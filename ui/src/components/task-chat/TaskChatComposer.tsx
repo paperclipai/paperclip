@@ -142,6 +142,7 @@ interface TaskChatComposerProps {
     { label: string; image: string | null }
   > | null;
   currentAssigneeValue?: string;
+  suggestedAssigneeValue?: string;
   onPendingAssigneeChange?: (value: string | null) => void;
   issueStatus?: string;
   /** Mobile document-flow host: 16px editor text so iOS doesn't zoom on focus. */
@@ -397,6 +398,7 @@ export function TaskChatComposer({
   assigneeAdapterOverrides,
   userProfileMap,
   currentAssigneeValue = "",
+  suggestedAssigneeValue,
   onPendingAssigneeChange,
   issueStatus,
   mobile = false,
@@ -638,7 +640,7 @@ export function TaskChatComposer({
   const showAssignee = Boolean(
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
-  const assigneeValue = creation ? currentAssigneeValue : pendingAssignee ?? currentAssigneeValue;
+  const assigneeValue = creation ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =

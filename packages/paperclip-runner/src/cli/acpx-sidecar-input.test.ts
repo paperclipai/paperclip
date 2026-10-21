@@ -120,6 +120,12 @@ describe("ACPX sidecar input sequencing", () => {
     expect(acpxBootstrapBlockedError(null, "turn.start")).toBeNull();
   });
 
+  it.each(["COPILOT_POLICY_VIOLATION", "COPILOT_DETACHED_WORK_UNSUPPORTED"])("preserves Copilot policy identity %s", code => {
+    const error = Object.assign(new Error("safe fixed policy message"), { code });
+    expect(acpxSidecarErrorCode(error)).toBe(code);
+    expect(acpxSidecarErrorCode(new Error("wrapped", { cause: error }))).toBe(code);
+  });
+
   it("preserves stable ACPX error identities without copying startup stderr", () => {
     const missingModule = Object.assign(new Error("provider exited"), {
       detailCode: "AGENT_STARTUP_FAILED",
@@ -179,4 +185,10 @@ describe("ACPX sidecar input sequencing", () => {
       "ACPX_SESSION_HANDSHAKE_TIMEOUT",
     );
   });
+});
+
+it("preserves a missing runtime package category across wrapped bootstrap errors", () => {
+  const error = Object.assign(new Error("private resolver stack"), { code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+  expect(acpxSidecarErrorCode(new Error("bootstrap failed", { cause: error }))).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
+  expect(acpxSidecarErrorCode(acpxBootstrapBlockedError(error, "session.read")!)).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
 });

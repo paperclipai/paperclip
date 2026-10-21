@@ -15,14 +15,17 @@ const everydayOracleImage =
   "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
-  it("keeps the manual EC2 image build credential-free and pins the authorized target", async () => {
+  it("keeps the manual hosted Linux image build credential-free and pins the authorized target", async () => {
     const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
     const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
     expect(manual.match(/AWS_CI_TRUSTED_USER_IDS/gu)).toHaveLength(2);
     expect(manual.match(/test "\$REPOSITORY_ID" = 1170821064/gu)).toHaveLength(2);
-    expect(manual).toContain('runs-on: runs-on/fleet=paperclip-public-pr-x64/env=public-ci');
+    expect(manual.slice(manual.indexOf('  manual_image:'))).toContain('runs-on: ubuntu-latest');
     expect(manual).toContain('repos/$REPOSITORY/git/ref/heads/$TARGET_BRANCH');
-    expect(manual).toContain('ref: ${{ needs.authorize_manual.outputs.target_sha }}');
+    expect(manual).toContain("ref: ${{ inputs.release_run_id != '' && github.sha || needs.authorize_manual.outputs.target_sha }}");
+    expect(manual).toContain('test "$PUBLISH_EVAL_IMAGE" = true');
+    expect(manual).toContain('test "$VERIFY_SOURCE" != true');
+    expect(manual).toContain('test "$VERIFY_PUBLIC_INSTALL" != true');
     expect(manual).toContain('SOURCE_SHA: ${{ needs.authorize_manual.outputs.target_sha }}');
     expect([...manual.matchAll(/secrets\.([A-Z_]+)/gu)].map(match => match[1])).toEqual(["GITHUB_TOKEN"]);
     expect(manual).toContain('pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile');

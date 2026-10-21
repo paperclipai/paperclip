@@ -100,6 +100,21 @@ export async function findRunnerExternalPackages(entryPoints) {
   return externalPackageNames;
 }
 
+// Provider entrypoints are resolved with createRequire from profile metadata,
+// so esbuild cannot see them. These two bridges ship in the server package;
+// other ACP agents use separately provisioned provider packs.
+export async function findRunnerRuntimePackages(entryPoints, profileData) {
+  const packages = await findRunnerExternalPackages(entryPoints);
+  for (const agent of ["claude", "codex"]) {
+    const profile = profileData?.profiles?.[agent];
+    if (profileData?.schema !== "paperclip.acpx-profiles.v1" || !profile?.agentServerPackage) {
+      throw new Error(`paperclip-runner vendor check: missing ${agent} provider profile.`);
+    }
+    packages.add(profile.agentServerPackage);
+  }
+  return packages;
+}
+
 function readDependencyNames(packageJsonPath) {
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
   return new Map(Object.entries(packageJson.dependencies ?? {}));
@@ -125,7 +140,8 @@ function explainMissingDependencies(missing, runnerDependencyNames) {
 
 async function main() {
   const entryPoints = ENTRY_POINT_NAMES.map((name) => resolve(runnerDist, name));
-  const externalPackageNames = await findRunnerExternalPackages(entryPoints);
+  const profileData = JSON.parse(readFileSync(resolve(runnerRoot, "acpx-profiles.json"), "utf8"));
+  const externalPackageNames = await findRunnerRuntimePackages(entryPoints, profileData);
   const serverDependencyNames = readDependencyNames(resolve(serverRoot, "package.json"));
 
   const missing = findMissingVendorDependencies(

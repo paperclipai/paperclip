@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "slug": "klaviyo",
+  "name": "Klaviyo",
+  "description": "Review Klaviyo campaign performance and prepare campaign changes for review.",
+  "categories": [
+    "commerce"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/klaviyo.png"
+  },
+  "urlPatterns": [
+    "https://mcp.klaviyo.com/*"
+  ],
+  "docsUrl": "https://developers.klaviyo.com/en/docs/connect_to_the_klaviyo_mcp_server",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Klaviyo",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthClientRegistration": "dcr",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Connect to the provider-hosted Klaviyo MCP server with browser sign-in.",
+      "defaults": {
+        "serverUrl": "https://mcp.klaviyo.com/mcp?toolsets=campaigns:read,campaigns:write,metrics:read,segments:read"
+      },
+      "guidanceMd": "Review campaign and metric data, then prepare campaign changes for human review. Campaign write access may expose sends and other state changes; never send or schedule a campaign without explicit authorization and an allowed Paperclip action.",
+      "riskTier": "S4",
+      "tenantFields": [
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "advanced": true,
+          "defaultValue": false,
+          "helperMd": "Turn on to remove Klaviyo MCP tools that can modify account data. This provider-side restriction is separate from Paperclip action permissions.",
+          "transport": {
+            "location": "query",
+            "name": "read-only",
+            "format": "boolean",
+            "omitFalse": true
+          }
+        }
+      ],
+      "consoleLinks": {
+        "docs": "https://developers.klaviyo.com/en/docs/connect_to_the_klaviyo_mcp_server"
+      },
+      "warnings": [
+        "Klaviyo's remote MCP requires an Owner, Admin, or Manager account role.",
+        "The campaigns:write toolset may expose campaign sending and other writes. Keep write actions Off until reviewed; the provider's Advanced read-only mode is optional and does not replace Paperclip action permissions."
+      ]
+    }
+  ]
+}

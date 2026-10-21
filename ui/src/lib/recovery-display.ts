@@ -108,6 +108,9 @@ export function deriveActiveRecoveryDisplayState(
   action: RecoveryDisplayInput,
   context?: RecoveryLivenessContext,
 ): ActiveRecoveryDisplayState | null {
+  // System repair is represented by the task's interruption projection.
+  // Diagnostics may still inspect the full recovery record.
+  if (action.ownerType === "system") return null;
   if (action.cause === "native_workspace_sync_out_unsafe_archive") return null;
   const state = deriveRecoveryDisplayState(action, context);
   return state === "resolved" ? null : state;

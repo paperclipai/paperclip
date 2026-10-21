@@ -1,0 +1,167 @@
+import type { Issue, Project } from "@paperclipai/shared";
+import {
+  createIssue,
+  storybookAuthSession,
+  storybookCompanies,
+} from "../../fixtures/paperclipData";
+
+export const projectHealthProjectIds = {
+  onboarding: "project-health-trial-onboarding",
+  international: "project-health-trial-international",
+  knowledge: "project-health-trial-knowledge",
+  partners: "project-health-trial-partners",
+  developer: "project-health-trial-developer",
+  launch: "project-health-trial-launch",
+} as const;
+
+const companyId = storybookCompanies[0]!.id;
+const authorId = storybookAuthSession.user.id;
+
+export const projectHealthProjects: Pick<
+  Project,
+  "id" | "companyId" | "name" | "description" | "status"
+>[] = [
+  {
+    id: projectHealthProjectIds.onboarding,
+    companyId,
+    name: "Customer onboarding",
+    description: "Help new teams reach their first successful workflow with fewer handoffs.",
+    status: "in_progress",
+  },
+  {
+    id: projectHealthProjectIds.international,
+    companyId,
+    name: "International expansion and multi-region billing infrastructure",
+    description: "Prepare regional invoicing, local currencies and a reliable rollout for new markets.",
+    status: "in_progress",
+  },
+  {
+    id: projectHealthProjectIds.knowledge,
+    companyId,
+    name: "Knowledge base refresh",
+    description: "Turn recurring support questions into clear, searchable product guidance.",
+    status: "in_progress",
+  },
+  {
+    id: projectHealthProjectIds.partners,
+    companyId,
+    name: "Partner integrations",
+    description: "Scope the first partner workflows before planning the implementation.",
+    status: "planned",
+  },
+  {
+    id: projectHealthProjectIds.developer,
+    companyId,
+    name: "Developer experience",
+    description: "Reduce setup friction and make everyday development feedback faster.",
+    status: "backlog",
+  },
+  {
+    id: projectHealthProjectIds.launch,
+    companyId,
+    name: "Autumn launch",
+    description: "Ship the autumn release with a coordinated announcement and support handoff.",
+    status: "completed",
+  },
+];
+
+const fixtureNow = new Date("2026-10-16T16:00:00.000Z");
+
+function task(
+  number: number,
+  projectId: string,
+  title: string,
+  status: Issue["status"],
+  minutesAgo: number,
+  description: string,
+): Issue {
+  const updatedAt = new Date(fixtureNow.getTime() - minutesAgo * 60_000);
+  return createIssue({
+    id: `project-health-trial-task-${number}`,
+    companyId,
+    projectId,
+    projectWorkspaceId: null,
+    project: null,
+    goalId: null,
+    goal: null,
+    parentId: null,
+    title,
+    description,
+    status,
+    priority: status === "blocked" ? "high" : "medium",
+    issueNumber: number,
+    identifier: `PAP-${number}`,
+    createdByUserId: authorId,
+    createdByAgentId: null,
+    assigneeAgentId: null,
+    assigneeUserId: authorId,
+    responsibleUserId: authorId,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    currentExecutionWorkspace: null,
+    billingCode: null,
+    labelIds: [],
+    labels: [],
+    blockedBy: [],
+    blocks: [],
+    startedAt: status === "todo" || status === "backlog" ? null : new Date("2026-10-12T16:00:00.000Z"),
+    completedAt: status === "done" ? updatedAt : null,
+    isUnreadForMe: false,
+    myLastTouchAt: updatedAt,
+    lastExternalCommentAt: null,
+    lastActivityAt: updatedAt,
+    createdAt: new Date("2026-10-09T16:00:00.000Z"),
+    updatedAt,
+  });
+}
+
+export const projectHealthTasks: Issue[] = [
+  task(701, projectHealthProjectIds.onboarding, "Confirm the activation milestone with customer success", "blocked", 8,
+    "Resolve the ownership question before publishing the new onboarding checklist."),
+  task(702, projectHealthProjectIds.onboarding, "Review the first-run checklist with the pilot team", "in_review", 24,
+    "The pilot feedback is ready for review, including the two steps that still need clearer copy."),
+  task(703, projectHealthProjectIds.onboarding, "Simplify workspace invitations", "in_progress", 46,
+    "Keep the invitation flow understandable for teams adding their first collaborators."),
+  task(704, projectHealthProjectIds.onboarding, "Draft welcome messages for new workspace owners", "todo", 78,
+    "Explain the next useful action without overwhelming a new workspace owner."),
+  task(705, projectHealthProjectIds.onboarding, "Add a sample workflow to the starter workspace", "done", 120,
+    "Provide a complete example that a new team can inspect before creating its own workflow."),
+  task(706, projectHealthProjectIds.onboarding, "Measure time to first completed task", "done", 186,
+    "Document the baseline and the definition used to compare the next onboarding iteration."),
+  task(707, projectHealthProjectIds.onboarding, "Document assisted onboarding handoffs", "todo", 244,
+    "Capture when customer success should step in and what context should accompany the handoff."),
+  task(708, projectHealthProjectIds.international, "Resolve invoice rounding differences across currencies before the multi-region billing pilot begins", "blocked", 12,
+    "Reconcile line-item and invoice totals for currencies with different decimal precision."),
+  task(709, projectHealthProjectIds.international, "Review regional invoice templates", "in_review", 38,
+    "Check the proposed regional fields and the examples prepared for the pilot."),
+  task(710, projectHealthProjectIds.international, "Implement currency selection for new subscriptions", "in_progress", 91,
+    "Apply the selected billing currency consistently throughout checkout and subscription details."),
+  task(711, projectHealthProjectIds.international, "Prepare the regional rollout checklist", "todo", 170,
+    "List the launch owners, support coverage and rollback conditions for each region."),
+  task(712, projectHealthProjectIds.international, "Inventory supported payment methods", "done", 302,
+    "Record which payment methods are available to the initial regional pilot accounts."),
+  task(713, projectHealthProjectIds.knowledge, "Refresh the workspace setup guide", "done", 31,
+    "Update the setup guide to match the current workspace creation flow."),
+  task(714, projectHealthProjectIds.knowledge, "Rewrite the task ownership examples", "todo", 116,
+    "Use realistic examples to explain assignment, responsibility and review handoffs."),
+  task(715, projectHealthProjectIds.knowledge, "Publish the troubleshooting index", "done", 218,
+    "Make the most common setup problems easy to find from a single support entry point."),
+  task(716, projectHealthProjectIds.knowledge, "Add screenshots to the project guide", "todo", 357,
+    "Show the project overview and its task list using the current interface."),
+  task(717, projectHealthProjectIds.developer, "Map the slowest local feedback loops", "todo", 63,
+    "Collect baseline timings for the development tasks the team repeats every day."),
+  task(718, projectHealthProjectIds.developer, "Explore a guided development setup", "backlog", 421,
+    "Outline a setup flow that explains each missing prerequisite at the point it is needed."),
+  task(719, projectHealthProjectIds.launch, "Publish the release announcement", "done", 52,
+    "Publish the approved product announcement and link to the release notes."),
+  task(720, projectHealthProjectIds.launch, "Complete launch readiness review", "done", 133,
+    "Confirm the release checklist, support coverage and follow-up owners."),
+  task(721, projectHealthProjectIds.launch, "Hand off release notes to support", "done", 266,
+    "Give support the user-facing changes and answers to expected launch questions."),
+  task(722, projectHealthProjectIds.launch, "Archive the launch retrospective", "done", 388,
+    "Capture the rollout results and the process improvements for the next release."),
+];

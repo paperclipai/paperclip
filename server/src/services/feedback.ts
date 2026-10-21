@@ -1,3 +1,4 @@
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, getTableColumns, gte, isNull, lte, ne, or } from "drizzle-orm";
@@ -111,7 +112,7 @@ const feedbackExportColumns = getTableColumns(feedbackExports);
 const instructionsSvc = agentInstructionsService();
 
 type FeedbackTraceShareClient = {
-  uploadTraceBundle(bundle: FeedbackTraceBundle): Promise<{ objectKey: string }>;
+  uploadTraceBundle(bundle: FeedbackTraceBundle, signal?: AbortSignal): Promise<{ objectKey: string }>;
 };
 
 type FeedbackServiceOptions = {
@@ -1715,6 +1716,15 @@ async function buildFeedbackTraceBundleFromRow(
 }
 
 export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
+  // Serialize explicit flushes and the worker's batches so callers cannot
+  // upload the same trace concurrently. HTTP vote handlers only save and notify.
+  let exportFlush: Promise<unknown> = Promise.resolve();
+  function serializeExportFlush<T>(operation: () => Promise<T>): Promise<T> {
+    const result = exportFlush.then(operation, operation);
+    exportFlush = result.catch(() => undefined);
+    return result;
+  }
+
   return {
     listIssueVotesForUser: async (issueId: string, authorUserId: string) =>
       db
@@ -1786,13 +1796,23 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       return row ? buildFeedbackTraceBundleFromRow(db, row) : null;
     },
 
+    hasPendingFeedbackTraces: async () => {
+      const pending = options.shareClient
+        ? or(eq(feedbackExports.status, "pending"), eq(feedbackExports.status, "failed"))
+        : eq(feedbackExports.status, "pending");
+      return (await db.select({ id: feedbackExports.id }).from(feedbackExports)
+        .where(pending).limit(1)).length > 0;
+    },
+
     flushPendingFeedbackTraces: async (input?: {
       companyId?: string;
       traceId?: string;
       limit?: number;
       now?: Date;
-    }) => {
+      signal?: AbortSignal;
+    }) => serializeExportFlush(async () => {
       const shareClient = options.shareClient;
+      input?.signal?.throwIfAborted();
       if (!shareClient) {
         const filters = [eq(feedbackExports.status, "pending")];
         if (input?.companyId) {
@@ -1861,12 +1881,13 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
       let failed = 0;
 
       for (const row of rows) {
+        if (input?.signal?.aborted) break;
         const attemptAt = input?.now ?? new Date();
         attempted += 1;
 
         try {
           const bundle = await buildFeedbackTraceBundleFromRow(db, row);
-          await shareClient.uploadTraceBundle(bundle);
+          await shareClient.uploadTraceBundle(bundle, input?.signal);
 
           await db
             .update(feedbackExports)
@@ -1900,7 +1921,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
         sent,
         failed,
       };
-    },
+    }),
 
     saveIssueVote: async (input: {
       issueId: string;
@@ -2071,6 +2092,7 @@ export function feedbackService(db: Db, options: FeedbackServiceOptions = {}) {
           })
           .where(eq(feedbackVotes.id, savedVote.id));
 
+        if (sharedWithLabs) await notifyDeliveryWork(tx, DELIVERY_QUEUES.feedback);
         const [savedTrace] = await tx
           .insert(feedbackExports)
           .values({

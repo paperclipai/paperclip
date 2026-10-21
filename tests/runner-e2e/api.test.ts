@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { APIRequestContext, APIResponse } from "@playwright/test";
-import { RunnerApi } from "./api.js";
+import { RunnerApi, RunnerApiHttpError } from "./api.js";
 const response = (status: number, data: unknown = {}): APIResponse => ({
   ok: () => status >= 200 && status < 300, status: () => status,
   json: async () => data, text: async () => JSON.stringify(data), url: () => "http://fixture.invalid/instructions",
@@ -31,4 +31,23 @@ describe("fixture instruction revision fence", () => {
     expect(fixture.request.get).toHaveBeenCalledTimes(1);
     expect(fixture.request.put).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("passes a bounded GET timeout to the request transport without changing its response", async () => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const get = vi.fn(async () => response(200, { status: "running" }));
+  const api = new RunnerApi({ get } as unknown as APIRequestContext);
+  await expect(api.get("/api/heartbeat-runs/run", { timeout: 1234 })).resolves.toEqual({ status: "running" });
+  expect(get).toHaveBeenCalledExactlyOnceWith("/api/heartbeat-runs/run", { timeout: 1234 });
+});
+
+
+it("preserves GET HTTP status separately from diagnostic text", async () => {
+  vi.stubEnv("PAPERCLIP_RUNNER_E2E_PORT", "3100");
+  const api = new RunnerApi({ get: vi.fn(async () => response(503, { error: "PRIVATE" })) } as unknown as APIRequestContext);
+  const error = await api.get("/api/environments/env/leases").catch(error => error);
+  expect(error).toBeInstanceOf(RunnerApiHttpError);
+  if (!(error instanceof RunnerApiHttpError)) throw new Error("Expected typed HTTP error");
+  expect(error.status).toBe(503);
 });

@@ -2,6 +2,7 @@
  * Uses real Codex, disposable database/workspaces, and a private copy of login credentials.
  * Writes only content-free evidence to stdout; never runs as part of the unit suite.
  */
+import { createAgentLifecycle } from "../src/services/agent-lifecycle.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -63,7 +64,7 @@ try {
       let result;
       if (mode === "legacy") {
         await server.db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null }).where(eq(heartbeatRuns.id, f.runId));
-        await server.db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, f.agentId));
+        await createAgentLifecycle(server.db).updateConfiguration(f.agentId, { adapterType: "codex_local" });
         result = await executeLegacy({
           runId: f.runId,
           agent: { id: f.agentId, companyId: f.companyId, name: "Feedback smoke", adapterType: "codex_local", adapterConfig: {} },

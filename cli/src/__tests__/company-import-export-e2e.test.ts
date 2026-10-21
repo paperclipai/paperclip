@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createStoredZipArchive } from "./helpers/zip.js";
+import { removeTestHome } from "../../../tests/helpers/remove-test-home.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
@@ -302,8 +304,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
     const child = spawn(
-      "pnpm",
-      ["paperclipai", "run", "--config", configPath],
+      process.execPath,
+      ["--import", createRequire(import.meta.url).resolve("tsx"), path.join(repoRoot, "cli/src/index.ts"), "run", "--config", configPath],
       {
         cwd: repoRoot,
         env: createServerEnv(configPath, port, tempDb.connectionString, {
@@ -329,7 +331,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
     await stopServerProcess(serverProcess);
     await tempDb?.cleanup();
     if (tempRoot) {
-      rmSync(tempRoot, { recursive: true, force: true });
+      removeTestHome(tempRoot);
     }
   });
 

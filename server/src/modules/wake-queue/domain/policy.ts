@@ -142,6 +142,7 @@ export type DeferredWakeAgentFacts = {
   agentFound: boolean;
   /** True when the agent is invokable (status, org chain). Meaningless when agentFound is false. */
   invokable: boolean;
+  paused?: boolean;
 };
 
 export type DeferredWakePauseHoldFacts = {
@@ -158,6 +159,7 @@ export type DeferredWakeOutcomeFacts = {
 
 export type DeferredWakeOutcomeDecision =
   | { kind: "fail_not_invokable" }
+  | { kind: "defer_agent_pause" }
   | { kind: "cancel_pause_hold" }
   | { kind: "promote" };
 
@@ -180,17 +182,18 @@ export function decideQueuedCommentAction(
   return { kind: "proceed" };
 }
 
-/** Decides the outcome for a deferred wake whose queued-comment action resolved to "proceed" (or finished its rewrite): fail, cancel, or promote. */
 export function decideWakeOutcome(facts: DeferredWakeOutcomeFacts): DeferredWakeOutcomeDecision {
   const { agent, pauseHold } = facts;
 
-  if (!agent.agentFound || !agent.invokable) {
+  if (!agent.agentFound || (!agent.invokable && !agent.paused)) {
     return { kind: "fail_not_invokable" };
   }
 
   if (pauseHold.activePauseHold && !pauseHold.treeHoldInteractionWake) {
     return { kind: "cancel_pause_hold" };
   }
+
+  if (agent.paused) return { kind: "defer_agent_pause" };
 
   return { kind: "promote" };
 }

@@ -1,3 +1,5 @@
+import { skillAccessService } from "./skill-access.js";
+import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -28,6 +30,7 @@ export interface ActivityFilters {
   entityId?: string;
   limit?: number;
   readCondition?: SQL<boolean>;
+  caseReadCondition?: SQL<boolean>;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -84,11 +87,26 @@ export function activityService(db: Db) {
       ))
     end
   `.as("usageJson");
-  const summarizedResultJson = sql<Record<string, unknown> | null>`
+  // A denied user needs the selected connection's name to repair their task.
+  // Other readers need the connection's existing human sharing permission.
+  const summarizedResultJson = (viewerUserId: string | null) => sql<Record<string, unknown> | null>`
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
         'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
+        'configurationIncomplete', case
+          when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
+          when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
+          and (${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+            or ${heartbeatRuns.error} = 'This credential is not shared with the responsible user')
+          then jsonb_build_object(
+            'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+              then 'ai_connection_credential_not_shared' end,
+            'credentialAccess', jsonb_build_object(
+              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId)}
+            )
+          ) end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
           in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
@@ -338,8 +356,9 @@ export function activityService(db: Db) {
   }
 
   return {
-    list: (filters: ActivityFilters) => {
-      const conditions = [eq(activityLog.companyId, filters.companyId)];
+    list: async (filters: ActivityFilters) => {
+      const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {
@@ -389,12 +408,13 @@ export function activityService(db: Db) {
         )
         .orderBy(desc(activityLog.createdAt)),
 
-    runsForIssue: async (companyId: string, issueId: string) => {
+    runsForIssue: async (companyId: string, issueId: string, viewerUserId: string | null = null) => {
       scheduleRunLivenessBackfill(companyId, issueId);
       const runs = await db
         .select({
           runId: heartbeatRuns.id,
           runtimeMode: heartbeatRuns.runtimeMode,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
           status: heartbeatRuns.status,
           agentId: heartbeatRuns.agentId,
           adapterType: agents.adapterType,
@@ -406,9 +426,12 @@ export function activityService(db: Db) {
           errorCode: heartbeatRuns.errorCode,
           error: sql<string | null>`case when ${heartbeatRuns.status} = 'failed'
             and ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
-            then left(${heartbeatRuns.error}, 2000) else null end`,
+            then left(${heartbeatRuns.error}, 2000)
+            when ${heartbeatRuns.status} = 'failed'
+              and ${heartbeatRuns.error} = 'This credential is not shared with the responsible user'
+            then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
-          resultJson: summarizedResultJson,
+          resultJson: summarizedResultJson(viewerUserId),
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -420,6 +443,7 @@ export function activityService(db: Db) {
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
           wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
+          queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
@@ -565,7 +589,7 @@ export function activityService(db: Db) {
       });
     },
 
-    issuesForRun: async (runId: string) => {
+    issuesForRun: async (runId: string, readCondition: SQL<boolean>) => {
       const run = await db
         .select({
           companyId: heartbeatRuns.companyId,
@@ -591,7 +615,9 @@ export function activityService(db: Db) {
             eq(activityLog.companyId, run.companyId),
             eq(activityLog.runId, runId),
             eq(activityLog.entityType, "issue"),
+            eq(issues.companyId, run.companyId),
             visibleIssueCondition(),
+            readCondition,
           ),
         )
         .orderBy(issueIdAsText);
@@ -614,6 +640,7 @@ export function activityService(db: Db) {
             eq(issues.companyId, run.companyId),
             eq(issues.id, contextIssueId),
             visibleIssueCondition(),
+            readCondition,
           ),
         )
         .then((rows) => rows[0] ?? null);

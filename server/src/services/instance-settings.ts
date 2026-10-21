@@ -35,6 +35,8 @@ import {
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
+import { forbidden } from "../errors.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -235,9 +237,11 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableMcpAggregators: true,
       enablePublicMcp: parsed.data.enablePublicMcp ?? false,
       enableOpenAiDot: parsed.data.enableOpenAiDot ?? false,
+      enableMuse: parsed.data.enableMuse ?? false,
+      enableGrokBot: parsed.data.enableGrokBot ?? false,
       enableChatConnectors: parsed.data.enableChatConnectors ?? false,
+      enableGitHubReviewBots: parsed.data.enableGitHubReviewBots ?? false,
       enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
-      enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableAgentChat: parsed.data.enableAgentChat ?? false,
       enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
@@ -252,6 +256,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableSummaries: parsed.data.enableSummaries ?? false,
       enableStatusCards: parsed.data.enableStatusCards ?? false,
       enableDecisions: parsed.data.enableDecisions ?? false,
+      enableFastResponses: parsed.data.enableFastResponses ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       enablePaperclipDeveloperMode: parsed.data.enablePaperclipDeveloperMode ?? false,
@@ -282,9 +287,11 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableMcpAggregators: true,
     enablePublicMcp: false,
     enableOpenAiDot: false,
+    enableMuse: false,
+    enableGrokBot: false,
     enableChatConnectors: false,
+    enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
-    enablePipelines: false,
     enableCases: false,
     enableAgentChat: false,
     enableCombinedInboxTasks: false,
@@ -299,6 +306,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
+    enableFastResponses: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
@@ -385,7 +393,7 @@ export function applyCloudCatalogDefaults(
  *
  * `updateExperimental` persists the whole normalized object, and the schema
  * normalizes an omitted flag to its self-hosted default. Without this step an
- * unrelated experimental write (say, turning on pipelines) would store
+ * unrelated experimental write (say, turning on Cases) would store
  * `enableNativeRunner: true` on a managed instance whose tenant row had never
  * mentioned the flag; every later read would then treat the stored boolean as
  * an explicit tenant choice and stop re-asserting the Cloud default.
@@ -429,6 +437,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+  const staging = isCloudStagingInstance(options.runtimeEnv ?? process.env);
+  const enforcedManagedConfig = staging && managedConfig
+    ? {
+      ...managedConfig,
+      features: Object.fromEntries(Object.entries(managedConfig.features)
+        .filter(([key, enabled]) => enabled || !isCloudStagingExperimentalSetting(key))),
+    }
+    : managedConfig;
   // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
   // read, never persisted (see applyOperatorGeneralDefaults) — including on
   // the write path, where a full-GET echo of the overlaid value is stripped
@@ -440,9 +456,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
+    const stored = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const defaults = staging ? { ...managedConfig?.features, ...stored } : raw;
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
-      applyCloudCatalogDefaults(normalizeExperimentalSettings(raw), raw, managedConfig),
-      managedConfig,
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(defaults), defaults, managedConfig),
+      enforcedManagedConfig,
     );
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
     return managedConfig ? { ...experimental, managedKeys } : experimental;
@@ -559,15 +577,32 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
+      for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
+          throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
+            code: "settings_operator_managed",
+          });
+        }
+      }
       const current = await getOrCreateRow();
       // Guarded Cloud flags stay absent from the row unless chosen, so the
       // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
-      const nextExperimental = stripCloudCatalogDefaultEchoes(
-        current.experimental,
-        patch,
-        applyExperimentalSettingsPatch(current.experimental, patch, options),
-        managedConfig,
-      );
+      const nextExperimental = staging
+        ? applyExperimentalSettingsPatch(toExperimentalView(current.experimental), patch, options)
+        : stripCloudCatalogDefaultEchoes(
+          current.experimental,
+          patch,
+          applyExperimentalSettingsPatch(current.experimental, patch, options),
+          managedConfig,
+        );
+      if (staging) {
+        const stored = current.experimental as Record<string, unknown> | null;
+        for (const key of Object.keys(INSTANCE_FEATURE_CATALOG) as ManagedExperimentalFeatureKey[]) {
+          if (typeof stored?.[key] !== "boolean" && !Object.prototype.hasOwnProperty.call(patch, key)) {
+            delete nextExperimental[key];
+          }
+        }
+      }
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)

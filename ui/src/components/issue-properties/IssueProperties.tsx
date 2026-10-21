@@ -29,11 +29,12 @@ import { issuesApi } from "../../api/issues";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
-import { selectAgentArtifactAttachments } from "@/lib/issue-artifacts";
+import { selectArtifactAttachments } from "@/lib/issue-artifacts";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS, copilotTaskModelCatalogOptions } from "../../lib/copilot-task-model-catalog";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
@@ -47,6 +48,7 @@ import { getRecentProjectIds } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
@@ -101,8 +103,6 @@ import { ExternalObjectRows } from "./external-object-rows";
 import {
   asRecord,
   compactRecord,
-  defaultExecutionWorkspaceModeForProject,
-  defaultProjectWorkspaceIdForProject,
   isMainIssueWorkspace,
   overrideLane,
   sortAdapterModels,
@@ -246,6 +246,9 @@ export function IssueProperties({
   documentDeepLink,
   sidePanelContentOnly = false,
 }: IssuePropertiesProps) {
+  const policyResult = useExecutionPolicy(issue.executionPolicy);
+  const policyAvailable = policyResult.success;
+  const executionPolicy = policyResult.success ? policyResult.data : null;
   const { selectedCompanyId } = useCompany();
   const { isMobile } = useSidebar();
   const queryClient = useQueryClient();
@@ -317,12 +320,11 @@ export function IssueProperties({
     || paneTabStandaloneDocuments.length > 0;
   // Artifacts covers the same three sources the tab body composes: work
   // products, documents (redundant with the Plan tab, intentionally), and
-  // agent-created attachments. User comment uploads stay thread-only and
-  // no longer summon the tab.
+  // attachments from agents and people.
   const hasArtifactsTab =
     (paneTabWorkProducts?.length ?? 0) > 0
     || paneTabStandaloneDocuments.length > 0
-    || selectAgentArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
+    || selectArtifactAttachments(paneTabAttachments, paneTabWorkProducts).length > 0;
   const [paneTab, setPaneTab] = useState<IssuePaneTab>("properties");
   const [closedPaneTabs, setClosedPaneTabs] = useState<Set<IssuePaneTab>>(() => new Set());
   // Once a plan document exists, surface it: switch the pane to the Plan tab so
@@ -392,9 +394,9 @@ export function IssueProperties({
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
-  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
-  const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(executionPolicy?.monitor?.notes ?? "");
+  const [monitorServiceInput, setMonitorServiceInput] = useState(executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
@@ -604,7 +606,8 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId && issue.currentExecutionWorkspace?.id === issue.executionWorkspaceId) && !issueUsesMainWorkspace
+    && experimentalSettings?.enableIsolatedWorkspaces === true;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null
     : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
@@ -630,7 +633,7 @@ export function IssueProperties({
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      if (result.workspace.projectId) void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       if (companyId) {
@@ -729,11 +732,12 @@ export function IssueProperties({
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const copilotCatalog = copilotTaskModelCatalogOptions(assignee);
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
+    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || copilotCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
@@ -750,14 +754,24 @@ export function IssueProperties({
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
   const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
-  const { data: assigneeAdapterModels } = useQuery({
+  const catalogEnvironmentId = copilotCatalog ? assignee?.defaultEnvironmentId ?? null : null;
+  const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
+  const requestCopilotModels = Boolean(copilotCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);
+  const { data: assigneeAdapterModels, refetch: refreshAssigneeModels } = useQuery({
     queryKey:
       companyId && assigneeAdapterType
-        ? queryKeys.agents.adapterModels(companyId, assigneeAdapterType, null, catalogProvider)
+        ? [...queryKeys.agents.adapterModels(companyId, assigneeAdapterType, catalogEnvironmentId, catalogProvider), copilotCatalog ?? null]
         : ["agents", "none", "adapter-models", assigneeAdapterType ?? "none"],
-    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
+    queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!, {
+      provider: catalogProvider,
+      ...(copilotCatalog ? { environmentId: catalogEnvironmentId, ...copilotCatalog } : {}),
+    }),
+    ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides && (!copilotCatalog || requestCopilotModels),
   });
+  useEffect(() => {
+    if (requestCopilotModels) void refreshAssigneeModels();
+  }, [requestCopilotModels, copilotCatalogScope, catalogEnvironmentId, companyId, refreshAssigneeModels]);
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -999,6 +1013,7 @@ export function IssueProperties({
     applyAssignee(next, track);
   };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
+    if (!policyAvailable) return;
     onUpdate({
       executionPolicy: buildExecutionPolicy({
         existingPolicy: issue.executionPolicy ?? null,
@@ -1073,13 +1088,13 @@ export function IssueProperties({
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
   useEffect(() => {
-    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
-    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
-    setMonitorServiceInput(issue.executionPolicy?.monitor?.serviceName ?? "");
+    setMonitorAtInput(toDateTimeLocalValue(executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(executionPolicy?.monitor?.notes ?? "");
+    setMonitorServiceInput(executionPolicy?.monitor?.serviceName ?? "");
   }, [
-    issue.executionPolicy?.monitor?.nextCheckAt,
-    issue.executionPolicy?.monitor?.notes,
-    issue.executionPolicy?.monitor?.serviceName,
+    executionPolicy?.monitor?.nextCheckAt,
+    executionPolicy?.monitor?.notes,
+    executionPolicy?.monitor?.serviceName,
   ]);
   // Re-sync watchdog editor inputs when the persisted watchdog changes (and reset on close).
   useEffect(() => {
@@ -1261,6 +1276,7 @@ export function IssueProperties({
       ? M | null
       : never
     : never) => {
+    if (!policyAvailable) return;
     const basePolicy = buildExecutionPolicy({
       existingPolicy: issue.executionPolicy ?? null,
       reviewerValues,
@@ -1270,8 +1286,10 @@ export function IssueProperties({
       onUpdate({ executionPolicy: null });
       return;
     }
+    const { monitor: _previousMonitor, ...policyWithoutMonitor } = basePolicy ?? {};
     onUpdate({
       executionPolicy: {
+        ...policyWithoutMonitor,
         mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
@@ -1299,11 +1317,11 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
-  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
-  const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
-  const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
+  const monitorServiceName = executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
+  const monitorNotes = executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
   const monitorNow = useMonitorCountdown(monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
@@ -1585,7 +1603,7 @@ export function IssueProperties({
           >
             Schedule
           </button>
-          {issue.executionPolicy?.monitor ? (
+          {executionPolicy?.monitor ? (
             <button
               type="button"
               className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
@@ -2000,26 +2018,7 @@ export function IssueProperties({
                 option.id === (issue.projectId ?? "") && "bg-accent",
               )}
               onClick={() => {
-                if (option.kind === "project") {
-                  const defaultMode = defaultExecutionWorkspaceModeForProject(option.project);
-                  onUpdate({
-                    projectId: option.project.id,
-                    projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: workspaceIsolationControlsVisible ? defaultMode : null,
-                    executionWorkspaceSettings: workspaceIsolationControlsVisible && option.project.executionWorkspacePolicy?.enabled
-                      ? { mode: defaultMode }
-                      : null,
-                  });
-                } else {
-                  onUpdate({
-                    projectId: null,
-                    projectWorkspaceId: null,
-                    executionWorkspaceId: null,
-                    executionWorkspacePreference: null,
-                    executionWorkspaceSettings: null,
-                  });
-                }
+                onUpdate({ projectId: option.kind === "project" ? option.project.id : null });
                 setProjectOpen(false);
               }}
             >
@@ -2621,6 +2620,11 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        {!policyAvailable ? (
+          <PropertyRow label="Execution policy" wrap>
+            <span role="status" className="text-sm text-muted-foreground">Execution policy unavailable. Refresh to try again.</span>
+          </PropertyRow>
+        ) : (<>
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2658,6 +2662,7 @@ export function IssueProperties({
           )}
         </PropertyPicker>
         {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
+        </>)}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
@@ -2684,6 +2689,7 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
+        {policyAvailable ? (
         <PropertyPicker
           inline={inline}
           label="Monitor"
@@ -2695,6 +2701,7 @@ export function IssueProperties({
         >
           {monitorContent}
         </PropertyPicker>
+        ) : null}
 
         <PropertyPicker
           inline={inline}

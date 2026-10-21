@@ -7,14 +7,16 @@ import { readStockInstructionVariant } from "./stock-harness-instruction-variant
 // constants. Otherwise a larger shipped manual could silently update the oracle.
 export const STOCK_HIRE_IDENTITY = "You are an agent in a Paperclip company.\n";
 export const STOCK_TEMPLATE_IDENTITY = "You are agent";
-const SKILL_SOURCES = ["../../skills/paperclip/SKILL.md", "../../skills/paperclip/references/issue-documents.md"];
+const SKILL_SOURCES = ["../../skills/paperclip/SKILL.md", "../../skills/paperclip/references/issue-documents.md",
+  "../../scripts/paperclip-issue-update.sh", "../../skills/paperclip/scripts/paperclip-issue-update.sh"];
 export function stockHarnessSkillSources() {
   return SKILL_SOURCES.map(source => {
     try {
       return { path: source.replace(/^\.\.\/\.\.\//, ""), present: true,
         sha256: createHash("sha256").update(readFileSync(new URL(source, import.meta.url))).digest("hex") };
     } catch (error) {
-      if (source.endsWith("/references/issue-documents.md") && (error as NodeJS.ErrnoException).code === "ENOENT")
+      if ((source.endsWith("/references/issue-documents.md") || source === "../../skills/paperclip/scripts/paperclip-issue-update.sh")
+        && (error as NodeJS.ErrnoException).code === "ENOENT")
         return { path: source.replace(/^\.\.\/\.\.\//, ""), present: false, sha256: null };
       throw error;
     }
@@ -155,7 +157,7 @@ export async function captureStockHarness(input: {
 export function stockHarnessSourceDigest() {
   const hash = createHash("sha256");
   for (const source of [
-    "stock-harness.ts", "context-integrity-cases.ts", "context-integrity-scoring.ts",
+    "stock-harness.ts", "checkout-activity.ts", "context-integrity-cases.ts", "context-integrity-scoring.ts",
     "context-integrity-flow.ts", "chat-cases.ts", "chat-flow.ts", "live-fixtures.ts", "runner.spec.ts",
     "stock-harness-checks.mjs", "stock-harness-admission.ts", "stock-harness-manifest.ts",
     "stock-harness-instruction-variant.mjs", "stock-harness-instruction-variant.d.mts", "stock-harness-instruction-variant.test.mjs",

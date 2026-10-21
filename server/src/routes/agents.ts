@@ -1,22 +1,35 @@
-import { aiRoutingHarness } from "@paperclipai/shared";
+import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { agentHarnessType, type AgentRunnerChoice } from "@paperclipai/shared";
+import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+
 import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { publicMcpConfig } from "../services/public-mcp/oauth.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { completeConnectionIntentSchema } from "@paperclipai/shared";
-import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { agentFileStore, agentFileTokenFromHash } from "../services/agent-file-store.js";
 import { pipeline } from "node:stream/promises";
 import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
 import { listOpenRouterModels } from "../services/openrouter-models.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding, aiRuntimeConnectionBindingSchema, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
+import { withManagedAiProbe, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
+import {
+  ADAPTER_AUTH_MISSING_CHECK_CODE,
+  aiConnectionBindingSchema,
+  aiRuntimeConnectionBindingSchema,
+  type AiConnectionBinding,
+  type AiRuntimeConnectionBinding,
+} from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services/copilot-connection-probe.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
-import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
+import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -114,7 +127,7 @@ import {
 } from "./workspace-command-authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
-import { resolveEnvironmentExecutionTarget } from "../services/environment-execution-target.js";
+
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -265,6 +278,7 @@ import {
 } from "../services/change-consent-gate.js";
 import {
   canActorReadHeartbeatRun,
+  getHeartbeatRunReadDecisions,
   canActorReadWorkspaceOperation,
   redactHeartbeatRunListRow,
 } from "../services/heartbeat-run-privacy.js";
@@ -272,6 +286,7 @@ import {
   PaperclipRunnerProviderProfileError,
   resolvePaperclipRunnerProviderProfile,
   validatePaperclipRunnerDotConfig,
+  validatePaperclipRunnerGrokConfig,
 } from "../services/native-runtime/provider-profile.js";
 import { managedAgentProfileService } from "../services/managed-agent-profiles.js";
 import { remoteAgentProfileService } from "../services/remote-agent-profiles.js";
@@ -412,6 +427,7 @@ const ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES = 5;
 
 async function anySecretNamesAccountHome(
   secretsSvc: {
+    hasInstanceAccountHomeClaim: (companyId: string, accountHomeDir: string) => Promise<boolean>;
     list: (companyId: string) => Promise<Array<{ id: string; name: string; provider: string }>>;
     resolveSecretValueForDeviceLoginCheck: (
       companyId: string,
@@ -422,6 +438,7 @@ async function anySecretNamesAccountHome(
   companyId: string,
   accountHomeDir: string,
 ): Promise<boolean> {
+  if (await secretsSvc.hasInstanceAccountHomeClaim(companyId, accountHomeDir)) return true;
   const checkedSecretIds = new Set<string>();
   for (let pass = 0; pass < ACCOUNT_HOME_CLAIM_SCAN_MAX_PASSES; pass += 1) {
     const secrets = await secretsSvc.list(companyId);
@@ -561,10 +578,12 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db, { cancelWorkForScope: scope => heartbeat.cancelBudgetScopeWork(scope) });
+  const svcLifecycle = createAgentLifecycle(db, { cancelWorkForScope: scope => heartbeat.cancelBudgetScopeWork(scope) });
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
   const environmentsSvc = environmentService(db);
+  const { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, testManagedEnvironment } = agentEnvironmentTestService(db, options.pluginWorkerManager);
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -786,12 +805,6 @@ export function agentRoutes(
     if (await actorCanReadRun(req, run)) return true;
     res.status(404).json({ error: notFoundMessage });
     return false;
-  }
-
-  async function serializeRunListRow<
-    T extends Record<string, unknown> & RunReadBinding & { id: string },
-  >(req: Request, run: T) {
-    return await actorCanReadRun(req, run) ? run : redactHeartbeatRunListRow(run);
   }
 
   // The company-scoped adapter login-session service. It runs the device-login
@@ -1219,415 +1232,6 @@ export function agentRoutes(
       return decideAgentRead(req, { id, companyId });
     }));
     return rows.filter((_, index) => decisions[index]?.allowed);
-  }
-
-  // A null agent override inherits the instance default, just like dispatch.
-  // Resolve this before secrets or probes so a default remote environment can
-  // never accidentally validate the account on the control-plane host.
-  async function resolveAdapterTestEnvironmentId(companyId: string, environmentId: string | null | undefined) {
-    if (environmentId) return environmentId;
-    const settings = await instanceSettings.get();
-    if (settings.defaultEnvironmentId) return settings.defaultEnvironmentId;
-    if ((await instanceSettings.getExperimental()).enableManagedSandboxOnly === true) {
-      const managed = await environmentsSvc.findManagedSandboxEnvironment(companyId);
-      if (!managed) {
-        throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
-          code: "managed_sandbox_unavailable",
-        });
-      }
-      return managed.id;
-    }
-    return null;
-  }
-
-  /**
-   * Resolve the execution target the adapter should run its test probes against.
-   *
-   * - No environmentId / local environment → returns a local target so the
-   *   adapter probes the Paperclip host (legacy behavior).
-   * - SSH environment → builds an SSH execution target from the environment
-   *   config so the adapter probes the remote box. No lease is required:
-   *   the SSH spec is fully derived from the saved environment config.
-   * - Sandbox / plugin environments → acquires an ad-hoc lease, realizes the
-   *   workspace, and resolves a sandbox execution target wired to the runtime
-   *   so the adapter probe runs inside the sandbox the same way a heartbeat
-   *   would. The returned `release` callback rolls the lease back when the
-   *   route is done.
-   *
-   * The caller MUST always invoke `release()` (typically in a `finally` block).
-   */
-  async function resolveAdapterTestExecutionContext(input: {
-    companyId: string;
-    adapterType: string;
-    environmentId: string | null;
-  }): Promise<{
-    executionTarget: AdapterExecutionTarget | null;
-    environmentName: string | null;
-    fallbackChecks: AdapterEnvironmentCheck[];
-    sandboxIdentityCheck?: AdapterEnvironmentCheck | null;
-    release: (status?: "released" | "failed") => Promise<void>;
-  }> {
-    const noopRelease = async () => {};
-
-    if (!input.environmentId) {
-      return {
-        executionTarget: null,
-        environmentName: null,
-        fallbackChecks: [],
-        release: noopRelease,
-      };
-    }
-
-    const requestedEnvironment = await environmentsSvc.getById(input.environmentId);
-    if (!requestedEnvironment) {
-      return {
-        executionTarget: null,
-        environmentName: null,
-        fallbackChecks: [
-          {
-            code: "environment_not_found",
-            level: "warn",
-            message: "Selected environment was not found. The test did not run.",
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    // Managed-sandbox-only policy: redirect a Test that would run on the local
-    // host onto the platform-managed sandbox, the same as a real run does
-    // (resolveExecutionWorkspaceEnvironmentId in heartbeat). Without this
-    // redirect the Test probes the local host while the run executes in the
-    // managed sandbox, so a passing Test validates the wrong execution target.
-    // With no active managed sandbox the Test fails closed — never local.
-    let environment = requestedEnvironment;
-    if (requestedEnvironment.driver === "local") {
-      const managedSandboxOnly =
-        (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
-      if (managedSandboxOnly) {
-        const managedSandboxEnvironment = await environmentsSvc.findManagedSandboxEnvironment(
-          input.companyId,
-        );
-        if (!managedSandboxEnvironment) {
-          return {
-            executionTarget: null,
-            environmentName: requestedEnvironment.name,
-            fallbackChecks: [
-              {
-                code: "managed_sandbox_unavailable",
-                level: "error",
-                message:
-                  "This instance runs agents only in its platform-managed sandbox, but no active managed sandbox environment exists. The test did not run.",
-                hint: "Restore the managed sandbox environment, then test again.",
-              },
-            ],
-            release: noopRelease,
-          };
-        }
-        environment = managedSandboxEnvironment;
-      }
-    }
-
-    if (environment.driver === "local") {
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [],
-        release: noopRelease,
-      };
-    }
-
-    if (environment.driver === "ssh") {
-      try {
-        const target = await resolveEnvironmentExecutionTarget({
-          db,
-          companyId: input.companyId,
-          adapterType: input.adapterType,
-          environment: {
-            id: environment.id,
-            driver: environment.driver,
-            config: environment.config ?? null,
-          },
-          leaseMetadata: null,
-        });
-        if (target) {
-          return {
-            executionTarget: target,
-            environmentName: environment.name,
-            fallbackChecks: [],
-            release: noopRelease,
-          };
-        }
-        return {
-          executionTarget: null,
-          environmentName: environment.name,
-          fallbackChecks: [
-            {
-              code: "environment_target_unavailable",
-              level: "warn",
-              message:
-                `Could not resolve an execution target for environment "${environment.name}". The test did not run.`,
-            },
-          ],
-          release: noopRelease,
-        };
-      } catch (err) {
-        return {
-          executionTarget: null,
-          environmentName: environment.name,
-          fallbackChecks: [
-            {
-              code: "environment_target_failed",
-              level: "warn",
-              message:
-                `Could not connect to environment "${environment.name}" to run the test.`,
-              detail: err instanceof Error ? err.message : String(err),
-            },
-          ],
-          release: noopRelease,
-        };
-      }
-    }
-
-    // sandbox / plugin / other remote drivers: spin up an ad-hoc lease, realize
-    // the workspace inside the box, and run the same probe SSH uses against
-    // a sandbox execution target wired to the environment runtime.
-    //
-    // We pass `heartbeatRunId: null` because there's no heartbeat run for an
-    // operator-initiated `Test` invocation — the leases table FKs heartbeat
-    // run id to heartbeat_runs.id, and we don't want to manufacture a fake
-    // run row. Cleanup goes through the driver's `releaseRunLease` directly
-    // (by lease record), since the batch helper queries by heartbeatRunId.
-    //
-    // Sandbox tests boot a fresh throwaway sandbox (never resume a retained
-    // agent lease) and archive it on release instead of deleting it, so the
-    // operator can inspect the exact sandbox from the provider dashboard while
-    // provider-side expiry reaps it later.
-    const testEnvironment = environment.driver === "sandbox"
-      ? {
-          ...environment,
-          config: {
-            ...(environment.config ?? {}),
-            reuseLease: false,
-            archiveOnRelease: true,
-          },
-        }
-      : environment;
-    let leaseRecord: Awaited<ReturnType<typeof environmentRuntime.acquireRunLease>>;
-    try {
-      leaseRecord = await environmentRuntime.acquireRunLease({
-        companyId: input.companyId,
-        environment: testEnvironment,
-        issueId: null,
-        heartbeatRunId: null,
-        persistedExecutionWorkspace: null,
-        // Re-check the company binding atomically at lease time. The route
-        // guard already rejected a foreign environment, but the binding could
-        // change between the guard check and the lease acquire. This closes
-        // that check-to-lease race so a foreign sandbox never gets a lease.
-        assertCompanyBinding: true,
-        // Apply the active custom-image template so the Test boots with the
-        // operator's captured sandbox customizations and prepared image state,
-        // matching what real agent runs use. Without this the test would
-        // silently fall back to the base image.
-        applyCustomImageTemplate: true,
-      });
-    } catch (err) {
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_lease_acquire_failed",
-            level: "error",
-            message: `Could not acquire a lease for environment "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-            hint: "Check the environment's provider credentials and quota.",
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    const driver = environmentRuntime.getDriver(environment.driver);
-    const releaseLease = async (status: "released" | "failed" = "released") => {
-      try {
-        if (driver) {
-          await driver.releaseRunLease({
-            environment: testEnvironment,
-            lease: leaseRecord.lease,
-            status,
-          });
-        } else {
-          await environmentsSvc.releaseLease(leaseRecord.lease.id, status);
-        }
-      } catch (err) {
-        // Cleanup failures must not mask the test result.
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[adapter-test] Failed to release lease ${leaseRecord.lease.id}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    };
-
-    let realizedCwd: string | null = null;
-    try {
-      const realized = await environmentRuntime.realizeWorkspace({
-        environment: testEnvironment,
-        lease: leaseRecord.lease,
-        // No host workspace to copy for a Test invocation; sandbox/plugin
-        // realize implementations use the lease metadata's remoteCwd to
-        // create the working directory inside the box.
-        workspace: {},
-      });
-      realizedCwd =
-        typeof realized.cwd === "string" && realized.cwd.trim().length > 0
-          ? realized.cwd.trim()
-          : null;
-    } catch (err) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_workspace_realize_failed",
-            level: "error",
-            message: `Could not realize a workspace inside "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    let target: AdapterExecutionTarget | null;
-    try {
-      // Prefer the cwd the realize step returned; fall back to lease metadata.
-      const leaseMetadataForTarget: Record<string, unknown> | null =
-        realizedCwd
-          ? { ...(leaseRecord.lease.metadata ?? {}), remoteCwd: realizedCwd }
-          : (leaseRecord.lease.metadata as Record<string, unknown> | null) ?? null;
-
-      target = await resolveEnvironmentExecutionTarget({
-        db,
-        companyId: input.companyId,
-        adapterType: input.adapterType,
-        environment: {
-          id: testEnvironment.id,
-          driver: testEnvironment.driver,
-          config: testEnvironment.config ?? null,
-        },
-        leaseId: leaseRecord.lease.id,
-        leaseMetadata: leaseMetadataForTarget,
-        lease: leaseRecord.lease,
-        environmentRuntime,
-      });
-    } catch (err) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_target_failed",
-            level: "error",
-            message: `Could not resolve an execution target for "${environment.name}".`,
-            detail: err instanceof Error ? err.message : String(err),
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    if (!target) {
-      await releaseLease("failed");
-      return {
-        executionTarget: null,
-        environmentName: environment.name,
-        fallbackChecks: [
-          {
-            code: "environment_target_unsupported",
-            level: "warn",
-            message:
-              `Adapter "${input.adapterType}" is not allowed in "${environment.name}" environments.`,
-          },
-        ],
-        release: noopRelease,
-      };
-    }
-
-    return {
-      executionTarget: target,
-      environmentName: environment.name,
-      fallbackChecks: [],
-      sandboxIdentityCheck: buildSandboxIdentityCheck({
-        environmentName: environment.name,
-        lease: leaseRecord.lease,
-      }),
-      release: releaseLease,
-    };
-  }
-
-  function readMetadataString(metadata: Record<string, unknown>, keys: string[]): string | null {
-    for (const key of keys) {
-      const value = metadata[key];
-      if (typeof value === "string" && value.trim().length > 0) return value.trim();
-    }
-    return null;
-  }
-
-  function buildSandboxIdentityCheck(input: {
-    environmentName: string;
-    lease: {
-      id: string;
-      provider?: string | null;
-      providerLeaseId?: string | null;
-      metadata?: Record<string, unknown> | null;
-    };
-  }): AdapterEnvironmentCheck {
-    const metadata = input.lease.metadata ?? {};
-    const provider = input.lease.provider ?? readMetadataString(metadata, ["provider"]);
-    const sandboxId = readMetadataString(metadata, ["sandboxId", "sandboxID", "sandbox_id", "id"]);
-    const sandboxName = readMetadataString(metadata, ["sandboxName", "sandbox_name", "name"]);
-    const snapshotRef = readMetadataString(metadata, [
-      "snapshot",
-      "snapshotId",
-      "snapshotID",
-      "snapshotRef",
-      "snapshot_ref",
-      "templateRef",
-      "template_ref",
-      "templateId",
-      "templateID",
-      "image",
-      "imageId",
-      "imageID",
-      "imageRef",
-      "image_ref",
-    ]);
-    const templateKind = readMetadataString(metadata, [
-      "templateKind",
-      "template_kind",
-      "templateRefKind",
-      "template_ref_kind",
-    ]);
-    const detailParts = [
-      `paperclipLeaseId=${input.lease.id}`,
-      input.lease.providerLeaseId ? `providerLeaseId=${input.lease.providerLeaseId}` : null,
-      provider ? `provider=${provider}` : null,
-      sandboxId ? `sandboxId=${sandboxId}` : null,
-      sandboxName ? `sandboxName=${sandboxName}` : null,
-      snapshotRef ? `${templateKind ? `${templateKind}Ref` : "snapshotOrTemplateRef"}=${snapshotRef}` : null,
-    ].filter((part): part is string => Boolean(part));
-
-    return {
-      code: "sandbox_test_identity",
-      level: "info",
-      message: `Environment test identity for "${input.environmentName}".`,
-      detail: detailParts.join("; "),
-      hint: "Use these provider-neutral IDs when comparing model-test output with provider logs or refreshed environment snapshots.",
-    };
   }
 
   async function getCurrentUserRedactionOptions() {
@@ -2181,6 +1785,17 @@ export function agentRoutes(
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
+  async function assertCanConfigureAgentSetup(req: Request, targetAgent: {
+    id: string; companyId: string; createdByUserId?: string | null; lifecycleState?: string; pauseReason?: string | null;
+  }, allowCompleted = false) {
+    if (req.actor.type === "board" && req.actor.userId && targetAgent.createdByUserId === req.actor.userId
+      && (allowCompleted || (targetAgent.lifecycleState === "paused" && targetAgent.pauseReason === "setup"))) {
+      await assertCanCreateAgentsForCompany(req, targetAgent.companyId);
+      return;
+    }
+    await assertCanUpdateAgent(req, targetAgent);
+  }
+
   async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -2243,7 +1858,14 @@ export function agentRoutes(
           "OpenAI Dot is experimental and disabled on this instance.",
           { code: "paperclip_runner_dot_disabled" },
         );
-      } else if (experimental.enableNativeRunner !== true) {
+      } else if (asRecord(config)?.provider === "muse") {
+        if (experimental.enableMuse !== true || experimental.enableNativeRunner !== true) throw unprocessable("Muse is experimental and disabled on this instance.", { code: "paperclip_runner_muse_disabled" });
+      } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enablePublicMcp !== true || experimental.enableNativeRunner !== true)) {
+        throw unprocessable("Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
+      } else if (!([undefined, "codex"].includes(asRecord(config)?.provider as string | undefined)) &&
+        !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
+        agentHarnessType("paperclip_runner", asRecord(config) ?? {}) !== "claude_local" &&
+        experimental.enableNativeRunner !== true) {
         throw unprocessable(
           "Paperclip Runner is experimental and disabled on this instance.",
           { code: "paperclip_runner_rollout_disabled" },
@@ -2270,6 +1892,10 @@ export function agentRoutes(
     if (adapterType !== "paperclip_runner") return;
     let profile;
     try {
+      if (adapterConfig.provider === "grok_bot") {
+        validatePaperclipRunnerGrokConfig(adapterConfig, false);
+        return;
+      }
       if (adapterConfig.provider === "openai_dot") {
         validatePaperclipRunnerDotConfig(adapterConfig, false);
         return;
@@ -2307,7 +1933,7 @@ export function agentRoutes(
     ) {
       return input.nextAdapterConfig;
     }
-    if (input.nextAdapterConfig.provider === "openai_dot") return input.nextAdapterConfig;
+    if (["openai_dot", "muse"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
     const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
     if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
       && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
@@ -2516,11 +2142,20 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
-    if (req.actor.type !== "agent" || normalized.aiConnection) return normalized;
-    const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
-    if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
-    const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
-    if (binding) normalized.aiConnection = binding;
+    if (normalized.aiConnection) return normalized;
+    if (req.actor.type === "agent") {
+      const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
+      if (!manager || manager.companyId !== companyId) throw forbidden("Hiring agent is unavailable");
+      const binding = defaultAiConnectionForHire(adapterType, adapterConfig, manager.runtimeConfig?.aiConnection);
+      if (binding) normalized.aiConnection = binding;
+    }
+    // Copilot has no ambient-auth setup path. Omitting a binding still selects
+    // the responsible user's saved account and must pass the same metadata
+    // admission as an explicit connection before configuration is persisted.
+    if (!normalized.aiConnection && adapterType === "paperclip_runner"
+      && adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "copilot") {
+      normalized.aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" };
+    }
     return normalized;
   }
 
@@ -2594,7 +2229,7 @@ export function agentRoutes(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
-    if (adapterType !== "codex_local") return adapterConfig;
+    if (agentHarnessType(adapterType ?? "", adapterConfig) !== "codex_local") return adapterConfig;
     const existingEnv = asRecord(adapterConfig.env);
     if (!existingEnv) return adapterConfig;
     if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
@@ -2645,11 +2280,12 @@ export function agentRoutes(
     const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
     if (asRecord(runtimeConfig)?.aiConnection) return noInheritance;
     if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
-    const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
+    const harness = agentHarnessType(adapterType ?? "", adapterConfig);
+    const credentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[harness];
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
-    if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    if (!parent || parent.companyId !== companyId || agentHarnessType(parent.adapterType, parent.adapterConfig) !== harness) return noInheritance;
     // Managed parents must not pass stale legacy credential references to hires.
     if (aiRuntimeConnectionBindingSchema.safeParse(parent.runtimeConfig.aiConnection).success) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
@@ -2658,7 +2294,7 @@ export function agentRoutes(
     const existingEnv = asRecord(adapterConfig.env);
     const claudeCredentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS.claude_local;
     const childHasClaudeCredential =
-      adapterType === "claude_local" &&
+      harness === "claude_local" &&
       existingEnv !== null &&
       claudeCredentialKeys.some((key) => existingEnv[key] !== undefined);
     if (childHasClaudeCredential) return noInheritance;
@@ -2957,8 +2593,10 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
     path = "adapterConfig",
   ) {
-    if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId"].some(key => hasOwn(adapterConfig, key)))
-      throw forbidden("Only an operator can configure Dot attachment access, workspace access, or pairing.");
+    if (req.actor.type === "agent" && hasOwn(adapterConfig, "homeMode"))
+      throw forbidden("Only an operator can configure Runner homeMode.");
+    if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId", "museBindingId", "museGeneration", "museConnection"].some(key => hasOwn(adapterConfig, key)))
+      throw forbidden("Only an operator can configure external-agent pairing, attachment access, or workspace access.");
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -3017,11 +2655,13 @@ export function agentRoutes(
     adapterType: string,
     adapterConfig: Record<string, unknown>,
     allowPlainCredentials = false,
+    harnessConfig = adapterConfig,
   ) {
-    if (req.actor.type !== "agent" || !adapterType.endsWith("_local")) return;
+    if (req.actor.type !== "agent" || (!adapterType.endsWith("_local") && adapterType !== "paperclip_runner")) return;
+    const harness = agentHarnessType(adapterType, harnessConfig);
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
       adapterConfig[key] !== undefined &&
-      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env, allowPlainCredentials)),
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(harness, adapterConfig.env, allowPlainCredentials)),
     );
     if (changedKeys.length === 0) return;
     throw forbidden(
@@ -3062,6 +2702,17 @@ export function agentRoutes(
     };
   }
 
+  function withAssignedSkillVersions(snapshot: AgentSkillSnapshot, adapterConfig: Record<string, unknown>): AgentSkillSnapshot {
+    const assignments = new Map(readPaperclipSkillSyncPreference(adapterConfig).desiredSkillEntries
+      .map(entry => [entry.key, entry.versionId]));
+    return {
+      ...snapshot,
+      // A resolved runtime version is not a stored assignment pin. Returning
+      // it here makes a read/save round trip silently pin Latest selections.
+      desiredSkillEntries: snapshot.desiredSkills.map(key => ({ key, versionId: assignments.get(key) ?? null })),
+    };
+  }
+
   // CEO and board-created onboarding chief-of-staff instructions assume the
   // core paperclip skills (board coordination, planning, hiring, memory).
   // Union them into these skills-capable hires/creates so their desired skills
@@ -3074,7 +2725,7 @@ export function agentRoutes(
     boardOnboardingFirstAgent = false,
     adapterConfig?: Record<string, unknown>,
   ): AgentDesiredSkillEntry[] | undefined {
-    if (adapterType === "paperclip_runner" && adapterConfig?.provider === "openai_dot") return undefined;
+    if (adapterType === "paperclip_runner" && ["openai_dot", "grok_bot"].includes(String(adapterConfig?.provider))) return undefined;
     if (role !== "ceo" && !boardOnboardingFirstAgent) return undefined;
     const adapter = findActiveServerAdapter(adapterType);
     if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
@@ -3385,6 +3036,32 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "copilot") {
+      const userId = responsibleUserForAiRequest(req);
+      let binding: AiConnectionBinding = { provider: "github", method: "api_key", mode: "responsible_user" };
+      if (typeof req.query.aiConnection === "string") {
+        if (req.query.aiConnection.length > 4096) throw unprocessable("Invalid AI connection binding");
+        try { binding = aiConnectionBindingSchema.parse(JSON.parse(req.query.aiConnection)); }
+        catch { throw unprocessable("Invalid AI connection binding"); }
+      }
+      if (binding.provider !== "github") throw unprocessable("Select a GitHub Copilot AI connection");
+      const modelAgentId = asNonEmptyString(req.query.agentId);
+      let modelEnvironmentId = environmentId;
+      if (modelAgentId) {
+        const modelAgent = await svc.getById(modelAgentId);
+        if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, modelAgent);
+        modelEnvironmentId ??= modelAgent.defaultEnvironmentId ?? null;
+      } else await assertCanCreateAgentsForCompany(req, companyId);
+      const allowUninstalledShared = !modelAgentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+      const service = aiConnectionService(db);
+      const selection = await service.select({ companyId, userId, agentId: modelAgentId ?? "00000000-0000-0000-0000-000000000000",
+        adapterType: type, runnerProvider: "acpx", acpxAgent: "copilot", binding, allowUninstalledPersonal: true, allowUninstalledShared });
+      const metadata = await probeCopilotConnection(db, companyId, await service.credential(selection), modelEnvironmentId, undefined, { pluginWorkerManager: options.pluginWorkerManager, targetAgentId: modelAgentId ?? undefined });
+      res.setHeader("Cache-Control", "no-store");
+      res.json(metadata.models);
+      return;
+    }
     if (type === "opencode_local" && provider === "openrouter") {
       res.json(await listOpenRouterModels(refresh));
       return;
@@ -3415,103 +3092,6 @@ export function agentRoutes(
     const detected = await detectAdapterModel(type);
     res.json(detected);
   });
-
-  // The environment drivers the adapter Test route accepts. A local, SSH, or
-  // sandbox environment can host a probe; a plugin environment cannot.
-  const ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox"];
-
-  // The fail-closed tenant-binding guard for the adapter Test route. A caller
-  // may name any instance environment by id, so the route must reject an
-  // environment that binds to another company before it resolves secrets,
-  // merges env, resolves the target, leases a sandbox, or runs the adapter
-  // test. The guard checks the company binding BEFORE it validates the status
-  // or the driver, so it never reveals the status or the driver of a foreign
-  // environment. A same-company or an instance-global environment then gets the
-  // shared driver and status validation.
-  async function assertAdapterTestEnvironmentForCompany(
-    companyId: string,
-    environmentId: string,
-  ): Promise<void> {
-    const environment = await environmentsSvc.getById(environmentId);
-    if (!environment) {
-      // A missing environment leaks no tenant state. The execution-context
-      // resolver surfaces the existing environment_not_found check.
-      return;
-    }
-    const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
-    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
-      throw forbidden("The selected environment belongs to another company.", {
-        code: "environment_company_mismatch",
-      });
-    }
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
-    });
-  }
-
-  async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
-    const startedAt = new Date();
-    const result = await probeManagedEnvironment(adapterType, context, binding);
-    // A provider rejection invalidates the tested credential generation. A
-    // missing CLI, unavailable environment, or other runtime error does not.
-    if (result.status === "fail" && result.checks.some(check =>
-      check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || /_hello_probe_auth_required$/.test(check.code)
-        || check.code === "ai_connection_api_key_rejected",
-    )) {
-      await aiConnectionService(db).markAuthenticationFailed({
-        companyId: context.companyId, agentId, runStartedAt: startedAt,
-        attribution: { ...managed.attribution, identity: managed.identity },
-      });
-    }
-    return result;
-  }
-
-  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
-    await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
-    const result = await requireServerAdapter(adapterType).testEnvironment(context);
-    if (result.status === "fail") return result;
-    // The resolved method, not binding.method — on a responsible_user binding
-    // that field is wire-compat only and the default connection decides.
-    const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
-    // An api_key account does not take the CLI hello probe below: a key
-    // travels as an env var any engine understands, and the engine's own test
-    // above judged whether this runtime can execute with it — the ACP lane
-    // deliberately runs no hello probe when a key is configured. Demanding one
-    // anyway forced the CLI lane, whose probe needs a provider CLI on PATH,
-    // and a clean install has none: that walled off onboarding's API-key path
-    // on exactly the machines the release smoke exists to guard. The account
-    // is still verified live here — the same provider-endpoint check the save
-    // performed — so a key revoked since its save fails adoption rather than
-    // producing an agent that cannot authenticate at runtime. The hello-probe
-    // requirement stays for subscriptions: a stored login is a file layout
-    // only a provider CLI reads, so proving the runtime lane can consume it
-    // takes a real hello turn.
-    if (resolvedMethod === "api_key" && !context.config.managedAiRouting) {
-      const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
-      const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
-      try {
-        if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
-        await validateAiApiKey(binding.provider, key);
-        result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
-      } catch (error) {
-        result.status = "fail";
-        const rejected = error instanceof HttpError && asRecord(error.details)?.code === "ai_connection_api_key_rejected";
-        result.checks.push({ code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
-      }
-      return result;
-    }
-    if (!result.checks.some(check => check.code.includes("hello_probe"))) {
-      const providerAdapter = context.config.managedAiRouting ? aiRoutingHarness(adapterType, context.config.provider, context.config.acpxAgent) : { anthropic: "claude_local", openai: "codex_local", openrouter: "opencode_local", xai: "grok_local", google: "gemini_local" }[binding.provider];
-      const probe = await requireServerAdapter(providerAdapter).testEnvironment({ ...context, adapterType: providerAdapter, config: { ...context.config, engine: "cli" } });
-      result.checks.push(...probe.checks);
-      result.status = probe.status === "fail" ? "fail" : result.status === "warn" || probe.status === "warn" ? "warn" : "pass";
-    }
-    if (!result.checks.some(check => /hello_probe_(passed|succeeded)$/.test(check.code))) {
-      result.status = "fail";
-      result.checks.push({ code: "ai_connection_validation_incomplete", level: "error", message: "The selected account has not completed a provider hello test. Retry before adopting it." });
-    }
-    return result;
-  }
 
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
     if (binding.mode === "router") {
@@ -3546,21 +3126,30 @@ export function agentRoutes(
       // Hiring is allowed before the responsible user has connected this
       // provider. Execution still resolves credentials and creates the normal
       // task connection request; compatibility and access denials stay errors.
-      if (newAgent && !test && binding.mode === "responsible_user" && error instanceof HttpError
+      if (newAgent && !test && binding.provider !== "github" && binding.mode === "responsible_user" && error instanceof HttpError
         && ["ai_connection_default_missing", "ai_connection_missing", "ai_connection_unavailable", "ai_connection_responsible_user_missing"].includes(String(asRecord(error.details)?.code))) {
         return null;
       }
       throw error;
     });
     if (!selection) return undefined;
-    if (test) {
-      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
-      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId);
-      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: testEnvironmentId });
+    // Copilot model availability is account-specific. Verify the selected
+    // packaged runtime before creation/adoption even when a token is saved.
+    // This metadata-only path sends no model prompt.
+    if (test || binding.provider === "github") {
+      const testEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId, binding.provider === "github");
+      if (testEnvironmentId) await assertAdapterTestEnvironmentForCompany(companyId, testEnvironmentId, adapterType);
+      const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, agentId: newAgent ? undefined : agentId, environmentId: testEnvironmentId });
       try {
         if (!target.executionTarget && target.fallbackChecks.length > 0) throw unprocessable("The agent environment is not available for adoption");
         await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true }, async managed => {
-        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, managed, agentId);
+        const managedAiCredentialHome = adapterType === "paperclip_runner" && asRecord(managed.config)?.provider === "codex" && managed.home
+          ? path.join(managed.home, "provider") : undefined;
+        const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, managedAiCredentialHome, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding, managed, agentId);
+        if (binding.provider === "github" && result.status === "fail") {
+          const failure = result.checks.find(check => check.level === "error");
+          throw unprocessable(failure?.message ?? "Copilot metadata verification failed.", { code: failure?.code ?? "COPILOT_REQUEST_FAILED" });
+        }
         if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment. Run the agent test to see the failing checks.", {
           code: "ai_connection_validation_failed",
           checks: result.checks.filter(check => check.level === "error" || check.code === ADAPTER_AUTH_MISSING_CHECK_CODE).map(check => ({ code: check.code, level: check.level })),
@@ -3577,10 +3166,8 @@ export function agentRoutes(
     validate(testAdapterEnvironmentSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      const type = assertKnownAdapterType(req.params.type as string);
+      let type = assertKnownAdapterType(req.params.type as string);
       await assertCanCreateAgentsForCompany(req, companyId);
-
-      const adapter = requireServerAdapter(type);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
       const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
@@ -3593,14 +3180,10 @@ export function agentRoutes(
       if (savedAgentId) {
         if (!savedAgent) return;
         if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
-        await assertCanUpdateAgent(req, savedAgent);
+        await assertCanConfigureAgentSetup(req, savedAgent);
       }
+      const testingSetup = savedAgent?.lifecycleState === "paused" && savedAgent.pauseReason === "setup";
       const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
-      if (poolBinding?.mode === "router") {
-        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, req.body.adapterConfig ?? {}, poolBinding, req.body.environmentId, false, !savedAgentId);
-        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
-        return;
-      }
       const requestedEnvironmentId = await resolveAdapterTestEnvironmentId(
         companyId,
         // Omission tests the saved selection. Explicit null tests a prospective
@@ -3608,11 +3191,12 @@ export function agentRoutes(
         req.body.environmentId === undefined
           ? savedAgent?.defaultEnvironmentId
           : asNonEmptyString(req.body.environmentId),
+        aiBinding?.provider === "github",
       );
       // Fail closed on a foreign environment before any secret resolution, env
       // merge, target resolution, sandbox lease, or adapter test runs.
       if (requestedEnvironmentId) {
-        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
+        await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId, type);
       }
       // Agent reads redact every plain environment value. When this is a saved
       // agent test, restore those display-only placeholders from the
@@ -3620,14 +3204,7 @@ export function agentRoutes(
       // the probe treats "***REDACTED***" as a value to persist.
       let adapterConfigForTest = inputAdapterConfig;
       if (savedAgent) {
-        const providerAdapter = savedAgent.adapterType === "paperclip_runner"
-          ? inputAdapterConfig.provider === "codex"
-            ? "codex_local"
-            : inputAdapterConfig.provider === "acpx" && inputAdapterConfig.acpxAgent === "claude"
-              ? "claude_local"
-              : null
-          : null;
-        const canRestoreEnv = savedAgent.adapterType === type || providerAdapter === type;
+        const canRestoreEnv = agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig) === agentHarnessType(type, inputAdapterConfig);
         // Permit testing a prospective adapter switch, but do not transfer
         // hidden values from the saved adapter into an unrelated harness.
         if (!canRestoreEnv && Object.values(parseObject(inputAdapterConfig.env)).some(value => {
@@ -3640,17 +3217,46 @@ export function agentRoutes(
           ? restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig)
           : inputAdapterConfig;
       }
+      const retainsSavedExecution = savedAgent && req.body.runner === undefined
+        && savedAgent.adapterType === type
+        && agentHarnessType(type, adapterConfigForTest) === agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig);
+      const selection = retainsSavedExecution
+        ? { adapterType: type, adapterConfig: adapterConfigForTest }
+        : await resolveNewAgentRunnerForCompany(db, companyId, {
+          adapterType: type, adapterConfig: adapterConfigForTest,
+          runner: req.body.runner,
+          defaultEnvironmentId: requestedEnvironmentId,
+        });
+      type = selection.adapterType;
+      adapterConfigForTest = selection.adapterConfig;
+      const adapter = requireServerAdapter(type);
+      if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest);
+      if (poolBinding?.mode === "router") {
+        await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId || testingSetup);
+        res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
+        return;
+      }
       if (type === "paperclip_runner" && inputAdapterConfig.provider === "openai_dot") {
         const dotEnabled = await dotRunnerBroker(db).enabled();
         const binding = savedAgentId ? await dotRunnerBroker(db).bindingForAgent(companyId, savedAgentId) : null;
         let resource: ReturnType<typeof publicMcpConfig> = null;
         try { resource = publicMcpConfig(process.env); } catch { /* diagnostic below */ }
+        let environment = requestedEnvironmentId ? await environmentsSvc.getById(requestedEnvironmentId) : null;
+        const managedOnly = isCloudManagedInstance() || (await instanceSettings.getExperimental()).enableManagedSandboxOnly === true;
+        if (managedOnly && (!environment || environment.driver === "local")) {
+          environment = await environmentsSvc.findManagedSandboxEnvironment(companyId);
+        }
+        const controllerAvailable = !managedOnly || environment?.driver === "sandbox";
         const checks: AdapterEnvironmentCheck[] = [
           { code: "dot_enabled", level: dotEnabled ? "info" : "error", message: dotEnabled ? "Dot is enabled." : "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings." },
           { code: "dot_public_endpoint", level: resource?.origin.startsWith("https://") ? "info" : "error", message: resource?.origin.startsWith("https://") ? "Public HTTPS MCP origin is configured." : "Configure a stable public HTTPS PAPERCLIP_PUBLIC_URL." },
           { code: "dot_unmetered", level: inputAdapterConfig.allowUnmeteredProvider === true ? "info" : "error", message: "Dot usage and provider cost are unavailable. Explicit externally billed provider acknowledgement is required." },
           { code: "dot_binding", level: binding?.status === "ready" && binding.subscriptionVerified && binding.id === inputAdapterConfig.dotBindingId ? "info" : "warn", message: binding?.status === "ready" && binding.subscriptionVerified ? "Binding has a verified event subscription and completed readiness challenge." : "Save this agent, pair it, subscribe to mailbox events and complete the event test." },
-          { code: "dot_controller", level: requestedEnvironmentId && (await environmentsSvc.getById(requestedEnvironmentId))?.driver !== "local" ? "error" : "info", message: "Dot currently requires a self-hosted local Runner controller." },
+          { code: "dot_controller", level: controllerAvailable ? "info" : "error", message: controllerAvailable
+            ? environment?.driver === "sandbox" ? "Dot assignments use the selected managed sandbox Runner." : "Dot assignments use the selected Runner environment."
+            : "Restore the managed sandbox before assigning Dot work. Dot cannot run on the Cloud control-plane host." },
+          ...(environment?.driver === "sandbox" && inputAdapterConfig.dotWorkspaceAccess === true
+            ? [{ code: "dot_workspace", level: "error" as const, message: "Managed Dot runners do not expose workspace access. Turn off workspace access before assigning work." }] : []),
         ];
         res.json({ adapterType: type, status: checks.some(c => c.level === "error") ? "fail" : checks.some(c => c.level === "warn") ? "warn" : "pass", testedAt: new Date().toISOString(), checks });
         return;
@@ -3679,6 +3285,7 @@ export function agentRoutes(
       const { executionTarget, environmentName, fallbackChecks, sandboxIdentityCheck, release } =
         await resolveAdapterTestExecutionContext({
           companyId,
+          agentId: savedAgentId ?? undefined,
           adapterType: type,
           environmentId: requestedEnvironmentId,
         });
@@ -3775,8 +3382,10 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
-          const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
+        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !savedAgentId || testingSetup, allowUninstalledShared: (!savedAgentId || testingSetup) && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
+          const managedAiCredentialHome = type === "paperclip_runner" && asRecord(managed.config)?.provider === "codex" && managed.home
+            ? path.join(managed.home, "provider") : undefined;
+          const tested = await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, managedAiCredentialHome, executionTarget, environmentName }, aiBinding, managed, savedAgentId ?? undefined);
           tested.checks.unshift({ code: "ai_connection_tested", level: "info", message: `Tested ${managed.accountName} — ${managed.accountOwnerUserId ? managed.accountOwnerUserId === responsibleUserForAiRequest(req) ? "your personal account" : "the owner’s account authorized for this agent" : "company-shared account"}. Responsible user: ${req.actor.type === "agent" ? responsibleUserForAiRequest(req) ?? "unavailable" : "the signed-in user"}.` });
           return tested;
         }) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });
@@ -3901,7 +3510,7 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
       const environmentId = asNonEmptyString(req.query.environmentId);
       if (environmentId) {
-        await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
+        await assertAdapterTestEnvironmentForCompany(companyId, environmentId, type);
       }
       res.setHeader("Cache-Control", "no-store");
 
@@ -4123,7 +3732,7 @@ export function agentRoutes(
       adapterType: agent.adapterType,
       config: connectorConfig,
     });
-    res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+    res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, agent.adapterConfig as Record<string, unknown>), connectorAssignments));
   });
 
   router.post(
@@ -4223,7 +3832,7 @@ export function agentRoutes(
         },
       });
 
-      res.json(annotateConnectorSkills(snapshot, connectorAssignments));
+      res.json(annotateConnectorSkills(withAssignedSkillVersions(snapshot, nextAdapterConfig), connectorAssignments));
     },
   );
 
@@ -4556,10 +4165,12 @@ export function agentRoutes(
     const existingRollbackProvider = asRecord(existing.adapterConfig)?.provider;
     if (rollbackAdapterType !== existing.adapterType || (rollbackAdapterType === "paperclip_runner"
       && rollbackAdapterConfig.provider !== existingRollbackProvider
-      && (rollbackAdapterConfig.provider === "openai_dot" || existingRollbackProvider === "openai_dot"))) {
+      && (["openai_dot", "muse"].includes(String(rollbackAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRollbackProvider))))) {
       await assertSelectableAdapterType(rollbackAdapterType, rollbackAdapterConfig);
     }
     assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
+    if (req.actor.type === "agent" && rollbackAdapterConfig.homeMode !== asRecord(existing.adapterConfig)?.homeMode)
+      throw forbidden("Only an operator can configure Runner homeMode.");
     assertNoAgentLocalAdapterHostCommandMutation(req, rollbackAdapterType, rollbackAdapterConfig);
     assertNoAgentProcessAdapterMutation(
       req,
@@ -4669,7 +4280,7 @@ export function agentRoutes(
   // adapter-config secret lands in the activity log.
   const hireFingerprint = (body: unknown): string => sha256Digest(body);
 
-  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+  const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
@@ -4690,8 +4301,55 @@ export function agentRoutes(
       onboardingFirstAgent: hireOnboardingFirstAgent,
       // This intent flag is consumed below and must never reach agent create.
       inheritRuntimeFrom,
+      setupAgentId,
+      runner: hireRunner,
       ...hireInput
     } = req.body;
+
+    if (setupAgentId) {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
+      const setupAgent = await svc.getById(setupAgentId);
+      if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
+      await assertCanConfigureAgentSetup(req, setupAgent, true);
+      if (!setupAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, setupAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
+        if (["terminated", "rejected", "deleting"].includes(setupAgent.lifecycleState)) throw conflict("Agent setup is no longer available");
+        const priorApprovals = await approvalsSvc.list(companyId, undefined,
+          sql`type = 'hire_agent' AND payload ->> 'agentId' = ${setupAgentId}`);
+        let approval = priorApprovals.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0] ?? null;
+        if (!approval && setupAgent.status === "pending_approval") {
+          const adapterConfig = redactEventPayload(setupAgent.adapterConfig) ?? {};
+          const runtimeConfig = redactEventPayload(setupAgent.runtimeConfig) ?? {};
+          const desiredSkills = readPaperclipSkillSyncPreference(setupAgent.adapterConfig).desiredSkills;
+          approval = await approvalsSvc.create(companyId, {
+            type: "hire_agent", requestedByAgentId: null, requestedByUserId: req.actor.userId ?? null,
+            status: "pending", payload: {
+              name: setupAgent.name, role: setupAgent.role, title: setupAgent.title, icon: setupAgent.icon,
+              appearance: setupAgent.appearance, reportsTo: setupAgent.reportsTo, capabilities: setupAgent.capabilities,
+              adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills,
+              budgetMonthlyCents: setupAgent.budgetMonthlyCents, metadata: redactEventPayload(setupAgent.metadata ?? {}) ?? {},
+              agentId: setupAgent.id, requestedByAgentId: null,
+              requestedConfigurationSnapshot: { adapterType: setupAgent.adapterType, adapterConfig, runtimeConfig, desiredSkills },
+            }, decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+          });
+        }
+        res.status(200).json({ agent: redactAgentRowForResponse(setupAgent), approval, idempotent: true });
+        return;
+      }
+      if (hireInput.adapterConfig && agentHarnessType(hireInput.adapterType ?? "process", hireInput.adapterConfig)
+        === agentHarnessType(setupAgent.adapterType, setupAgent.adapterConfig)) {
+        hireInput.adapterConfig = restoreRedactedAgentEnv(hireInput.adapterConfig, setupAgent.adapterConfig);
+      }
+    }
+    const hiredAgentId = setupAgentId ?? randomUUID();
+    const requestedHireConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedHireConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType ?? "process", requestedHireConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, hireInput.adapterType ?? "process", Object.keys(requestedHireConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: hiredAgentId, companyId, name: hireInput.name, adapterConfig: requestedHireConfig });
 
     if (inheritRuntimeFrom === "caller") {
       if (req.actor.type !== "agent" || !req.actor.agentId) {
@@ -4715,6 +4373,8 @@ export function agentRoutes(
       hireInput.adapterConfig = inheritNativeRunnerAdapterConfig(caller.adapterConfig);
       hireInput.defaultEnvironmentId = caller.defaultEnvironmentId ?? null;
     }
+    if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
+    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
@@ -4730,7 +4390,6 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
-    const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
       companyId,
@@ -4834,7 +4493,7 @@ export function agentRoutes(
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
       const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, false, true) : undefined;
-      const createdAgent = await svc.create(
+      const createdAgent = await svcLifecycle.requestHire(
         companyId,
         {
           id: hiredAgentId,
@@ -4844,7 +4503,10 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
+          ...(setupAgentId ? { setupAgentId } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          runnerResolved: true,
+          responsibleUserId: responsibleUserForAiRequest(req),
           aiConnectionInstall: managedHireConnection ? { ...managedHireConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
@@ -4992,6 +4654,12 @@ export function agentRoutes(
       ? await withHireRunLock(`${companyId}:${runId}`, performHire)
       : await performHire();
     res.status(outcome.status).json(outcome.body);
+  };
+
+  router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
+    if (req.body.setupAgentId) {
+      await withHireRunLock(`setup:${req.params.companyId}:${req.body.setupAgentId}`, () => handleAgentHire(req, res));
+    } else await handleAgentHire(req, res);
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -5007,7 +4675,11 @@ export function agentRoutes(
       res.status(404).json({ error: "Company not found" });
       return;
     }
-    if (company.requireBoardApprovalForNewAgents) {
+    if (req.body.setupId) {
+      assertBoard(req);
+      if (!req.actor.userId) throw forbidden("User identity required for agent setup");
+    }
+    if (company.requireBoardApprovalForNewAgents && !req.body.setupId) {
       throw conflict(
         "Direct agent creation requires board approval. Use POST /api/companies/:companyId/agent-hires to create a pending hire approval.",
       );
@@ -5026,12 +4698,22 @@ export function agentRoutes(
       // The onboarding marker is not an agent column. The server consumes it to
       // seed the chief-of-staff persona; it never reaches the insert values.
       onboardingFirstAgent: createOnboardingFirstAgent,
+      setupId,
+      runner: createRunner,
       ...createInput
     } = req.body;
+    const agentId = setupId ?? randomUUID();
+    const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
+    assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
+    assertNoAgentProcessAdapterMutation(req, createInput.adapterType ?? "process", Object.keys(requestedCreateConfig).length > 0);
+    assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
+    Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
-    await assertFreshPaperclipRunnerProvider(
+    if (!setupId) await assertFreshPaperclipRunnerProvider(
       companyId,
       createInput.adapterType,
       rawCreateAdapterConfig,
@@ -5043,7 +4725,6 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
-    const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
@@ -5087,8 +4768,8 @@ export function agentRoutes(
     });
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
-    const managedConnection = managedBinding ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
-    const createdAgent = await svc.create(
+    const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, false, true) : undefined;
+    const createdAgent = await svcLifecycle.requestHire(
       companyId,
       {
         id: agentId,
@@ -5100,7 +4781,10 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
+        ...(setupId ? { setupOnly: true } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        runnerResolved: true,
+        responsibleUserId: responsibleUserForAiRequest(req),
         aiConnectionInstall: managedConnection ? { ...managedConnection, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
         claudeLogin: {
           storedSessionId: createStoredSessionId ?? null,
@@ -5112,6 +4796,14 @@ export function agentRoutes(
         },
       },
     );
+    if (setupId) {
+      if (!createdAgent.lifecycleHolds.includes("setup")) {
+        if (!(await assertAgentReadAllowed(req, res, createdAgent))) return;
+        await assertCanReadConfigurations(req, companyId);
+      }
+      res.status(201).json(redactAgentRowForResponse(createdAgent));
+      return;
+    }
     const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
       onboardingFirstAgent: createOnboardingFirstAgent,
       actorType: req.actor.type,
@@ -5643,6 +5335,11 @@ export function agentRoutes(
     }
 
     const patchData = { ...(req.body as Record<string, unknown>) };
+    const runner = patchData.runner as AgentRunnerChoice | undefined;
+    delete patchData.runner;
+    const requestedStatus = patchData.status;
+    delete patchData.status;
+    if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
     const replaceAdapterConfig = patchData.replaceAdapterConfig === true;
     delete patchData.replaceAdapterConfig;
     // The apply-existing flag is not an agent column. The server binds the fixed
@@ -5668,6 +5365,15 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
+    if (runner !== undefined) {
+      await assertCanConfigureAgentSetup(req, existing);
+      const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
+      Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
+        adapterType: typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
+        adapterConfig: config, runner,
+        defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
+      }));
+    }
     const nextAdapterType = hasOwn(patchData, "adapterType")
       ? assertKnownAdapterType(patchData.adapterType as string | null | undefined)
       : existing.adapterType;
@@ -5742,11 +5448,15 @@ export function agentRoutes(
       if (requestedAdapterType === "paperclip_runner") {
         rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
       }
+      if (req.actor.type === "agent" && rawEffectiveAdapterConfig.homeMode !== existingAdapterConfig.homeMode)
+        throw forbidden("Only an operator can configure Runner homeMode.");
       if (changingAdapterType || requestedAdapterConfig) {
         assertNoAgentLocalAdapterHostCommandMutation(
           req,
           requestedAdapterType,
           changingAdapterType ? rawEffectiveAdapterConfig : (requestedAdapterConfig ?? {}),
+          false,
+          rawEffectiveAdapterConfig,
         );
       }
       const existingRunnerProvider =
@@ -5757,15 +5467,15 @@ export function agentRoutes(
       // selection. Preserve historical edits within the general Runner rollout.
       if (!changingAdapterType && requestedAdapterType === "paperclip_runner"
         && rawEffectiveAdapterConfig.provider !== existingRunnerProvider
-        && (rawEffectiveAdapterConfig.provider === "openai_dot" || existingRunnerProvider === "openai_dot")) {
+        && (["openai_dot", "muse"].includes(String(rawEffectiveAdapterConfig.provider)) || ["openai_dot", "muse"].includes(String(existingRunnerProvider)))) {
         await assertSelectableAdapterType(requestedAdapterType, rawEffectiveAdapterConfig);
       }
-      if (
+      if (!(existing.lifecycleState === "paused" && existing.pauseReason === "setup") && (
         changingAdapterType ||
         (requestedAdapterType === "paperclip_runner" &&
           (requestedAdapterConfig !== null ||
             rawEffectiveAdapterConfig.provider !== existingRunnerProvider))
-      ) {
+      )) {
         await assertFreshPaperclipRunnerProvider(
           existing.companyId,
           requestedAdapterType,
@@ -5792,14 +5502,38 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
+    const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+      && !(existing.lifecycleState === "paused" && existing.pauseReason === "setup")) {
+      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
+        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
+          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+        requestedRuntimeConfig.aiConnection = existingBinding;
+      }
+    }
+    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+      && !(existing.lifecycleState === "paused" && existing.pauseReason === "setup")
+      && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
+      && nextAiConfig.acpxAgent === "copilot"
+      && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
+      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+        aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+    }
+    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
       if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
-      if (changed || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding, (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null, true);
+      const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
+        && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
+      if (changed || copilotConfigurationChanged || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) {
+        const configuringSetup = existing.lifecycleState === "paused" && existing.pauseReason === "setup";
+        await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
+          (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+          !configuringSetup, configuringSetup);
+      }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
@@ -5821,11 +5555,11 @@ export function agentRoutes(
     if (profileOnlyChange) {
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
-      await assertCanUpdateAgent(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
     }
 
     const actor = getActorInfo(req);
-    const agent = await svc.update(id, patchData, {
+    const updateOptions = {
       recordRevision: {
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -5838,7 +5572,11 @@ export function agentRoutes(
         applyExistingWithoutClaim:
           req.actor.type !== "agent" && applyStoredClaudeLogin,
       },
-    });
+    };
+    const command = requestedStatus === "paused" ? "pause" : requestedStatus === "idle" ? "resume" : requestedStatus === "terminated" ? "terminate" : null;
+    const agent = command
+      ? await svcLifecycle.updateAndTransition(id, command, patchData, updateOptions)
+      : await svc.update(id, patchData, updateOptions);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5860,13 +5598,28 @@ export function agentRoutes(
     res.json(redactAgentRowForResponse(agent));
   });
 
+  router.post("/agents/:id/lifecycle/retry", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) return;
+    await assertCanUpdateAgent(req, existing);
+    const agent = await svcLifecycle.retry(id);
+    if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
+    const actor = getActorInfo(req);
+    await logActivity(db, { companyId: agent.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,
+      action: "agent.lifecycle_retried", entityType: "agent", entityId: agent.id });
+    res.json(redactAgentRowForResponse(agent));
+  });
+
   router.post("/agents/:id/pause", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.pause(id);
+    const agent = await svcLifecycle.pauseAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5899,7 +5652,7 @@ export function agentRoutes(
       });
       return;
     }
-    const agent = await svc.resume(id);
+    const agent = await svcLifecycle.resumeAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5965,32 +5718,14 @@ export function agentRoutes(
       return;
     }
 
-    // Resolve the linked hire approval (clears it from the inbox) and run the
-    // shared approval side effects: agent activation, budget policy, and the
-    // hire-approved notification. Fall back to direct activation if no open
-    // approval record exists (e.g. agents created before approvals were tracked).
-    const decidedByUserId = req.actor.userId ?? "board";
-    const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-
-    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-    if (openApproval) {
-      await approvalsSvc.approve(openApproval.id, decidedByUserId);
-      agent = await svc.getById(id);
-    } else {
-      const approval = await svc.activatePendingApproval(id);
-      if (!approval) {
-        res.status(404).json({ error: "Agent not found" });
-        return;
-      }
-      if (!approval.activated) {
-        res.status(409).json({ error: "Only pending approval agents can be approved" });
-        return;
-      }
-      agent = approval.agent;
-    }
-
+    const decision = await approvalsSvc.approveHire(id, req.actor.userId ?? "board");
+    const agent = decision?.agent;
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (!decision.applied) {
+      res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
 
@@ -6001,7 +5736,7 @@ export function agentRoutes(
       action: "agent.approved",
       entityType: "agent",
       entityId: agent.id,
-      details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
+      details: { source: "agent_detail", approvalId: decision.approval?.id ?? null },
     });
 
     res.json(redactAgentRowForResponse(agent));
@@ -6015,23 +5750,9 @@ export function agentRoutes(
       return;
     }
 
-    // Terminating an agent that is still awaiting approval is the agent-detail
-    // equivalent of rejecting the hire. When a linked hire approval is still
-    // open, delegate to approvalsSvc.reject(), which both resolves the approval
-    // (clearing the inbox "Approve/Reject" card) and terminates the agent.
-    // Mirror the approve path's branch-or-fallback so we never terminate twice:
-    // reject() already calls agentsSvc.terminate() internally.
-    let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
-    if (existing.status === "pending_approval") {
-      const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
-      if (openApproval) {
-        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
-        agent = await svc.getById(id);
-      }
-    }
-    if (!agent) {
-      agent = await svc.terminate(id);
-    }
+    const agent = existing.status === "pending_approval"
+      ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
+      : await svcLifecycle.terminateAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -7105,10 +6826,15 @@ export function agentRoutes(
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
+    const limit = limitParam
+      ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || HEARTBEAT_RUN_LIST_DEFAULT_LIMIT))
+      : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(await runRedactions.redactForRuns(companyId, await Promise.all(runs.map(run => serializeRunListRow(req, run)))));
+    const readDecisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
+    res.json(await runRedactions.redactForRuns(companyId, runs.map((run, index) =>
+      readDecisions[index] ? run : redactHeartbeatRunListRow(run)),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   router.get("/companies/:companyId/provider-traces", async (req, res) => {
@@ -7250,7 +6976,7 @@ export function agentRoutes(
       avatarUrl: agentAvatarUrl(resolveAgentAppearance(run.agentAppearance, run.agentId), 512),
       execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    })))));
+    }))), req.actor.type === "board" ? getActorInfo(req).actorId : null));
   });
 
   function readHeartbeatRunId(req: Request): string {
@@ -7277,6 +7003,7 @@ export function agentRoutes(
         { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
+      req.actor.type === "board" ? getActorInfo(req).actorId : null,
     ));
   });
 
@@ -7310,7 +7037,8 @@ export function agentRoutes(
       });
     }
 
-    res.json(run);
+    res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,
+      getActorInfo(req).actorId) : null);
   });
 
   router.post(
@@ -7833,6 +7561,8 @@ export function agentRoutes(
       .select({
         id: heartbeatRuns.id,
         runtimeMode: heartbeatRuns.runtimeMode,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`.as("queuedCommentSourceWakeIds"),
         status: heartbeatRuns.status,
         invocationSource: heartbeatRuns.invocationSource,
         triggerDetail: heartbeatRuns.triggerDetail,

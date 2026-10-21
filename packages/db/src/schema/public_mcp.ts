@@ -65,7 +65,8 @@ export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
   tokenHash: text("token_hash").notNull(),
   kind: text("kind").$type<"access" | "refresh">().notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  // Null only for renewable agent connection refresh tokens; access tokens expire.
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_oauth_tokens_hash_uq").on(t.tokenHash),
@@ -169,6 +170,8 @@ export const mcpEventDeliveries = pgTable("mcp_event_deliveries", {
 
 // Upload identities outlive their short-lived tickets so retries cannot duplicate files.
 export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
+  grantId: uuid("grant_id").references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
+  workSessionId: uuid("work_session_id"),
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
@@ -192,6 +195,7 @@ export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
 ]);
 
 export const mcpFileTickets = pgTable("mcp_file_tickets", {
+  workSessionId: uuid("work_session_id"),
   tokenHash: text("token_hash").primaryKey(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   grantId: uuid("grant_id").notNull().references(() => mcpOauthGrants.id, { onDelete: "cascade" }),

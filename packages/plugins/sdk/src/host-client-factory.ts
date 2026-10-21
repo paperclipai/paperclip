@@ -202,6 +202,7 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    getInstanceSecrets(params: WorkerToHostMethods["projects.getInstanceSecrets"][0]): Promise<WorkerToHostMethods["projects.getInstanceSecrets"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -273,6 +274,7 @@ export interface HostServices {
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
+    getRuntime?(params: WorkerToHostMethods["agents.getRuntime"][0]): Promise<WorkerToHostMethods["agents.getRuntime"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
@@ -439,6 +441,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.getInstanceSecrets": "projects.instance-secrets",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -491,6 +494,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.getRuntime": "agents.lifecycle.manage",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
@@ -828,6 +832,10 @@ export function createHostClientHandlers(
     "projects.list": gated("projects.list", async (params) => {
       return services.projects.list(params);
     }),
+    "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
+      return services.projects.getInstanceSecrets({ ...params, companyId });
+    }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
     }),
@@ -978,6 +986,10 @@ export function createHostClientHandlers(
     // Agents
     "agents.list": gated("agents.list", async (params) => {
       return services.agents.list(params);
+    }),
+    "agents.getRuntime": gated("agents.getRuntime", async (params) => {
+      if (!services.agents.getRuntime) throw new Error("Agent runtime state is unavailable");
+      return services.agents.getRuntime(params);
     }),
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);

@@ -45,7 +45,7 @@
     "generate": "pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate && pnpm run prune:snapshots",
     "prune:snapshots": "ls src/migrations/meta/*_snapshot.json | sort -r | tail -n +6 | xargs rm -f",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "pnpm --filter @paperclipai/server exec tsx scripts/seed.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",

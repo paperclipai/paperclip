@@ -1,0 +1,110 @@
+{
+  "schema": "paperclip.pi-product-infrastructure-failure/v1",
+  "attemptId": "pi-product-plan-03",
+  "sourceRevision": "92bcd6f07ae9a3905333dbaa2542b1401945f5fa",
+  "runtimeSourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+  "profileVersion": 4,
+  "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+  "providerPackDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+  "runnerdDigest": "sha256:373848d2d7287b2c47b2cee422cb7bd25073a594a620a9ad574f2d3d51cd1670",
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "case": "extended-harnesses.runner-acpx-pi.local.plan-approve-complete",
+  "result": {
+    "schema": "paperclip.runner-e2e.result/v2",
+    "executionId": "extended-harnesses.runner-acpx-pi.local.plan-approve-complete",
+    "suiteId": "extended-harnesses",
+    "suiteDefinitionHash": "e75cb2222d2f52ec3a2a425211d195d36b95882de2cb9ed0ad93231b7c42768a",
+    "source": {
+      "sha": "92bcd6f07ae9a3905333dbaa2542b1401945f5fa",
+      "ref": "refs/heads/codex/runner-pi-acp",
+      "workflowRunUrl": null
+    },
+    "attempt": 1,
+    "status": "failed",
+    "failureClass": "transient_infrastructure",
+    "error": "Playwright exited 1 before writing a result",
+    "profileId": "runner-acpx-pi",
+    "environmentId": "local",
+    "caseId": "plan-approve-complete",
+    "provider": "acpx",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "runtimeMode": "native",
+    "startedAt": "2026-09-28T22:14:34.240Z",
+    "finishedAt": "2026-09-28T22:14:40.919Z",
+    "durationMs": 6679,
+    "cleanup": "not_started"
+  },
+  "providerPromptCalls": 0,
+  "providerStartupReached": false,
+  "terminalUsage": null,
+  "billingDeltaUsd": 0,
+  "billingCoverage": "Two spaced post-attempt exclusive-key observations show unchanged usage; the fixture failed before provider startup.",
+  "supervision": {
+    "reservationUsd": 2,
+    "watchdogUsd": 0.5,
+    "activeDeadlineSeconds": 120,
+    "outerDeadlineSeconds": 300,
+    "automaticRetries": 0,
+    "supervisorDurationSeconds": 13.774,
+    "outerDeadlineFired": false
+  },
+  "diagnosis": {
+    "failurePhase": "embedded PostgreSQL initdb bootstrap before Playwright test",
+    "observed": "Embedded PostgreSQL init script exited1 after selecting max_connections20/shared_buffers400kB; original bootstrap stderr was not retained.",
+    "hostCapacity": {
+      "recordedAt": "2026-09-28T22:16:06.846217+00:00",
+      "sysvSemaphoreSets": 5135,
+      "sysvSemaphoresInUse": 87263,
+      "sysvSemaphoreLimit": 87381,
+      "freeSemaphores": 118,
+      "usualPostgresSetSize": 17,
+      "attemptFixtureRemoved": true,
+      "scope": "read-only host capacity observation; unrelated IPC resources untouched"
+    },
+    "inference": "A later credential-free initdb invocation of the same pinned PostgreSQL binary reproduced semaphore exhaustion with16 free and17 required. The original Product bootstrap stderr remains unavailable.",
+    "unrelatedProcessesOrIpcModified": false,
+    "disposableReproduction": {
+      "nativePackage": "@embedded-postgres/darwin-arm64@18.1.0-beta.16",
+      "initdbSha256": "5a6ad92c2ce915b1a13aa2f8f2b2199996daf0cbe6b9f1d0044a387303b368ec",
+      "arguments": [
+        "--pgdata=<private disposable directory>",
+        "--username=paperclip_fixture",
+        "--auth=trust",
+        "--encoding=UTF8",
+        "--locale=C",
+        "--no-sync"
+      ],
+      "before": {
+        "sets": 5141,
+        "used": 87365,
+        "limit": 87381,
+        "recordedAt": "2026-09-28T22:17:28.611679+00:00"
+      },
+      "after": {
+        "sets": 5141,
+        "used": 87365,
+        "limit": 87381,
+        "recordedAt": "2026-09-28T22:17:29.168791+00:00"
+      },
+      "exitCode": 1,
+      "durationSeconds": 0.557,
+      "error": "FATAL: could not create semaphores: No space left on device",
+      "failedSystemCall": "semget(..., 17, 03600)",
+      "processGroupRemaining": false,
+      "temporaryDirectoryRemoved": true,
+      "providerCalls": 0,
+      "postgresServerStarted": false
+    }
+  },
+  "independentCleanup": {
+    "fixtureDirectoryRemoved": true,
+    "matchingAttemptProcesses": 0,
+    "canonicalCleanup": "not_started; failed before test setup"
+  },
+  "privateLogSha256": "2600fbad9d5c736bd7e76526acd3eaec9de305f0b9d22f7f7e5bd3333b3f28ba",
+  "publication": {
+    "credentials": false,
+    "hiddenReasoning": false,
+    "rawProviderTranscript": false
+  }
+}

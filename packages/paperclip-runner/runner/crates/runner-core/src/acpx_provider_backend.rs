@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use crate::acpx_provider_capabilities::{run_attachment_policy, RunAttachmentPolicy};
 use crate::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession, AcpxProviderSessionConfig,
-    AcpxProviderSessionIdentity, AcpxTurnControlCapabilities,
+    AcpxProviderSessionIdentity, AcpxTurnControlCapabilities, PiThinkingLevel,
 };
 use crate::acpx_sidecar_transport::AcpxSidecarTransportConfig;
 #[cfg(test)]
@@ -36,7 +36,7 @@ use crate::provider_bridge::{
 use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
-use crate::qualified_launch::verify_launch_artifact;
+use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
 fn is_reserved_terminal_operation_id(operation_id: &str) -> bool {
     matches!(operation_id, "paperclip_finish" | "paperclip_block")
@@ -141,6 +141,10 @@ struct AcpxProviderDescriptor {
     permission_mode: AcpxPermissionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pi_thinking_level: Option<PiThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_effort: Option<String>,
     permission_mode_pinned: bool,
     #[serde(default)]
     provider_policy: Option<AcpxProviderRuntimePolicy>,
@@ -202,7 +206,7 @@ fn registered_asset_suffix(context: &Value) -> Option<String> {
             return None;
         }
         blocks.push(if copy.get("kind").and_then(Value::as_str) == Some("agent_files") {
-            format!("Your persistent agent directory (AGENT_HOME) is {path}. Your instruction entry is {entry}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.")
+            format!("Your persistent agent directory (AGENT_HOME) is {path}. This is the current turn's copy; its absolute path may change between turns. In shell commands, use the current $AGENT_HOME environment variable instead of an absolute agent-directory path from an earlier turn. Your instruction entry is {entry}, relative to that directory. All supported files and subfolders there are restored across tasks and sessions, and collected after this provider stops. Write task deliverables in the task working directory. Only changed or deleted files synchronize; the last sync wins for the same file. Temporary copies are cleaned up without retaining file history. Check the save receipt before claiming persistence.")
         } else {
             format!("Your editable agent instruction file is {path}/{entry}. Edit this registered private copy normally. After this run stops, Paperclip saves changed content as a persistent revision if your responsible user still has permission and the baseline has not changed. Check the run's instruction-save receipt before claiming persistence. Conflicts are preserved for explicit resolution. Repository instruction files, skills, and this run's loaded prompt are separate and are not collected.")
         });
@@ -264,6 +268,11 @@ impl AcpxProviderDescriptor {
             || self.model.trim().is_empty()
             || self.model.len() > 240
             || self.model.contains('\0')
+            || ((self.agent == "pi") != self.pi_thinking_level.is_some())
+            || self.claude_effort.as_ref().is_some_and(|effort| {
+                self.agent != "claude"
+                    || !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+            })
             || self.mode.as_ref().is_some_and(|mode| {
                 mode.trim().is_empty()
                     || mode.chars().count() > 240
@@ -364,6 +373,8 @@ impl AcpxProviderDescriptor {
             working_directory: PathBuf::from(&self.cwd),
             permission_mode: self.permission_mode,
             mode: self.mode.clone(),
+            pi_thinking_level: self.pi_thinking_level,
+            claude_effort: self.claude_effort.clone(),
             permission_mode_pinned: self.permission_mode_pinned,
             provider_policy: self.provider_policy.clone(),
             system_instructions: self.instructions.clone(),
@@ -397,7 +408,11 @@ impl AcpxProviderDescriptor {
                     "ACPX runner launch profile repeats an artifact path",
                 ));
             }
-            let snapshot = verify_launch_artifact(artifact, "ACPX")?;
+            let snapshot = if artifact.path == launch_profile.command {
+                verify_executable_launch_artifact(artifact, "ACPX")?
+            } else {
+                verify_launch_artifact(artifact, "ACPX")?
+            };
             verified.insert(artifact.path.clone(), snapshot);
         }
         let command = verified
@@ -464,6 +479,12 @@ impl AcpxProviderDescriptor {
             "acpxRecordId": identity.map(|value| value.acpx_record_id.as_str()),
             "permissionMode": self.permission_mode,
         });
+        if let Some(effort) = &self.claude_effort {
+            descriptor["claudeEffort"] = json!(effort);
+        }
+        if let Some(level) = self.pi_thinking_level {
+            descriptor["piThinkingLevel"] = json!(level);
+        }
         if let Some(mode) = self.mode.as_deref() {
             descriptor["mode"] = json!(mode);
         }
@@ -599,6 +620,8 @@ impl AcpxDurableState {
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
             if identity.profile_digest != self.descriptor.command_digest
                 || identity.mode != self.descriptor.mode
+                || identity.pi_thinking_level != self.descriptor.pi_thinking_level
+                || identity.claude_effort != self.descriptor.claude_effort
             {
                 return Err(DurableRunnerError::invalid(
                     "ACPX durable identity no longer matches its qualified profile or provider mode",
@@ -740,6 +763,33 @@ fn validate_pending_runtime_requests(
     Ok(())
 }
 
+fn attested_pending_runtime_requests(
+    pending: &BTreeMap<String, Value>,
+    provider: &crate::acpx_provider_state::AcpxProviderState,
+    live: &BTreeMap<String, String>,
+    durable_turn_id: &str,
+) -> Vec<Value> {
+    pending
+        .values()
+        .filter(|request| {
+            let id = request["requestId"].as_str().unwrap_or("");
+            // Canonical requests bind the durable PRP turn. The sidecar
+            // separately attests the provider-assigned turn.
+            request["turnId"].as_str() == Some(durable_turn_id)
+                && if request["type"] == "input" {
+                    provider
+                        .pending_provider_input_request_id(id)
+                        .and_then(|provider_id| live.get(provider_id))
+                        .is_some_and(|kind| kind == "input")
+                } else {
+                    provider.pending_permission(id).is_some()
+                        && live.get(id).is_some_and(|kind| kind == "permission")
+                }
+        })
+        .cloned()
+        .collect()
+}
+
 pub struct AcpxCommandExecutor {
     state_dir: PathBuf,
     context: AcpxEventProjectionContext,
@@ -751,6 +801,28 @@ pub struct AcpxCommandExecutor {
     #[cfg(test)]
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
+}
+
+// The durable command's turn and the live provider callback have separate IDs.
+// Legacy direct callers use turnId for both; an explicit provider binding must
+// never fall back to the durable ID if it is malformed.
+fn turn_control_provider_turn_id(payload: &Value) -> Result<&str, DurableRunnerError> {
+    let durable_turn_id = payload
+        .get("turnId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.turnId is required"))?;
+    let provider_turn_id = match payload.get("providerTurnId") {
+        None => durable_turn_id,
+        Some(value) => value.as_str().ok_or_else(|| {
+            DurableRunnerError::invalid("turn.steer payload.providerTurnId must be a string")
+        })?,
+    };
+    if !is_stable_id(provider_turn_id, DURABLE_STABLE_ID_CHARS) {
+        return Err(DurableRunnerError::invalid(
+            "turn.steer provider turn identity is invalid",
+        ));
+    }
+    Ok(provider_turn_id)
 }
 
 impl AcpxCommandExecutor {
@@ -1225,16 +1297,24 @@ impl AcpxCommandExecutor {
             session_event_payload(&state.descriptor, &identity, process_id, turn_controls);
         let goal = self.goal_control("session.goal.get", &json!({}))?;
         self.save_state()?;
+        let mut result = json!({
+            "status": if resumed { "resumed" } else { "started" },
+            "provider": "acpx",
+            "driver": "acpx_runtime",
+            "providerVersion": "0.13.1",
+            "providerSessionId": identity.acpx_record_id,
+            "sessionId": identity.agent_session_id,
+            "processId": process_id,
+        });
+        if let Some(effort) = &identity.claude_effort {
+            result["claudeEffort"] = json!(effort);
+        }
+        if let Some(level) = identity.pi_thinking_level {
+            // This identity is admitted only after the sidecar's effective-mode ACK.
+            result["piThinkingLevel"] = json!(level);
+        }
         Ok(CommandExecution {
-            result: json!({
-                "status": if resumed { "resumed" } else { "started" },
-                "provider": "acpx",
-                "driver": "acpx_runtime",
-                "providerVersion": "0.13.1",
-                "providerSessionId": identity.acpx_record_id,
-                "sessionId": identity.agent_session_id,
-                "processId": process_id,
-            }),
+            result,
             events: [(
                 if resumed {
                     "session.resumed"
@@ -1477,10 +1557,7 @@ impl AcpxCommandExecutor {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.text is required"))?;
-        let turn_id = payload
-            .get("turnId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| DurableRunnerError::invalid("turn.steer payload.turnId is required"))?;
+        let turn_id = turn_control_provider_turn_id(payload)?;
         let mode = match payload.get("mode") {
             None => "steer",
             Some(Value::String(mode)) => mode.as_str(),
@@ -1586,25 +1663,33 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .and_then(|state| state.active_turn_id.clone());
-        let Some(turn_id) = turn_id else {
+        let stop_idle_pi = turn_id.is_none()
+            && self.session.is_some()
+            && self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.descriptor.agent == "pi");
+        if turn_id.is_none() && !stop_idle_pi {
             return Ok(CommandExecution::result(json!({
                 "status": "already_settled",
                 "reason": reason,
             })));
-        };
+        }
         let provider_lifetime_fence_candidates = {
             let session = self
                 .session
                 .as_mut()
                 .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?;
             let candidates = session.identity().provider_lifetime_fence_candidates;
-            session
-                .terminate_active_turn_for_suspension(&turn_id)
-                .map_err(|error| {
-                    DurableRunnerError::invalid(format!(
-                        "failed to terminate ACPX turn at the suspension boundary: {error}"
-                    ))
-                })?;
+            match turn_id.as_deref() {
+                Some(turn_id) => session.terminate_active_turn_for_suspension(turn_id),
+                None => session.terminate_idle_for_suspension(),
+            }
+            .map_err(|error| {
+                DurableRunnerError::invalid(format!(
+                    "failed to terminate ACPX provider at the suspension boundary: {error}"
+                ))
+            })?;
             candidates
         };
         // Process-group termination reaps the sidecar leader and its ordinary
@@ -1776,6 +1861,40 @@ impl AcpxCommandExecutor {
         })))
     }
 
+    fn snapshot_live_requests(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        let session = self.session.as_mut().ok_or_else(|| {
+            DurableRunnerError::invalid("ACPX request snapshot requires the surviving provider")
+        })?;
+        let live_requests = session.verify_live_request_snapshot().map_err(|error| {
+            DurableRunnerError::invalid(format!("ACPX live request snapshot failed: {error}"))
+        })?;
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))?;
+        if state.provider_exit_unconfirmed
+            || state.lifecycle == "closed"
+            || state.identity.as_ref() != Some(session.identity())
+            || state.active_turn_id.as_deref() != session.state().active_turn_id()
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX live request snapshot lost its provider binding",
+            ));
+        }
+        validate_pending_runtime_requests(&state.pending_runtime_requests)?;
+        let requests = attested_pending_runtime_requests(
+            &state.pending_runtime_requests,
+            session.state(),
+            &live_requests,
+            &self.context.turn_id,
+        );
+        let mut snapshot = self.snapshot()?;
+        snapshot.result["pendingRuntimeRequests"] = json!(requests);
+        snapshot.result["runtimeRequestsLive"] = json!(true);
+        snapshot.result["runtimeRequestTurnId"] = json!(self.context.turn_id);
+        Ok(snapshot)
+    }
+
     fn close_session(&mut self, reason: &str) -> Result<CommandExecution, DurableRunnerError> {
         if let Some(session) = self.session.as_mut() {
             session.shutdown(reason).map_err(|error| {
@@ -1807,6 +1926,15 @@ impl AcpxCommandExecutor {
     }
 
     fn suspend(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        if self
+            .state
+            .as_ref()
+            .is_some_and(|state| state.provider_exit_unconfirmed)
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX provider lifetime cleanup is not yet proven",
+            ));
+        }
         if let Some(session) = self.session.as_mut() {
             let identity = session.suspend("runner.suspend").map_err(|error| {
                 DurableRunnerError::invalid(format!("failed to suspend ACPX provider: {error}"))
@@ -1887,6 +2015,12 @@ impl AcpxCommandExecutor {
             let Some(events) = events else { break };
             let mut provider_turn_settled = false;
             for event in events {
+                let provider_process_lost = matches!(
+                    &event,
+                    crate::acpx_provider_state::AcpxProviderStateEvent::TurnTerminal {
+                        error: Some(error), ..
+                    } if error.get("code").and_then(Value::as_str) == Some("ACPX_PROVIDER_PROCESS_LOST")
+                );
                 let normalized = project_acpx_state_event(&self.context, &event)
                     .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
                 let terminal = normalized.iter().find_map(|event| {
@@ -1896,7 +2030,10 @@ impl AcpxCommandExecutor {
                     )
                     .then(|| event.event_type.clone())
                 });
-                if terminal.is_some() {
+                // A failed provider cannot answer session controls. Its
+                // terminal receipt must remain publishable without another
+                // protocol request, and must revoke future warm admission.
+                if terminal.is_some() && !provider_process_lost {
                     let snapshot = self.goal_control("session.goal.get", &json!({}))?;
                     let state = self.state.as_mut().expect("ACPX session has durable state");
                     for (event_type, priority, payload) in snapshot.events {
@@ -1937,10 +2074,12 @@ impl AcpxCommandExecutor {
                 }
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
-                    state.lifecycle = if self
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| session.runtime_retired())
+                    state.provider_exit_unconfirmed |= provider_process_lost;
+                    state.lifecycle = if provider_process_lost
+                        || self
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.runtime_retired())
                     {
                         "closed"
                     } else {
@@ -1950,11 +2089,12 @@ impl AcpxCommandExecutor {
                     provider_turn_settled = true;
                     // An ACP goal has session lifetime, not prompt lifetime.
                     // Out-of-prompt goal updates remain observable after quiescence.
-                    if state
-                        .goal_projection
-                        .pointer("/goal/status")
-                        .and_then(Value::as_str)
-                        == Some("active")
+                    if !provider_process_lost
+                        && state
+                            .goal_projection
+                            .pointer("/goal/status")
+                            .and_then(Value::as_str)
+                            == Some("active")
                     {
                         continue;
                     }
@@ -2055,6 +2195,15 @@ impl CommandExecutor for AcpxCommandExecutor {
             "turn.stop" => self.stop_turn_for_suspension(&command.command_type),
             "request.resolve" => self.resolve_request(&command.payload),
             "semantic_tool.result" => self.deliver_tool_result(&command.payload),
+            "session.snapshot"
+                if command
+                    .payload
+                    .get("includePendingRuntimeRequests")
+                    .and_then(Value::as_bool)
+                    == Some(true) =>
+            {
+                self.snapshot_live_requests()
+            }
             "session.snapshot" => self.snapshot(),
             "session.close" | "session.destroy" => self.close_session(&command.command_type),
             "runner.suspend" => self.suspend(),
@@ -2255,7 +2404,7 @@ fn replacement_continuity_payload(
     })
 }
 
-fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRunnerError> {
+pub(crate) fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRunnerError> {
     let mut builder = DirBuilder::new();
     #[cfg(unix)]
     builder.mode(0o700);
@@ -2379,6 +2528,9 @@ mod tests {
         if agent == "cursor" {
             value["mode"] = json!("agent");
         }
+        if agent == "pi" {
+            value["piThinkingLevel"] = json!("low");
+        }
         value
     }
 
@@ -2386,6 +2538,84 @@ mod tests {
         json!({"schema":"paperclip.runtime_request.v2","requestId":id,"requestKind":"runtime","type":"input","status":"pending",
             "turnId":"turn-1","itemId":"item-1","prompt":"Choose","input":{"schema":"paperclip.question_set.v1","questions":[{"id":"q","prompt":"Choose","answerMode":"text","required":true}]},
             "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/ask_question"}})
+    }
+
+    #[test]
+    fn live_request_snapshot_preserves_durable_turn_and_provider_callback_bindings() {
+        use crate::acpx_provider_state::AcpxProviderState;
+        use crate::acpx_sidecar_transport::AcpxSidecarEvent;
+        use crate::generated_acpx_sidecar_contract::GeneratedAcpxSidecarEventType;
+        let mut provider = AcpxProviderState::new("run-1").unwrap();
+        provider.begin_turn("provider-turn-1").unwrap();
+        let mut projection = context();
+        projection.turn_id = "durable-turn-1".into();
+        projection.provider_turn_id = Some("provider-turn-1".into());
+        let mut pending = BTreeMap::new();
+        for (sequence, event_type, payload) in [
+            (
+                1,
+                GeneratedAcpxSidecarEventType::RuntimeInputRequested,
+                json!({"requestId":"raw input / 1","questionSet":pending_input_request("unused")["input"]}),
+            ),
+            (
+                2,
+                GeneratedAcpxSidecarEventType::RuntimePermissionRequested,
+                json!({"requestId":"permission-1","kind":"execute","title":"Run?","choices":[{"key":"decline","label":"Decline"}]}),
+            ),
+        ] {
+            let event = AcpxSidecarEvent {
+                sequence,
+                event_type,
+                run_id: Some("run-1".into()),
+                turn_id: Some("provider-turn-1".into()),
+                payload,
+            };
+            for event in provider.accept_event(&event).unwrap() {
+                for normalized in project_acpx_state_event(&projection, &event).unwrap() {
+                    if normalized.event_type == "runtime_request.created" {
+                        let request = normalized.payload["request"].clone();
+                        pending.insert(request["requestId"].as_str().unwrap().to_owned(), request);
+                    }
+                }
+            }
+        }
+        validate_pending_runtime_requests(&pending).unwrap();
+        let live = BTreeMap::from([
+            ("raw input / 1".into(), "input".into()),
+            ("permission-1".into(), "permission".into()),
+        ]);
+        let requests =
+            attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1");
+        assert_eq!(requests.len(), 2);
+        assert!(requests
+            .iter()
+            .all(|request| request["turnId"] == "durable-turn-1"));
+        assert!(requests
+            .iter()
+            .any(|request| request["requestId"] != "raw input / 1" && request["type"] == "input"));
+        assert!(
+            attested_pending_runtime_requests(&pending, &provider, &live, "provider-turn-1")
+                .is_empty()
+        );
+        assert!(attested_pending_runtime_requests(
+            &pending,
+            &provider,
+            &BTreeMap::new(),
+            "durable-turn-1"
+        )
+        .is_empty());
+        provider.complete_permission("permission-1").unwrap();
+        let input_id = requests
+            .iter()
+            .find(|request| request["type"] == "input")
+            .unwrap()["requestId"]
+            .as_str()
+            .unwrap();
+        provider.complete_input(input_id).unwrap();
+        assert!(
+            attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2549,6 +2779,8 @@ mod tests {
                 effective_model: descriptor.model.clone(),
                 permission_mode: Some(descriptor.permission_mode),
                 mode: descriptor.mode.clone(),
+                pi_thinking_level: descriptor.pi_thinking_level,
+                claude_effort: descriptor.claude_effort.clone(),
                 provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
             };
             let operations = Vec::new();
@@ -2690,6 +2922,31 @@ mod tests {
     }
 
     #[test]
+    fn turn_control_uses_the_explicit_live_provider_binding() {
+        let command = json!({"turnId":"durable-turn", "providerTurnId":"provider-turn"});
+        assert_eq!(
+            turn_control_provider_turn_id(&command).unwrap(),
+            "provider-turn"
+        );
+        let legacy = json!({"turnId":"provider-turn"});
+        assert_eq!(
+            turn_control_provider_turn_id(&legacy).unwrap(),
+            "provider-turn"
+        );
+        for malformed in [
+            Value::Null,
+            json!(false),
+            json!(1),
+            json!(""),
+            json!("bad\0id"),
+        ] {
+            let command = json!({"turnId":"provider-turn", "providerTurnId":malformed});
+            assert!(turn_control_provider_turn_id(&command).is_err());
+        }
+        assert!(turn_control_provider_turn_id(&json!({"providerTurnId":"provider-turn"})).is_err());
+    }
+
+    #[test]
     fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
         let directory = temporary_directory("retained-terminal-suffix");
         let config = test_config(&directory, None);
@@ -2799,6 +3056,8 @@ mod tests {
             effective_model: "gpt-5.6-sol".to_owned(),
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
             mode: None,
+            pi_thinking_level: None,
+            claude_effort: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
 
@@ -2951,6 +3210,52 @@ mod tests {
     }
 
     #[test]
+    fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
+        let published: Value = serde_json::from_str(include_str!(
+            "../../../../test-fixtures/pi-acp/profile-v28-identity.json"
+        ))
+        .unwrap();
+        let mut value = descriptor("codex");
+        value["agent"] = json!("pi");
+        value["model"] = json!("openrouter/deepseek/deepseek-v4-flash-0731");
+        value["agentServerPackage"] = json!("pi-acp");
+        value["agentServerVersion"] = json!("0.0.33");
+        value["agentRuntimePackage"] = json!("@earendil-works/pi-coding-agent");
+        value["agentRuntimeVersion"] = json!("1.0.0");
+        value["piThinkingLevel"] = json!("low");
+        value["providerPolicy"] = json!({"readOnly": true});
+        value["commandDigest"] = published["commandDigest"].clone();
+        let current: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
+        current.validate(&context()).unwrap();
+
+        for prior in [
+            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v16-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v17-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v18-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v19-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v20-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v21-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v22-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
+            include_str!(
+                "../../../../test-fixtures/pi-acp/profile-v24-claude-historical-identity.json"
+            ),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v25-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v26-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v27-identity.json"),
+        ] {
+            let prior: Value = serde_json::from_str(prior).unwrap();
+            value["commandDigest"] = prior["commandDigest"].clone();
+            let rejected: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
+            assert!(rejected.validate(&context()).is_err());
+        }
+    }
+
+    #[test]
     fn rejects_pi_with_another_profile_identity_before_process_launch() {
         let mut pi = descriptor("codex");
         pi["agent"] = json!("pi");
@@ -2995,6 +3300,135 @@ mod tests {
         write_artifact(&sidecar, b"modified sidecar", false);
         assert!(descriptor.verified_transport(Some(&profile)).is_err());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    mod darwin_named_transport_cleanup {
+        use super::*;
+
+        struct Fixture {
+            directory: PathBuf,
+            descriptor: AcpxProviderDescriptor,
+            profile: AcpxLaunchProfile,
+        }
+
+        impl Fixture {
+            fn new(label: &str) -> Self {
+                let directory = temporary_directory(label);
+                let command = directory.join("node");
+                let sidecar = directory.join("sidecar.cjs");
+                write_artifact(&command, b"qualified node", true);
+                write_artifact(&sidecar, b"qualified sidecar", false);
+                let args = vec![sidecar.to_string_lossy().into_owned()];
+                let profile = AcpxLaunchProfile {
+                    authority_digest: format!("sha256:{}", "d".repeat(64)),
+                    command: command.clone(),
+                    args: args.clone(),
+                    artifacts: vec![artifact(&command), artifact(&sidecar)],
+                };
+                let mut value = descriptor("codex");
+                value["sidecarCommand"] = json!(command);
+                value["sidecarArgs"] = json!(args);
+                Self {
+                    directory,
+                    descriptor: serde_json::from_value(value).unwrap(),
+                    profile,
+                }
+            }
+
+            fn named_images(&self) -> usize {
+                fs::read_dir(&self.directory)
+                    .unwrap()
+                    .map(|entry| entry.unwrap())
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".paperclip-verified-executable-")
+                    })
+                    .count()
+            }
+
+            fn prove_transport_owns_image(&self) {
+                assert_eq!(self.named_images(), 0);
+                let transport = self
+                    .descriptor
+                    .verified_transport(Some(&self.profile))
+                    .unwrap();
+                assert_eq!(
+                    self.named_images(),
+                    1,
+                    "verification must own one named Node image"
+                );
+                drop(transport);
+                assert_eq!(
+                    self.named_images(),
+                    0,
+                    "dropping unstarted transport must retire its image"
+                );
+            }
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.directory);
+            }
+        }
+
+        // File verification only: these tests never start a transport/process.
+        #[test]
+        fn second_artifact_failure_retires_named_executable() {
+            let fixture = Fixture::new("darwin-second-artifact-cleanup");
+            fixture.prove_transport_owns_image();
+            // The command remains valid and first in the profile; the sidecar
+            // fails only after the command's named snapshot has been admitted.
+            write_artifact(
+                &fixture.profile.artifacts[1].path,
+                b"tampered sidecar",
+                false,
+            );
+            let error = fixture
+                .descriptor
+                .verified_transport(Some(&fixture.profile))
+                .err()
+                .unwrap();
+            assert!(error
+                .to_string()
+                .contains("verified process artifact digest mismatch"));
+            assert_eq!(fixture.named_images(), 0);
+            assert_eq!(
+                fs::read(&fixture.profile.command).unwrap(),
+                b"qualified node"
+            );
+        }
+
+        #[test]
+        fn argv_construction_failure_retires_named_executable() {
+            let mut fixture = Fixture::new("darwin-argv-cleanup");
+            fixture.prove_transport_owns_image();
+            // Descriptor and profile agree, so this passes launch binding and
+            // artifact verification, then fails the absolute-argument mapping.
+            let unauthenticated = fixture
+                .directory
+                .join("unauthenticated.cjs")
+                .to_string_lossy()
+                .into_owned();
+            fixture.profile.args.push(unauthenticated.clone());
+            fixture.descriptor.sidecar_args.push(unauthenticated);
+            let error = fixture
+                .descriptor
+                .verified_transport(Some(&fixture.profile))
+                .err()
+                .unwrap();
+            assert!(error
+                .to_string()
+                .contains("does not authenticate an absolute argument"));
+            assert_eq!(fixture.named_images(), 0);
+            assert_eq!(
+                fs::read(&fixture.profile.command).unwrap(),
+                b"qualified node"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -3071,12 +3505,32 @@ mod tests {
             args: Vec::new(),
             artifacts: vec![artifact(&command)],
         };
-        let mut descriptor_value = descriptor("codex");
+        let mut descriptor_value = descriptor("pi");
         descriptor_value["sidecarCommand"] = json!(command);
         descriptor_value["runtimeContext"] = json!({ "instructions": { "digest": "stable" }, "mcp": { "digest": "before" }, "aggregateDigest": "before" });
         descriptor_value["sidecarArgs"] = json!([]);
         descriptor_value["runtimeDirectory"] = json!(runtime);
         descriptor_value["cwd"] = json!(workspace);
+        let prior_root = directory.join("old-registered-copy");
+        let current_root = directory.join("new-registered-copy");
+        fs::create_dir_all(&prior_root).unwrap();
+        fs::create_dir_all(&current_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Custom entry.",
+            prior_root.display()
+        ));
+        descriptor_value["runtimeContext"] = json!({
+            "aggregateDigest": "a".repeat(64),
+            "prompt": {"revision": "pinned", "digest": "b".repeat(64)},
+            "instructions": {
+                "entryPath": "AGENTS.md",
+                "bundle": {"digest": "c".repeat(64), "rootPath": "/old-bundle"},
+                "workingCopy": {"kind": "agent_files", "entryPath": "AGENTS.md", "rootPath": prior_root},
+            },
+            "skills": [{"key": "skill-1", "bundle": {"digest": "d".repeat(64), "rootPath": "/old-skill"}}],
+            "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
+            "futurePolicy": {"companyId": "company-1"},
+        });
         let original_descriptor: AcpxProviderDescriptor =
             serde_json::from_value(descriptor_value.clone()).unwrap();
         let identity = AcpxProviderSessionIdentity {
@@ -3091,6 +3545,8 @@ mod tests {
             effective_model: original_descriptor.model.clone(),
             permission_mode: Some(original_descriptor.permission_mode),
             mode: original_descriptor.mode.clone(),
+            pi_thinking_level: original_descriptor.pi_thinking_level,
+            claude_effort: original_descriptor.claude_effort.clone(),
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -3193,11 +3649,57 @@ mod tests {
             .contains("requires run.attach before commands from a new run"));
 
         descriptor_value["runId"] = json!("run-2");
+        fs::remove_dir_all(&prior_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Fresh custom entry.",
+            current_root.display()
+        ));
+        descriptor_value["runtimeContext"]["instructions"]["workingCopy"]["rootPath"] =
+            json!(current_root);
+        descriptor_value["runtimeContext"]["instructions"]["bundle"]["rootPath"] =
+            json!("/new-bundle");
+        descriptor_value["runtimeContext"]["skills"][0]["bundle"]["rootPath"] = json!("/new-skill");
+        descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
         attached
             .attach_run(&json!({"provider": descriptor_value}))
             .unwrap();
         assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
         assert!(!marker.exists());
+        let refreshed = &attached.state.as_ref().unwrap().descriptor;
+        assert_eq!(
+            refreshed.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(refreshed.instructions, descriptor_value["instructions"]);
+        let session_config = refreshed
+            .session_config(
+                attached.state.as_ref().unwrap().tool_set.clone(),
+                attached.state.as_ref().unwrap().identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        assert_eq!(
+            session_config.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(
+            session_config.system_instructions,
+            descriptor_value["instructions"]
+        );
+        // Both persistence and the sidecar launch config receive the new grant.
+        let persisted: AcpxDurableState =
+            serde_json::from_slice(&fs::read(attached.state_path()).unwrap()).unwrap();
+        assert_eq!(
+            persisted.descriptor.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        let mut same_run_mutation = descriptor_value.clone();
+        same_run_mutation["instructions"] = json!("A different grant in the same run");
+        assert!(attached
+            .attach_run(&json!({"provider": same_run_mutation}))
+            .unwrap_err()
+            .to_string()
+            .contains("changed runtime context outside a new authenticated run"));
 
         // In-place warm handoff executes under the old authority. Only the
         // authenticated next-authority boundary may admit the new descriptor;
@@ -3227,7 +3729,7 @@ mod tests {
             json!("other-session");
         assert!(original.attach_run(&wrong_session).is_err());
         let mut changed_profile = warm_payload.clone();
-        changed_profile["provider"]["instructions"] = json!("different profile");
+        changed_profile["provider"]["cwd"] = json!("/different-workspace");
         assert!(original.attach_run(&changed_profile).is_err());
         let mut refreshed = warm_payload.clone();
         refreshed["provider"]["runtimeContext"]["mcp"] = json!({ "digest": "after" });
@@ -3263,7 +3765,7 @@ mod tests {
 
     #[cfg(unix)]
     fn authenticated_run_grant_attachment(agent: &str) {
-        let directory = temporary_directory("cursor-cross-run-attach");
+        let directory = temporary_directory(&format!("{agent}-cross-run-attach"));
         let runtime = directory.join("runtime");
         let workspace = directory.join("workspace");
         fs::create_dir_all(&runtime).unwrap();
@@ -3329,6 +3831,8 @@ mod tests {
             effective_model: original_descriptor.model.clone(),
             permission_mode: Some(original_descriptor.permission_mode),
             mode: original_descriptor.mode.clone(),
+            pi_thinking_level: original_descriptor.pi_thinking_level,
+            claude_effort: original_descriptor.claude_effort.clone(),
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -3581,6 +4085,279 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn copilot_attachment_refreshes_current_grant_without_changing_profile() {
+        let directory = temporary_directory("cross-run-attach");
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = directory.join("provider-started");
+        let command = directory.join("sidecar");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+            true,
+        );
+        let launch_profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: Vec::new(),
+            artifacts: vec![artifact(&command)],
+        };
+        let mut descriptor_value = descriptor("copilot");
+        // The fixture factory uses the generated current release identity.
+        // Overwriting it with a historical digest prevents restore before the
+        // instruction-refresh behavior under test can run.
+        descriptor_value["providerPolicy"] = json!({ "readOnly": true });
+        descriptor_value["sidecarCommand"] = json!(command);
+        descriptor_value["runtimeContext"] = json!({ "instructions": { "digest": "stable" }, "mcp": { "digest": "before" }, "aggregateDigest": "before" });
+        descriptor_value["sidecarArgs"] = json!([]);
+        descriptor_value["runtimeDirectory"] = json!(runtime);
+        descriptor_value["cwd"] = json!(workspace);
+        let prior_root = directory.join("old-registered-copy");
+        let current_root = directory.join("new-registered-copy");
+        fs::create_dir_all(&prior_root).unwrap();
+        fs::create_dir_all(&current_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Custom entry.",
+            prior_root.display()
+        ));
+        descriptor_value["runtimeContext"] = json!({
+            "aggregateDigest": "a".repeat(64),
+            "prompt": {"revision": "pinned", "digest": "b".repeat(64)},
+            "instructions": {
+                "entryPath": "AGENTS.md",
+                "bundle": {"digest": "c".repeat(64), "rootPath": "/old-bundle"},
+                "workingCopy": {"kind": "agent_files", "entryPath": "AGENTS.md", "rootPath": prior_root},
+            },
+            "skills": [{"key": "skill-1", "bundle": {"digest": "d".repeat(64), "rootPath": "/old-skill"}}],
+            "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
+            "futurePolicy": {"companyId": "company-1"},
+        });
+        let original_descriptor: AcpxProviderDescriptor =
+            serde_json::from_value(descriptor_value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: original_descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: original_descriptor.model.clone(),
+            effective_model: original_descriptor.model.clone(),
+            permission_mode: Some(original_descriptor.permission_mode),
+            mode: original_descriptor.mode.clone(),
+            pi_thinking_level: None,
+            claude_effort: None,
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let launch_profile_digest = launch_profile.canonical_digest().unwrap();
+        let mut state = AcpxDurableState::new(original_descriptor, tool_set, launch_profile_digest);
+        state.lifecycle = "suspended".to_owned();
+        state.identity = Some(identity);
+        let original_config = test_config(&directory, Some(launch_profile.clone()));
+        let mut original = AcpxCommandExecutor::with_runner_config(&directory, &original_config);
+        original.state = Some(state);
+        let settled = original.state.clone().unwrap();
+        let ready = original.snapshot().unwrap().result;
+        assert_eq!(ready["warmAttachReady"], true);
+        assert_eq!(ready["warmAttachBlockers"], json!([]));
+        let blocked_states: [(&str, fn(&mut AcpxDurableState)); 4] = [
+            ("durable_closed", |state| {
+                state.lifecycle = "closed".to_owned()
+            }),
+            ("provider_exit_unconfirmed", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.provider_exit_unconfirmed = true;
+            }),
+            ("provider_identity_unavailable", |state| {
+                state.lifecycle = "prepared".to_owned();
+                state.identity = None;
+            }),
+            ("durable_active_turn", |state| {
+                state.lifecycle = "turn_active".to_owned();
+                state.active_turn_id = Some("turn-1".to_owned());
+            }),
+        ];
+        for (blocker, mutate) in blocked_states {
+            original.state = Some(settled.clone());
+            mutate(original.state.as_mut().unwrap());
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false, "{blocker}");
+            assert_eq!(snapshot["warmAttachBlockers"], json!([blocker]));
+        }
+        // A readiness probe must retain the old authority's audit events until
+        // the durable runner commits and acknowledges them, including recovery
+        // notices that run.attach itself is allowed to consume.
+        for event_type in ["session.resumed", "harness.diagnostic"] {
+            original.state = Some(settled.clone());
+            original
+                .state
+                .as_mut()
+                .unwrap()
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+            let snapshot = original.snapshot().unwrap().result;
+            assert_eq!(snapshot["warmAttachReady"], false);
+            assert_eq!(
+                snapshot["warmAttachBlockers"],
+                json!(["durable_pending_events"])
+            );
+            assert_eq!(original.retained_events().unwrap().len(), 1);
+            original.acknowledge_events(1).unwrap();
+            assert_eq!(original.snapshot().unwrap().result["warmAttachReady"], true);
+        }
+        original.state = Some(settled);
+        assert!(!marker.exists(), "readiness must not start a provider");
+        original.save_state().unwrap();
+
+        let mut wrong_session_config = original_config.clone();
+        wrong_session_config.run_id = "run-2".to_owned();
+        wrong_session_config.normalized_session_id = "session-2".to_owned();
+        let mut wrong_session =
+            AcpxCommandExecutor::with_runner_config(&directory, &wrong_session_config);
+        assert!(wrong_session.restore().is_err());
+
+        let mut attached_config = original_config.clone();
+        attached_config.run_id = "run-2".to_owned();
+        let mut attached = AcpxCommandExecutor::with_runner_config(&directory, &attached_config);
+        attached.restore().unwrap();
+        assert!(!marker.exists());
+        let non_attach_error = attached
+            .execute(&Command {
+                schema: "paperclip.prp.command.v1".to_owned(),
+                command_id: "command-before-attach".to_owned(),
+                controller_seq: 1,
+                command_type: "session.snapshot".to_owned(),
+                issued_at: "2026-09-01T00:00:00.000Z".to_owned(),
+                deadline_at: None,
+                precondition: None,
+                payload: json!({}),
+            })
+            .unwrap_err();
+        assert!(non_attach_error
+            .to_string()
+            .contains("requires run.attach before commands from a new run"));
+
+        descriptor_value["runId"] = json!("run-2");
+        fs::remove_dir_all(&prior_root).unwrap();
+        descriptor_value["instructions"] = json!(format!(
+            "Current AGENT_HOME: {}. Fresh custom entry.",
+            current_root.display()
+        ));
+        descriptor_value["runtimeContext"]["instructions"]["workingCopy"]["rootPath"] =
+            json!(current_root);
+        descriptor_value["runtimeContext"]["instructions"]["bundle"]["rootPath"] =
+            json!("/new-bundle");
+        descriptor_value["runtimeContext"]["skills"][0]["bundle"]["rootPath"] = json!("/new-skill");
+        descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
+        attached
+            .attach_run(&json!({"provider": descriptor_value}))
+            .unwrap();
+        assert_eq!(attached.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert!(!marker.exists());
+        let refreshed = &attached.state.as_ref().unwrap().descriptor;
+        assert_eq!(
+            refreshed.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(refreshed.instructions, descriptor_value["instructions"]);
+        let session_config = refreshed
+            .session_config(
+                attached.state.as_ref().unwrap().tool_set.clone(),
+                attached.state.as_ref().unwrap().identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        assert_eq!(
+            session_config.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        assert_eq!(
+            session_config.system_instructions,
+            descriptor_value["instructions"]
+        );
+        // Both persistence and the sidecar launch config receive the new grant.
+        let persisted: AcpxDurableState =
+            serde_json::from_slice(&fs::read(attached.state_path()).unwrap()).unwrap();
+        assert_eq!(
+            persisted.descriptor.runtime_context,
+            descriptor_value["runtimeContext"]
+        );
+        let mut same_run_mutation = descriptor_value.clone();
+        same_run_mutation["instructions"] = json!("A different grant in the same run");
+        assert!(attached
+            .attach_run(&json!({"provider": same_run_mutation}))
+            .unwrap_err()
+            .to_string()
+            .contains("new authenticated run"));
+
+        // In-place warm handoff executes under the old authority. Only the
+        // authenticated next-authority boundary may admit the new descriptor;
+        // event correlation stays on run-1 until durable activation completes.
+        assert!(original
+            .attach_run(&json!({"provider": descriptor_value}))
+            .is_err());
+        let warm_payload = json!({
+            "provider": descriptor_value,
+            "paperclipNextAuthority": {
+                "identity": {
+                    "runnerInstanceId": original_config.runner_instance_id,
+                    "environmentLeaseId": original_config.environment_lease_id,
+                    "runId": "run-2",
+                    "normalizedSessionId": original_config.normalized_session_id,
+                    "turnId": "turn-2",
+                    "itemId": "item-2",
+                },
+                "connection": {"mode": "connect", "connectUrl": original_config.connect_url},
+            },
+        });
+        let mut wrong_run = warm_payload.clone();
+        wrong_run["paperclipNextAuthority"]["identity"]["runId"] = json!("run-3");
+        assert!(original.attach_run(&wrong_run).is_err());
+        let mut wrong_session = warm_payload.clone();
+        wrong_session["paperclipNextAuthority"]["identity"]["normalizedSessionId"] =
+            json!("other-session");
+        assert!(original.attach_run(&wrong_session).is_err());
+        let mut changed_profile = warm_payload.clone();
+        changed_profile["provider"]["cwd"] = json!("/different-workspace");
+        assert!(original.attach_run(&changed_profile).is_err());
+        let mut refreshed = warm_payload.clone();
+        refreshed["provider"]["runtimeContext"]["mcp"] = json!({ "digest": "after" });
+        refreshed["provider"]["runtimeContext"]["aggregateDigest"] = json!("after");
+        let mut changed_context = refreshed.clone();
+        changed_context["provider"]["runtimeContext"]["instructions"] =
+            json!({ "digest": "changed" });
+        assert!(original.attach_run(&changed_context).is_err());
+        original.attach_run(&refreshed).unwrap();
+        assert_eq!(
+            original.state.as_ref().unwrap().descriptor.runtime_context["mcp"]["digest"],
+            "after"
+        );
+        assert_eq!(original.state.as_ref().unwrap().descriptor.run_id, "run-2");
+        assert_eq!(original.context.run_id, "run-1");
+        original.rotate_authority(&attached_config);
+        assert_eq!(original.context.run_id, "run-2");
+        assert!(!marker.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn active_turn_recovery_closes_without_starting_the_provider() {
         let directory = temporary_directory("active-recovery");
         let runtime = directory.join("runtime");
@@ -3622,6 +4399,8 @@ mod tests {
             effective_model: descriptor.model.clone(),
             permission_mode: Some(descriptor.permission_mode),
             mode: descriptor.mode.clone(),
+            pi_thinking_level: descriptor.pi_thinking_level,
+            claude_effort: descriptor.claude_effort.clone(),
             provider_lifetime_fence_candidates,
         };
         let operations = Vec::new();
@@ -3794,6 +4573,8 @@ mod tests {
             effective_model: provider_descriptor.model.clone(),
             permission_mode: Some(provider_descriptor.permission_mode),
             mode: provider_descriptor.mode.clone(),
+            pi_thinking_level: provider_descriptor.pi_thinking_level,
+            claude_effort: provider_descriptor.claude_effort.clone(),
             provider_lifetime_fence_candidates,
         });
         state.provider_exit_unconfirmed = true;

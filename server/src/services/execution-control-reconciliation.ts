@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 
@@ -151,6 +152,13 @@ export async function reconcileAbandonedExecutionControl(
               .where(eq(nativeRunFinalizations.runId, run.id));
             return true;
           }
+          if (await hasLiveLegacyController(tx as unknown as Db, run)) {
+            await tx
+              .update(heartbeatRuns)
+              .set({ executionControlDeadlineAt: run.controllerLeaseExpiresAt })
+              .where(eq(heartbeatRuns.id, run.id));
+            return false;
+          }
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
@@ -200,6 +208,7 @@ export async function reconcileAbandonedExecutionControl(
                 eq(agents.id, run.agentId),
                 eq(agents.companyId, run.companyId),
                 eq(agents.status, "running"),
+                eq(agents.lifecycleState, "ready"),
                 sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${run.agentId} and ${heartbeatRuns.status} = 'running')`,
               ),
             );

@@ -68,7 +68,7 @@ describe("canonical operation-groups specification", () => {
     expect(input.source.behaviorGroups).toHaveLength(16);
     expect(input.scenarios).toHaveLength(106);
     expect(new Set(input.scenarios.map((scenario) => scenario.id)).size).toBe(106);
-    expect(input.eventTypes).toHaveLength(105);
+    expect(input.eventTypes).toHaveLength(106);
     expect(input.commandTypes).toHaveLength(18);
   });
 

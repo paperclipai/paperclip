@@ -1,9 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Request } from "express";
+import express, { type Request } from "express";
+import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
-import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
+import {
+  authUsers,
+  companies,
+  companyMemberships,
+  instanceSettings,
+  instanceUserRoles,
+  principalPermissionGrants,
+} from "@paperclipai/db";
+import { actorMiddleware, cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./auth.js";
+import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./idle-admission.js";
+import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
@@ -18,6 +29,7 @@ function createFakeDb(options: {
   membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
+  beforeWrite?: () => Promise<void>;
 } = {}) {
   const membershipRow =
     options.membershipRow ?? { companyId: "company-x", membershipRole: "owner", status: "active" };
@@ -41,8 +53,9 @@ function createFakeDb(options: {
   chain.onConflictDoUpdate = () => chain;
   chain.onConflictDoNothing = () => chain;
   chain.where = () => chain;
-  chain.returning = async () => [membershipRow];
-  chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve(undefined).then(resolve);
+  chain.returning = async () => { await options.beforeWrite?.(); return [membershipRow]; };
+  chain.then = (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) =>
+    Promise.resolve().then(options.beforeWrite).then(resolve, reject);
   const db = {
     insert: (table: unknown) => {
       insertedTables.push(table);
@@ -53,10 +66,14 @@ function createFakeDb(options: {
       return chain;
     },
     select: () => {
-      if (options.selectThrows) throw new Error("select unavailable");
       return {
         from: (table: unknown) => ({
           where: (condition: unknown) => {
+            // Role-default grant seeding reads existing grants first; keep that
+            // read working so selectThrows exercises only the degradable reads.
+            if (options.selectThrows && table !== principalPermissionGrants) {
+              throw new Error("select unavailable");
+            }
             selectWheres.push({ table, condition });
             const rows =
               table === instanceSettings && settingsRow
@@ -122,6 +139,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
   });
   afterEach(() => {
+    stopTaskDrain();
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     delete process.env.PAPERCLIP_MANAGED_CONFIG;
   });
@@ -157,6 +175,52 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(authUsers);
     expect(insertedTables).toContain(companies);
     expect(insertedTables).toContain(companyMemberships);
+  });
+
+  it.each(["/api/health", "/api/instance/task-drain"])("counts unfinished authentication on exempt %s requests", async (path) => {
+    let enterWrite!: () => void, finishWrite!: () => void;
+    const entered = new Promise<void>(resolve => { enterWrite = resolve; });
+    const pending = new Promise<void>(resolve => { finishWrite = resolve; });
+    const { db, insertedTables } = createFakeDb({ beforeWrite: async () => { enterWrite(); await pending; } });
+    const server = express();
+    server.use(idleAdmissionMiddleware);
+    server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+    const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+    server.get("/api/health", (_req, res) => res.sendStatus(204));
+    server.get("/api/instance/task-drain", async (_req, res) => {
+      res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
+        Date.now, hold.ownerId, async () => "none"));
+    });
+    trackIdleRequestHandlers(server);
+    const accepted = request(server).get(path).set(VALID_HEADERS).then(response => response);
+    try {
+      await entered;
+      expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      const during = await request(server).get("/api/instance/task-drain").expect(200);
+      expect(during.body.backgroundWork).toBe("unknown");
+    } finally {
+      finishWrite();
+      await accepted;
+    }
+    expect(insertedTables).toEqual(expect.arrayContaining([authUsers, companies, companyMemberships]));
+    expect(idleWorkSnapshot().active).toBe(0);
+    const after = await request(server).get("/api/instance/task-drain").expect(200);
+    expect(after.body.backgroundWork).toBe("none");
+  });
+
+  it("releases failed control authentication and preserves Express error handling", async () => {
+    const { db } = createFakeDb({ beforeWrite: async () => { throw new Error("fixture write failed"); } });
+    const server = express();
+    server.use(idleAdmissionMiddleware);
+    server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+    server.get("/api/health", (_req, res) => res.sendStatus(204));
+    server.use((_err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.sendStatus(500));
+    trackIdleRequestHandlers(server);
+    await request(server).get("/api/health").set(VALID_HEADERS).expect(500);
+    expect(idleWorkSnapshot().active).toBe(0);
+    await request(server).get("/api/health").expect(204);
   });
 
   it("resyncs an A to B to A context transition inside the debounce window", async () => {
@@ -204,6 +268,34 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     );
     expect(actor!.isInstanceAdmin).toBe(false);
     expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+  });
+
+  it.each(["admin", "member", "support"])(
+    "grants experimental settings access only to the admin stack role (%s)",
+    async (stackRole) => {
+      const { db, insertedTables } = createFakeDb();
+      const actor = await resolveCloudTenantActor(
+        db,
+        fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": stackRole }),
+      );
+      expect(actor?.canManageExperimentalSettings).toBe(stackRole === "admin");
+      expect(actor?.isInstanceAdmin).toBe(false);
+      expect(insertedTables).not.toContain(instanceUserRoles);
+    },
+  );
+
+  it("removes experimental settings access on the next request after a stack admin is demoted", async () => {
+    const { db } = createFakeDb();
+    const admin = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "admin" }),
+    );
+    const member = await resolveCloudTenantActor(
+      db,
+      fakeReq({ ...VALID_HEADERS, "x-paperclip-cloud-stack-role": "member" }),
+    );
+    expect(admin?.canManageExperimentalSettings).toBe(true);
+    expect(member?.canManageExperimentalSettings).toBe(false);
   });
 
   describe("company membership union", () => {

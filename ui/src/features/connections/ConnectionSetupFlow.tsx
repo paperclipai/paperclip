@@ -1,4 +1,6 @@
 import { StepHeader } from "./ConnectionSetupHeader";
+import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
+import type { GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
 export { StepHeader } from "./ConnectionSetupHeader";
 import { ConnectionInstructionsEditor } from "./ConnectionInstructions";
 import { connectionInstructionsConfig, defaultConnectionAgentInstructions, type ConnectionAgentInstructions } from "@paperclipai/shared";
@@ -58,7 +60,7 @@ import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
+import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { queryKeys } from "@/lib/queryKeys";
 import { RadioCardGroup } from "@/components/ui/radio-card";
 import { ApiError } from "@/api/client";
@@ -81,7 +83,7 @@ import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHand
 import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { askFirstCatalogEntryIdsFor } from "./connection-defaults";
 import { AppLogo } from "@/pages/apps/AppLogo";
-import { appApplicationSourceSlug } from "@/pages/apps/app-definition-display";
+import { appApplicationSourceSlug, appConnectionSourceSlug } from "@/pages/apps/app-definition-display";
 import { UnverifiedServerBadge } from "@/pages/apps/UnverifiedServerBadge";
 import {
   appSourceConnectHref,
@@ -209,16 +211,46 @@ export function requestedConnectionEntry(input: {
   requestedAppKey: string;
   galleryApps: readonly AppDefinition[];
   reconnectConnection: ToolConnection | null;
+  resumeConnection: ToolConnection | null;
+  resumeApplication: ToolApplication | null;
+  completedResumeConnectionId: string | null;
   applications: readonly ToolApplication[];
 }): AppDefinition | null {
   const visible = input.galleryApps.find((candidate) => candidate.slug === input.requestedAppKey);
   if (visible) return visible;
+  if (retainedResumeMatches({
+    requestedAppKey: input.requestedAppKey,
+    resumeConnection: input.resumeConnection,
+    resumeApplication: input.resumeApplication,
+    completedResumeConnectionId: input.completedResumeConnectionId,
+  })) return getConnectableAppDefinition(input.requestedAppKey);
   if (!input.reconnectConnection) return null;
   const application = input.applications.find(
     (candidate) => candidate.id === input.reconnectConnection?.applicationId,
   );
   if (appApplicationSourceSlug(application) !== input.requestedAppKey) return null;
   return getConnectableAppDefinition(input.requestedAppKey);
+}
+
+export function retainedResumeMatches(input: {
+  requestedAppKey: string;
+  resumeConnection: ToolConnection | null;
+  resumeApplication: ToolApplication | null;
+  completedResumeConnectionId: string | null;
+}): boolean {
+  const { requestedAppKey, resumeConnection, resumeApplication, completedResumeConnectionId } = input;
+  return Boolean(
+    resumeConnection
+    && (
+      resumeConnection.status === "draft"
+      || (resumeConnection.status === "active" && resumeConnection.id === completedResumeConnectionId)
+    )
+    && resumeApplication
+    && resumeConnection.applicationId === resumeApplication.id
+    && resumeConnection.companyId === resumeApplication.companyId
+    && appApplicationSourceSlug(resumeApplication) === requestedAppKey
+    && appConnectionSourceSlug(resumeConnection) === requestedAppKey,
+  );
 }
 
 export function retainedReconnectMatches(input: {
@@ -334,10 +366,17 @@ const OAUTH_SIGN_IN_STEP_LABELS = ["Sign in"];
  * original identity through the explicit reconnect hint.
  */
 function defaultGrantKindFor(method: ConnectionMethodDef | null, preferPersonal = false): ConnectionGrantKind {
+  // A Copilot PAT represents a person's paid runtime account. Sharing it must
+  // be an explicit choice, independent of GitHub repository connections.
+  if (method?.ai?.provider === "github") return "user";
   if (preferPersonal && method?.auth !== "none" && (!method?.grantKinds || method.grantKinds.includes("user"))) return "user";
   if (method?.grantKinds?.length === 1) return method.grantKinds[0]!;
   if (method?.grantKinds && !method.grantKinds.includes("organization")) return method.grantKinds[0]!;
   return "organization";
+}
+
+function defaultInstallChoiceFor(method: ConnectionMethodDef | null, requestedAgentId?: string): "specific" | "all" {
+  return requestedAgentId || method?.ai?.provider === "github" ? "specific" : "all";
 }
 
 function configuredAgentIdentity(connection: ToolConnection): string | undefined {
@@ -594,6 +633,10 @@ function StandardConnectionSetupFlow({
   onCancel,
   renderCredentialStep,
 }: ConnectionSetupFlowProps = {}) {
+  const workspaceSelectionRef = useRef<GoogleWorkspaceServiceSelection | null>(null);
+  const [workspaceConsent, setWorkspaceConsent] = useState<(() => void) | null>(null);
+  const [workspaceConnection, setWorkspaceConnection] = useState<ToolConnection | undefined>();
+  const [workspaceDraft, setWorkspaceDraft] = useState<GoogleWorkspaceServiceSelection | undefined>();
   const queryClient = useQueryClient();
   const routeNavigate = useNavigate();
   const navigate = useCallback((to: string, options?: { replace?: boolean }) => {
@@ -603,7 +646,7 @@ function StandardConnectionSetupFlow({
   }, [host, routeNavigate]);
   const routeParams = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
-  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
+  const { enabled: chatConnectorsEnabled, githubEnabled } = useChatConnectorsEnabled();
   const { enabled: memoryConnectorsEnabled } = useMemoryConnectorsEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
@@ -728,6 +771,10 @@ function StandardConnectionSetupFlow({
   const customerClientResumeRef = useRef<string | null>(null);
   const hydratedResumeConnectionIdRef = useRef<string | null>(null);
   const [hydratedResumeConnectionId, setHydratedResumeConnectionId] = useState<string | null>(null);
+  // Finishing a resumed unauthenticated/API-key draft activates that exact row.
+  // Permit it through retained-draft validation only after this flow's own
+  // finish request succeeds; an initially active resume remains invalid.
+  const [completedResumeConnectionId, setCompletedResumeConnectionId] = useState<string | null>(null);
   const oauthPopupRef = useRef<Window | null>(null);
   const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
   const [authorizationFallbackUrl, setAuthorizationFallbackUrl] = useState<string | null>(null);
@@ -944,7 +991,7 @@ function StandardConnectionSetupFlow({
     setGoogleSheetsError(null);
     setConnectResult(null);
     setInstallAgentIds(new Set(requestedAgentId ? [requestedAgentId] : []));
-    setInstallChoice(requestedAgentId ? "specific" : "all");
+    setInstallChoice(defaultInstallChoiceFor(initialMethod, requestedAgentId));
     setGrantKind(reconnectGrantKind ?? defaultGrantKindFor(initialMethod, Boolean(requestedAgentId)));
     setStep("key");
     navigate(
@@ -984,15 +1031,19 @@ function StandardConnectionSetupFlow({
     } : data, [connectionIntentId, aiConnection?.provider, aiConnection?.method, aiConnection?.mode]),
     enabled: !!selectedCompanyId,
   });
+  const callbackUrlForSetup = oauthCallbackUrlForBrowser(
+    window.location.origin,
+    galleryQuery.data?.oauthCallbackUrl,
+  );
   // Use the same visible catalog for cards and every branded URL shortcut.
   // Generic custom URLs remain usable without selecting a hidden provider.
   const visibleGalleryApps = useMemo(
     () => (galleryQuery.data?.apps ?? []).filter((app) => memoryConnectorsEnabled || !isMemoryConnectorId(app.slug)).filter((app) =>
-      app.slug === "agentmail" || chatConnectorsEnabled ||
-      !app.methods.some((method) => method.transport === "chat_sdk") ||
+      chatProviderVisible(app.slug, chatConnectorsEnabled, githubEnabled) ||
+      !app.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(app),
     ),
-    [galleryQuery.data, chatConnectorsEnabled, memoryConnectorsEnabled],
+    [galleryQuery.data, chatConnectorsEnabled, githubEnabled, memoryConnectorsEnabled],
   );
   const fullRequestedDefinition = requestedAppKey
     ? getConnectableAppDefinition(requestedAppKey)
@@ -1002,7 +1053,11 @@ function StandardConnectionSetupFlow({
     && !connectionMethodSupportsAutomaticOAuth(candidate),
   );
   const selectedCustomOAuth = Boolean(customOAuthMethod && connectionMethodKey === customOAuthMethod.key);
-  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && Boolean(
+  const selectedRuntimeAuth = Boolean(fullRequestedDefinition?.methods.some(candidate =>
+    candidate.transport === "runtime_auth" && candidate.ai
+    && candidate.key === (connectionMethodKey || requestedMethodKey),
+  ));
+  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
     fullRequestedDefinition?.methods.some((candidate) =>
       candidate.oauthStrategy === "paperclip_cloud_connector"
       || candidate.oauthStrategy === "paperclip_id_connector"
@@ -1168,7 +1223,33 @@ function StandardConnectionSetupFlow({
       : null,
     [connectionsQuery.data, resumeConnectionId],
   );
+  const resumeApplication = useMemo(
+    () => resumeConnection
+      ? (applicationsQuery.data?.applications ?? []).find(
+        (application) => application.id === resumeConnection.applicationId,
+      ) ?? null
+      : null,
+    [applicationsQuery.data, resumeConnection],
+  );
+  const completedRouteResumeConnectionId = routeStage === "complete"
+    && resumeConnection?.status === "active"
+    ? resumeConnection.id
+    : null;
+  const resumeSourceMatches = requestedAppKey
+    ? retainedResumeMatches({
+      requestedAppKey,
+      resumeConnection,
+      resumeApplication,
+      completedResumeConnectionId: completedResumeConnectionId ?? completedRouteResumeConnectionId,
+    })
+    : false;
   const identityConnection = resumeConnection ?? reconnectConnection;
+  useEffect(() => {
+    workspaceSelectionRef.current = null;
+    setWorkspaceConsent(null);
+    setWorkspaceConnection(undefined);
+    setWorkspaceDraft(undefined);
+  }, [selectedCompanyId, requestedAppKey, identityConnection?.id]);
   const reconnectGrantKind: ConnectionGrantKind | null = identityConnection
     ? identityConnection.credentialPolicy === "per_user"
       ? "user"
@@ -1244,6 +1325,7 @@ function StandardConnectionSetupFlow({
         await toolsApi.updateConnection(connection.id, { agentInstructions: instructionValue });
       }
       return toolsApi.startOAuth(connection.id, {
+      ...(connection.config?.sourceTemplateKey === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
       asCurrentUser: connection.credentialPolicy === "per_user",
       ...(connection.credentialPolicy === "per_agent"
         ? { asAgentId: configuredAgentIdentity(connection) ?? [...installAgentIds][0] }
@@ -1257,6 +1339,7 @@ function StandardConnectionSetupFlow({
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
       setOAuthPhase("error");
+      workspaceSelectionRef.current = null;
       onPhaseChange?.("needs_retry");
       setOAuthError(
         details?.code === "invalid_grant"
@@ -1269,6 +1352,16 @@ function StandardConnectionSetupFlow({
   });
   const mutateOAuthStart = oauthStartMutation.mutate;
   const startOAuth = useCallback((connection: ToolConnection) => {
+    if (connection.config?.sourceTemplateKey === "google-workspace" && !workspaceSelectionRef.current) {
+      setWorkspaceConnection(connection);
+      setWorkspaceConsent(() => () => {
+        onPhaseChange?.("authorizing");
+        reserveOAuthPopup();
+        if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
+        mutateOAuthStart(connection);
+      });
+      return;
+    }
     onPhaseChange?.("authorizing");
     reserveOAuthPopup();
     if (host === "dialog" && !connectionIntentId) setDialogOAuthConnectionId(connection.id);
@@ -1311,6 +1404,7 @@ function StandardConnectionSetupFlow({
           requestedGrantKind,
         );
         result = await toolsApi.connectApp(selectedCompanyId!, {
+          ...(connectEntry.slug === "google-workspace" && workspaceSelectionRef.current ? { workspaceServices: workspaceSelectionRef.current } : {}),
           galleryKey: connectEntry.slug,
           ...(instructionValue ? { agentInstructions: instructionValue } : {}),
           ...(connectionMethodKey ? { connectionMethodKey } : {}),
@@ -1431,6 +1525,7 @@ function StandardConnectionSetupFlow({
       const details = error instanceof ApiError && error.body && typeof error.body === "object"
         ? (error.body as { details?: { code?: unknown } }).details
         : null;
+      if (entry?.slug === "google-workspace") workspaceSelectionRef.current = null;
       if (automaticOAuthEntry) {
         setOAuthPhase("error");
         onPhaseChange?.("needs_retry");
@@ -1472,24 +1567,50 @@ function StandardConnectionSetupFlow({
     const method = connectEntry
       ? availableToolConnectionMethod(connectEntry, connectionMethodKey || null)
       : null;
+    if (connectEntry?.slug === "google-workspace" && !workspaceSelectionRef.current) {
+      setWorkspaceConnection(identityConnection ?? undefined);
+      setWorkspaceConsent(() => () => {
+        reserveOAuthPopup();
+        mutateConnect(entryOverride);
+      });
+      return;
+    }
     if (method?.auth === "oauth") {
       reserveOAuthPopup();
     }
     mutateConnect(entryOverride);
-  }, [connectionMethodKey, entry, mutateConnect, reserveOAuthPopup]);
+  }, [connectionMethodKey, entry, identityConnection, mutateConnect, reserveOAuthPopup]);
 
   useEffect(() => {
     if (!requestedAppKey || galleryQuery.isLoading || !galleryQuery.data) return;
 
-    if (reconnectConnectionId && (
+    if ((resumeConnectionId || reconnectConnectionId) && (
       !connectionsQuery.isFetchedAfterMount
       || !applicationsQuery.isFetchedAfterMount
     )) return;
+
+    // A resume URL is only a recovery route. Invalid or cross-provider drafts
+    // must remain on the blocked recovery screen instead of falling through to
+    // fresh setup for a hidden provider.
+    if (
+      resumeConnectionId
+      && routeStage === "complete"
+      && resumeConnection?.status === "active"
+      && completedResumeConnectionId !== resumeConnectionId
+      && resumeSourceMatches
+    ) {
+      navigate(`/apps/${resumeConnection.id}/permissions`, { replace: true });
+      return;
+    }
+    if (resumeConnectionId && !resumeSourceMatches) return;
 
     const requestedEntry = requestedConnectionEntry({
       requestedAppKey,
       galleryApps: galleryQuery.data.apps,
       reconnectConnection,
+      resumeConnection,
+      resumeApplication,
+      completedResumeConnectionId,
       applications: applicationsQuery.data?.applications ?? [],
     });
     const requestedEntryAdvertisesManagedConnector = Boolean(
@@ -1583,7 +1704,7 @@ function StandardConnectionSetupFlow({
       setInstallAgentIds(new Set(
         matchingEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
       ));
-      setInstallChoice(matchingEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"));
+      setInstallChoice(matchingEnrollmentAccess?.installChoice ?? defaultInstallChoiceFor(initialMethod, requestedAgentId));
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.
@@ -1634,6 +1755,12 @@ function StandardConnectionSetupFlow({
     reconnectConnection,
     reconnectConnectionId,
     reconnectSourceMatches,
+    resumeConnection,
+    resumeApplication,
+    resumeSourceMatches,
+    completedResumeConnectionId,
+    completedRouteResumeConnectionId,
+    routeStage,
     resumeConnectionId,
     fullRequestedDefinition,
     requestedAppKey,
@@ -1752,6 +1879,9 @@ function StandardConnectionSetupFlow({
       return finished;
     },
     onSuccess: async (_finished, input) => {
+      if (resumeConnectionId && input.result.connectionId === resumeConnectionId) {
+        setCompletedResumeConnectionId(resumeConnectionId);
+      }
       await queryClient.invalidateQueries({ queryKey: ["tools"] });
       await queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       setAppStep("success");
@@ -1814,6 +1944,26 @@ function StandardConnectionSetupFlow({
         <h2 className="text-lg font-semibold text-foreground">This setup can’t be resumed</h2>
         <p className="mt-2 text-sm text-muted-foreground">
           The saved connection no longer exists or is not available to this organization.
+        </p>
+        <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
+          Back to apps
+        </Button>
+      </div>
+    );
+  }
+
+  if (
+    resumeConnectionId
+    && connectionsQuery.isFetchedAfterMount
+    && applicationsQuery.isFetchedAfterMount
+    && resumeConnection
+    && !resumeSourceMatches
+  ) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+        <h2 className="text-lg font-semibold text-foreground">This setup can’t be resumed</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          This saved draft does not match the requested provider. The connection was not changed.
         </p>
         <Button type="button" variant="outline" className="mt-5" onClick={() => navigate("/apps")}>
           Back to apps
@@ -2004,7 +2154,7 @@ function StandardConnectionSetupFlow({
       capabilities={galleryQuery.data?.capabilities}
       githubIdentity={entry?.slug === "github"}
       identityLoading={Boolean(automaticOAuthEntry) && directOAuthLookupPending}
-      preserveAgentAccess={Boolean(automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection))}
+      preserveAgentAccess={Boolean((automaticOAuthEntry && (resumableOAuthConnection || reconnectConnection)) || reconnectConnection?.connectionPurpose === "ai")}
       disabled={connectMutation.isPending || oauthStartMutation.isPending}
     />
     {entry && instructionTemplate && instructionValue && <div className="mt-6"><ConnectionInstructionsEditor provider={entry.name} template={instructionTemplate} value={instructionValue} onChange={(value) => setInstructionDraft({ slug: entry.slug, value })} disabled={connectMutation.isPending || oauthStartMutation.isPending} /></div>}
@@ -2025,7 +2175,7 @@ function StandardConnectionSetupFlow({
     <OAuthClientFields
       entry={automaticOAuthEntry}
       method={automaticCustomerClientMethod}
-      callbackUrl={oauthCallbackUrlForBrowser()}
+      callbackUrl={callbackUrlForSetup}
       clientId={curatedOAuthClientId}
       onClientIdChange={setCuratedOAuthClientId}
       clientSecret={curatedOAuthClientSecret}
@@ -2066,6 +2216,19 @@ function StandardConnectionSetupFlow({
       || connectorEnrollmentQuery.data?.configured !== true
     )
   );
+
+  if (workspaceConsent) return <GoogleWorkspaceServicesDialog
+    connection={workspaceConnection}
+    initial={workspaceDraft}
+    onCancel={selection => { if (selection) setWorkspaceDraft(selection); setWorkspaceConsent(null); setOAuthPhase("entry"); onPhaseChange?.("requested"); }}
+    onContinue={selection => {
+      workspaceSelectionRef.current = selection;
+      setWorkspaceDraft(selection);
+      const proceed = workspaceConsent;
+      setWorkspaceConsent(null);
+      proceed();
+    }}
+  />;
 
   if (showCuratedOAuthState && automaticOAuthEntry) {
     return (
@@ -2294,7 +2457,7 @@ function StandardConnectionSetupFlow({
               zapierSource
                 ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null, darkLogoUrl: zapierEntry?.branding.darkLogoUrl ?? null }
                 : entry && step !== "gallery"
-                  ? { name: entry.name, logoUrl: entry.branding.logoUrl, darkLogoUrl: entry.branding.darkLogoUrl ?? null }
+                  ? { name: aiMethod?.provider === "github" ? "GitHub Copilot" : entry.name, logoUrl: entry.branding.logoUrl, darkLogoUrl: entry.branding.darkLogoUrl ?? null }
                 : undefined
             }
             unverifiedHost={!entry && !zapierSource && step !== "gallery" ? endpointHost(linkUrl) : null}
@@ -2426,6 +2589,7 @@ function StandardConnectionSetupFlow({
           oauthClientId={curatedOAuthClientId}
           onOAuthClientIdChange={setCuratedOAuthClientId}
           oauthClientSecret={curatedOAuthClientSecret}
+          oauthCallbackUrl={callbackUrlForSetup}
           canReuseOAuthClientSecret={Boolean(
             identityConnection?.config?.oauth
             && (identityConnection.config.oauth as Record<string, unknown>).clientId === curatedOAuthClientId.trim()
@@ -2592,7 +2756,11 @@ function StandardConnectionSetupFlow({
             installCount: installAgentIds.size,
             lockedAgentId: requestedAgentId ?? null,
           })}
-          onDone={onCancel ?? (() => navigate("/apps"))}
+          onDone={onCancel ?? (() => navigate(
+            host === "page" && connectResult?.connectionId
+              ? `/apps/${connectResult.connectionId}/permissions`
+              : "/apps",
+          ))}
         />
       )}
     </div>
@@ -3397,6 +3565,7 @@ function KeyStep({
   oauthClientId,
   onOAuthClientIdChange,
   oauthClientSecret,
+  oauthCallbackUrl: serverCallbackUrl,
   canReuseOAuthClientSecret,
   onOAuthClientSecretChange,
   credentialSource,
@@ -3423,6 +3592,7 @@ function KeyStep({
   oauthClientId: string;
   onOAuthClientIdChange: (next: string) => void;
   oauthClientSecret: string;
+  oauthCallbackUrl: string;
   canReuseOAuthClientSecret: boolean;
   onOAuthClientSecretChange: (next: string) => void;
   credentialSource: ToolConnectionCredentialSource;
@@ -3520,7 +3690,7 @@ function KeyStep({
   );
   const vercelConnectorFilled = !usingVercel || vercelConnector.trim().length > 0;
   const oauthCallbackUrl = method?.auth === "oauth" && acceptsCustomerOAuthClient
-    ? oauthCallbackUrlForBrowser()
+    ? serverCallbackUrl
     : null;
   const allConfigFields = [...(method?.tenantFields ?? []), ...(method?.extensionFields ?? [])];
   const configFields = allConfigFields.filter((field) => !field.hidden);

@@ -1,10 +1,11 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
+import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { createDb, companies, agents, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
+import { createDb, closeRegisteredClients, companies, agents, authUsers, companyMemberships, connectionGrants, plugins, aiConnectionRouterCursors, aiConnectionTaskPins, toolConnections, companySecrets, heartbeatRuns, issues, dotAgentBindings, grokBotRoutines } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import type { AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, poolMemberRuntimeConfig, applyAiConnectionRouterTaskSettings } from "../services/ai-connection-router.js";
@@ -24,10 +25,20 @@ import { heartbeatService, buildEffectiveRunSessionConfigMetadata, resolveTaskSe
 import { connectionIntentService } from "../services/connection-intents.js";
 import { legacyExecutionNeedsReconciliation } from "../services/legacy-execution-recovery.js";
 import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
+import { dotRunnerBroker } from "../services/dot-runner-broker.js";
+
+const captureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sentry.js")>(),
+  captureRunFailure,
+}));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+const externalTestDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 let db: ReturnType<typeof createDb>;
 let home: string;
+let isolatedHome: ReturnType<typeof createIsolatedTestHome> | undefined;
 const companyId = randomUUID(), otherCompanyId = randomUUID(), agentId = randomUUID(), secondAgentId = randomUUID(), pluginId = randomUUID();
 const pluginKey = "fixture.ai-router";
 const manifest: PaperclipPluginManifestV1 = { id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Fixture router", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" }, entrypoints: { worker: "worker.js" } };
@@ -44,11 +55,14 @@ const service = () => aiConnectionRouterService(db, worker);
 const resolve = (poolId: string, taskKey: string, extra = {}) => service().resolve({ companyId, poolId, agentId, userId: "alice", adapterType: "paperclip_runner", taskKey, ...extra });
 const makePool = async (config = {}) => service().save(pluginKey, { companyId, config: { name: randomUUID(), enabled: true, mode: "round_robin", thresholdPercent: 90, members, ...config } }, "alice");
 beforeAll(async () => {
-  home = await mkdtemp(path.join(os.tmpdir(), "paperclip-router-tests-"));
+  isolatedHome = createIsolatedTestHome();
+  home = isolatedHome.home;
   vi.stubEnv("PAPERCLIP_HOME", home); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "router-fixture");
-  database = await startEmbeddedPostgresTestDatabase("paperclip-router-db-"); db = createDb(database.connectionString);
+  if (externalTestDatabaseUrl) db = createDb(externalTestDatabaseUrl);
+  else { database = await startEmbeddedPostgresTestDatabase("paperclip-router-db-"); db = createDb(database.connectionString); }
   await db.insert(companies).values([{ id: companyId, name: "Router fixture", issuePrefix: "RTF" }, { id: otherCompanyId, name: "Other", issuePrefix: "RTO" }]);
   await db.insert(agents).values([agentId, secondAgentId].map(id => ({ id, companyId, name: "Router agent", adapterType: "paperclip_runner" })));
+  await db.insert(authUsers).values(["alice", "bob"].map(id => ({ id, name: id, email: `${id}@router.example.test`, createdAt: new Date(), updatedAt: new Date() }))).onConflictDoNothing();
   await db.insert(companyMemberships).values(["alice", "bob"].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
   await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: pluginKey, version: "0.1.0", manifestJson: manifest, status: "ready" });
   const accounts = aiConnectionService(db);
@@ -59,7 +73,12 @@ beforeAll(async () => {
     { id: randomUUID(), binding: { mode: "delegated", provider: "anthropic", method: "subscription", ...claude }, profile: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } },
   ];
 }, 90000);
-afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
+afterAll(async () => {
+  await waitForPendingRunFailureReports();
+  if (externalTestDatabaseUrl) await closeRegisteredClients(externalTestDatabaseUrl);
+  await db?.$client.end();
+  await database?.cleanup(); vi.unstubAllEnvs(); isolatedHome?.cleanup();
+});
 
 describe("durable, authorized connection routing", () => {
   it("defaults off and does not expose selectable pools before opt-in", async () => {
@@ -184,6 +203,9 @@ describe("durable, authorized connection routing", () => {
     expect(changed.binding).toEqual(first.binding); expect(changed.runtimeConfig).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", modelReasoningEffort: "high" }); expect(changed.notes).toHaveLength(1);
     const claude = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { model: "gpt-5.6-sol", modelReasoningEffort: "ultra" });
     expect(claude.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" }); expect(claude.notes).toHaveLength(2);
+    const claudeEffort = poolMemberRuntimeConfig(members[1]!, "paperclip_runner", { modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.config).toMatchObject({ provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "xhigh" });
+    expect(claudeEffort.notes).toEqual([]);
     const overrides = applyAiConnectionRouterTaskSettings({ model: "claude-sonnet-5", effort: "invalid", cwd: "/fixture" }, changed);
     const native = resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: projectPaperclipRunnerTaskConfig("codex_app_server", changed.runtimeConfig, overrides) });
     expect(native).toMatchObject({ provider: "codex", model: "gpt-5.6-sol", codexReasoningEffort: "high" });
@@ -321,15 +343,47 @@ describe("durable, authorized connection routing", () => {
       expect(run).not.toBeNull();
       await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("cancelled");
       const cancelled = await heartbeat.getRun(run!.id); expect(cancelled?.errorCode).toBe("ai_connection_pool_exhausted");
+      expect(cancelled?.resultJson).toMatchObject({
+        executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "Waiting for an AI connection pool account",
+          recordedAt: cancelled!.finishedAt!.toISOString(),
+        },
+      });
       expect(legacyExecutionNeedsReconciliation(cancelled!)).toBe(false);
       expect(legacyExecutionNeedsReconciliation({ ...cancelled!, resultJson: { executionRecovery: { kind: "ai_connection_wait", providerWorkStarted: true } } })).toBe(true);
       await expect.poll(async () => (await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agent!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_pool_wait")))).length, { timeout: 5000 }).toBe(1);
       const [retry] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.agentId, agent!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_pool_wait")));
+      await waitForPendingRunFailureReports();
+      expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
+      expect(retry?.resultJson?.cancellation).toBeUndefined();
       expect(retry?.contextSnapshot?.aiRouterTaskKey).toBe(issue!.id); expect(retry?.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0 }); expect(execute).not.toHaveBeenCalled();
       const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.agentId, agent!.id))); expect(pin?.selection).toEqual(pinned);
       const [cursor] = await db.select().from(aiConnectionRouterCursors).where(eq(aiConnectionRouterCursors.poolId, pool.id)); expect(cursor?.version).toBe(1);
       await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.agentId, agent!.id));
     } finally { fetch.mockRestore(); proposal.mockReset(); proposal.mockImplementation(defaultProposal); unregisterServerAdapter("claude_local"); await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+  it("keeps unexpected pool policy failures reportable before provider work", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true, enableWorktreeRunExecution: true });
+    const pool = await makePool({ members: [members[1]!] });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Unexpected router failure", adapterType: "claude_local", adapterConfig: { cwd: home, engine: "cli" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Router failure fixture", status: "todo", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    const execute = vi.fn(); registerServerAdapter({ ...getServerAdapter("claude_local"), execute });
+    proposal.mockRejectedValueOnce(new Error("Synthetic unexpected router policy failure"));
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent!.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue!.id }, contextSnapshot: { issueId: issue!.id, wakeReason: "issue_assigned", responsibleUserId: "alice" }, triggerDetail: "system" });
+      expect(run).not.toBeNull();
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("failed");
+      const failed = await heartbeat.getRun(run!.id);
+      expect(failed?.errorCode).toBe("configuration_incomplete");
+      expect(failed?.resultJson).toMatchObject({ configurationIncomplete: { reason: "ai_connection_unavailable" } });
+      expect(failed?.resultJson?.cancellation).toBeUndefined();
+      expect(execute).not.toHaveBeenCalled();
+      await expect.poll(() => captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(1);
+      expect(captureRunFailure).toHaveBeenCalledWith(expect.objectContaining({ runId: run!.id, runStatus: "failed", errorCode: "configuration_incomplete" }));
+    } finally { proposal.mockReset(); proposal.mockImplementation(defaultProposal); unregisterServerAdapter("claude_local"); await heartbeat.drainActiveRunExecutions(); }
   }, 30_000);
   it("repairs the failed pool account without replacing the pool or adopting the configured provider", async () => {
     const pool = await makePool({ members: [members[1]!] });
@@ -388,6 +442,54 @@ describe("durable, authorized connection routing", () => {
       expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: String(selected.runtimeConfig.model), taskSessionParams: { __paperclipConfiguredModel: selected.runtimeConfig.model, __paperclipConfigFingerprint: previous.fingerprint, __paperclipConfigFingerprintVersion: previous.version, __paperclipConfigCategoryFingerprints: previous.categoryFingerprints }, configMetadata: current, compatibleConfigMetadata }).reset).toBe(false);
     } finally { await before.cleanup(); await after.cleanup(); }
   });
+  it("admits a healthy pool member when the saved Grok connection is held", async () => {
+    const original = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true,
+      enableNativeRunner: true, enableGrokBot: true, enablePublicMcp: true, enableWorktreeRunExecution: true });
+    const pool = await makePool({ members: [members[0]!] });
+    const bindingId = randomUUID();
+    const workspace = path.join(home, "routed-grok-work");
+    await mkdir(workspace);
+    const [agent] = await db.insert(agents).values({ companyId, name: "Routed Grok fixture", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "grok_bot", externalBindingId: bindingId, cwd: workspace },
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false, wakeOnDemand: true } } }).returning();
+    await db.insert(dotAgentBindings).values({ id: bindingId, companyId, agentId: agent.id,
+      operatorId: "alice", providerKind: "grok_bot", status: "connected" });
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+    const ref = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    await db.insert(grokBotRoutines).values({ companyId, agentId: agent.id, bindingId, bindingGeneration: 1,
+      botName: "Unused held Bot", secretId: ref.secretId, secretVersion: 1,
+      recoveryRequiredAt: new Date(), recoveryReason: "work_session" });
+    expect(await dotRunnerBroker(db).canStartNewWork(companyId, agent.id, bindingId)).toBe(false);
+    const readiness = vi.spyOn(dotRunnerBroker(db), "canStartNewWork");
+    const beforeNative = vi.fn(async () => {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      throw new Error("fixture stopped before provider start");
+    });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: worker, runtimeEnv: {},
+      beforeNativeRuntimeSelection: beforeNative,
+      nativeSessionBackendFactory: () => { throw new Error("Unexpected provider start"); } });
+    const [issue] = await db.insert(issues).values({ companyId, title: "Healthy routed task", status: "todo",
+      assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", triggerDetail: "system",
+        payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" } });
+      expect(run).not.toBeNull();
+      await heartbeat.drainActiveRunExecutions();
+      const saved = await heartbeat.getRun(run!.id);
+      expect(saved?.contextSnapshot?.aiRouterSelection).toMatchObject({ poolId: pool.id,
+        memberId: members[0]!.id, runtimeConfig: { provider: "codex" } });
+      expect(saved?.error).toContain("fixture stopped before provider start");
+      expect(beforeNative).toHaveBeenCalledExactlyOnceWith(run!.id);
+      expect(readiness).not.toHaveBeenCalled();
+    } finally {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent.id));
+      await heartbeat.drainActiveRunExecutions();
+      readiness.mockRestore();
+      await instanceSettingsService(db).updateExperimental(original);
+    }
+  }, 30_000);
+
   it("keeps session identity and fingerprints stable on authenticated refresh, but changes them on manual replacement", async () => {
     const input = { companyId, agentId, responsibleUserId: "alice", adapterType: "paperclip_runner", binding: members[0]!.binding, config: { provider: "codex", model: "gpt-5.6-sol" } };
     const first = await prepareManagedAiRuntime(db, input);
@@ -402,3 +504,6 @@ describe("durable, authorized connection routing", () => {
     } finally { await first.cleanup(); }
   });
 });
+
+
+enableRunFailureReporting();

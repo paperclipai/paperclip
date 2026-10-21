@@ -1,0 +1,103 @@
+{
+  "schema": "paperclip.copilot-product-plan-live-proof/v1",
+  "qualificationStatus": "pending",
+  "sourceRevision": "c06fc5fccc88f5816450434493451b9d2d339125",
+  "providerPackSourceRevision": "8aa867b64d5fc2fd62cff110bd000addf5dc54de",
+  "providerPackDigest": "sha256:627992ea80e8be7154d07cbc9925b781519199e25690b02d4a044f44342e6bd8",
+  "runnerdBuildSourceRevision": "78360fa55adff11da9f200b228467eca782b81e1",
+  "runnerdSha256": "sha256:e6a9fb5170b76a49b8411834b3706e8edf8f1a1ae85ad13b55368158aa7f67a0",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "environment": "local",
+  "caseId": "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+  "status": "passed",
+  "durationMs": 45625,
+  "activeTurnDeadlineSeconds": 120,
+  "outerDeadlineSeconds": 300,
+  "reservationUsd": 2,
+  "providerTurns": 2,
+  "automaticRetries": 0,
+  "priorAttempt": "Original pre-provider PostgreSQL bootstrap failure retained separately; this is one newly authorized manual attempt.",
+  "matcherResults": [
+    {
+      "kind": "message_exact",
+      "passed": true
+    },
+    {
+      "kind": "message_occurrences",
+      "passed": true
+    },
+    {
+      "kind": "issue_status",
+      "passed": true
+    },
+    {
+      "kind": "run_status",
+      "passed": true
+    },
+    {
+      "kind": "runtime_mode",
+      "passed": true
+    },
+    {
+      "kind": "environment",
+      "passed": true
+    }
+  ],
+  "planApproval": {
+    "displayedRevisionNumber": 1,
+    "targetMatchesDisplayedRevision": true,
+    "status": "accepted",
+    "surface": "Paperclip semantic Plan document and request_confirmation card",
+    "nativeCopilotPlanCallback": false
+  },
+  "continuation": {
+    "freshSession": true,
+    "sessionReused": false,
+    "reason": "Adapter config changed and forceFreshSession was requested; do not treat as warm-session evidence."
+  },
+  "usage": [
+    {
+      "biller": "github",
+      "costStatus": "unpriced",
+      "costUsdFieldPresent": false,
+      "inputTokens": 0,
+      "cachedInputTokens": 0,
+      "outputTokens": 0
+    },
+    {
+      "biller": "github",
+      "costStatus": "unpriced",
+      "costUsdFieldPresent": false,
+      "inputTokens": 49444,
+      "cachedInputTokens": 32654,
+      "outputTokens": 742
+    }
+  ],
+  "providerReportedCostUsd": null,
+  "billingComplete": false,
+  "cleanup": "passed",
+  "retainedFixtureProcessesAfterCleanup": 0,
+  "visualReview": "Full Plan revision1, confirmation card, approved-plan message and exact terminal marker verified in browser screenshots.",
+  "originalResultSha256": "sha256:b6508a88e9f100e6d654a52cc755d691b0fcdfa49718cbddf7e57a1eb3edadb6",
+  "originalApiSnapshotSha256": "sha256:bf7f0f293f062dc7ec7c00daf64322b9ea785912d49513d63e1a7d81cfb5a75d",
+  "planScreenshotSha256": "sha256:3f5dd877e82b62f1e59836a4ad3b699ab9c567acf1b896a6499047aa31669c77",
+  "finalScreenshotSha256": "sha256:32940594fce3ba7c3f11c0d41f03c2f43595fa3e03f5ffb2e72f7e36ee4e690e",
+  "externalBilling": {
+    "baselineDisplayedIncludedAiCreditsUsed": 3,
+    "displayedIncludedAiCreditsTotal": 1500,
+    "postCaseReconciliation": "parent refreshed GitHub billing dashboard",
+    "exactCreditConsumption": null,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "postCaseDisplayedIncludedAiCreditsUsed": 5,
+    "aggregateDisplayedCreditDelta": 2,
+    "aggregateCoverage": [
+      "denied-write probe",
+      "detached-shell probe",
+      "two-turn Product plan"
+    ],
+    "additionalCashChargesUsd": 0,
+    "note": "The display was3 before these probes and the plan; delayed aggregate+2 cannot be allocated exactly among these calls."
+  }
+}

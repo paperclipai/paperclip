@@ -25,6 +25,7 @@ vi.mock("@paperclipai/adapter-claude-local/server", () => ({
   fetchClaudeQuota: mocks.claude,
 }));
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 let revision = 1;
 const db = {
@@ -192,7 +193,8 @@ describe("connected account quotas", () => {
   it("bounds a stalled credential lookup and preserves its account identity", async () => {
     vi.useFakeTimers();
     mocks.accounts.mockResolvedValue([account("stalled")]);
-    mocks.credential.mockReturnValue(new Promise(() => {}));
+    let finish!: (value: string) => void;
+    mocks.credential.mockReturnValue(new Promise<string>(resolve => { finish = resolve; }));
     const pending = fetchCompanyQuotaWindows(db, "company-8", "user-8");
     await vi.advanceTimersByTimeAsync(20_001);
     const [result] = await pending;
@@ -203,6 +205,32 @@ describe("connected account quotas", () => {
     });
     expect(result.accountKey).toBeTruthy();
     expect(result.error).not.toContain("timed out");
+    finish(JSON.stringify({ accessToken: "fixture" }));
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it("retains the actual credential refresh after its HTTP quota deadline expires", async () => {
+    vi.useFakeTimers();
+    const before = idleWorkSnapshot();
+    mocks.accounts.mockResolvedValue([account("tracked-refresh")]);
+    mocks.codex.mockRejectedValueOnce(new Error("401"));
+    let finish!: (value: string) => void;
+    mocks.refresh.mockReturnValue(new Promise<string>(resolve => { finish = resolve; }));
+    const pending = fetchCompanyQuotaWindows(db, "tracked-company", "tracked-user");
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+      await vi.advanceTimersByTimeAsync(20_001);
+      expect((await pending)[0].ok).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+    } finally {
+      finish(JSON.stringify({ accessToken: "fixture" }));
+      await vi.advanceTimersByTimeAsync(0);
+      await pending;
+    }
+    expect(idleWorkSnapshot().active).toBe(before.active);
+    expect(idleWorkSnapshot().generation).toBe(before.generation + 2);
   });
   it("does not start a provider request when a credential resolves after its deadline", async () => {
     vi.useFakeTimers();

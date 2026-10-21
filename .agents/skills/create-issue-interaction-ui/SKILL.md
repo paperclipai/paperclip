@@ -163,7 +163,7 @@ Touch:
   resolved, stale, disabled/submitting, and validation-error states.
 - `ui/src/fixtures/issueThreadInteractionFixtures.ts` — seed at least one
   pending and one resolved fixture for the new kind.
-- `ui/src/stories/issue-thread-interactions.stories.tsx` — Storybook entries
+- `ui/storybook/stories/questions-and-approvals/issue-thread-interactions.stories.tsx` — Storybook entries
   for the key states.
 - `ui/src/pages/IssueDetail.tsx` — extend the per-kind branches the card is
   rendered from (callback wiring, response submission).

@@ -1,5 +1,6 @@
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
@@ -24,6 +25,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -65,13 +67,15 @@ export async function validateExecutionReconciliation(input: {
     review.currentParticipant.agentId === run?.agentId;
   const retainedWorkspace = hasRequiredWorkspaceRecovery(run?.resultJson);
   const repairOnly = input.workspaceRepairOnly === true && retainedWorkspace;
+  const terminalRepairSource = ["failed", "interrupted", "timed_out", "cancelled"].includes(run?.status ?? "") ||
+    (repairOnly && run?.runtimeMode === "legacy" && run.status === "succeeded");
   if (
     (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
     (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
-    !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
+    !terminalRepairSource
   ) {
     throw conflict(
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
@@ -348,6 +352,7 @@ export async function settleUnrecoverableExecutions(
   // Keep their evidence and record the policy change in the task's activity log.
   const obsoleteConversationHold = and(
     conversationRecoveryActionPredicate(),
+    sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
     or(
       inArray(issueRecoveryActions.status, ["active", "escalated"]),
       sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
@@ -392,8 +397,11 @@ export async function settleUnrecoverableExecutions(
       heartbeatRuns,
       and(
         eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-        sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
-        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
+        eq(heartbeatRuns.id, canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`)),
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueRecoveryActions.sourceIssueId),
+          and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text`),
+        ),
       ),
     )
     .leftJoin(
@@ -406,6 +414,7 @@ export async function settleUnrecoverableExecutions(
     .where(
       and(
         not(conversationRecoveryActionPredicate()!),
+        sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
         inArray(issueRecoveryActions.cause, [
@@ -488,6 +497,10 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        // Adoption transfers maintenance to the retained-workspace owner.
+        // This compatibility resolver must not close its hold or relabel it
+        // as a user repair merely because old return-owner metadata is absent.
+        if (readSystemRecovery(action.evidence)) return;
         // Give durable native recovery its chance; never preempt a resume,
         // replacement, result finalizer, or still-owned execution.
         if (

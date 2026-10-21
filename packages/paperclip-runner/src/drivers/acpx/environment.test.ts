@@ -1,3 +1,4 @@
+import { configuredEnvironmentProjection, CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -5,6 +6,22 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("excludes general IAM from the Pi sidecar and launch, including selected task values", () => {
+    const iam = { AWS_ACCESS_KEY_ID: "general-key", AWS_SECRET_ACCESS_KEY: "general-secret", AWS_SESSION_TOKEN: "general-session" };
+    const source = { ...iam, ...configuredEnvironmentProjection({ ...iam, CUSTOM_SETTING: "allowed" }), AWS_BEARER_TOKEN_BEDROCK: "provider-key" };
+    const binding = createAcpxCredentialBinding(source, "pi", "session-1")!;
+    expect(JSON.parse(binding).names).toEqual(["AWS_BEARER_TOKEN_BEDROCK"]);
+    const sidecar = createAcpxSidecarHostEnvironment({ ...source, [ACPX_CREDENTIAL_BINDING_ENV]: binding }, "pi", "session-1");
+    for (const env of [sidecar, createSanitizedAcpxSpawnInput(source, "pi").env, createSanitizedAcpxSpawnInput(sidecar, "pi").env]) {
+      for (const name of Object.keys(iam)) expect(env).not.toHaveProperty(name);
+      expect(env.AWS_BEARER_TOKEN_BEDROCK).toBe("provider-key");
+      expect(env.CUSTOM_SETTING).toBe("allowed");
+      expect(JSON.parse(env[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM_SETTING"]);
+    }
+    for (const name of Object.keys(iam)) {
+      expect(() => createAcpxSidecarHostEnvironment({ ...source, [ACPX_CREDENTIAL_BINDING_ENV]: JSON.stringify({ ...JSON.parse(binding), names: [name] }) }, "pi", "session-1")).toThrow("explicit matching session binding");
+    }
+  });
   it("keeps gateway and Bedrock settings confined to the selected harness", () => {
     const source = {
       ANTHROPIC_BASE_URL: "https://gateway.example",
@@ -56,6 +73,8 @@ describe("ACPX launch environment", () => {
       LC_ALL: "C.UTF-8",
       HTTPS_PROXY: "https://proxy.example",
       OPENROUTER_API_KEY: "openrouter-secret",
+      OPENAI_API_KEY: "openai-secret",
+      ANTHROPIC_API_KEY: "anthropic-secret",
     });
     expect(codex.env).not.toHaveProperty("PAPERCLIP_NATIVE_MCP_TOKEN");
     expect(codex.env).not.toHaveProperty(
@@ -84,7 +103,7 @@ describe("ACPX launch environment", () => {
     };
     expect(createSanitizedAcpxSpawnInput(source, "cursor").env).toEqual({ CURSOR_API_KEY: "cursor-key", CURSOR_AUTH_TOKEN: "cursor-token" });
     expect(createSanitizedAcpxSpawnInput(source, "copilot").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
-    expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({});
+    expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
   });
 
   it.each([

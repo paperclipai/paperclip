@@ -9,10 +9,10 @@ import type { RunnerTaskFixture } from "./types.js";
  * authenticated model/mode; a prompt cannot force an absent provider tool.
  */
 export const cursorNativeCaseDesigns = [
-  { id: "native-question-reconnect", method: "cursor/ask_question", cursorMode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
-  { id: "native-plan-reject-revise-accept", method: "cursor/create_plan", cursorMode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
-  { id: "native-plan-cancel", method: "cursor/create_plan", cursorMode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
-  { id: "native-write-deny-reconnect", method: "session/request_permission", cursorMode: "agent", permissionMode: "approve-reads", expectedRunCount: 1 },
+  { id: "native-question-reconnect", method: "cursor/ask_question", mode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
+  { id: "native-plan-reject-revise-accept", method: "cursor/create_plan", mode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
+  { id: "native-plan-cancel", method: "cursor/create_plan", mode: "plan", permissionMode: "approve-all", expectedRunCount: 1 },
+  { id: "native-write-deny-reconnect", method: "session/request_permission", mode: "agent", permissionMode: "approve-reads", expectedRunCount: 1 },
 ] as const;
 export type CursorNativeMethod = typeof cursorNativeCaseDesigns[number]["method"];
 

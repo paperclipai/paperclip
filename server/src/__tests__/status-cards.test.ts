@@ -27,7 +27,7 @@ import {
 } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { statusCardRoutes } from "../routes/status-cards.js";
-import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
+import { withBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";

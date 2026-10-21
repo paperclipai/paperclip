@@ -3,6 +3,7 @@ import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+import { installDatabaseWorkSignals } from "./work-signals.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -266,8 +267,38 @@ export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: D
   finally { await dedicated.$client.end({ timeout: 1 }); }
 }
 
+// postgres.js pipelines a query onto a busy connection when none is idle, so
+// a short liveness write can wait behind an unrelated slow statement with no
+// client-side bound. Liveness writes (controller-lease renewal) get a small
+// private pool, created on first use and shared for the owner's lifetime.
+const livenessDbFactories = new WeakMap<object, () => Db>();
+const livenessDbs = new WeakMap<object, Db>();
+const LIVENESS_POOL_MAX_CONNECTIONS = 2;
+
+/** The private liveness pool for a `createDb` client; other clients (test
+ * doubles, transactions) are returned unchanged. */
+export function livenessDb(db: Db): Db {
+  const existing = livenessDbs.get(db);
+  if (existing) return existing;
+  const factory = livenessDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory();
+  livenessDbs.set(db, created);
+  return created;
+}
+
+/** Ends the liveness pool if one was created. The ended pool stays cached, so
+ * a late renewal fails like a query on the ended primary pool. */
+export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
+  await livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
+  return createDbClient(url, resolved);
+}
+
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
   const sql = postgres(url, postgresJsOptions(resolved));
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
@@ -275,10 +306,13 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   // postgres.js calls that error "write CONNECTION_CLOSED" too, so the
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
-  const db = drizzlePg(sql, { schema });
-  dedicatedDbFactories.set(db, () => createDb(url, {
+  const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }));
+  }, db));
+  livenessDbFactories.set(db, () => createDbClient(url, {
+    ...resolved, maxConnections: LIVENESS_POOL_MAX_CONNECTIONS, applicationName: "paperclip-controller-lease",
+  }, db));
   return db;
 }
 
@@ -462,12 +496,14 @@ async function recordMigrationHistoryEntry(
   );
 }
 
-// These idempotent privacy migrations commit keyset batches inside their DO
-// blocks. Execute each statement at top level so DDL locks and completed batches
-// are released before the next batch. History is recorded only after completion.
-const MIGRATIONS_WITH_BATCH_COMMITS = new Set([
+// These idempotent migrations require top-level statements for batch commits
+// or concurrent index builds. History is recorded only after completion.
+const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0313_private_task_access.sql",
   "0314_private_task_draft_assets.sql",
+  "0332_little_night_nurse.sql",
+  "0345_luxuriant_carmella_unuscione.sql",
+  "0369_late_logan.sql",
 ]);
 
 async function applyPendingMigrationsManually(
@@ -488,7 +524,13 @@ async function applyPendingMigrationsManually(
     try {
       // A session lock survives each batch COMMIT. Reserve the connection so
       // pool rotation cannot release it while another migrator is waiting.
-      await sql`SELECT pg_advisory_lock(hashtextextended('paperclip:migrations', 0))`;
+      // A blocking lock SELECT retains its statement snapshot while waiting.
+      // A partial concurrent index build can wait for that snapshot, forming a
+      // deadlock with this lock. Each failed try ends its snapshot before sleep.
+      while (!(await sql<{ locked: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtextextended('paperclip:migrations', 0)) AS locked`)[0]?.locked) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
       const { migrationTableSchema, columnNames } = await ensureMigrationJournalTable(sql);
       const qualifiedTable = `${quoteIdentifier(migrationTableSchema)}.${quoteIdentifier(DRIZZLE_MIGRATIONS_TABLE)}`;
 
@@ -506,7 +548,7 @@ async function applyPendingMigrationsManually(
 
         const applyMigration = async () => {
           for (const statement of splitMigrationStatements(migrationContent)) {
-            if (MIGRATIONS_WITH_BATCH_COMMITS.has(migrationFile)) {
+            if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
               // A cancelled concurrent build leaves an invalid index. IF NOT
               // EXISTS alone would skip it on retry and journal an incomplete index.
               const index = statement.replace(/^\s*--.*$/gm, "").trim()
@@ -540,7 +582,7 @@ async function applyPendingMigrationsManually(
             folderMillisByFileName.get(migrationFile) ?? Date.now(),
           );
         };
-        if (MIGRATIONS_WITH_BATCH_COMMITS.has(migrationFile)) {
+        if (MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS.has(migrationFile)) {
           await applyMigration();
         } else {
           await runInTransaction(sql, applyMigration);
@@ -568,6 +610,9 @@ async function mapHashesToMigrationFiles(migrationFiles: string[]): Promise<Map<
       const content = await readMigrationFileContent(migrationFile);
       const hash = createHash("sha256").update(content).digest("hex");
       mapped.set(hash, migrationFile);
+      if (migrationFile === "0355_agent_tool_definition_hooks.sql") {
+        mapped.set("7ac76adac0220da522c78e51da20490aeb0f90512b4370a05af9f8dd0f75eda6", migrationFile);
+      }
     }),
   );
 

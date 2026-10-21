@@ -32,6 +32,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  retryTask: vi.fn(),
   archiveFromInbox: vi.fn(),
   unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
@@ -74,6 +75,7 @@ vi.mock("../api/issues", () => ({
     listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
+    retryTask: apiMocks.retryTask,
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: apiMocks.archiveFromInbox,
@@ -148,8 +150,8 @@ import {
 } from "./Inbox";
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, ...props }: ComponentProps<"a">) => (
-    <a className={className} {...props}>{children}</a>
+  Link: ({ children, className, to, ...props }: ComponentProps<"a"> & { to?: string }) => (
+    <a className={className} href={to} {...props}>{children}</a>
   ),
   useLocation: () => routerMock.location,
   useNavigate: () => routerMock.navigate,
@@ -357,6 +359,7 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.retryTask.mockReset().mockResolvedValue({ accepted: true, requestId: "retry-intent", presentation: null });
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
@@ -414,8 +417,8 @@ describe("Inbox toolbar", () => {
         await vi.waitFor(() => {
           expect(apiMocks.heartbeatRunsList).toHaveBeenCalled();
           expect(queryClient.isFetching()).toBe(0);
-          for (const id of visible) expect(container.querySelector(`a[to$="/runs/${id}"]`)).not.toBeNull();
-          for (const id of hidden) expect(container.querySelector(`a[to$="/runs/${id}"]`)).toBeNull();
+          for (const id of visible) expect(container.querySelector(`a[href$="/runs/${id}"]`)).not.toBeNull();
+          for (const id of hidden) expect(container.querySelector(`a[href$="/runs/${id}"]`)).toBeNull();
         });
       } finally {
         act(() => root.unmount());
@@ -1394,6 +1397,20 @@ describe("FailedRunInboxRow", () => {
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("uses task presentation instead of infrastructure errors and keeps Retry in the task", () => {
+    const root = createRoot(container);
+    const issue = createIssue({ interruption: { intentId: "saved-input", responsibility: "system", state: "failed",
+      nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: ["run-1"], observedRunId: "run-1" } });
+    act(() => root.render(<FailedRunInboxRow run={createFailedRun({ issueId: issue.id, error: "Internal process identity missing" })}
+      issueById={new Map([[issue.id, issue]])} agentName="Worker" issueLinkState={null}
+      onDismiss={() => {}} onRetry={() => {}} isRetrying={false} />));
+    expect(container.textContent).toContain("Couldn’t finish this attempt. Your message is saved.");
+    expect(container.textContent).not.toContain("Internal process identity missing");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`/issues/${issue.id}`);
+    expect(container.textContent).toContain("Retry");
+    act(() => root.unmount());
   });
 
   it("suppresses accent hover styling when selected", () => {

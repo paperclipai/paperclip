@@ -15,9 +15,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
+    "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f";
+    "sha256:4918a4d5472d66b22b1ec642b68b5c60a8092a39c84ec1ab1c9ad0289cb8c68c";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -32,6 +32,86 @@ fn temporary_directory(label: &str) -> PathBuf {
     #[cfg(unix)]
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     directory
+}
+
+#[test]
+#[cfg(unix)]
+fn credential_observation_allows_fresh_acpx_session_startup() {
+    let directory = temporary_directory("fresh-observed-acpx");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut prepare = prepare_payload(&directory, "codex");
+    prepare["observeCredentials"] = json!(true);
+    let runtime = directory.join("acpx-runtime");
+    assert!(!runtime.exists());
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let prepared = executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    assert_eq!(prepared.result["status"], "prepared");
+    assert_eq!(
+        fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
+    let root = temporary_directory("credential-updates");
+    let root = fs::canonicalize(root).unwrap();
+    let auth = root.join("auth.json");
+    let write_auth = |marker: &str| {
+        fs::write(
+            &auth,
+            serde_json::to_vec(&json!({"tokens":{
+                "account_id":"account", "access_token":format!("access-{marker}"),
+                "refresh_token":format!("refresh-{marker}")
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    let state_path = root.join("credential-observer-state.json");
+    fs::write(&state_path, serde_json::to_vec(&json!({
+        "schema":"paperclip.runner.credential-observer.v1", "sessionId":"session-1",
+        "provider":"codex", "path":auth, "snapshot":null, "revision":0, "armed":true, "pending":null
+    })).unwrap()).unwrap();
+    fs::set_permissions(&state_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let runner_config = config(&root);
+    write_auth("initial");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
+    assert!(executor.poll_events().unwrap().is_empty());
+    write_auth("refreshed");
+    let _ = executor.execute(&Command {
+        schema: "paperclip.prp.command.v1".to_owned(),
+        command_id: "close-unselected".to_owned(),
+        controller_seq: 1,
+        command_type: "session.close".to_owned(),
+        issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
+        deadline_at: None,
+        precondition: None,
+        payload: json!({}),
+    });
+    let updates = executor.retained_events().unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].event_type, "auth.credentials.updated");
+    assert_eq!(
+        updates[0].priority,
+        paperclip_runner_core::durable::EventPriority::P0
+    );
+    drop(executor);
+    let mut resumed = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
+    assert_eq!(resumed.poll_events().unwrap(), updates);
+    assert_eq!(resumed.retained_runner_events().unwrap(), updates);
+    resumed.acknowledge_events(1).unwrap();
+    assert!(resumed.poll_events().unwrap().is_empty());
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn config(state_dir: &Path) -> DurableRunnerConfig {
@@ -231,10 +311,11 @@ fn pi_prepare_payload(directory: &Path, mode: &str) -> Value {
     provider["agentServerPackage"] = json!("pi-acp");
     provider["agentServerVersion"] = json!("0.0.33");
     provider["agentRuntimePackage"] = json!("@earendil-works/pi-coding-agent");
-    provider["agentRuntimeVersion"] = json!("0.84.2");
+    provider["agentRuntimeVersion"] = json!("1.0.0");
     provider["commandDigest"] = json!(PI_ACPX_DIGEST);
     provider["sidecarArgs"][3] = json!(PI_ACPX_DIGEST);
     provider["providerPolicy"] = json!({"readOnly":true});
+    provider["piThinkingLevel"] = json!("low");
     payload
 }
 
@@ -1023,6 +1104,111 @@ fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
 }
 
 #[test]
+fn provider_death_expires_input_and_commits_failure_without_querying_the_dead_provider() {
+    let directory = temporary_directory("acpx-provider-death");
+    let mode = "turns-provider-death";
+    let mut config = acpx_config(&directory, mode);
+    let mut payload = prepare_payload_with_mode(&directory, "codex", mode);
+    // Keep the death/expiry assertions on the active immutable profile. A
+    // historical digest fails admission before a provider can die.
+    let identity: Value =
+        serde_json::from_str(include_str!("../../../../acpx-profiles.json")).unwrap();
+    let digest = identity["profiles"]["copilot"]["commandDigest"]
+        .as_str()
+        .unwrap();
+    *config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .last_mut()
+        .unwrap() = digest.to_owned();
+    let provider = &mut payload["provider"];
+    provider["agent"] = json!("copilot");
+    provider["model"] = json!("gpt-5.6-luna");
+    provider["permissionMode"] = json!("approve-paperclip");
+    provider["agentServerPackage"] = json!("@github/copilot");
+    provider["agentServerVersion"] = json!("1.0.88");
+    provider["agentRuntimePackage"] = Value::Null;
+    provider["agentRuntimeVersion"] = Value::Null;
+    provider["providerPolicy"] = json!({"readOnly":false});
+    provider["commandDigest"] = json!(digest);
+    provider["sidecarArgs"][3] = json!(digest);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Write", "turnId":"provider-turn-dead"}),
+        ))
+        .unwrap();
+    let mut events = Vec::new();
+    for _ in 0..20 {
+        let batch = executor.poll_events().unwrap();
+        executor.acknowledge_events(batch.len()).unwrap();
+        events.extend(batch);
+        if events
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let expired = events
+        .iter()
+        .position(|event| event.event_type == "runtime_request.expired")
+        .unwrap_or_else(|| panic!("provider death did not expire input: {events:?}"));
+    let failed = events
+        .iter()
+        .position(|event| event.event_type == "turn.failed")
+        .unwrap();
+    assert!(expired < failed);
+    assert_eq!(events[expired].payload["reason"], "provider_process_lost");
+    assert_eq!(events[expired].payload["replayAllowed"], false);
+    assert_eq!(
+        events[failed].payload["providerTurnId"],
+        "provider-turn-dead"
+    );
+    assert_eq!(
+        events[failed].payload["error"]["code"],
+        "ACPX_PROVIDER_PROCESS_LOST"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "turn.failed")
+            .count(),
+        1
+    );
+    let snapshot = executor
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap()
+        .result;
+    assert_eq!(snapshot["status"], "closed");
+    assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
+    assert_eq!(snapshot["warmAttachReady"], false);
+    assert!(executor
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"text":"Replay", "turnId":"replay-turn"})
+        ))
+        .is_err());
+    executor
+        .execute(&command(6, "session.close", json!({})))
+        .unwrap();
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
     let directory = temporary_directory("acpx-cold-idle-recovery");
     let config = acpx_config(&directory, "turns-reserved-result-terminal");
@@ -1368,6 +1554,162 @@ fn rejects_pi_without_an_explicit_model_before_starting_a_sidecar() {
         .contains("does not match a qualified immutable profile"));
     assert!(!directory.join("acpx-runtime").exists());
     assert!(!directory.join("acpx-provider-state.json").exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn pi_thinking_change_cannot_attach_to_an_existing_provider_identity() {
+    let directory = temporary_directory("pi-thinking-attach");
+    let config = pi_acpx_config(&directory, "bootstrap");
+    let payload = pi_prepare_payload(&directory, "bootstrap");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload.clone()))
+        .unwrap();
+    let opened = executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    assert_eq!(opened.result["piThinkingLevel"], json!("low"));
+    assert_eq!(
+        opened.events[0].2["providerDescriptor"]["piThinkingLevel"],
+        json!("low")
+    );
+    let state_path = directory.join("acpx-provider-state.json");
+    let prior = fs::read(&state_path).unwrap();
+    for (index, mode) in ["off", "high", "max"].into_iter().enumerate() {
+        let mut changed = payload.clone();
+        changed["provider"]["piThinkingLevel"] = json!(mode);
+        let error = executor
+            .execute(&command(3 + index as u64, "run.attach", changed))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires the same settled ACPX provider profile and session"),
+            "unexpected thinking identity rejection: {error}"
+        );
+        assert_eq!(fs::read(&state_path).unwrap(), prior);
+    }
+    executor
+        .execute(&command(6, "run.attach", payload))
+        .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn stops_an_idle_pi_provider_before_suspension_without_waiting_for_its_close_rpc() {
+    let directory = temporary_directory("pi-idle-suspension");
+    let mut config = pi_acpx_config(&directory, "bootstrap");
+    config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .extend(["--suspend-delay-ms".to_owned(), "8000".to_owned()]);
+    let mut payload = pi_prepare_payload(&directory, "bootstrap");
+    payload["provider"]["sidecarArgs"] = json!(config.acpx_launch_profile.as_ref().unwrap().args);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let state_path = directory.join("acpx-provider-state.json");
+    let opened: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let started = std::time::Instant::now();
+    let stopped = executor
+        .execute(&command(3, "turn.stop", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(4, "runner.drain", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(5, "runner.suspend", json!({})))
+        .unwrap();
+    let suspended: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let elapsed = started.elapsed();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+
+    assert_eq!(stopped.result["status"], "stopped");
+    assert_eq!(stopped.result["providerExitConfirmed"], true);
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "idle close took {elapsed:?}"
+    );
+    assert_eq!(suspended["lifecycle"], "suspended");
+    assert_eq!(suspended["providerExitUnconfirmed"], false);
+    assert_eq!(suspended["identity"], opened["identity"]);
+    assert_eq!(suspended["activeProviderTurnId"], Value::Null);
+}
+
+#[test]
+fn idle_pi_stop_cannot_publish_a_reusable_identity_while_its_lifetime_fence_is_held() {
+    let directory = temporary_directory("pi-idle-held-lifetime");
+    // Linux can assign port 0 below the identity contract's dynamic-port range.
+    // Keep this fixture distinct from the fake sidecar's default fence ports.
+    let fence = (61_000..=u16::MAX)
+        .filter_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+        .take(3)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fence.len(),
+        3,
+        "three valid lifetime fence ports are required"
+    );
+    let ports = fence
+        .iter()
+        .map(|listener| listener.local_addr().unwrap().port().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut config = pi_acpx_config(&directory, "bootstrap");
+    config
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .args
+        .extend(["--lifetime-fence-ports".to_owned(), ports]);
+    let mut payload = pi_prepare_payload(&directory, "bootstrap");
+    payload["provider"]["sidecarArgs"] = json!(config.acpx_launch_profile.as_ref().unwrap().args);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(1, "run.prepare", payload))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let state_path = directory.join("acpx-provider-state.json");
+    let opened: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let error = executor
+        .execute(&command(3, "turn.stop", json!({})))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("original provider lifetime remains active"));
+    let stopped: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(stopped["lifecycle"], "prepared");
+    assert_eq!(stopped["providerExitUnconfirmed"], true);
+    assert_eq!(stopped["identity"], opened["identity"]);
+    assert!(
+        executor
+            .execute(&command(4, "runner.suspend", json!({})))
+            .is_err(),
+        "unconfirmed lifetime cannot produce a suspension receipt"
+    );
+    let before_poll = fs::read(&state_path).unwrap();
+    assert!(
+        executor.poll_events().unwrap().is_empty(),
+        "held lifetime cannot publish a resumed provider"
+    );
+    assert_eq!(
+        fs::read(&state_path).unwrap(),
+        before_poll,
+        "polling cannot erase the unconfirmed lifetime boundary"
+    );
+    drop(fence);
+    executor.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
 

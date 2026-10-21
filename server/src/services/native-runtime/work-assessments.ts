@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { workAssessments } from "@paperclipai/db";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { nativeSha256 } from "./canonical.js";
+import type { NativeMonitorDelivery } from "./native-monitor-delivery.js";
 
 export async function recordNativeWorkAssessment(input: {
   db: Db;
@@ -21,9 +22,17 @@ export async function recordNativeWorkAssessment(input: {
   assessment: NativeEvidenceAssessment;
   /** Workspace repair changes the status decision even when work evidence is unchanged. */
   workspaceFinalizeStatus?: "succeeded" | "failed";
+  /** Timer delivery can settle an old wait without changing the work evidence. */
+  monitorDelivery?: NativeMonitorDelivery | null;
+  /** A persisted schedule can regain settlement authority after a policy repair. */
+  monitorWaitAt?: string | null;
   supersedesAssessmentId?: string | null;
 }) {
-  const assessmentJson = input.assessment as unknown as Record<string, unknown>;
+  const assessmentJson = {
+    ...input.assessment,
+    ...(input.monitorDelivery ? { monitorDelivery: input.monitorDelivery } : {}),
+    ...(input.monitorWaitAt ? { monitorWaitAt: input.monitorWaitAt } : {}),
+  } as unknown as Record<string, unknown>;
   const inputDigest = nativeSha256({
     contractId: input.contractId,
     contractCanonicalSha256: input.contractCanonicalSha256,

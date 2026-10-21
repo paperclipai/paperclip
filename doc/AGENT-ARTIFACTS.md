@@ -5,6 +5,20 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Upload files from a task
+
+People can open the task's Artifacts tab and use the upload icon, or drop files
+anywhere in the panel, including its header and existing artifact cards. Uploads
+save directly to the task. They do not send a message, assign an agent, or
+release a pause hold. Files from people and agents appear together in Artifacts.
+
+Markdown imports create task documents. Repeated filenames get a new document
+key instead of replacing an existing revision.
+Hidden system keys and artifact-review prefixes are reserved; imports with
+those filenames receive a visible upload document key. Other supported files use
+the existing attachment API and its type and size limits. Failed uploads show
+an inline Retry action while successful files remain available.
+
 ## Native runner
 
 When `register_deliverable` is available, use it for files in the bound local or
@@ -12,6 +26,17 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 `contentType`, exact `byteSize` and SHA-256, `title`, and a stable `idempotencyKey`.
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
+
+The completion gate permits a narrow sentence-bound exception for one requested
+file when the following sentence explicitly qualifies it, for example:
+`Write memory.txt. This is personal memory, not a task deliverable.` or
+`Write internal-proof.txt. This is an internal verification file, not a deliverable.`
+Each qualifier applies to one file in the immediately preceding request sentence.
+Separate file requests can each qualify when each has its own following qualifier.
+Multiple files requested in one sentence, unqualified report requests, and explicit
+attachment/download requests still need verified accessible publication evidence. Saying only “for internal verification”
+does not establish this exception. Expected denied native writes in a negative
+test are separately recognized as denied attempts, not requested deliverables.
 
 Wait for the receipt. It includes `attachmentId`, `contentPath`, and
 `downloadPath`, along with the existing command, revision, entity references,

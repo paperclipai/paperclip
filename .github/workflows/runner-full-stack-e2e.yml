@@ -1012,7 +1012,7 @@ jobs:
       # This definition executes only from the authorized default-branch workflow.
       # Provision host policy before credentials reach target-controlled tests.
       - name: Provision Codex sandbox on the disposable trusted runner
-        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex')
+        if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-codex' || matrix.profileId == 'runner-codex-mini' || matrix.profileId == 'runner-acpx-codex' || matrix.profileId == 'runner-codex-subscription')
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from "node:child_process";

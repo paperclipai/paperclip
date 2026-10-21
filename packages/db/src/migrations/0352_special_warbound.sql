@@ -1,0 +1,1 @@
+ALTER TABLE "muse_runner_operations" ADD COLUMN IF NOT EXISTS "continuation_receipt_id" uuid;

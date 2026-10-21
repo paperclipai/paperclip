@@ -20,7 +20,7 @@ import {
   toolConnections,
 } from "@paperclipai/db";
 import type { ChatProvider } from "@paperclipai/shared";
-import { enqueueTerminalIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
+import { enqueueIssueInteractionChatPublications, enqueueTerminalIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -226,8 +226,38 @@ describeEmbeddedPostgres(
           wrapQuery(Reflect.apply(db.select, db, args))) as typeof db.select,
         insert: db.insert.bind(db),
         update: db.update.bind(db),
+        transaction: db.transaction.bind(db),
       };
     }
+
+    it("shows the free-text question and context alongside Respond", async () => {
+      const fixture = await seedBoundIssue(["slack"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "ask_user_questions",
+          title: "Identify the failed change",
+          summary: "The general migration checks passed. I need one detail to reproduce your specific failure.",
+          payload: {
+            version: 1,
+            title: "Identify the failed change",
+            questions: [{
+              id: "agent", prompt: "Which agent did you try to change?",
+              helpText: "Send the agent link and the error text, if available.",
+              selectionMode: "single", allowOther: true,
+              options: [{ id: "text", label: "Type an answer", freeText: true }],
+            }],
+          },
+        },
+        { agentId: fixture.agentId },
+      );
+      const [publication] = await publicationsForInteraction(fixture.companyId, interaction.id);
+      expect(publication.payload.card).toMatchObject({
+        title: "Identify the failed change",
+        body: "The general migration checks passed. I need one detail to reproduce your specific failure.\n\nWhich agent did you try to change?\n\nSend the agent link and the error text, if available.",
+        actions: [expect.objectContaining({ label: "Respond", type: "callback" })],
+      });
+    });
 
     it("publishes prompts only for the endpoint's verified immutable agent", async () => {
       const fixture = await seedBoundIssue();
@@ -310,6 +340,35 @@ describeEmbeddedPostgres(
             `interaction:${assignedAgent.id}:${row.endpointId}`,
         ),
       ).toBe(true);
+    });
+
+    it("rolls back an interaction publication if its callback tokens cannot be stored", async () => {
+      const fixture = await seedBoundIssue(["telegram"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        { kind: "request_confirmation", continuationPolicy: "wake_assignee", payload: { version: 1, prompt: "Proceed?" } },
+        { agentId: fixture.agentId },
+      );
+      expect(await publicationsForInteraction(fixture.companyId, interaction.id)).toHaveLength(1);
+      await db.delete(chatActions).where(eq(chatActions.companyId, fixture.companyId));
+      await db.delete(chatPublications).where(eq(chatPublications.companyId, fixture.companyId));
+      const failTokens = (insert: typeof db.insert): typeof db.insert =>
+        ((table: Parameters<typeof db.insert>[0]) => {
+          if (table === chatActions) throw new Error("Token write failed");
+          return insert(table);
+        }) as typeof db.insert;
+      const failingDb: Parameters<typeof enqueueIssueInteractionChatPublications>[0] = {
+        select: db.select.bind(db),
+        update: db.update.bind(db),
+        insert: failTokens(db.insert.bind(db)),
+        transaction: callback => db.transaction(async tx => {
+          tx.insert = failTokens(tx.insert.bind(tx));
+          return callback(tx);
+        }),
+      };
+      await expect(enqueueIssueInteractionChatPublications(failingDb, interaction))
+        .rejects.toThrow("Token write failed");
+      expect(await publicationsForInteraction(fixture.companyId, interaction.id)).toEqual([]);
     });
 
     it("keeps unsupported governance interactions authoritative in Paperclip", async () => {

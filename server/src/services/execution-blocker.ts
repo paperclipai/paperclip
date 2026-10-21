@@ -1,28 +1,64 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
-import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRuns, issueComments, issues, issueRecoveryActions, toolConnections, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, chatConversations, chatEndpoints, environmentLeases, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolConnections, type Db } from "@paperclipai/db";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { canRetryStoppedRun } from "./cancelled-native-startup.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
-import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA, nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
+import { unreconciledNativeExportPredicate } from "./native-runtime/native-workspace-reconstruction.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+
+export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
+  const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
+    ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
+    OR EXISTS (SELECT 1 FROM ${environmentLeases}
+      WHERE ${environmentLeases.companyId} = ${companyId} AND ${environmentLeases.heartbeatRunId} = ${runId}
+        AND (( ${environmentLeases.releasedAt} IS NULL AND NOT COALESCE(
+            ${environmentLeases.status} = 'retained' AND ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+              AND ${environmentLeases.cleanupStatus} = 'success', false))
+          OR ${environmentLeases.status} IN ('active', 'pending_cleanup') OR ${environmentLeases.cleanupStatus} = 'failed'
+          OR COALESCE(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') <> 'false'
+          OR (${heartbeatRuns.runtimeMode} = 'native' AND NOT COALESCE(
+            (${environmentLeases.status} IN ('released', 'expired', 'failed')
+              AND ${environmentLeases.releasedAt} IS NOT NULL AND (${environmentLeases.cleanupStatus} = 'success'
+                OR (${environmentLeases.cleanupStatus} IS NULL AND (
+                  (${environmentLeases.provider} = 'local' AND ${environmentLeases.providerLeaseId} IS NULL)
+                  OR (${environmentLeases.provider} = 'ssh' AND ${environmentLeases.metadata}->>'driver' = 'ssh'
+                    AND ${environmentLeases.providerLeaseId} LIKE 'ssh://%')))))
+            OR (${environmentLeases.status} = 'retained' AND ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+              AND ${environmentLeases.cleanupStatus} = 'success'), false))))
+    OR EXISTS (SELECT 1 FROM ${nativeRunFinalizations}
+      WHERE ${nativeRunFinalizations.companyId} = ${companyId} AND ${nativeRunFinalizations.runId} = ${runId}
+        AND (${nativeRunFinalizations.leaseOwner} IS NOT NULL
+          OR ${nativeRunFinalizations.phase} NOT IN ('committed', 'applied', 'terminal_failure'))) AS pending
+    FROM ${heartbeatRuns} WHERE ${heartbeatRuns.companyId} = ${companyId} AND ${heartbeatRuns.id} = ${runId} LIMIT 1`);
+  return state?.pending !== false;
+}
 
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
 export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
-    inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
-    or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
-      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+    not(preDispatchExecutionWaitRecoveryActionPredicate()),
+    or(unreconciledNativeExportPredicate(), and(
+      inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+      or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
+    )),
   );
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
-    assigneeAgentId: issues.assigneeAgentId }).from(issues).where(and(
+    assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
+    executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId }).from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   )).limit(1);
   // Resetting model context cannot repair or recover a workspace. This hold
@@ -32,6 +68,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
     or(
+      unreconciledNativeExportPredicate(),
       sql`${issueRecoveryActions.evidence}->>'workspaceRestoreFailure' = 'restore_unsafe_archive'`,
       sql`${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
     ),
@@ -65,6 +102,21 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   const [run] = runId ? await db.select().from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
   )).limit(1) : [];
+  const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));
+  const workspaceRepairRequired = Boolean(restoreHold && !withoutWorkspace && (!run || !await hasVerifiedWorkspaceRepair(db, run)));
+  const workspaceRecovery = workspaceRecoveryDisplay(action.evidence, runId);
+  const reconstructableExport = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(action.cause);
+  const exportSource = reconstructableExport ? readNativeWorkspaceSyncReference(run?.runnerProfileJson?.nativeWorkspaceSync) : null;
+  const [exportLease] = exportSource ? await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run!.id), eq(environmentLeases.id, exportSource.leaseId),
+    eq(environmentLeases.providerLeaseId, exportSource.providerLeaseId),
+  )).limit(1) : [];
+  const canReconstructWorkspace = Boolean(exportLease && hasRemoteTerminationReceipt(exportLease)
+    && (exportLease.metadata?.remoteExecutionTermination as { state?: string } | undefined)?.state === "destroyed"
+    && !action.evidence.executionReconciliation && conversation && ["blocked", "in_progress"].includes(conversation.status)
+    && !conversation.executionRunId && !conversation.checkoutRunId && conversation.assigneeAgentId === run?.agentId);
+  const reconstructionPending = Boolean((action.evidence.executionReconciliation as { workspaceReconstruction?: unknown } | undefined)?.workspaceReconstruction
+    && action.evidence.continuationDelivery === "pending");
   const queue = await db.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
@@ -105,7 +157,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   )).limit(1) : [];
   let nextAction = action.nextAction;
   if (canRetry && !eligibleContinuation) nextAction += " Try again or send a new message to continue once the previous execution has stopped.";
-  if (chatBinding) {
+  if (chatBinding && !restoreHold) {
     if (chatBinding.state === "endpoint_removed" || !chatBinding.endpointStatus || chatBinding.endpointStatus === "archived") {
       nextAction = "This chat connection was removed. Inspect the stopped run and create a new task to continue the work.";
     } else if (chatBinding.state === "unavailable" || !["active", "verifying"].includes(chatBinding.endpointStatus) ||
@@ -118,18 +170,31 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     nextAction += " Inspect the run before sending a new message to request continuation.";
   }
 
+  if (withoutWorkspace && (restoreHold || run?.status === "cancelled") && !run?.resultJson?.externalWorkspaceInspection) {
+    nextAction = run?.driverKind === "grok_bot_mcp"
+      ? "Inspect this Bot in Grok Bot, then clear the recovery hold and verify the connection in the agent's Runtime settings before assigning more work."
+      : "Inspect the stopped work in the external agent and its connection before requesting continuation.";
+  }
+
+  if (run?.resultJson?.externalWorkspaceInspection && !restoreHold) {
+    nextAction = "Verify the Grok connection, then send a new message to continue. The stopped work will not be replayed.";
+  }
+
   return {
     recoveryActionId: action.id,
     runId,
     // A stopped reviewer can differ from the task owner who receives the work back.
     agentId: run?.agentId ?? null,
     cause: action.cause,
-    nextAction,
+    nextAction: workspaceRecovery?.message ?? (reconstructionPending ? "Continuation from saved sources is queued and waiting for execution checks." : nextAction),
+    ...(workspaceRecovery ? { workspaceRecovery } : {}),
     runStatus: run?.status ?? null,
     runError: runError?.slice(0, 1024) ?? null,
     canContinue: eligibleContinuation && !chatBinding,
     canRetry: canRetry && !chatBinding,
-    ...(restoreHold ? { workspaceRepairRequired: true } : {}),
+    ...(restoreHold ? { workspaceRepairRequired, canRecordWorkspaceRepair: workspaceRepairRequired && hasRequiredWorkspaceRecovery(action.evidence) } : {}),
     savedMessageCount: saved.length,
+    ...(canReconstructWorkspace ? { canReconstructWorkspace, workspaceRecoveryStatusVersion: conversation!.statusVersion } : {}),
+    ...(reconstructionPending ? { workspaceReconstructionPending: true } : {}),
   };
 }

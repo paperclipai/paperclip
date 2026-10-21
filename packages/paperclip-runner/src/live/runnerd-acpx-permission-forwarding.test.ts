@@ -8,7 +8,7 @@ import type { HarnessRuntimeRequest } from "../contracts/harness-driver.js";
 
 // Replace only the PRP peer and process boundary. The production transport,
 // event pump, registered handler, and request emission below all run unchanged.
-const peer = vi.hoisted(() => ({ current: null as TestPeer | null }));
+const peer = vi.hoisted(() => ({ current: null as TestPeer | null, readiness: {} as Record<string, unknown> }));
 interface TestPeer {
   store: { state: { identity: DurableRecoveryIdentity; committedEvents: DurableRecoveryCommittedEvent[]; commands: Array<Record<string, unknown>> } };
   emit(type: string, payload: Record<string, unknown>): void;
@@ -36,6 +36,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
         if (type === "session.open") this.emit("session.started", {
           threadId: "thread-1", sessionId: "provider-session-1",
           runtimeIdentity: { executionKind: "remote_service" },
+          ...peer.readiness,
         });
         if (type === "turn.start") this.emit("turn.started", { providerTurnId: payload.turnId });
       }
@@ -51,7 +52,34 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
   };
 });
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest } from "./runner-provider-launch.js";
 import { handleServerRequest } from "../drivers/codex/codex-session-server-requests.js";
+
+it.each(["codex", "opencode", "acpx"] as const)("returns the observed %s model in the opened-session response", async provider => {
+  const root = mkdtempSync(join(tmpdir(), "runner-model-"));
+  const binary = join(root, "unexecuted-runner");
+  writeFileSync(binary, "not executable: process boundary is mocked");
+  peer.readiness = provider === "acpx"
+    ? { providerDescriptor: { model: "requested-only" }, providerIdentity: { kind: "acpx_session", effectiveModel: "observed-model" } }
+    : { providerDescriptor: { effectiveModel: "observed-model" } };
+  const bundle = createCapabilityRunnerdCodexTransport({
+    provider, acpxAgent: "codex", runnerBinary: binary, stateDirectory: root,
+    runnerArtifact: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+    runnerProcessLauncher: () => { throw new Error("mocked process boundary was bypassed"); },
+    controlPlaneRegistration: async () => ({ connectUrl: "ws://fixture.invalid", release: async () => {} }),
+    prepareLaunch: async requirements => ({ configurationId: "fixture", requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+      provider: createRunnerProviderLaunch(requirements, { options: {}, root, cwd: root, codexHome: join(root, "home"),
+        codexCommand: binary, providerNodeCommand: binary, opencodeProxyPath: binary, acpxSidecarPath: binary }) }),
+  });
+  try {
+    expect(await bundle.transport.request("thread/start", { cwd: root, model: "requested-only" }))
+      .toMatchObject({ model: "observed-model" });
+  } finally {
+    await bundle.detachControllerForRestart();
+    peer.readiness = {};
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe("permission events through the actual transport handler", () => {
   it.each([

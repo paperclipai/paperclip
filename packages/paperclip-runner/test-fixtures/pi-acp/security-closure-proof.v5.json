@@ -1,0 +1,173 @@
+{
+  "schema": "paperclip.pi-security-closure-proof.v1",
+  "sourceRevision": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+  "advisory": "https://github.com/advisories/GHSA-3wwx-pv8p-q78v",
+  "profileVersion": 5,
+  "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+  "npmCiInstalledVersionBeforeOwnedReplacement": "8.9.0",
+  "installedVersionAfterOwnedReplacement": "8.10.2",
+  "isolatedLockUnchangedByInstall": true,
+  "isolatedLockSha256": "0516456f6da2b09f35b15b17b558780f9d98419d2d911a37416e07cf0e306df4",
+  "upstreamMetadata": {
+    "package.json": {
+      "sha256": "820f4adc6d61f2cefbc29ce17e9dfd9aa482248d54be5d0dfa2a868ca000c7b0",
+      "unchangedFromV4": true
+    },
+    "npm-shrinkwrap.json": {
+      "sha256": "e09ee75249d2381fbb66d2199c9e699910ce3fa7608d55e93f6fe37c3ded5973",
+      "unchangedFromV4": true
+    }
+  },
+  "node": {
+    "version": "24.21.0",
+    "bundledUndici": "7.29.1",
+    "sha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b"
+  },
+  "targets": {
+    "darwin-arm64": {
+      "archiveSha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+      "executableSha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+      "executableSize": 122129232
+    },
+    "darwin-x64": {
+      "archiveSha256": "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+      "executableSha256": "7abcf39bd37ab251015337ff75304d7555f0d8e88c6e0fbf04bce8ce34636f49",
+      "executableSize": 125270960
+    },
+    "linux-x64": {
+      "archiveSha256": "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+      "executableSha256": "7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c",
+      "executableSize": 126595440
+    }
+  },
+  "closureSha256": {
+    "darwin-arm64": "0010175e4bc200f145386e59f7a824cf7532ad273e9db6824d22c4f82cdcd6ff",
+    "darwin-x64": "9dd49bd1341a6e3438db56cc6b3dc772964ebcdd0552bcfbf2e5e621b2970ab6",
+    "linux-x64": "91169667544764764e2e402868fbb76a9a429575cfdb1b312b8ed8ae669ebc89"
+  },
+  "verifiedFileCount": 13827,
+  "changedRuntimeFiles": [
+    "node/bin/node",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/docs/docs/api/Client.md",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/docs/docs/api/EnvHttpProxyAgent.md",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/docs/docs/api/EventSource.md",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/docs/docs/api/Interceptors.md",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/docs/docs/api/Socks5ProxyAgent.md",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/api/readable.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/cache/memory-cache-store.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/core/connect.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/core/symbols.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/balanced-pool.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/client-h1.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/client-h2.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/client.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/dispatcher-base.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/dispatcher.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/dispatcher1-wrapper.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/env-http-proxy-agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/proxy-agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/retry-agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/round-robin-pool.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/dispatcher/socks5-proxy-agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/handler/cache-handler.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/handler/decorator-handler.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/handler/deduplication-handler.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/handler/redirect-handler.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/handler/retry-handler.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/interceptor/cache.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/interceptor/decompress.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/interceptor/deduplicate.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/interceptor/dns.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/interceptor/dump.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/mock/mock-agent.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/mock/mock-utils.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/util/cache.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/cookies/parse.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/eventsource/eventsource-stream.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/eventsource/eventsource.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/fetch/index.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/fetch/request.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/fetch/util.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/webidl/index.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/websocket/connection.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/websocket/permessage-deflate.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/websocket/stream/websocketstream.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/lib/web/websocket/websocket.js",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/package.json",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/types/client.d.ts",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/types/interceptors.d.ts",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/types/mock-agent.d.ts",
+    "node_modules/@earendil-works/pi-coding-agent/node_modules/undici/types/socks5-proxy-agent.d.ts",
+    "package-lock.json",
+    "package.json"
+  ],
+  "archiveBounds": {
+    "compressedBytes": 4194304,
+    "inflatedTarBytes": 4194304,
+    "regularFiles": 214
+  },
+  "credentialAccess": false,
+  "providerPrompts": 0,
+  "providerInferenceCalls": 0,
+  "x64ExecutionQualified": false,
+  "tests": {
+    "materializer": 8,
+    "typescriptIncludingActualInstallation": 43,
+    "installedWrapperAndNativeSdk": 19,
+    "rustNativeBackend": 13
+  },
+  "independentReview": {
+    "source": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+    "review": "read-only credential-free",
+    "packageCount": 143,
+    "verifiedFiles": 13827,
+    "closureSha256": "0010175e4bc200f145386e59f7a824cf7532ad273e9db6824d22c4f82cdcd6ff",
+    "profileSha256": "020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+    "node": {
+      "node": "24.21.0",
+      "undici": "7.29.1"
+    },
+    "installedUndici": "8.10.2",
+    "unchangedUpstreamMetadata": {
+      "package.json": "820f4adc6d61f2cefbc29ce17e9dfd9aa482248d54be5d0dfa2a868ca000c7b0",
+      "npm-shrinkwrap.json": "e09ee75249d2381fbb66d2199c9e699910ce3fa7608d55e93f6fe37c3ded5973"
+    },
+    "unchangedDistributionLockSha256": "0516456f6da2b09f35b15b17b558780f9d98419d2d911a37416e07cf0e306df4",
+    "scope": "Reviewed source upgrades Pi private interpreter. Parent separately authorized outer pack Node24.21.0 and Docker provider-build Node24.21.0; resulting mac/Linux artifacts are not covered by this installed-distribution proof.",
+    "x64Execution": "not tested",
+    "inferenceRequests": 0,
+    "verification": {
+      "materializer": {
+        "passed": 8,
+        "failed": 0
+      },
+      "profileAndRecovery": {
+        "passed": 12,
+        "failed": 0,
+        "skipped": 1,
+        "skip": "Optional actual snapshot launch separately covered by Pi implementer"
+      },
+      "retainedOperatorSetupFailures": 2
+    },
+    "warmIdentityReview": {
+      "piOldProfileVersionsRejected": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "privateProfileBinds": [
+        "wrapper patch",
+        "all platform closure pins",
+        "Node executable via closure"
+      ],
+      "outerPackBinds": [
+        "Node artifact sha256",
+        "canonical manifest digest",
+        "runner launch authority digest",
+        "persisted launch_profile_digest"
+      ]
+    }
+  }
+}

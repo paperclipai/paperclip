@@ -5,8 +5,10 @@ export const CREDENTIAL_NAMES = [
   "KIMI_MODEL_API_KEY",
   "XAI_API_KEY",
   "GROK_AUTH_JSON",
+  "CODEX_AUTH_JSON",
   "GEMINI_API_KEY",
   "DAYTONA_API_KEY",
+  "GITHUB_TOKEN",
   "CURSOR_AUTH_TOKEN",
   "COPILOT_GITHUB_TOKEN",
 ] as const;
@@ -16,6 +18,9 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "case_handoff"
+  | "task_workspaces"
+  | "repository_skills"
   | "provider_connection"
   | "plan_task_guidance"
   | "blocker_guidance"
@@ -34,7 +39,10 @@ export type RunnerTaskFlow =
   | "plan_approval_completion"
   | "warm_three_turn"
   | "instruction_persistence"
+  | "pi_native"
+  | "pi_controls"
   | "native_active_stop"
+  | "copilot_protection"
   | "native_provider_loss"
   | "cursor_native";
 
@@ -138,6 +146,7 @@ export type Matcher =
   | { kind: "json_schema"; schema: Record<string, unknown> };
 
 export interface RunnerTaskFixture {
+  requiredCredentials?: readonly CredentialName[];
   id: string;
   label: string;
   groups: readonly string[];
@@ -151,6 +160,8 @@ export interface RunnerTaskFixture {
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
     issue: "done" | "in_review" | "blocked" | "in_progress";
+    /** Only the Copilot denial flow admits this with a verified recovery settlement. */
+    alternativeIssue?: "blocked";
     run: "succeeded" | "failed" | "cancelled";
   };
   buildTitle(nonce: string): string;
@@ -301,6 +312,7 @@ export interface RunnerE2EResult {
   issueId?: string;
   issueIdentifier?: string | null;
   runIds?: string[];
+  startupReuse?: Array<{ runId: string } & import("../../packages/adapter-utils/src/startup-reuse.js").StartupReuseSummary>;
   turnTimings?: Array<{
     turn: number;
     submittedAt: string;

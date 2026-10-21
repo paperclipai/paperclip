@@ -1,0 +1,102 @@
+name: Restore materialized CI dependencies
+description: Reuse exact installed dependencies and certified shared build outputs; install on a miss.
+inputs:
+  working-directory:
+    description: Checkout directory relative to the workspace.
+    default: '.'
+  save-cache:
+    description: Allow a canonical master push to populate the caches.
+    default: 'false'
+  restore-cache:
+    description: Disable materialized restores for a controlled cold-path benchmark.
+    default: 'true'
+outputs:
+  dependencies-restored:
+    description: Whether the exact materialized dependency cache was restored.
+    value: ${{ steps.installed.outputs.cache-hit }}
+  builds-restored:
+    description: Whether the exact certified build cache was restored.
+    value: ${{ steps.builds.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Compute dependency inputs
+      id: inputs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: node scripts/ci-dependency-cache.mjs
+
+    - name: Restore installed dependencies (read only)
+      if: inputs.restore-cache == 'true' && steps.inputs.outputs.cacheable == 'true'
+      id: installed
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        key: ${{ steps.inputs.outputs.dependency-key }}
+        path: ${{ steps.inputs.outputs.dependency-paths }}
+
+    - name: Locate pnpm store
+      if: steps.installed.outputs.cache-hit != 'true'
+      id: pnpm_store
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+        echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pnpm store (read only)
+      if: steps.installed.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ${{ steps.pnpm_store.outputs.path }}
+        key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles(format('{0}/pnpm-lock.yaml', inputs.working-directory)) }}
+        restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+    - name: Install dependencies
+      if: steps.installed.outputs.cache-hit != 'true'
+      id: install
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if pnpm install --frozen-lockfile; then
+          echo 'frozen=true' >> "$GITHUB_OUTPUT"
+        else
+          echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+          pnpm install --frozen-lockfile
+        fi
+
+    - name: Restore certified shared build outputs (read only)
+      if: inputs.restore-cache == 'true' && steps.inputs.outputs.cacheable == 'true'
+      id: builds
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        key: ${{ steps.inputs.outputs.build-key }}
+        path: ${{ steps.inputs.outputs.build-paths }}
+
+    - name: Validate workspace links and shared build outputs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        pnpm run preflight:workspace-links
+        node scripts/ensure-plugin-build-deps.mjs
+
+    - name: Save installed dependencies
+      if: >-
+        inputs.save-cache == 'true' && steps.inputs.outputs.cacheable == 'true' && github.repository == 'paperclipai/paperclip' &&
+        github.event_name == 'push' && github.ref == 'refs/heads/master' &&
+        steps.installed.outputs.cache-hit != 'true' && steps.install.outputs.frozen == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        key: ${{ steps.inputs.outputs.dependency-key }}
+        path: ${{ steps.inputs.outputs.dependency-paths }}
+
+    - name: Save certified shared build outputs
+      if: >-
+        inputs.save-cache == 'true' && steps.inputs.outputs.cacheable == 'true' && github.repository == 'paperclipai/paperclip' &&
+        github.event_name == 'push' && github.ref == 'refs/heads/master' &&
+        steps.builds.outputs.cache-hit != 'true' &&
+        (steps.installed.outputs.cache-hit == 'true' || steps.install.outputs.frozen == 'true')
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        key: ${{ steps.inputs.outputs.build-key }}
+        path: ${{ steps.inputs.outputs.build-paths }}

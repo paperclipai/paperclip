@@ -1,3 +1,5 @@
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { subscribeDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,7 +9,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
-import { issueService } from "../services/issues.js";
+import { executeIssuePostCommitActions, type IssuePostCommitAction, issueService } from "../services/issues.js";
 import { buildLowTrustSourceTrust } from "../services/source-trust.js";
 import { documentService } from "../services/documents.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -51,6 +53,57 @@ const support = await getEmbeddedPostgresTestSupport();
     };
     return { companyId, agentId, sourceId, runId, task, create, finish, rows, due, wakeup, service, run };
   }
+  it("dispatches a committed completion without activity publication and recovers after restart", async () => {
+    const f = await seed();
+    const run = vi.fn(() => f.service.sweepPending());
+    const makeWorker = () => {
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const worker = coordinator.register(DELIVERY_QUEUES.chatCompletion, { retryMs: 60_000, run, hasPending: f.service.hasPending });
+      return { ...worker, stop: coordinator.stop };
+    };
+    const worker = makeWorker();
+    try {
+      await worker.ready;
+      expect(await f.service.hasPending()).toBe(false);
+      expect(run).toHaveBeenCalledTimes(1);
+      await f.finish(); // Service mutation alone: no route activity callback.
+      await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledTimes(1));
+      expect(await f.service.hasPending()).toBe(true); // queued receipt still owed
+    } finally { await worker.stop(); }
+    // Admit the first reporting turn; later completions need a new turn.
+    await f.run();
+    // A second task commits while no consumer is registered.
+    const next = await f.create();
+    await f.finish(next.id);
+    const restarted = makeWorker();
+    try {
+      await restarted.ready;
+      expect(f.wakeup).toHaveBeenCalledTimes(2);
+    } finally { await restarted.stop(); }
+  });
+  it("automatically notifies after a caller-owned transaction commits", async () => {
+    const f = await seed();
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatCompletion, notified);
+    try {
+      const actions: IssuePostCommitAction[] = [];
+      await db.transaction(async tx => {
+        await issueService(db).update(f.task.id, { status: "done" }, tx, [], actions);
+        expect(notified).not.toHaveBeenCalled();
+      });
+      expect(notified).toHaveBeenCalledTimes(1);
+      expect(actions).toEqual([]);
+      await executeIssuePostCommitActions(db, actions);
+      expect(notified).toHaveBeenCalledTimes(1);
+      const rolledBack: IssuePostCommitAction[] = [];
+      await expect(db.transaction(async tx => {
+        await issueService(db).update(f.task.id, { status: "todo" }, tx, [], rolledBack);
+        throw new Error("rollback");
+      })).rejects.toThrow("rollback");
+      expect(notified).toHaveBeenCalledTimes(1);
+      expect((await f.rows())[0]?.status).toBe("pending");
+    } finally { unsubscribe(); }
+  });
   it("records authenticated origins and atomically creates one event per Done transition", async () => {
     const f = await seed();
     expect(await db.select().from(handoffs).where(eq(handoffs.taskId, f.task.id))).toMatchObject([{ conversationId: f.sourceId, sessionGeneration: 0 }]);

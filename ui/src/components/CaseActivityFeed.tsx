@@ -27,6 +27,11 @@ const EVENT_LABEL: Record<CaseEventKind, string> = {
   attachment_added: "attachment added",
   label_added: "label added",
   label_removed: "label removed",
+  handoff_requested: "handoff requested",
+  handoff_applied: "task handed off",
+  handoff_delivered: "agent wake queued",
+  handoff_completed: "case completed",
+  handoff_cancelled: "handoff cancelled",
 };
 
 /** Human label for the actor, preferring the resolved agent name. */

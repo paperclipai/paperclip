@@ -1,5 +1,6 @@
 import type {
   CostSummary,
+  CostDataQualityReport,
   CostByAgent,
   CostByUserReport,
   CostByProviderModel,
@@ -25,6 +26,10 @@ function dateParams(from?: string, to?: string): string {
 }
 
 export const costsApi = {
+  dataQuality: (companyId: string, from?: string, to?: string) =>
+    api.get<CostDataQualityReport>(`/companies/${companyId}/costs/data-quality${dateParams(from, to)}`),
+  retryAccounting: (companyId: string, runId: string) =>
+    api.post<{ accounted: boolean }>(`/companies/${companyId}/costs/retry-accounting`, { runId }),
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
   byUser: (companyId: string, from?: string, to?: string) =>

@@ -1,4 +1,4 @@
-import type { AgentAppearance } from "@paperclipai/shared";
+import type { AgentAppearance, AgentLifecycleState, AgentLifecycleOperation } from "@paperclipai/shared";
 import {
   type AnyPgColumn,
   pgTable,
@@ -25,6 +25,12 @@ export const agents = pgTable(
     icon: text("icon"),
     appearance: jsonb("appearance").$type<AgentAppearance>(),
     status: text("status").notNull().default("idle"),
+    lifecycleState: text("lifecycle_state").$type<AgentLifecycleState>().notNull().default("ready"),
+    lifecycleRequiredPluginIds: jsonb("lifecycle_required_plugin_ids").$type<string[]>(),
+    lifecycleHolds: jsonb("lifecycle_holds").$type<string[]>().notNull().default([]),
+    lifecycleVersion: integer("lifecycle_version").notNull().default(0),
+    lifecycleError: text("lifecycle_error"),
+    lifecycleOperation: jsonb("lifecycle_operation").$type<AgentLifecycleOperation>(),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
@@ -40,11 +46,13 @@ export const agents = pgTable(
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    createdByUserId: text("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyIdUq: unique("agents_company_id_uq").on(table.companyId, table.id),
+    lifecycleWorkIdx: index("agents_lifecycle_work_idx").on(table.lifecycleState, table.updatedAt, table.id),
     companyStatusIdx: index("agents_company_status_idx").on(table.companyId, table.status),
     companyReportsToIdx: index("agents_company_reports_to_idx").on(table.companyId, table.reportsTo),
     companyDefaultEnvironmentIdx: index("agents_company_default_environment_idx").on(table.companyId, table.defaultEnvironmentId),

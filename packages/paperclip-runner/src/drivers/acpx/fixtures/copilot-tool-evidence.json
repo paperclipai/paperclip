@@ -1,0 +1,241 @@
+{
+  "provider": "@github/copilot@1.0.88",
+  "executableSha256": "a9ff8babb10b7e443182ae96a8bc50a9c826ef1c773e1344c396eb5bf7f512c3",
+  "source": "Credential-free native binary with loopback synthetic model; no provider inference. Workspace paths normalized by probe.",
+  "deny-write": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "21c800ed-2229-48f8-b13a-68e711944863",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "fixture-tool",
+          "title": "Creating ...pilot-offline-2khr_xkr/copilot-denied-nonce.txt",
+          "kind": "edit",
+          "status": "pending",
+          "rawInput": {
+            "path": "/fixture/workspace/copilot-denied-nonce.txt",
+            "file_text": "MUST NOT EXIST"
+          },
+          "locations": [
+            {
+              "path": "/fixture/workspace/copilot-denied-nonce.txt"
+            }
+          ],
+          "content": [
+            {
+              "type": "diff",
+              "path": "/fixture/workspace/copilot-denied-nonce.txt",
+              "oldText": "",
+              "newText": "MUST NOT EXIST"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 0,
+      "method": "session/request_permission",
+      "params": {
+        "sessionId": "21c800ed-2229-48f8-b13a-68e711944863",
+        "toolCall": {
+          "toolCallId": "fixture-tool",
+          "title": "Create file",
+          "kind": "edit",
+          "status": "pending",
+          "rawInput": {
+            "fileName": "/fixture/workspace/copilot-denied-nonce.txt",
+            "diff": "\ndiff --git a/fixture/workspace/copilot-denied-nonce.txt b/fixture/workspace/copilot-denied-nonce.txt\ncreate file mode 100644\nindex 0000000..0000000\n--- a/dev/null\n+++ b/fixture/workspace/copilot-denied-nonce.txt\n@@ -1,0 +1,1 @@\n+MUST NOT EXIST\n"
+          },
+          "locations": [
+            {
+              "path": "/fixture/workspace/copilot-denied-nonce.txt"
+            }
+          ]
+        },
+        "options": [
+          {
+            "optionId": "allow_once",
+            "kind": "allow_once",
+            "name": "Allow once"
+          },
+          {
+            "optionId": "allow_always",
+            "kind": "allow_always",
+            "name": "Always allow"
+          },
+          {
+            "optionId": "reject_once",
+            "kind": "reject_once",
+            "name": "Deny"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "21c800ed-2229-48f8-b13a-68e711944863",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "fixture-tool",
+          "status": "failed",
+          "rawOutput": {
+            "message": "The user rejected this tool call.",
+            "code": "rejected"
+          }
+        }
+      }
+    }
+  ],
+  "attached-shell": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "fixture-tool",
+          "title": "Bounded settlement fixture",
+          "kind": "execute",
+          "status": "pending",
+          "rawInput": {
+            "command": "sleep 2; printf ACP_SHELL_DONE > settlement.txt",
+            "description": "Bounded settlement fixture",
+            "mode": "async",
+            "detach": false
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 0,
+      "method": "session/request_permission",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "toolCall": {
+          "toolCallId": "fixture-tool",
+          "title": "Bounded settlement fixture",
+          "kind": "execute",
+          "status": "pending",
+          "rawInput": {
+            "command": "sleep 2; printf ACP_SHELL_DONE > settlement.txt",
+            "commands": [
+              "sleep 2; printf ACP_SHELL_DONE > settlement.txt"
+            ]
+          }
+        },
+        "options": [
+          {
+            "optionId": "allow_once",
+            "kind": "allow_once",
+            "name": "Allow once"
+          },
+          {
+            "optionId": "allow_always",
+            "kind": "allow_always",
+            "name": "Always allow"
+          },
+          {
+            "optionId": "reject_once",
+            "kind": "reject_once",
+            "name": "Deny"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "fixture-tool",
+          "status": "completed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "<command started in background with shellId: 0>"
+              }
+            }
+          ],
+          "rawOutput": {
+            "content": "<command started in background with shellId: 0>",
+            "detailedContent": "<command started in background with shellId: 0>"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "fixture-tool",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": ""
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "7da35af6-2aab-469f-8964-40f0605dcb6c",
+          "title": "Reading shell output",
+          "kind": "read",
+          "status": "pending",
+          "rawInput": {
+            "shellId": "0",
+            "delay": 0
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "8426a268-fe73-4b5c-addd-26de5f670c38",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "7da35af6-2aab-469f-8964-40f0605dcb6c",
+          "status": "completed",
+          "content": [
+            {
+              "type": "content",
+              "content": {
+                "type": "text",
+                "text": "\n<shellId: 0 completed with exit code 0>"
+              }
+            }
+          ],
+          "rawOutput": {
+            "content": "\n<shellId: 0 completed with exit code 0>",
+            "detailedContent": "\n<shellId: 0 completed with exit code 0>"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -6,7 +6,9 @@ import {
   activityLog,
   heartbeatRunWatchdogDecisions,
   heartbeatRuns,
+  environmentLeases,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject } from "../../../adapters/utils.js";
 import { visibleIssueCondition } from "../../../services/issue-visibility.js";
@@ -65,6 +67,27 @@ function toRunSnapshot(row: typeof heartbeatRuns.$inferSelect): RunSnapshot {
   };
 }
 
+function runtimeSettlementPending(companyId: string, runId: string) {
+  return sql<boolean>`(
+    ${heartbeatRuns.runtimeMode} = 'native'
+    or coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> ''
+    or exists (
+      select 1 from ${environmentLeases}
+      where ${environmentLeases.companyId} = ${companyId}
+        and ${environmentLeases.heartbeatRunId} = ${runId}
+        and ${environmentLeases.providerLeaseId} is not null
+        and ${environmentLeases.status} in ('active', 'acquiring')
+    )
+    or exists (
+      select 1 from ${workspaceOperations}
+      where ${workspaceOperations.companyId} = ${companyId}
+        and ${workspaceOperations.heartbeatRunId} = ${runId}
+        and ${workspaceOperations.phase} = 'workspace_finalize'
+        and ${workspaceOperations.status} in ('running', 'failed')
+    )
+  )`;
+}
+
 export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & WatchdogWriter {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -117,6 +140,13 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1);
     return row ? toRunSnapshot(row) : null;
+  }
+
+  async function isRuntimeSettlementPending(companyId: string, runId: string): Promise<boolean> {
+    const [row] = await db.select({
+      pending: sql<boolean>`${heartbeatRuns.status} <> 'running' or ${runtimeSettlementPending(companyId, runId)}`,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+    return row?.pending ?? true;
   }
 
   async function findLatestDecision(companyId: string, runId: string, now: Date) {
@@ -321,6 +351,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           eq(heartbeatRuns.id, input.run.id),
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.status, "running"),
+          sql`not ${runtimeSettlementPending(companyId, input.run.id)}`,
         ))
         .returning();
       if (!updatedRun) return null;
@@ -456,6 +487,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           eq(agents.id, input.run.agentId),
           eq(agents.companyId, companyId),
           notInArray(agents.status, ["paused", "terminated"]),
+          eq(agents.lifecycleState, "ready"),
         ));
 
       return updatedRun;
@@ -476,6 +508,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   return {
     findCandidateSilentRuns,
     findRunForCompany,
+    isRuntimeSettlementPending,
     findLatestDecision,
     findOpenStaleRunEvaluation,
     findEvaluationIssueById,

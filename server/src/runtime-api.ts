@@ -46,20 +46,31 @@ function pushCandidate(
   }
 }
 
+// A base URL written as `host:port` (no `//`) is a VALID URL with an opaque
+// scheme, and the origin of an opaque-scheme URL serializes to the *string*
+// "null". That string is truthy, so it escapes every `if (origin)` guard and is
+// then handed to `new URL(origin)`, which throws `TypeError: Invalid URL`.
+// Treat it as absent config, exactly like input that fails to parse at all.
+function parsePublicOrigin(rawUrl: string | null | undefined): string | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  let origin: string;
+  try {
+    origin = new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+  return origin === "null" ? null : origin;
+}
+
 export function choosePrimaryRuntimeApiUrl(input: {
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
   bindHost: string;
   port: number;
 }): string {
-  const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim();
-  if (explicitPublicBaseUrl) {
-    try {
-      return new URL(explicitPublicBaseUrl).origin;
-    } catch {
-      // Fall through to derived candidates if config parsing drifted.
-    }
-  }
+  const explicitOrigin = parsePublicOrigin(input.authPublicBaseUrl);
+  if (explicitOrigin) return explicitOrigin;
 
   const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost) && isLoopbackHost(bindHost)) {
@@ -118,15 +129,7 @@ export function buildRuntimeApiCandidateUrls(input: {
 }): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
-  const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim() ?? "";
-  const explicitOrigin = (() => {
-    if (!explicitPublicBaseUrl) return null;
-    try {
-      return new URL(explicitPublicBaseUrl).origin;
-    } catch {
-      return null;
-    }
-  })();
+  const explicitOrigin = parsePublicOrigin(input.authPublicBaseUrl);
   const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
 
   pushCandidate(candidates, seen, input.preferredApiUrl);

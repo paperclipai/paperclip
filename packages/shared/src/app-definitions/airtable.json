@@ -20,6 +20,7 @@
       "key": "mcp-oauth",
       "transport": "mcp_remote",
       "auth": "oauth",
+      "oauthClientRegistration": "dcr",
       "ownershipModes": [
         "dcr"
       ],
@@ -44,6 +45,44 @@
       },
       "warnings": [
         "An Airtable account; enterprise administrators may need to allowlist the client."
+      ]
+    },
+    {
+      "key": "mcp-pat",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a personal access token when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.airtable.com/mcp"
+      },
+      "guidanceMd": "Create an Airtable personal access token with the scopes and base resources required for the actions you intend to allow. MCP calls inherit your Airtable role and base permissions; organization allowlisting may still apply.",
+      "riskTier": "S3",
+      "label": "Use a personal access token",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Airtable personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "pat...",
+          "secret": true,
+          "helperMd": "Choose provider scopes and resource bases for intended actions; token and user/base role permissions both restrict access."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://support.airtable.com/articles/9897799762-using-the-airtable-mcp-server",
+        "keys": "https://airtable.com/create/tokens"
+      },
+      "warnings": [
+        "Use a disposable or development base for initial write qualification. Enterprise admins may need to allowlist MCP access."
       ]
     }
   ]

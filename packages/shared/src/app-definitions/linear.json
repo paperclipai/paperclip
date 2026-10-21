@@ -33,7 +33,7 @@
           "write"
         ]
       },
-      "guidanceMd": "Connect Linear for issues and projects. Paperclip registers its own OAuth client with Linear's MCP server, so no developer-console setup is needed.",
+      "guidanceMd": "Connect Linear for issues and projects. Paperclip registers its own OAuth client with Linear MCP; no developer-console setup is needed.",
       "riskTier": "S2",
       "requiredResourceFilters": [
         "workspace",
@@ -57,7 +57,50 @@
             "prefix": "Bearer "
           }
         }
+      },
+      "label": "Sign in with Linear",
+      "consoleLinks": {
+        "docs": "https://linear.app/docs/mcp"
       }
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a Linear API key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.linear.app/mcp"
+      },
+      "guidanceMd": "Create a Linear API key with the permissions needed for the actions you intend to allow. A key restricted to Read is supported for read-only use; workspace and role access still apply.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Linear API key",
+          "type": "password",
+          "required": true,
+          "secret": true,
+          "helperMd": "Choose intended permissions and teams when creating the personal API key. Read-only is supported with Read permission only.",
+          "placeholder": "Paste your Linear API key"
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://linear.app/docs/api-and-webhooks"
+      },
+      "warnings": [
+        "Linear’s standard MCP endpoint exposes read and write tools; review the discovered catalog and Paperclip action policies."
+      ]
     }
-  ]
+  ],
+  "docsUrl": "https://linear.app/docs/mcp",
+  "redirectConstraints": "https-or-loopback-http"
 }

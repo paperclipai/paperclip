@@ -1,3 +1,16 @@
+import { runCaseHandoffsFlow } from "./case-handoffs-flow.js";
+import { runCaseReceiptFlow } from "./case-receipt-flow.js";
+import { runTaskWorkspacesFlow } from "./task-workspaces-flow.js";
+import { runNativeActiveStopFlow as runCopilotActiveStopFlow } from "./copilot-active-stop-flow.js";
+import { nativeActiveStopTasks as copilotActiveStopTasks } from "./copilot-active-stop-tasks.js";
+import type { RestartRunnerIdentity } from "./process-tree-owner.js";
+import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runPiControlsFlow } from "./pi-controls-flow.js";
+import { runCursorNativeFlow } from "./cursor-native-flow.js";
+import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
+import { runCopilotProtectionFlow } from "./copilot-protection-flow.js";
+import { runPiNativeFlow } from "./pi-native-flow.js";
+import { seedPiFile, collectPiFileEvidence } from "./pi-file-evidence.js";
 import { runPlanTaskFlow } from "./plan-task-flow.js";
 import { assertNativeCompletionSelection, NATIVE_COMPLETION_PREFLIGHT_ENV, verifyNativeCompletionPreflight } from "./native-completion-admission.js";
 import { assertNativeInstructionSelection, verifyNativeInstructionPreflight, NATIVE_INSTRUCTION_PREFLIGHT_ENV, NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_DEFAULT_SHA256 } from "./native-instruction-consolidation.js";
@@ -5,12 +18,10 @@ import { captureNativeDefault, gradeNativeDefault, nativeCompletionWorkspaceDige
 import { gradeNativeCompletion, gradeNativeCompletionFinalAnswer } from "./native-completion-scoring.js";
 import { assertNativeBlockerReply } from "./native-blocker-visible.js";
 import { warmManagedFileEvidence } from "./warm-managed-files.js";
+import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { gitFinalizationEvidence, gitStreamingEvidence, setupGitStreamingWorkspace } from "./daytona-git-streaming.js";
 import { runsCompletionUpdateProbe, completionQualityControls, completionQualityStatus, judgeCompletionQuality, reserveCompletionQuality, type CompletionQualityRecord } from "./completion-quality.js";
-import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
 import { runNativeProviderLossFlow } from "./native-provider-loss-flow.js";
-import { runCursorNativeFlow } from "./cursor-native-flow.js";
-import { createRemoteNativeBootstrap, createRemoteFixtureClient } from "./remote-native-bootstrap.js";
 import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAssertions, type CleanupAssertion } from "./cleanup-verification.js";
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
@@ -25,11 +36,12 @@ import { runContinuationFlow } from "./continuation-flow.js";
 import { runEverydayFlow } from "./everyday-flow.js";
 import { gradeTaskTitle } from "./task-titles.js";
 import { runContextIntegrityFlow } from "./context-integrity-flow.js";
+import { runRepositorySkillsFlow } from "./repository-skills.js";
 import { captureStockHarness, gradeStockHarness, gradeStockHire } from "./stock-harness.js";
 import { verifyStockHarnessPreflight, STOCK_PREFLIGHT_ENV } from "./stock-harness-admission.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 
-import { runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
+import { projectFirstTaskResult, runFirstTaskFlow, setupFirstTaskFixtures } from "./first-task-flow.js";
 import { runChatFlow } from "./chat-flow.js";
 import { restartChatServer } from "./chat-restart.js";
 import { matchesRunCount, minimumRunCount } from "./run-count.js";
@@ -45,7 +57,7 @@ import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
 import { setupConnectionReview } from "./connection-reviews.js";
-import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
+import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, persistedFinalRunMessage, type MatcherResult } from "./matchers.js";
 import { readRegisteredArtifacts } from "./registered-artifact.js";
 import {
@@ -86,6 +98,7 @@ interface IssueRecord {
   companyId: string;
   title: string;
   status: string;
+  statusVersion?: number;
   workMode?: string;
   assigneeAgentId?: string | null;
   projectId?: string | null;
@@ -113,6 +126,7 @@ interface RunRecord {
   agentId: string;
   status: string;
   runtimeMode?: string;
+  nativeIssueId?: string | null;
   continuationAttempt?: number;
   retryOfRunId?: string | null;
   runnerInstanceId?: string | null;
@@ -236,6 +250,7 @@ async function restartIsolatedPaperclipServer(input: {
   api: RunnerApi;
   requestId: string;
   deadlineAt: number;
+  preserveRunner?: RestartRunnerIdentity;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -246,7 +261,7 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId }),
+    JSON.stringify({ requestId: input.requestId, ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}) }),
     { encoding: "utf8", mode: 0o600 },
   );
   await rename(temporaryRequestPath, requestPath);
@@ -555,6 +570,9 @@ for (const execution of executions) {
     page,
     request,
   }, testInfo) => {
+    test.skip(execution.suite.id === "first-task" && execution.profile.id === "runner-acpx-claude"
+      && (process.platform !== "darwin" || process.arch !== "arm64"),
+    "Ordinary native Claude onboarding is qualified on Apple Silicon only in this delivery.");
     test.setTimeout(
       execution.task.flow === "warm_three_turn"
         ? deadlineMs
@@ -584,7 +602,7 @@ for (const execution of executions) {
     const credentials = credentialValues();
     const secrets = normalizedSecrets(Object.values(credentials));
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -597,10 +615,12 @@ for (const execution of executions) {
     let fixtures: LiveFixtureValues | undefined;
     let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
+    let workflowCase: { id: string; identifier?: string } | undefined;
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
+    let piFileSeed: Awaited<ReturnType<typeof seedPiFile>> | undefined;
     const completionQuality: CompletionQualityRecord[] = [];
     const completionEvidence = async (name: string, data: unknown) => {
       await writeSanitizedJson(snapshotsDir, name, data, secrets);
@@ -627,6 +647,7 @@ for (const execution of executions) {
     };
     let firstTaskEvidence: RunnerE2EResult["firstTask"];
     let turnTimings: NonNullable<RunnerE2EResult["turnTimings"]> | undefined;
+    let startupReuse: RunnerE2EResult["startupReuse"];
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
     let primaryError: unknown;
@@ -658,6 +679,8 @@ for (const execution of executions) {
         issuePrefix: fixtures?.company.issuePrefix,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier,
+        caseId: execution.task.flow === "case_handoff" ? workflowCase?.id : undefined,
+        caseIdentifier: execution.task.flow === "case_handoff" ? workflowCase?.identifier : undefined,
       });
 
     const captureScreenshot = async (
@@ -687,16 +710,9 @@ for (const execution of executions) {
       const listed = await api.get<EnvironmentLeaseRecord[]>(
         `/api/environments/${fixtures.environment.id}/leases`,
       );
-      const selectedRunIds = new Set(selectedRuns.map((run) => run.id));
-      const relevant = listed.filter(
-        (lease) =>
-          lease.provider === "daytona" &&
-          (selectedRunIds.size === 0 ||
-            (lease.heartbeatRunId &&
-              selectedRunIds.has(lease.heartbeatRunId)) ||
-            (issue && lease.issueId === issue.id)),
-      );
-      runtimeLeases = relevant.length > 0 ? relevant : listed;
+      runtimeLeases = selectFixtureRuntimeLeases({ leases: listed,
+        runIds: selectedRuns.map(run => run.id), issueId: issue?.id,
+        setupProbeLeaseId: fixtures.setupProbe?.leaseId, setupLeaseIds: fixtures.setupLeases?.map(lease => lease.leaseId) });
     };
 
     const cancelActiveRunsForCleanup = async () => {
@@ -863,10 +879,11 @@ for (const execution of executions) {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
         await writeSanitizedJson(snapshotsDir, "stock-harness-preflight.json", receipt, secrets);
       }
+      const nativeRolloutEnabled = execution.profile.provider !== "codex";
       const experimental = await api.patch<{
         enableNativeRunner: boolean;
       }>("/api/instance/settings/experimental", {
-        enableNativeRunner: true,
+        enableNativeRunner: nativeRolloutEnabled,
         ...(["warm_three_turn", "everyday_workflow"].includes(execution.task.flow)
           ? { enableIsolatedWorkspaces: true }
           : {}),
@@ -875,13 +892,18 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
-      expect(experimental.enableNativeRunner).toBe(true);
+      expect(experimental.enableNativeRunner).toBe(nativeRolloutEnabled);
+
+      if (execution.suite.id === "extended-harnesses" && execution.profile.qualificationCandidate === "pi" && execution.task.id === "file-edit-validate") {
+        piFileSeed = await seedPiFile(workspacePath, nonce);
+        await writeSanitizedJson(snapshotsDir, "pi-file-seed.json", piFileSeed, secrets);
+      }
 
       if (execution.suite.id === "daytona-git-streaming") {
         await setupGitStreamingWorkspace(workspacePath);
       }
       fixtures = execution.task.flow === "first_task"
-        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, observe: value => { fixtures = value; } })
+        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; } })
         : await setupLiveFixtures({
         api,
         execution,
@@ -903,7 +925,7 @@ for (const execution of executions) {
         nativeInitial = { issueIds: issues.map(value => value.id), agentIds: agents.map(value => value.id), workspaceDigest };
       }
       const remoteBootstrap = execution.environment.id === "daytona"
-        && ["cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
+        && ["pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss"].includes(execution.task.flow)
         ? createRemoteNativeBootstrap({
           api, daytona: await createRemoteFixtureClient(credentials.DAYTONA_API_KEY ?? ""),
           companyId: fixtures.company.id, environmentId: fixtures.environment.id, agentId: fixtures.agent.id,
@@ -911,6 +933,7 @@ for (const execution of executions) {
           nodeSha256: process.env.PAPERCLIP_E2E_DAYTONA_NODE_SHA256 ?? "",
           runnerdSha256: process.env.PAPERCLIP_E2E_DAYTONA_RUNNERD_SHA256 ?? "",
           deadlineAt: startedAtMs + deadlineMs,
+          requireCopilotTaskContext: execution.profile.qualificationCandidate === "copilot",
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         }) : undefined;
 
@@ -954,6 +977,8 @@ for (const execution of executions) {
           companyId: fixtures.company.id,
           environmentId: fixtures.environment.id,
           agentId: fixtures.agent.id,
+          ...(fixtures.setupProbe ? { setupProbe: { durationMs: fixtures.setupProbe.durationMs,
+            ...(fixtures.setupProbe.defaultRunner ? { defaultRunner: fixtures.setupProbe.defaultRunner } : {}) } } : {}),
           secretIds: Object.fromEntries(
             Object.entries(fixtures.secretRefs).map(([name, ref]) => [
               name,
@@ -970,7 +995,42 @@ for (const execution of executions) {
         secrets,
       );
 
-      if (execution.task.flow === "public_mcp") {
+      if (execution.task.flow === "case_handoff") {
+        const receiptSmoke = execution.task.id === "receipt-smoke";
+        const runFlow = receiptSmoke ? runCaseReceiptFlow : runCaseHandoffsFlow;
+        const journey = await runFlow({ page, api, fixtures, execution, nonce, workspacePath,
+          deadlineAt: startedAtMs + deadlineMs - 30_000,
+          observe: (currentIssue, currentRuns, checks, currentCase) => {
+            issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[];
+            workflowCase = { id: currentCase.id, identifier: currentCase.identifier };
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const,
+              path: `${receiptSmoke ? "caseReceipt" : "caseHandoffs"}.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          }, capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = journey.issue as IssueRecord; selectedRuns = journey.runs as RunRecord[];
+        await writeSanitizedJson(snapshotsDir, "api-state.json", {
+          capturePhase: "completed",
+          issue: { id: issue.id, identifier: issue.identifier, status: issue.status,
+            assigneeAgentId: issue.assigneeAgentId, statusVersion: issue.statusVersion },
+          workflowCase,
+          runs: selectedRuns.map(candidate => ({ id: candidate.id, companyId: candidate.companyId,
+            agentId: candidate.agentId, status: candidate.status, runtimeMode: candidate.runtimeMode,
+            nativeIssueId: candidate.nativeIssueId, startedAt: candidate.startedAt,
+            finishedAt: candidate.finishedAt, errorCode: candidate.errorCode })),
+          matcherResults,
+        }, secrets);
+        await captureScreenshot("final-state", "Final visible task state", "final-state.png");
+      } else if (execution.task.flow === "task_workspaces") {
+        const journey = await runTaskWorkspacesFlow({ page, api, fixtures, execution, nonce, temporaryRoot,
+          deadlineAt: startedAtMs + deadlineMs - 30_000,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `task-workspaces-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (currentIssue, currentRuns, checks) => {
+            issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[];
+            matcherResults = checks.map(check => ({ matcher: { kind: "json_path" as const, path: `taskWorkspaces.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+          }, capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = journey.issue as IssueRecord; selectedRuns = journey.runs as RunRecord[];
+      } else if (execution.task.flow === "public_mcp") {
         const journey = await runPublicMcpFlow({
           page, api, fixtures, execution, nonce, secrets, userId: publicMcpUserId,
           credential: credentials[execution.profile.credential]!, usage: publicMcpUsage!, deadlineAt: startedAtMs + deadlineMs,
@@ -1012,6 +1072,15 @@ for (const execution of executions) {
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
         });
         issue = accounting.issue as IssueRecord; selectedRuns = accounting.runs as RunRecord[];
+      } else if (execution.task.flow === "pi_controls") {
+        const story = await runPiControlsFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piControls.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "native_provider_loss") {
         const story = await runNativeProviderLossFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1022,14 +1091,23 @@ for (const execution of executions) {
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeProviderLoss.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "native_active_stop") {
-        const story = await runNativeActiveStopFlow({
-          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+        const story = await (execution.profile.qualificationCandidate === "copilot" ? runCopilotActiveStopFlow : runNativeActiveStopFlow)({
+          page, api, fixtures, execution: execution.profile.qualificationCandidate === "copilot" && execution.task.id === "pending-permission-stop" ? { ...execution, task: copilotActiveStopTasks[0]! } : execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
           observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
           capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
           remoteBootstrap, registerCleanupAssertion, registerBeforeEnvironmentTeardownAssertion,
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeActiveStop.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "copilot_protection") {
+        const story = await runCopilotProtectionFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerBeforeEnvironmentTeardownAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `copilotProtection.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "cursor_native") {
         const story = await runCursorNativeFlow({
           page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1040,6 +1118,17 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "pi_native") {
+        const story = await runPiNativeFlow({
+          page, api, fixtures, execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
+          restart: preserveRunner => restartIsolatedPaperclipServer({ api, requestId: `pi-native-${nonce}`, deadlineAt: startedAtMs + deadlineMs, preserveRunner }),
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          remoteBootstrap, registerCleanupAssertion: remoteBootstrap ? registerBeforeEnvironmentTeardownAssertion : registerCleanupAssertion,
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `piNative.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
       } else if (execution.task.flow === "instruction_persistence") {
         const story = await runInstructionPersistenceFlow({
           page, api, fixtures, execution, nonce, secrets, deadlineAt: startedAtMs + deadlineMs,
@@ -1073,6 +1162,14 @@ for (const execution of executions) {
         });
         issue = story.issue; selectedRuns = story.runs;
         matcherResults = story.evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: check.id, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "repository_skills") {
+        const story = await runRepositorySkillsFlow({ page, api, fixtures, execution, nonce, credentials, secrets,
+          deadlineAt: startedAtMs + deadlineMs, capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `repositorySkills.${check.id}`, expected: true }, passed: check.passed, detail: check.id }));
       } else if (execution.task.flow === "context_integrity") {
         const contextIntegrity = await runContextIntegrityFlow({
           page, api, fixtures, execution, nonce, deadlineAt: startedAtMs + deadlineMs,
@@ -1099,7 +1196,7 @@ for (const execution of executions) {
         if (matcherResults.length === 0) matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
       } else if (execution.task.flow === "first_task") {
         const firstTask = await runFirstTaskFlow({
-          page, api, fixtures, execution, nonce, secrets,
+          page, api, fixtures, execution, nonce, deadlineAt: startedAtMs + deadlineMs, secrets,
           observe: (currentIssue, runs, evidence) => {
             issue = currentIssue; selectedRuns = runs; firstTaskEvidence = evidence;
             matcherResults = evidence.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `firstTask.checks.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
@@ -2196,6 +2293,15 @@ for (const execution of executions) {
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);
         if (!paging.passed) invariantFailures.push(`Bounded response paging was not proven: ${paging.failure}`);
       }
+      if (piFileSeed) {
+        const proof = await collectPiFileEvidence({ page, api, nonce, companyId: fixtures.company.id,
+          issueId: issue.id, agentId: fixtures.agent.id, run: finalRun,
+          events: runEventsByRun.find(entry => entry.runId === finalRun.id)?.events ?? [],
+          seed: piFileSeed, workspace: workspacePath,
+          environment: execution.environment.id === "daytona" ? "daytona" : "local", environmentId: fixtures.environment.id,
+          evidence: data => writeSanitizedJson(snapshotsDir, "pi-file-observation.json", data, secrets) });
+        await writeSanitizedJson(snapshotsDir, "pi-file-evidence.json", proof, secrets);
+      }
       if (execution.suite.id === "task-titles") {
         const titleEvidence = gradeTaskTitle({
           initial: titleCreation?.issue, submitted: titleCreation?.submitted,
@@ -2271,7 +2377,7 @@ for (const execution of executions) {
       if (registeredArtifacts.length > 0) {
         await writeSanitizedJson(snapshotsDir, "downloaded-registered-artifacts.json", registeredArtifacts, secrets);
       }
-      matcherResults = await Promise.all(
+      matcherResults.push(...await Promise.all(
         taskMatchers.map((matcher) =>
           evaluateMatcher(matcher, {
             ...matcherObservation,
@@ -2285,7 +2391,7 @@ for (const execution of executions) {
               matcher.kind === "message_exact" ? finalRunMessage : message,
           }),
         ),
-      );
+      ));
       const failedMatchers = matcherResults.filter((result) => !result.passed);
       const exactMessageMatcher = taskMatchers.find(
         (matcher) => matcher.kind === "message_exact",
@@ -2685,6 +2791,9 @@ for (const execution of executions) {
         }
       }
 
+      startupReuse = runEventsByRun.map(captured => ({ runId: captured.runId,
+        ...summarizeStartupReuse(captured.error ? [] : captured.events) }));
+      await writeSanitizedJson(snapshotsDir, "startup-reuse.json", startupReuse, secrets);
       await writeSanitizedJson(
         snapshotsDir,
         "api-state.json",
@@ -3033,12 +3142,12 @@ for (const execution of executions) {
       }
 
       const finishedAtMs = Date.now();
-      const runtimeUsage = buildRuntimeUsage({
+      const runtimeUsage = fixtureRuntimeCostCoverage(buildRuntimeUsage({
         environmentId: execution.environment.id,
         runs: selectedRuns,
         leases: runtimeLeases,
         fallbackFinishedAt: new Date(finishedAtMs),
-      });
+      }), fixtures ?? {});
       const resultWithoutBilling: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
         executionId: execution.id,
@@ -3073,6 +3182,7 @@ for (const execution of executions) {
         issueIdentifier: issue?.identifier ?? null,
         runIds: selectedRuns.map((run) => run.id),
         ...(turnTimings ? { turnTimings } : {}),
+        ...(startupReuse ? { startupReuse } : {}),
         startedAt,
         finishedAt: new Date(finishedAtMs).toISOString(),
         durationMs: finishedAtMs - startedAtMs,
@@ -3094,10 +3204,13 @@ for (const execution of executions) {
         ...resultWithoutBilling,
         billing: summarizeExecutionBilling(resultWithoutBilling),
       };
+      if (firstTaskEvidence) {
+        await writeSanitizedJson(snapshotsDir, "first-task-result-private.json", result, secrets);
+      }
       await mkdir(privateDir, { recursive: true });
       await writeFile(
         resultPath,
-        `${JSON.stringify(sanitizeJson(result, secrets), null, 2)}\n`,
+        `${JSON.stringify(sanitizeJson(projectFirstTaskResult(result), secrets), null, 2)}\n`,
         "utf8",
       );
       await testInfo.attach("runner-e2e-result", {

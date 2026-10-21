@@ -189,12 +189,16 @@ describe("company decision service", () => {
     const context: DecisionContext = { companyId: f.companyId, feature: settingsDecisionTest,
       actor: { type: "agent", agentId: f.agentId, runId, companyId: f.companyId, source: "agent_jwt" } };
     const remove = () => agentService(db).remove(f.agentId);
+    let inFlightDeletionError: unknown;
     f.provider.mockImplementationOnce(async () => {
-      await expect(remove()).rejects.toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
+      // Exercise the accounting guard after lifecycle termination.
+      await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, f.agentId));
+      inFlightDeletionError = await remove().catch(error => error);
       expect(await f.service.decide(f.context, DECISION_TEST_REQUEST)).toMatchObject({ status: "unavailable", reason: "budget_blocked" });
       return { errorCode: "timeout", receipt: decisionReceipt("openai", null) };
     });
     expect((await f.service.decide(context, DECISION_TEST_REQUEST)).status).toBe("failed");
+    expect(inFlightDeletionError).toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
     await expect(remove()).rejects.toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
     expect((await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId)))[0]).toMatchObject({ state: "held", amountCents: "1.0000000" });
   });

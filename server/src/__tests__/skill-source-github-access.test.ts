@@ -14,6 +14,14 @@ const db = {} as Db;
 beforeEach(() => { mocks.grantIds.mockResolvedValue(['grant']); mocks.connectionIds.mockResolvedValue([]); });
 afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 describe('GitHub source authorization', () => {
+  it('identifies a missing tracked branch instead of suggesting another connection', async () => {
+    mocks.headers.mockResolvedValue({ Authorization: 'Bearer allowed' });
+    const fetch = vi.fn().mockResolvedValue(new Response('', { status: 422 }));
+    vi.stubGlobal('fetch', fetch);
+    await expect(skillSourceGitHubReader(db, 'missing-ref-company', actor({ type: 'board', userId: 'alice' }), 'connection')('/repos/acme/private/commits/main'))
+      .rejects.toMatchObject({ details: { code: 'skill_source_ref_unavailable' }, message: expect.stringContaining('branch or revision') });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('uses one lease across metadata, snapshot and auditing, then permits another complete scan', async () => {
     const fixture = githubFixture({ 'SKILL.md': '---\nname: example\ndescription: Useful instructions\n---\nRead the document.' });
     const fetch = vi.fn(async (url: string) => Response.json(await fixture(new URL(url).pathname)));

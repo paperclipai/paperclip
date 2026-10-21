@@ -25,16 +25,19 @@ export function shouldUseIsolatedTaskDirectory(input: {
 export async function materializeIsolatedTaskDirectory(input: {
   companyId: string;
   issueId: string;
+  attemptId?: string;
 }): Promise<string> {
   // Files belong to the task, so reassignment preserves the same workspace.
-  const identities = [input.companyId, input.issueId];
+  const identities = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
   if (identities.some((value) => !/^[a-zA-Z0-9_-]+$/.test(value))) {
     throw new Error("Invalid isolated task workspace identity");
   }
   const root = resolvePaperclipInstanceRoot();
   await mkdir(root, { recursive: true });
   let cwd = await realpath(root);
-  for (const segment of ["isolated-workspaces", ...identities]) {
+  // A retry is a sibling namespace, never a descendant of the retained root.
+  // An old copyback operation must not be able to overwrite its replacement.
+  for (const segment of [input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces", ...identities]) {
     cwd = path.join(cwd, segment);
     await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "EEXIST") throw error;

@@ -136,6 +136,18 @@ describe("Workspaces", () => {
     vi.clearAllMocks();
   });
 
+  it("links projectless task folders to workspace details without a project route", async () => {
+    mockExecutionWorkspacesApi.listOverview.mockResolvedValue(overviewResponse({ items: [{ ...overviewItem(), projectId: null, projectName: null, projectUrlKey: null }] }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(() => root!.render(<QueryClientProvider client={client}><Workspaces /></QueryClientProvider>));
+    await flushQueries();
+    await vi.waitFor(() => expect(container.textContent).toContain("Task workspaces"));
+    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    expect(container.querySelector('a[href^="/projects/"]')).toBeNull();
+    client.clear();
+  });
+
   it("uses the bounded overview endpoint and renders grouped workspace cards with linked task summaries", async () => {
     mockExecutionWorkspacesApi.listOverview
       .mockResolvedValueOnce(overviewResponse({

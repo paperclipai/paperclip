@@ -1,0 +1,139 @@
+{
+  "audit": {
+    "file": "ui/src/components/task-chat/transcript-adapter.test.ts",
+    "base": "51dc1eb69f5c52d6ef0e29cd2e4061da6c88871f",
+    "originalSha256": "a4b107fd4a12ee5acf55ee2a6aabcf1f8d7f26202b8adf2c533d1929a39be1ef",
+    "candidateSha256": "f79f72eb7d5f43e26fb0ac9f614887786dabea6f82af12e64446aba5fa54e03c",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "formattingOnlyCleanup": "Remove one extra blank line before the enclosing describe closes",
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 2,
+    "parserCallsRemoved": 2,
+    "netTestLinesRemoved": 15,
+    "migrations": [
+      {
+        "retired": "marks only the message still open at the tail as streaming",
+        "keeper": "tags agent messages streamed inside a live run turn as interstitial",
+        "parserInputsAndFilterEqual": true,
+        "originalKindGuardRetained": true,
+        "exactMigratedStatements": [
+          "if (messages[0].kind !== \"message\" || messages[1].kind !== \"message\")\n      return;",
+          "expect(messages[0].streaming).toBe(false);",
+          "expect(messages[1].streaming).toBe(true);"
+        ],
+        "registeredInvocationsRemoved": 1,
+        "parserCallsRemoved": 1
+      },
+      {
+        "retired": "stamps atMs from the first streamed chunk",
+        "keeper": "tags settled-history messages interstitial too, so live and history agree",
+        "parserInputsAndFilterEqual": true,
+        "originalKindGuardRetained": true,
+        "exactMigratedStatements": [
+          "if (messages[0].kind !== \"message\" || messages[1].kind !== \"message\")\n      return;",
+          "expect(messages[0].atMs).toBe(Date.parse(TS));",
+          "expect(messages[1].atMs).toBe(Date.parse(\"2026-07-31T12:00:05.000Z\"));"
+        ],
+        "registeredInvocationsRemoved": 1,
+        "parserCallsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "421f9dbbf4e63e1ed307279704a1be2918526bc35109fa15adc88d06668d0c58",
+  "runs": [
+    {
+      "kind": "baseline",
+      "jsonSha256": "2bc04c1382a274652a867e74fd7916721419e325e76c4c364757538a85d35300",
+      "total": 105,
+      "passed": 105,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "kind": "candidate",
+      "jsonSha256": "1a7f58af351f003c24491660580c7565fcb6f46203ec641837c06cf39ced9f14",
+      "total": 103,
+      "passed": 103,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "transcript-non-tail-reset",
+      "owner": "ui/src/components/task-chat/transcript-adapter.ts",
+      "title": "tags agent messages streamed inside a live run turn as interstitial",
+      "sourceSha": "b1895fa6038b65e4d7fab3773dc1ea83ec1a35892d1b001142b14b275e7b1ae1",
+      "replacements": 1,
+      "mutation": {
+        "before": "if (it.kind === \"message\" && idx !== messageIndex) it.streaming = false;",
+        "after": "if (it.kind === \"message\" && idx !== messageIndex) it.streaming = true;"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "caseStatus": "passed",
+        "jsonSha256": "298db52c7b3cd9636c1dfcc50b403e278bdd35a3e8f72156973bb77b9e1c294f",
+        "logSha256": "8ab8ab05ce7559f4de16ffd01ed68c7ce0aa847401f129bcea8bf449cc2ac206"
+      },
+      "negative": {
+        "exit": 1,
+        "caseStatus": "failed",
+        "intendedAssertionFailure": "AssertionError: expected true to be false // Object.is equality",
+        "jsonSha256": "bc2ffc949c5982f6975a48356631cf044f272950a6567815895e6b312a48dca0",
+        "logSha256": "1eff4e160b2a4237619c4849d5c6896fc8d627ce24c72b18393328aff9d22b4f"
+      }
+    },
+    {
+      "slug": "transcript-message-timestamp",
+      "owner": "ui/src/components/task-chat/transcript-adapter.ts",
+      "title": "tags settled-history messages interstitial too, so live and history agree",
+      "sourceSha": "b1895fa6038b65e4d7fab3773dc1ea83ec1a35892d1b001142b14b275e7b1ae1",
+      "replacements": 1,
+      "mutation": {
+        "before": "atMs: Number.isFinite(atMs) ? atMs : undefined,",
+        "after": "atMs: Number.isFinite(atMs) ? atMs + 1 : undefined,"
+      },
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "caseStatus": "passed",
+        "jsonSha256": "03eadad261cf00b8294cffe69d300e521c370d5e939c8cfd585c38c55b90ea25",
+        "logSha256": "ff2883bd26a884dacfafb56fa698259aa6023d2526ee3d982ddffc2c6a50d1de"
+      },
+      "negative": {
+        "exit": 1,
+        "caseStatus": "failed",
+        "intendedAssertionFailure": "AssertionError: expected 1785499200001 to be 1785499200000 // Object.is equality",
+        "jsonSha256": "cff42697f265879a73202f701d39fac703788a5bf26ebe236e47e943227a101b",
+        "logSha256": "4736d9727f5398ac9009afd0498ad19529009d7d4eee639743f40b875f9e3103"
+      }
+    }
+  ],
+  "allProductionOwnerBytesRestored": true,
+  "productionLinesChanged": 0,
+  "priorUiProofUnchanged": {
+    "commit": "51dc1eb69f5c52d6ef0e29cd2e4061da6c88871f",
+    "files": {
+      "doc/plans/2026-10-12-test-audit-r7-ui.md": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8",
+      "doc/plans/2026-10-12-test-audit-r7-ui-controls.json": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7",
+      "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229",
+      "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    }
+  },
+  "discardedAttempt": "Initial candidate clipped the suite-closing statement and failed to parse; regenerated from baseline before accepted full-file run. No result from that attempt counts as proof.",
+  "ciInclusion": "@paperclipai/ui project in general-workspaces-a; complete file remains included; no routing changes",
+  "combinedNetTestLinesRemoved": 386,
+  "combinedRegisteredInvocationsRemoved": 4,
+  "combinedCompleteFileBaselineCases": 333,
+  "combinedCompleteFileCandidateCases": 329,
+  "finalPolishedSourceRun": {
+    "candidateSha256": "f79f72eb7d5f43e26fb0ac9f614887786dabea6f82af12e64446aba5fa54e03c",
+    "jsonSha256": "1cdd87edeed3e2801bcb6aeaab417ae87452bced5daf8f3436ac52bc1ded9aef",
+    "total": 103,
+    "passed": 103,
+    "failed": 0,
+    "skipped": 0
+  }
+}

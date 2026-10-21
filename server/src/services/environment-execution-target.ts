@@ -1,3 +1,4 @@
+import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
@@ -254,6 +255,26 @@ export async function resolveEnvironmentExecutionTarget(input: {
     };
   }
 
+  if (input.environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+    const lease = input.lease;
+    const runtime = input.environmentRuntime;
+    if (!lease || !runtime || lease.companyId !== input.companyId ||
+        lease.environmentId !== input.environment.id || !await runtime.supportsTasks({ lease })) {
+      throw new Error("Plugin environment does not provide native Runner task execution");
+    }
+    // The Runner resolves its workspace locally; this is only a relative scope marker.
+    return {
+      kind: "remote", transport: "sandbox", providerKey: "plugin",
+      environmentId: input.environment.id, leaseId: lease.id, remoteCwd: ".",
+      runnerLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: lease.providerLeaseId! },
+      ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
+      runnerTask: operation => runtime.task({ companyId: input.companyId, leaseId: lease.id,
+        operation: environmentTaskOperationSchema.parse(operation) }),
+
+    };
+  }
+
   if (input.environment.driver === "sandbox") {
     // Keep this gate in lockstep with the shared capability metadata that the
     // environment selector and capabilities API expose; a drift here lets the
@@ -484,6 +505,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    commandTimeoutMs: commandInput.commandTimeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and

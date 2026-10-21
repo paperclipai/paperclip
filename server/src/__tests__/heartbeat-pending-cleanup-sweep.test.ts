@@ -36,6 +36,7 @@ vi.mock("../middleware/logger.js", () => ({
 
 import { logger } from "../middleware/logger.ts";
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "../services/heartbeat.ts";
+import { hasPendingRunCleanup } from "../services/execution-blocker.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -163,6 +164,50 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     });
     return id;
   }
+
+  it("settles the cleanup claim before a later cooldown write fails", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const agentId = randomUUID(), runId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Cleanup worker", role: "engineer",
+      status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual",
+      status: "succeeded", runtimeMode: "native", finishedAt: new Date() });
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000) });
+    await db.update(environmentLeases).set({ heartbeatRunId: runId }).where(eq(environmentLeases.id, leaseId));
+    const teardown = vi.fn(async () => undefined);
+    const heartbeat = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: teardown,
+    } as unknown as HeartbeatEnvironmentRuntime });
+    await db.execute(sql`CREATE FUNCTION test_cleanup_cooldown_failure() RETURNS trigger AS $$
+      BEGIN
+        IF OLD.status = 'expired' AND NEW.metadata ? 'pendingCleanupRetryAfterMs' THEN
+          RAISE EXCEPTION 'fixture cooldown write failed';
+        END IF;
+        RETURN NEW;
+      END;
+    $$ LANGUAGE plpgsql`);
+    await db.execute(sql`CREATE TRIGGER test_cleanup_cooldown_failure BEFORE UPDATE ON environment_leases
+      FOR EACH ROW EXECUTE FUNCTION test_cleanup_cooldown_failure()`);
+    try {
+      await expect(heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 })).rejects.toMatchObject({
+        cause: { message: "fixture cooldown write failed" },
+      });
+      expect(teardown).toHaveBeenCalledTimes(1);
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(lease).toMatchObject({ status: "expired", cleanupStatus: "success",
+        metadata: { pendingCleanupInFlight: false } });
+      expect(await hasPendingRunCleanup(db, companyId, runId)).toBe(false);
+      expect(await heartbeatService(db, { environmentRuntime: {
+        retryPendingSandboxTeardown: teardown,
+      } as unknown as HeartbeatEnvironmentRuntime }).sweepPendingCleanupLeases({ backoffMs: 0 }))
+        .toMatchObject({ swept: 0, destroyed: 0 });
+      expect(teardown).toHaveBeenCalledTimes(1);
+    } finally {
+      await db.execute(sql`DROP TRIGGER test_cleanup_cooldown_failure ON environment_leases`);
+      await db.execute(sql`DROP FUNCTION test_cleanup_cooldown_failure()`);
+    }
+  });
 
   it("test_pending_cleanup_sweep_retries_and_destroys_lease", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();

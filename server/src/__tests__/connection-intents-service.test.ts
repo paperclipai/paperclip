@@ -1,3 +1,5 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -38,6 +40,7 @@ import { materializeNativeInteractionResponses } from "../services/native-runtim
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -196,6 +199,29 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("responsible-user");
     expect(serialized).not.toContain(claims.sub);
+  });
+
+  it("discovers GitHub review bots independently from chat connectors", async () => {
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    const service = connectionIntentService(db);
+    try {
+      await settings.updateExperimental({ enableChatConnectors: false, enableGitHubReviewBots: true });
+      expect((await service.search(claims, "github")).results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ service: "github-code-review-bot" }),
+        expect.objectContaining({ service: "github" }),
+      ]));
+      expect((await service.search(claims, "slack")).results.some(item =>
+        item.methods.some(method => method.purpose === "channel"))).toBe(false);
+      await settings.updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: false });
+      expect((await service.search(claims, "github")).results.some(item =>
+        item.service === "github-code-review-bot")).toBe(false);
+    } finally {
+      await settings.updateExperimental({
+        enableChatConnectors: previous.enableChatConnectors,
+        enableGitHubReviewBots: previous.enableGitHubReviewBots,
+      });
+    }
   });
 
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {
@@ -372,7 +398,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     });
   });
 
-  it("only advertises GitHub tool methods in search and setup options", async () => {
+  it("separates GitHub runtime discovery from tool setup options", async () => {
     const service = connectionIntentService(db);
     const search = await service.search(claims, "github");
     const github = search.results.find((result) => result.service === "github");
@@ -383,6 +409,12 @@ describeEmbeddedPostgres("connectionIntentService", () => {
             key: "mcp-key",
             label: "Personal access token (advanced)",
             auth: "api_key",
+            purpose: "tool",
+          }),
+          expect.objectContaining({
+            key: "copilot-token",
+            purpose: "ai",
+            setupPath: expect.stringContaining("/apps/connect?source=github"),
           }),
         ],
       }),
@@ -407,6 +439,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(setup.service.methods.map((method) => method.key)).not.toContain(
       "chat-agent",
     );
+    expect(setup.service.methods.map((method) => method.key)).not.toContain("copilot-token");
   });
 
   it("serializes OAuth intent completion behind addressed-user membership revocation", async () => {
@@ -773,7 +806,11 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   it("recovers a resolution after a failed dispatch and acknowledges an already queued wake exactly once", async () => {
     const service = connectionIntentService(db);
     const pending = await service.request(claims, "airtable");
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.connection, notified);
     await service.decline(pending.interactionId!, claims.responsible_user_id);
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
     const wakeup = vi.fn().mockRejectedValueOnce(new Error("simulated crash before durable enqueue"));
     const deliveries = connectionIntentDeliveryService(db, { wakeup } as never);
     await expect(deliveries.deliver(pending.interactionId!)).rejects.toThrow("simulated crash");

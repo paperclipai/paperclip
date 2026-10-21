@@ -1,3 +1,4 @@
+import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import {
   createHash,
   generateKeyPairSync,
@@ -13,7 +14,7 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
-import type { Request } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -29,6 +30,7 @@ import {
   principalPermissionGrants,
 } from "@paperclipai/db";
 import {
+  EXTERNAL_AGENT_TOOL_GUIDANCE,
   acceptInviteSchema,
   createCliAuthChallengeSchema,
   claimJoinRequestApiKeySchema,
@@ -1770,7 +1772,7 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your Paperclip API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run `hermes gateway run --replace --accept-hooks`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable Paperclip base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your Paperclip API key through the standard claim endpoint. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. Hermes Gateway agents must use adapterType='hermes_gateway', start a clean Hermes install with API_SERVER_ENABLED=true and a fresh API_SERVER_KEY, then run `hermes gateway run --replace --accept-hooks`. Put the Hermes gateway URL in agentDefaultsPayload.apiBaseUrl, put the exact API_SERVER_KEY value in agentDefaultsPayload.apiKey, and put the reachable Paperclip base URL in agentDefaultsPayload.paperclipApiUrl. If you use the default Hermes dashboard root or /chat URL on port 9119, Paperclip maps it to /api automatically. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token." + "\n\n" + EXTERNAL_AGENT_TOOL_GUIDANCE,
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
@@ -1996,6 +1998,9 @@ export function buildInviteOnboardingTextDocument(
     Install path: ${onboarding.skill.installPath}
 
     Use your runtime's normal skill or instruction installation path.
+
+    ## Working through Paperclip
+    ${EXTERNAL_AGENT_TOOL_GUIDANCE}
 
     ## Text onboarding URL
     ${onboarding.textInstructions.url}
@@ -2633,6 +2638,8 @@ export function accessRoutes(
     allowedHostnames: string[];
     inviteResolutionNetwork?: Partial<InviteResolutionNetwork>;
     inviteRateLimiter?: InviteRateLimiter;
+    cliAuthCreateRateLimiter?: InviteRateLimiter;
+    cliAuthPollRateLimiter?: InviteRateLimiter;
     authPublicBaseUrl?: string;
   }
 ) {
@@ -2640,6 +2647,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const agentsLifecycle = createAgentLifecycle(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -2672,6 +2680,25 @@ export function accessRoutes(
       );
       return;
     }
+    next();
+  });
+
+  const cliAuthCreateRateLimiter = opts.cliAuthCreateRateLimiter ?? createInviteRateLimiter();
+  const cliAuthPollRateLimiter = opts.cliAuthPollRateLimiter ?? createInviteRateLimiter({ maxRequests: 120 });
+  const limitCliAuth = (limiter: InviteRateLimiter) => (req: Request, res: Response, next: NextFunction) => {
+    const result = limiter.consume(req.ip || req.socket?.remoteAddress || "unknown");
+    res.setHeader("X-RateLimit-Limit", String(result.limit));
+    res.setHeader("X-RateLimit-Remaining", String(result.remaining));
+    if (!result.allowed) {
+      res.setHeader("Retry-After", String(result.retryAfterSeconds));
+      next(tooManyRequests("Too many CLI auth requests", { retryAfterSeconds: result.retryAfterSeconds }));
+      return;
+    }
+    next();
+  };
+  router.use("/cli-auth/challenges", (_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
     next();
   });
 
@@ -2757,6 +2784,7 @@ export function accessRoutes(
 
   router.post(
     "/cli-auth/challenges",
+    limitCliAuth(cliAuthCreateRateLimiter),
     validate(createCliAuthChallengeSchema),
     async (req, res) => {
       const created = await boardAuth.createCliAuthChallenge(req.body);
@@ -2778,13 +2806,15 @@ export function accessRoutes(
     },
   );
 
-  router.get("/cli-auth/challenges/:id", async (req, res) => {
+  router.get("/cli-auth/challenges/:id", limitCliAuth(cliAuthPollRateLimiter), async (req, res) => {
     const id = (req.params.id as string).trim();
     const token =
       typeof req.query.token === "string" ? req.query.token.trim() : "";
     if (!id || !token) throw notFound("CLI auth challenge not found");
     if (!isUuidLike(id)) throw badRequest("Invalid CLI auth challenge ID");
-    const challenge = await boardAuth.describeCliAuthChallenge(id, token);
+    const challenge = await boardAuth.describeCliAuthChallenge(id, token, {
+      viewerUserId: req.actor.type === "board" ? req.actor.userId : undefined,
+    });
     if (!challenge) throw notFound("CLI auth challenge not found");
 
     const isSignedInBoardUser =
@@ -2793,6 +2823,8 @@ export function accessRoutes(
       Boolean(req.actor.userId);
     const canApprove =
       isSignedInBoardUser &&
+      (!challenge.requestedCompanyId || Boolean(req.actor.isInstanceAdmin) || isLocalImplicit(req)
+        || Boolean(req.actor.companyIds?.includes(challenge.requestedCompanyId))) &&
       (challenge.requestedAccess !== "instance_admin_required" ||
         isLocalImplicit(req) ||
         Boolean(req.actor.isInstanceAdmin));
@@ -2824,30 +2856,6 @@ export function accessRoutes(
         req.body.token,
         userId,
       );
-
-      if (approved.status === "approved") {
-        const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
-          userId,
-          requestedCompanyId: approved.challenge.requestedCompanyId,
-          boardApiKeyId: approved.challenge.boardApiKeyId,
-        });
-        for (const companyId of companyIds) {
-          await logActivity(db, {
-            companyId,
-            actorType: "user",
-            actorId: userId,
-            action: "board_api_key.created",
-            entityType: "user",
-            entityId: userId,
-            details: {
-              boardApiKeyId: approved.challenge.boardApiKeyId,
-              requestedAccess: approved.challenge.requestedAccess,
-              requestedCompanyId: approved.challenge.requestedCompanyId,
-              challengeId: approved.challenge.id,
-            },
-          });
-        }
-      }
 
       res.json({
         approved: approved.status === "approved",
@@ -2952,28 +2960,8 @@ export function accessRoutes(
     }
     const key = await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId);
     if (!key) throw notFound("Board API key not found");
-    const revoked = await boardAuth.revokeBoardApiKey(key.id);
+    const revoked = await boardAuth.revokeBoardApiKey(key.id, { userId: req.actor.userId, revokedVia: "board_api_key_lifecycle" });
     if (!revoked) throw notFound("Board API key not found");
-
-    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
-      userId: req.actor.userId,
-      boardApiKeyId: key.id,
-    });
-    for (const companyId of companyIds) {
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId: req.actor.userId,
-        action: "board_api_key.revoked",
-        entityType: "user",
-        entityId: req.actor.userId,
-        details: {
-          boardApiKeyId: key.id,
-          name: key.name,
-          revokedVia: "board_api_key_lifecycle",
-        },
-      });
-    }
 
     res.json({ ok: true, keyId: key.id });
   });
@@ -2986,25 +2974,7 @@ export function accessRoutes(
       req.actor.keyId,
       req.actor.userId,
     );
-    await boardAuth.revokeBoardApiKey(key.id);
-    const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
-      userId: key.userId,
-      boardApiKeyId: key.id,
-    });
-    for (const companyId of companyIds) {
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId: key.userId,
-        action: "board_api_key.revoked",
-        entityType: "user",
-        entityId: key.userId,
-        details: {
-          boardApiKeyId: key.id,
-          revokedVia: "cli_auth_logout",
-        },
-      });
-    }
+    await boardAuth.revokeBoardApiKey(key.id, { userId: key.userId, revokedVia: "cli_auth_logout" });
     res.json({ revoked: true, keyId: key.id });
   });
 
@@ -4268,7 +4238,7 @@ export function accessRoutes(
           }))
         );
 
-        const created = await agents.create(companyId, {
+        const created = await agentsLifecycle.requestHire(companyId, {
           name: agentName,
           role: "general",
           title: null,

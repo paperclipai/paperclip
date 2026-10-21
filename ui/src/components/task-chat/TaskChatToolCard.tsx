@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { TaskChatToolItem } from "./task-chat-model";
 import { toolTaxonomy } from "./tool-taxonomy";
+import { useTaskChatShimmer } from "./TaskChatShimmer";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -31,6 +32,7 @@ const STATUS_ICON = {
  */
 export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   const { Icon, spin, tone } = STATUS_ICON[item.status];
+  const shimmer = useTaskChatShimmer(item.id);
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
   const expandable = Boolean(item.target || item.detail || item.diff);
@@ -55,7 +57,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
             data-testid="task-chat-tool-icon"
           />
         </span>
-        <span className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
+        <span data-conversation-tool-running={item.status === "in_progress" && shimmer ? "true" : undefined} className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">
           <span className="shrink-0 font-medium leading-4">{item.name}</span>
           {item.target ? (
             <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro) leading-4">

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -591,14 +592,14 @@ function evaluatePolicyConditions(
 }
 
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
+  const selected = entry.selectorType === "application" ? entry.applicationId === ctx.applicationId
+    : entry.selectorType === "connection" ? entry.connectionId === ctx.connectionId
+    : entry.selectorType === "catalog_entry" ? entry.catalogEntryId === ctx.catalogEntryId
+    : entry.selectorType === "tool_name" ? entry.toolName === ctx.toolName
+    : entry.selectorType === "risk_level" ? entry.riskLevel === ctx.riskLevel : false;
+  if (!selected) return false;
   const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;
-  if (!evaluatePolicyConditions(conditions, ctx).matched) return false;
-  if (entry.selectorType === "application") return entry.applicationId === ctx.applicationId;
-  if (entry.selectorType === "connection") return entry.connectionId === ctx.connectionId;
-  if (entry.selectorType === "catalog_entry") return entry.catalogEntryId === ctx.catalogEntryId;
-  if (entry.selectorType === "tool_name") return entry.toolName === ctx.toolName;
-  if (entry.selectorType === "risk_level") return entry.riskLevel === ctx.riskLevel;
-  return false;
+  return evaluatePolicyConditions(conditions, ctx).matched;
 }
 
 function targetMatches(binding: typeof toolProfileBindings.$inferSelect, ctx: ToolAccessContext): boolean {
@@ -777,13 +778,14 @@ export function toolAccessPolicyService(db: Db) {
 
     return db.transaction(async (tx) => {
       const rows = await tx
-        .update(toolPolicies)
-        .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
+        .select()
+        .from(toolPolicies)
         .where(and(
           eq(toolPolicies.companyId, companyId),
           ne(toolPolicies.policyType, "trust_rule"),
         ))
-        .returning();
+        .orderBy(toolPolicies.id)
+        .for("no key update");
       const byId = new Map(rows.map((row) => [row.id, row]));
       const missingIds = uniquePolicyIds.filter((id) => !byId.has(id));
       if (missingIds.length > 0) {
@@ -797,12 +799,11 @@ export function toolAccessPolicyService(db: Db) {
       }
 
       const now = new Date();
-      for (const [index, policyId] of uniquePolicyIds.entries()) {
-        await tx
-          .update(toolPolicies)
-          .set({ priority: (index + 1) * 100, updatedAt: now })
-          .where(eq(toolPolicies.id, policyId));
-      }
+      await tx.execute(sql`UPDATE tool_policies
+        SET priority = (requested.ordinality * 100)::integer, updated_at = ${now.toISOString()}
+        FROM jsonb_array_elements_text(${JSON.stringify(uniquePolicyIds)}::jsonb)
+          WITH ORDINALITY AS requested(id, ordinality)
+        WHERE tool_policies.company_id = ${companyId} AND tool_policies.id = requested.id::uuid`);
       return tx
         .select()
         .from(toolPolicies)
@@ -976,7 +977,7 @@ export function toolAccessPolicyService(db: Db) {
           .select({
             companyId: heartbeatRuns.companyId,
             agentId: heartbeatRuns.agentId,
-            issueId: runContextSnapshotString("issueId"),
+            issueId: boundRunIssueIdSql(),
             projectId: runContextSnapshotString("projectId"),
             routineId: runContextSnapshotString("routineId"),
           })

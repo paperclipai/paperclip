@@ -87,12 +87,19 @@ describe("ACPX driver profile", () => {
     expect(
       validateAcpxDriverConfig({
         agent: "pi",
+        piThinkingLevel: "low",
         model: "openrouter/deepseek/deepseek-v4-flash-0731",
       }),
     ).toMatchObject({
-      ok: false,
-      issues: [{ path: "agent", code: "qualification_pending" }],
+      ok: true,
+      config: { agent: "pi", permissionMode: "approve-all" },
     });
+    for (const agent of ["copilot"]) {
+      expect(validateAcpxDriverConfig({ agent, model: "explicit-model" }))
+        .toMatchObject({ ok: false, issues: [{ path: "agent", code: "qualification_pending" }] });
+    }
+    expect(validateAcpxDriverConfig({ agent: "pi", piThinkingLevel: "low", model: "another-model" }))
+      .toMatchObject({ ok: true, config: { model: "another-model" } });
     expect(
       validateAcpxDriverConfig({
         agent: "claude",

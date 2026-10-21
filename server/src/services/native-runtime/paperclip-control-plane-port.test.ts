@@ -14,6 +14,7 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
@@ -42,7 +43,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
@@ -358,6 +359,53 @@ describe("PaperclipControlPlanePort conformance", () => {
     await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
     await expect(replacement.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
+  });
+
+  it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `api-${identity.runId}`,
+    }, { onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const result = { operationId: "call_api", apiOperationId: "POST /api/companies/{companyId}/exports", callId: "private-export",
+      status: 200, ok: true, data: { credentials: "private-history-fixture-value" } };
+    const wireResult = { success: true, contentItems: [{ type: "inputText", text: JSON.stringify(result) }] };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "item.completed", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(),
+      payload: { kind: "dynamicToolCall", item: { type: "tool_result", id: "private-export", tool_use_id: "private-export", result: wireResult } },
+    };
+    await port.appendEvent(event);
+    expect((await port.appendEvent(event)).disposition).toBe("duplicate");
+    expect(port.normalizeReplayPayload(event.payload)).toEqual(observed[0]?.payload);
+    expect(port.normalizeReplayPayload(observed[0]!.payload)).toEqual(observed[0]?.payload);
+    await expect(port.appendEvent({ ...event, payload: { ...event.payload, item: {
+      ...(event.payload.item as object), result: { success: true, contentItems: [{ type: "inputText",
+        text: JSON.stringify({ ...result, data: { credentials: "different-history-fixture-value" } }),
+      }] },
+    } } })).rejects.toThrow();
+    await port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity,
+      semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: JSON.stringify(result) },
+    });
+    const persisted = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
+    for (const saved of [persisted, observed, run.runnerProfileJson]) {
+      expect(JSON.stringify(saved)).not.toContain("private-history-fixture-value");
+      expect(JSON.stringify(saved)).toContain("apiPayloadRedacted");
+    }
+    expect(result.data.credentials).toBe("private-history-fixture-value");
   });
 
   it("redacts identity private material before persisting native events and checkpoints", async () => {
@@ -974,7 +1022,43 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(response.decision.chosenSource).toBe("final_agent_message");
     expect(stored.findIndex((row) => row.eventType === "run.result.accepted"))
       .toBeGreaterThan(stored.findIndex((row) => row.eventType === "item.completed"));
-    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded" });
+    // A workspace recovery owner can commit before the live heartbeat reaches
+    // presentation. The file-preparation comment must not hide the real reply.
+    const [workspaceNotice] = await db.insert(issueComments).values({
+      companyId: identity.companyId, issueId: taskIssueId,
+      authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
+      body: "## Workspace Ready",
+      presentation: { kind: "system_notice", tone: "info", title: "Workspace ready", density: "compact", detailsDefaultOpen: false },
+    }).returning();
+    const [prepared] = await db.insert(issueComments).values({
+      companyId: identity.companyId, issueId: taskIssueId,
+      authorAgentId: identity.agentId, authorType: "agent", createdByRunId: taskRunId,
+      body: "Prepared Continuity file for this response.",
+    }).returning();
+    const receipt = { semanticToolReceipts: { file: {
+      operationId: "register_deliverable", result: {
+        commandId: "deliverable-prepared:attachment-1", disposition: "applied",
+        attachmentId: "attachment-1", entityRefs: ["attachment-1", prepared!.id],
+      },
+    } } };
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { skipIssueComment: true },
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(receipt)}::jsonb`,
+    }).where(eq(heartbeatRuns.id, taskRunId));
+    await finalizeNativeRun({ db, runId: taskRunId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const repair = () => repairCommittedNativeChatResponse(db, {
+      companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
+    });
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
+      .where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(true);
+    expect(await repair()).toBe(false);
+    expect(await db.select({ body: issueComments.body }).from(issueComments)
+      .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
+      .toEqual([{ body: workspaceNotice!.body }, { body: prepared!.body }, { body: finalText }]);
     await expect(port.completeRun({
       result: taskResult,
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,

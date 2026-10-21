@@ -21,7 +21,7 @@ import type {
 import { companySearchQuerySchema, STATUS_CARD_AGENT_MAX_CARDS } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { companySearchService } from "./company-search.js";
 import { issueService } from "./issues.js";

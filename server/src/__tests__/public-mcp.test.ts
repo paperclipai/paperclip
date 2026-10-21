@@ -10,11 +10,11 @@ import { mcpAttachmentUploads, mcpFileTickets, principalPermissionGrants, heartb
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto";
 import express, { type Request } from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, mcpEventAdmissions, mcpEventDeliveries, mcpEventSubscriptions, createDb, authUsers, companies, companyLogos, assets, companyMemberships, mcpOauthTokens, mcpOauthRequests, mcpOauthGrants, mcpOauthClients, mcpOauthDeviceRequests, mcpOauthMetadataAdmissions, mcpMutationReceipts, agents, issues, issueComments, instanceUserRoles } from "@paperclipai/db";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
+import { createPublicMcpOAuth, publicMcpConfig, hashMcpSecret, DEVICE_GRANT, McpOAuthError } from "../services/public-mcp/oauth.js";
 import { McpApiError, createMcpApiDispatch, createPublicMcpExecutor, publicMcpCapabilities } from "../services/public-mcp/capabilities.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
 import { authorizationService } from "../services/authorization.js";
@@ -479,6 +479,15 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     await expect(oauth.authenticate(next.access_token)).rejects.toThrow();
   });
 
+  it.each([new Date(0), null])("rejects personal refresh tokens with invalid expiry %s", async expiresAt => {
+    const f = await fixture();
+    const [stored] = await db.select().from(mcpOauthTokens).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.refresh_token!)));
+    expect(stored!.expiresAt!.getTime() - Date.now()).toBeGreaterThan(29 * 24 * 60 * 60_000);
+    await db.update(mcpOauthTokens).set({ expiresAt }).where(eq(mcpOauthTokens.id, stored!.id));
+    await expect(oauth.token({ grant_type: "refresh_token", client_id: f.client.client_id,
+      resource: config.resource, refresh_token: f.tokens.refresh_token })).rejects.toThrow();
+  });
+
   it("rejects token expiry, revocation and membership loss on the next call", async () => {
     const f = await fixture();
     await db.update(mcpOauthTokens).set({ expiresAt: new Date(0) }).where(eq(mcpOauthTokens.tokenHash, hashMcpSecret(f.tokens.access_token)));
@@ -937,6 +946,31 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       expect((await put(bytes)).status).toBe(200);
       expect((await f.call("paperclip_list_deliverables", { taskId: f.issue.id })).attachments).toHaveLength(1);
     } finally { await f.cleanup(); }
+  });
+
+  it.each(["unexpected_storage", "oauth_shaped_storage"])("preserves retryable upload storage failures without confusing them with session authority (%s)", async kind => {
+    const f = await expandedFixture();
+    let restoreStorage = () => {};
+    try {
+      const bytes = Buffer.from("synthetic storage failure");
+      const args = { taskId: f.issue.id, requestId: randomUUID(), filename: "data.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      const prepared = await f.call("paperclip_get_upload_url", args);
+      const failure = kind === "oauth_shaped_storage" ? new McpOAuthError("access_denied", "SYNTHETIC_STORAGE_FAILURE_CANARY", 409)
+        : new Error("SYNTHETIC_STORAGE_FAILURE_CANARY");
+      const putSpy = vi.spyOn(f.storage, "putFile").mockRejectedValueOnce(failure);
+      restoreStorage = () => { putSpy.mockRestore(); };
+      const app = express(); app.use(f.transfers.router);
+      const url = new URL(prepared.url as string);
+      const response = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes);
+      expect(putSpy).toHaveBeenCalledTimes(1);
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ error: "transfer_unavailable", message: "Transfer could not be confirmed. Retry the same upload identity, or request another download link." });
+      expect(JSON.stringify(response.body)).not.toContain("SYNTHETIC_STORAGE_FAILURE_CANARY");
+      const [upload] = await db.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, prepared.uploadId as string));
+      expect(upload!.attachmentId).toBeNull();
+      expect((await f.call("paperclip_list_deliverables", { taskId: f.issue.id })).attachments).toHaveLength(0);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.company.id), eq(activityLog.action, "issue.attachment_added")))).toHaveLength(0);
+    } finally { restoreStorage(); await f.cleanup(); }
   });
 
   it("rejects authority lost during storage and safely reclaims the orphaned object", async () => {

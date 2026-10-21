@@ -1,4 +1,5 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
+import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import {
   discoverReportCatalog,
@@ -28,6 +29,9 @@ export function canonicalExecutionId(id: string) {
 
 export function upgradeRunnerResult(result: RunnerE2EResult): RunnerE2EResult {
   validateRetainedRunnerResult(result);
+  result = { ...result, startupReuse: result.startupReuse ?? (result.runIds ?? []).map(runId => ({
+    runId, ...summarizeStartupReuse([]),
+  })) };
   const executionId = canonicalExecutionId(result.executionId);
   const execution = runnerMatrix.find(
     (candidate) => candidate.id === executionId,

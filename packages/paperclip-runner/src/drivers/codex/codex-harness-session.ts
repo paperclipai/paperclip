@@ -23,6 +23,7 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import {
   CODEX_RESULT_OUTPUT_SCHEMA,
   type CodexModelContextSnapshot,
@@ -64,12 +65,26 @@ export class CodexHarnessSession
     this.transport.setServerRequestHandler((request) =>
       handleServerRequest(this, request),
     );
-    initializeCodexSessionEvents(this, input);
+    const restored = this.transport.takeRestoredRuntimeRequests?.() ?? [];
+    const restoredIds = new Set(restored.map(request => String(request.id)));
+    initializeCodexSessionEvents(this, {
+      ...input,
+      stalePendingRuntimeRequests: input.stalePendingRuntimeRequests?.filter(request => !restoredIds.has(request.requestId)),
+    });
+    for (const request of restored) {
+      void handleServerRequest(this, request, { restored: true }).catch(error => this.failProtocol(
+        "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
+      ));
+    }
     if (this.terminal) {
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
     }
+  }
+
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
   }
 
   turnControlCapabilities() {
@@ -87,7 +102,7 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -102,6 +117,7 @@ export class CodexHarnessSession
       runId: input.runId,
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+      ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
     });
     this.assertProtocolIntegrity();
     if (transportOwnsQuiescence) {
@@ -147,11 +163,16 @@ export class CodexHarnessSession
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }
@@ -221,6 +242,7 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
         ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
@@ -465,12 +487,12 @@ export class CodexHarnessSession
         `request ${input.requestId} is already settling`,
       );
     }
-    pending.settlingResolution = structuredClone(resolution);
     const response = runtimeRequestResponse(
       pending.request,
       resolution,
       pending.responseContext,
     );
+    pending.settlingResolution = structuredClone(resolution);
     try {
       await this.transport.resolveRuntimeRequest?.({
         requestId: input.requestId,

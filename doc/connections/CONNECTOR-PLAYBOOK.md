@@ -5,6 +5,13 @@ and shipping Paperclip app connections.
 
 Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
 
+Experimental voice connections use the same company-scoped channel endpoints,
+vault, task bindings, delivery ledger and publications, with `transport: voice`
+and an explicit runtime rather than Chat SDK. Do not expose voice transport as
+an MCP tool connection. Speko's browser implementation and its remaining phone
+qualification gate are documented in the [native voice report](../plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../plans/2026-09-11-speko-voice-e2e-runbook.md). The optional
+Company Phone Agent is a catalog template; selecting it must remain optional.
 For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
@@ -60,6 +67,72 @@ They authenticate provider execution and never enter MCP discovery or tool/chann
 execution. Extend the provider's existing catalog entry with typed AI methods;
 reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
 for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
+## Provider app attribution
+
+When a provider supports application attribution, credit Paperclip for requests
+that Paperclip manages. Research the provider's current attribution contract
+alongside authentication. A harness may identify itself by default; setting an
+API key or model alone does not replace that identity.
+
+For OpenRouter, use the shared policy in
+`packages/shared/src/openrouter-attribution.ts`:
+
+```http
+HTTP-Referer: https://paperclip.ing
+X-OpenRouter-Title: Paperclip
+X-Title: Paperclip
+X-OpenRouter-Categories: cloud-agent,programming-app
+```
+
+The URL is the app identity. Keep it stable across companies, deployments,
+personal keys, and shared keys. Send only public product identity; never put a
+company name, user identifier, task, credential, or instance URL in these fields.
+Preserve authentication, routing headers, and explicit visibility preferences.
+Replace conflicting attribution names case-insensitively. Do not rely on header
+casing or send two different identities under the legacy and current title names.
+See [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution).
+
+Apply this policy to the actual provider endpoint, including a custom connection
+that points to `https://openrouter.ai` or its documented
+[regional endpoints](https://openrouter.ai/docs/guides/features/in-region-routing),
+`https://eu.openrouter.ai` and `https://us.openrouter.ai`. Do not infer OpenRouter from a model name,
+URL substring, or a provider label whose endpoint was changed. A private gateway
+must implement forwarding or attribution itself; Paperclip cannot establish the
+identity of an upstream request it does not control.
+
+Managed AI connections project attribution into Codex provider `http_headers`,
+Claude `ANTHROPIC_CUSTOM_HEADERS`, OpenCode provider `options.headers`, and Hermes
+`model.default_headers`. Native Runner also regenerates Codex headers after its
+config allowlist, preserves Claude headers across environment isolation, sets
+OpenCode proxy headers at the upstream boundary, and attributes Pi's default and
+custom OpenRouter providers in `models.json`. Explicit legacy provider configs
+for Codex, OpenCode, and Pi use the same policy. Legacy Pi also loads a temporary
+extension at execution time, including on remote targets. It applies attribution
+after credential and model-header resolution on Pi 0.74 and at provider dispatch
+on Pi 1.0. This covers bare `OPENROUTER_API_KEY` setups and existing Pi home
+configurations without replacing the home, credentials, settings, or model catalog.
+The extension checks each request's endpoint, including custom aliases and regional
+hosts; a provider named `openrouter` that points elsewhere retains its headers.
+These paths must preserve model
+overrides, helper-model requests, retries, and recovery. The standalone Runner
+keeps its dependency-free copy of the policy under a parity test.
+
+For each new or changed provider path, verify:
+
+- Actual outgoing headers from the supported, pinned harness or SDK. Config
+  snapshots alone do not prove precedence over a harness's own defaults.
+- Custom aliases, conflicting mixed-case attribution, and model-level overrides.
+- An unrelated provider and a repointed built-in provider retain their settings.
+- The credential and unrelated headers survive; secrets never enter test logs.
+- A small live request succeeds and its provider-side record carries the expected
+  app identity, when the provider exposes that record. Keep this evidence separate
+  from public leaderboard visibility, which depends on the provider's processing
+  and ranking rules.
+
+Record coverage limits explicitly. An externally managed agent, an unmanaged
+harness configuration, or a gateway that replaces headers requires separate
+qualification; do not claim that generating Paperclip's configuration covers it.
 
 ## Read/write defaults and credential ownership
 
@@ -317,6 +390,15 @@ only `customer` must not silently fall through to generic DCR. A method
 containing `dcr` permits the automatic CIMD/DCR tiers. Deployment-preconfigured
 credentials still take precedence when present.
 
+A reviewed remote OAuth method may set `oauthClientRegistration: "dcr"` when
+live provider evidence shows that its advertised CIMD route fails while DCR
+works. Airtable uses this compatibility option. It requires `dcr` in
+`ownershipModes`; a deployment-preconfigured client still wins, and a missing
+registration endpoint fails with `oauth_dcr_not_supported`. Existing CIMD
+bindings are re-registered through DCR when the method changes. Other methods
+keep the normal resolution order. This option does not relax issuer, resource,
+redirect URI, PKCE, or registration-response validation.
+
 ### Credential source is not OAuth client ownership
 
 `ownershipModes` says who owns the OAuth client registration. It does not say
@@ -352,6 +434,16 @@ Paperclip gateway capability. At invocation time the gateway rechecks company,
 connection, grant, catalog, profile, policy, and run state; resolves the needed
 secret version; projects only the reviewed headers/arguments; calls the
 provider; and writes redacted audit evidence.
+
+For a reviewed remote MCP method that accepts discovery before initialization
+but requires an initialized session for calls, set
+`defaults.mcpSessionRequired: true`. Tavily uses this compatibility preference.
+Setup persists it for new connections; discovery and execution also resolve the
+curated method default for retained connections without the config flag. The
+existing session cache stays scoped to the connection, grant, actor, endpoint,
+and effective credential headers. Other methods retain their existing discovery fallback
+and direct-call behavior. Initialize before dispatch; never retry `tools/call`
+automatically after a provider error, since the first call may have mutated data.
 
 ## Secret Storage And Lifecycle
 
@@ -770,7 +862,10 @@ remove it there, and increment its version when changing the default. There is
 no central instruction-template registry. See
 [Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
-1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
+1. Add or update the provider in `scripts/ingest-app-definitions.mjs` or its
+   reviewed source inputs at `scripts/app-definition-overrides/<slug>.json`.
+   Overrides use the complete AppDefinition shape and pass through the same
+   branding, permission-review, instruction-template, and validation pipeline.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to
    that program.
 3. Add branding provenance and assets first; generation fails closed when
@@ -1690,27 +1785,31 @@ The broker implements this in `discoverOAuthEndpoints`
 unconditional. `oauthEndpointsForConnection` resolves endpoints in this
 order:
 
-1. If the manifest's method `defaults` ship a **complete** pair
-   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used
-   unconditionally. `discoverOAuthEndpoints` never runs in this case, so
-   endpoints stored on the connection's own OAuth config and 401 challenge
-   hints are **not consulted at all**.
-2. Otherwise, for `mcp_remote` connections, the broker calls
+1. A method's `defaults.discoveryUrl` is authoritative. The broker resolves
+   that document before cached endpoints, including when a saved connection
+   resumes or reconnects. It must describe the MCP resource or its authorization
+   server, not a separate web/API OAuth service. Failure stops setup.
+2. A complete manifest pair (`authorizationEndpoint` and `tokenEndpoint`)
+   replaces discovery when the method does not support dynamic registration,
+   or when the connection uses an operator-entered client. A method that can
+   register automatically still discovers its MCP authorization server.
+3. Otherwise, for `mcp_remote` connections, the broker calls
    `discoverOAuthEndpoints`, which first checks endpoints already stored on
    the connection's own OAuth config (falling back field-by-field to the 401
    challenge hints); a complete stored/hinted pair is used as-is — no
    `.well-known` fetch.
-3. Only when neither of the above yields a complete pair does the broker run
+4. Only when none of the above yields a complete pair does the broker run
    the RFC 9728 → RFC 8414 discovery chain above.
 
-Consequence: complete manifest endpoint hints are **authoritative, not
-hints** — they override even endpoints that an earlier discovery persisted
-on the connection, and if they go stale the broker keeps using them. For
-discovery-capable vendors, ship only `serverUrl` in `defaults` (as
-`notion.json` does) so the broker discovers fresh endpoints at connect
-time; add explicit `authorizationEndpoint`/`tokenEndpoint` only for vendors
-that do not publish RFC 9728/8414 metadata, and then own keeping them
-current.
+For discovery-capable vendors, prefer `serverUrl` alone (as `notion.json`
+does), or pin the reviewed protected-resource document when the provider
+requires an exact path. Keep explicit metadata and endpoint URLs current.
+When changing discovery precedence, test each affected catalog method against
+its actual metadata shape. Cover both new setup and a saved registration.
+A metadata preflight that finds registration somewhere in its search is not
+proof that sign-in selects that issuer. Sentry's web/API and MCP hosts both
+serve valid metadata, but only its MCP issuer supports automatic registration;
+see [Sentry](./SENTRY.md).
 
 ### Dynamic client registration (RFC 7591)
 
@@ -1719,10 +1818,16 @@ supports public clients (`token_endpoint_auth_method: "none"` plus PKCE S256)
 need **no pre-provisioned OAuth app at all**. At first connect the broker
 registers a client on the fly and stores it on the connection:
 
-- Registration request: `client_name` `Paperclip (<instance host>)`,
+- Registration request: `client_name` `Paperclip <sanitized instance host>`,
   `redirect_uris` = the instance's own callback, `grant_types`
   `["authorization_code", "refresh_token"]`, `response_types` `["code"]`,
   `token_endpoint_auth_method` `"none"`.
+- Authorization servers may validate `client_name` more narrowly than the
+  human-readable RFC field suggests. Paperclip replaces punctuation in the
+  callback host with hyphens (for example, `localhost:3105` becomes
+  `localhost-3105`), preserving a recognizable instance label while meeting
+  Calendly's documented rule that names contain only alphanumeric characters,
+  hyphens, and spaces ([Calendly MCP DCR requirements](https://developer.calendly.com/docs/mcp/calendly-mcp-server)).
 - The issued `client_id` is persisted in the connection's OAuth config and any
   issued `client_secret` becomes a `company_secrets` ref. The registered
   client is **reused** for every later authorize/refresh on that connection —

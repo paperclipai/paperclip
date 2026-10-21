@@ -38,6 +38,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   const [eventsByRun, setEventsByRun] = useState<Map<string, HeartbeatRunEvent[]>>(new Map());
   const [errorsByRun, setErrorsByRun] = useState<Map<string, NativeRunTranscriptError>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<ReadonlySet<string>>(new Set());
+  const [hydratedStatusByRun, setHydratedStatusByRun] = useState(new Map<string, string>());
   const [retryGeneration, setRetryGeneration] = useState(0);
   const retry = useCallback(() => setRetryGeneration((value) => value + 1), []);
   const projectionCacheRef = useRef(new Map<string, { events: HeartbeatRunEvent[]; transcript: TranscriptEntry[] }>());
@@ -54,6 +55,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     };
     setEventsByRun(retainMap);
     setErrorsByRun(retainMap);
+    setHydratedStatusByRun(retainMap);
     setHydratedRunIds((previous) => {
       const next = new Set([...previous].filter((id) => retainedIds.has(id)));
       return next.size === previous.size ? previous : next;
@@ -95,6 +97,10 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
           const next = new Map(previous);
           next.delete(run.id);
           return next;
+        });
+        setHydratedStatusByRun((previous) => {
+          if (previous.get(run.id) === run.status) return previous;
+          return new Map(previous).set(run.id, run.status);
         });
       } catch (error) {
         if (cancelled) return;
@@ -145,8 +151,12 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     return transcripts;
   }, [eventsByRun, nativeRuns]);
 
+  const terminalHydratedRunIds = useMemo(() => new Set(nativeRuns
+    .filter((run) => !isLive(run.status) && hydratedStatusByRun.get(run.id) === run.status)
+    .map((run) => run.id)), [nativeRuns, hydratedStatusByRun]);
+
   return {
-    transcriptByRun, errorsByRun, hydratedRunIds, retry,
+    transcriptByRun, errorsByRun, hydratedRunIds, terminalHydratedRunIds, retry,
     isInitialHydrating: nativeRuns.some((run) => !hydratedRunIds.has(run.id)),
   };
 }

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
@@ -144,6 +145,35 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
       scheduledRetry: null,
     } as unknown as Issue;
   }
+
+  it("requires confirmation, keeps the monitor on dismissal, and reports cancellation errors", async () => {
+    const issue = issueWithMonitor(new Date(NOW.getTime() + 60_000).toISOString());
+    const onCancel = vi.fn().mockRejectedValueOnce(new Error("Unable to save monitor")).mockResolvedValueOnce(undefined);
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={onCancel} />));
+    const open = () => flushSync(() => (container.querySelector('[aria-label="Cancel monitor"]') as HTMLButtonElement).click());
+    open();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain("no longer resume");
+    flushSync(() => (Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Keep monitor")!).click());
+    expect(onCancel).not.toHaveBeenCalled();
+    open();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe("Unable to save monitor");
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    await act(async () => { Array.from(document.querySelectorAll("button")).find(b => b.textContent === "Cancel monitor")!.click(); });
+    expect(onCancel).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
+
+  it("does not offer monitor cancellation for automatic retries", () => {
+    const issue = { scheduledRetry: { status: "scheduled_retry", scheduledRetryAt: NOW.toISOString() } } as Issue;
+    const root = createRoot(container);
+    flushSync(() => root.render(<IssueMonitorBanner issue={issue} onCancelMonitor={vi.fn()} />));
+    expect(container.querySelector('[aria-label="Cancel monitor"]')).toBeNull();
+    flushSync(() => root.unmount());
+  });
 
   it("shows the saved PR and a status check above the composer during a GitHub review wait", () => {
     const issue = issueWithMonitor(new Date(NOW.getTime() + 6 * 60 * 60_000).toISOString());

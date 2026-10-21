@@ -6,8 +6,12 @@ dist/
 dist-preview/
 dist-flow-preview/
 server/ui-dist/
+server/dist-runtime/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
+ui/storybook/generated/
+ui/storybook/.storybook/preview.tsx
+maps/generated/
 .env
 *.tsbuildinfo
 drizzle/meta/
@@ -56,6 +60,9 @@ diagnostics/
 /.idea/
 /.agents/
 
+# Personal agent instructions
+/AGENTS.local.md
+
 # Doc maintenance cursor
 .doc-review-cursor
 
@@ -71,6 +78,7 @@ tests/storybook-visual/.cache/
 tests/storybook-visual/.snapshots/
 tests/storybook-visual/baseline-review/
 tests/storybook-visual/test-results/
+tests/storybook-visual/repository-skill-results/
 tests/storybook-visual/playwright-report/
 .superset/
 .superpowers/
@@ -82,3 +90,12 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+# Copilot assets are generated from pinned platform packages during installation.
+/packages/paperclip-runner/provider-assets/
+/server/provider-assets/
+
+# Local native Runner test/session state
+.paperclip-runner-prp/
+
+# Opt-in CI timing artifacts
+.ci-profile/

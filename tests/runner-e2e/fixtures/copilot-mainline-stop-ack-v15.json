@@ -1,0 +1,55 @@
+{
+  "schema": "paperclip.e2e.retained-mainline-stop.v1",
+  "sourceRevision": "2dd62ad52b8b4348d286c59e11e36144305bca6c",
+  "outcome": "failed fixture expected unsupported caller-owned cancellation ID; calibration only",
+  "run": {
+    "id": "be098444-7780-4afc-976a-4cfbc9565eb2",
+    "companyId": "045e3eb6-1f10-47dd-9931-7f4e0396d682",
+    "nativeIssueId": "7f425402-9ec8-4011-9e37-6f6d4d3a7153",
+    "runtimeMode": "native",
+    "status": "cancelled",
+    "resultJson": {
+      "stopReason": "cancelled",
+      "cancellation": {
+        "reason": "Cancelled by a board operator",
+        "source": "operator",
+        "expected": true,
+        "initiator": {
+          "id": "local-board",
+          "type": "user"
+        },
+        "recordedAt": "2026-10-03T22:42:57.243Z"
+      },
+      "timeoutFired": false,
+      "timeoutSource": "config",
+      "cancelledByUserId": "local-board",
+      "timeoutConfigured": true,
+      "nativeCancellation": {
+        "runId": "be098444-7780-4afc-976a-4cfbc9565eb2",
+        "scope": "run",
+        "schema": "paperclip.native-cancellation.v1",
+        "effects": [
+          "release_run_resources"
+        ],
+        "issueId": "7f425402-9ec8-4011-9e37-6f6d4d3a7153",
+        "intentId": "native-cancellation:88c9dd8f-92d2-407d-a989-a3495e8e6944",
+        "companyId": "045e3eb6-1f10-47dd-9931-7f4e0396d682",
+        "decisionId": null,
+        "dispatched": true,
+        "reasonCode": "cancellation_run_only",
+        "recordedAt": "2026-10-03T22:42:57.247Z",
+        "dispatchState": "acknowledged",
+        "intentAuditId": "ceab3cf4-3bec-4133-a73b-15101f3035b2",
+        "acknowledgedAt": "2026-10-03T22:42:57.249Z",
+        "acknowledgementAuditId": "87b5cd2d-6c5e-4beb-91e7-3392d0868036",
+        "priorCoordinatorDecisionId": null
+      },
+      "effectiveTimeoutSec": 120,
+      "startupCancellation": {
+        "requestedAt": "2026-10-03T22:42:57.243Z",
+        "beforeNativeSelection": false
+      },
+      "cancelledByActorType": "user"
+    }
+  }
+}

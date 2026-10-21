@@ -207,24 +207,6 @@ describe("InlineEditor", () => {
     });
   });
 
-  it("marks multiline preview textboxes as multiline", () => {
-    const onSave = vi.fn().mockResolvedValue(undefined);
-    const root = createRoot(container);
-
-    act(() => {
-      root.render(<InlineEditor value="Hello world" multiline onSave={onSave} />);
-    });
-
-    const preview = container.querySelector<HTMLElement>('[role="textbox"]');
-    expect(preview).not.toBeNull();
-    expect(preview?.getAttribute("aria-multiline")).toBe("true");
-    expect(preview?.tabIndex).toBe(0);
-
-    act(() => {
-      root.unmount();
-    });
-  });
-
   it("enters multiline edit mode from the keyboard preview surface", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const root = createRoot(container);
@@ -235,6 +217,9 @@ describe("InlineEditor", () => {
 
     const preview = container.querySelector<HTMLElement>('[role="textbox"]');
     expect(preview).not.toBeNull();
+
+    expect(preview?.getAttribute("aria-multiline")).toBe("true");
+    expect(preview?.tabIndex).toBe(0);
 
     act(() => {
       preview!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));

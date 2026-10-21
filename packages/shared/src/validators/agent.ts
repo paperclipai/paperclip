@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
-  AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -85,6 +84,7 @@ export const agentRuntimeConfigSchema = z.object({
 });
 
 export const createAgentSchema = z.object({
+  setupId: z.string().guid().optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   title: z.string().optional().nullable(),
@@ -94,6 +94,7 @@ export const createAgentSchema = z.object({
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
   runtimeConfig: agentRuntimeConfigSchema.optional().default({}),
@@ -122,6 +123,7 @@ export type CreateAgent = z.infer<typeof createAgentSchema>;
 
 export const builtInAgentProvisionSchema = z.object({
   adapterType: agentAdapterTypeSchema.optional(),
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterConfig: adapterConfigSchema.optional(),
   budgetMonthlyCents: z.number().int().nonnegative().optional(),
 }).strict();
@@ -138,7 +140,8 @@ export const builtInAgentResetSchema = z.object({
 
 export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
-export const createAgentHireSchema = createAgentSchema.extend({
+export const createAgentHireSchema = createAgentSchema.omit({ setupId: true }).extend({
+  setupAgentId: z.string().guid().optional(),
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
   // Agent-authored hires may explicitly request the caller's native runner
@@ -149,14 +152,14 @@ export const createAgentHireSchema = createAgentSchema.extend({
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
 )
   .partial()
   .extend({
     permissions: z.never().optional(),
     replaceAdapterConfig: z.boolean().optional(),
-    status: z.enum(AGENT_STATUSES).optional(),
-    spentMonthlyCents: z.number().int().nonnegative().optional(),
+    status: z.enum(["paused", "idle", "terminated"]).optional(),
+    spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
@@ -257,6 +260,7 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
   /** Saved agent whose redacted environment entries are restored for this probe. */
   agentId: z.string().guid().optional(),

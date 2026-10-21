@@ -245,7 +245,13 @@ async function openedFilePath(fd: number): Promise<string> {
       execFile(
         "/usr/sbin/lsof",
         ["-a", "-p", String(process.pid), "-d", String(fd), "-F0n"],
-        { encoding: "buffer", maxBuffer: 16_384, timeout: 1_000 },
+        {
+          encoding: "buffer",
+          maxBuffer: 16_384,
+          timeout: 1_000,
+          // lsof escapes non-ASCII names under the C locale, breaking descriptor verification.
+          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+        },
         (error, stdout) => {
           if (error) reject(error);
           else resolve(Buffer.from(stdout));

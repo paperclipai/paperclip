@@ -1,3 +1,5 @@
+import { usesPreconfiguredHome } from "../preconfigured-home.js";
+import { writeManagedCodexObservability, redactObservabilityDiagnostic } from "../agent-observability.js";
 import { trustCodexStartupRoot } from "./codex-startup-trust.js";
 import { readCodexThreadState, readCodexTurnMetadata } from "./codex-history.js";
 import { codexExecutableReadOnlyRoots } from "./codex-security-config.js";
@@ -623,6 +625,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         resumed: true,
         activeTurnId: recoveredActiveTurnId,
         semanticResult: snapshot.semanticResult ?? null,
+        normalizeReplayPayload: options.normalizeReplayPayload,
         terminalTurns: snapshot.terminalTurns ?? [],
         codexUsageBaseline: snapshot.codexUsageBaseline,
         dispositionOnlyRecoveryConsumed,
@@ -669,7 +672,12 @@ export class CodexAppServerDriver implements HarnessDriver {
     >;
   }): CodexAppServerTransport {
     const workingDirectory = context?.workingDirectory ?? this.#options.environment?.PAPERCLIP_WORKSPACE_CWD;
-    if (!this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
+    if (this.#options.observability?.otelConfig && !this.#options.transportFactory && !usesPreconfiguredHome(this.#options.environment)) {
+      const home = this.#options.environment?.CODEX_HOME;
+      if (home) writeManagedCodexObservability(home, this.#options.observability.otelConfig);
+      else this.#options.onDiagnostic?.("Company observability requires a managed Codex home");
+    }
+    if (!usesPreconfiguredHome(this.#options.environment) && !this.#options.transportFactory && this.#options.environment?.CODEX_HOME && workingDirectory) {
       trustCodexStartupRoot(this.#options.environment.CODEX_HOME, workingDirectory);
     }
     return (
@@ -678,7 +686,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         workingDirectory,
         args: createIsolatedCodexAppServerArgs(this.#options.environment, codexExecutableReadOnlyRoots(this.#options.environment ?? process.env), this.#options.instructionWorkingCopyRoot),
         environment: createSanitizedCodexEnvironment(this.#options.environment),
-        onDiagnostic: this.#options.onDiagnostic,
+        onDiagnostic: message => this.#options.onDiagnostic?.(redactObservabilityDiagnostic(message, this.#options.environment, this.#options.observability?.otelConfig)),
         processGroup: true,
       })
     );
@@ -923,6 +931,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     resumed: boolean;
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
+    normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
     terminalTurns?: PersistedHarnessTurnTerminal[];
     codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
     dispositionOnlyRecoveryConsumed?: boolean;

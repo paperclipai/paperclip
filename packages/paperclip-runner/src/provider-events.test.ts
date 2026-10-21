@@ -87,6 +87,7 @@ describe("provider-neutral events", () => {
         const [event] = canonicalProviderEventsFromCodex(method, params);
         expect(event.eventType).toBe("provider.notice.recorded");
         expect(event.payload.summary).toBe(expected);
+        expect(event.payload.userActionable).toBe(false);
         expect(validatePrpEvent(envelope(event)).ok).toBe(true);
       }
     }

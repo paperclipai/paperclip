@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { CHAT_FILE_TRANSFER_PHASES } from "@paperclipai/shared";
@@ -375,6 +376,7 @@ export async function projectTeamsFilePublication(
     !sameDate(publication.nextAttemptAt, nextAttemptAt) ||
     !sameDate(publication.publishedAt, publishedAt)
   ) {
+    await notifyChatPublicationWork(tx);
     await tx
       .update(chatPublications)
       .set({

@@ -354,8 +354,8 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Chat connectors"
-          description="Connect agents to Slack, GitHub, Discord, Microsoft Teams, and Telegram conversations."
-          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub tools, and other tool connectors stay available."
+          description="Connect agents to Slack, Discord, Microsoft Teams, and Telegram conversations."
+          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are controlled separately."
           checked={enableChatConnectors}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
           disabled={toggleMutation.isPending}
@@ -434,6 +434,17 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Experimental fast responses"
+          description="Allow short acknowledgements while agents begin work. Configure them in Settings → Connections."
+          checked={experimentalQuery.data?.enableFastResponses ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableFastResponses: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableFastResponses"
+          managed={managedKeys.enableFastResponses}
+          ariaLabel="Toggle fast responses experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Experimental File Viewer"
           description="Show task detail controls for browsing and previewing workspace files relative to a task."
           checked={enableExperimentalFileViewer}
@@ -458,6 +469,30 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="GitHub review bots"
+          description="Connect agents to GitHub with their own App identity to review pull requests and respond to issues."
+          footnote="Independent of Chat connectors. Turning this off hides setup and management; existing bots keep running. GitHub tool connections stay available."
+          checked={experimentalQuery.data?.enableGitHubReviewBots === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableGitHubReviewBots: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGitHubReviewBots"
+          managed={managedKeys.enableGitHubReviewBots}
+          ariaLabel="Toggle GitHub review bots experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Grok Bot"
+          description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
+          footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
+          checked={experimentalQuery.data?.enableGrokBot === true}
+          onCheckedChange={checked => toggleMutation.mutate({ enableGrokBot: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGrokBot" managed={managedKeys.enableGrokBot}
+          ariaLabel="Toggle Grok Bot experimental setting"
+        />
+
+
+        <ExperimentalToggleCard
           title="Memory connectors"
           description="Connect Mem0, Zep, Supermemory, Cognee, and Honcho for long-term memory and context."
           footnote="Turning this off hides setup for these connectors. Existing connections keep running."
@@ -467,6 +502,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMemoryConnectors"
           managed={managedKeys.enableMemoryConnectors}
           ariaLabel="Toggle memory connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Muse — Personal agent"
+          description="Connect your personal Meta Muse. Pair it, detect its receiver, and verify an independent background reply before assigning tasks."
+          footnote="Requires Paperclip Runner and an authenticated instance with a public HTTPS URL. Turning this off blocks new work; cleanup and stop evidence remain available. Provider usage and cost are unavailable."
+          checked={experimentalQuery.data?.enableMuse === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMuse: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMuse"
+          managed={managedKeys.enableMuse}
+          ariaLabel="Toggle Muse experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -481,9 +528,10 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle OpenAI Dot experimental setting"
         />
 
+
         <ExperimentalToggleCard
           title="Paperclip Runner"
-          description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
+          description="Allow agents to select Paperclip Runner, including authenticated runner ingress when a sandbox requires it. First-run setup offers qualified GitHub Copilot. Turning this off hides the choice without affecting existing native runs."
           checked={enableNativeRunner}
           onCheckedChange={(checked) =>
             toggleMutation.mutate({ enableNativeRunner: checked })

@@ -19,6 +19,10 @@ import {
   issueWatchdogs,
 } from "@paperclipai/db";
 import {
+  normalizePaperclipWakePayload,
+  renderPaperclipWakePrompt,
+} from "@paperclipai/adapter-utils/server-utils";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -144,12 +148,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   }
 
-  async function seedWatchdog(companyId: string, issueId: string, agentId: string) {
+  async function seedWatchdog(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    instructions = "Verify stopped work.",
+  ) {
     const [row] = await db.insert(issueWatchdogs).values({
       companyId,
       issueId,
       watchdogAgentId: agentId,
-      instructions: "Verify stopped work.",
+      instructions,
       status: "active",
     }).returning();
     return row;
@@ -227,6 +236,46 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("delivers board-supplied watchdog instructions all the way into the rendered mandate", async () => {
+    const boardInstructions =
+      "Escalate to Luna before any production deploy; you do not hold Level B authority.";
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INSTR", status: "done" });
+    const leafId = await seedIssue(companyId, {
+      parentId: sourceId,
+      identifier: "WDOG-INSTR-LEAF",
+      status: "todo",
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId, boardInstructions);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    expect(wakes).toHaveLength(1);
+
+    // The producer must place the instructions inside `taskWatchdog`, which is
+    // the only object the wake normalizer reads.
+    const snapshot = wakes[0]?.opts?.contextSnapshot;
+    expect(snapshot).toMatchObject({ taskWatchdog: { customInstructions: boardInstructions } });
+
+    // End-to-end: the text the agent actually receives.
+    const normalized = normalizePaperclipWakePayload(snapshot);
+    expect(normalized?.taskWatchdog?.customInstructions).toBe(boardInstructions);
+
+    const prompt = renderPaperclipWakePrompt(normalized);
+    expect(prompt).toContain("## Task Watchdog Mandate");
+    expect(prompt).toContain(boardInstructions);
+    expect(prompt).not.toContain("No board-supplied watchdog instructions");
+
+    // Same producer/normalizer contract: the stopped leaves the watchdog is
+    // asked to verify must reach the mandate too.
+    expect(normalized?.taskWatchdog?.terminalLeafSummaries).toEqual([
+      expect.objectContaining({ id: leafId, identifier: "WDOG-INSTR-LEAF", status: "todo" }),
+    ]);
+    expect(prompt).toContain("Terminal / stopped leaves to verify:");
+    expect(prompt).toContain("WDOG-INSTR-LEAF");
   });
 
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {

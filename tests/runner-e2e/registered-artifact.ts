@@ -3,6 +3,8 @@ import type { IssueAttachment } from "../../packages/shared/src/types/issue.js";
 import type { IssueWorkProduct } from "../../packages/shared/src/types/work-product.js";
 import type { RunnerApi } from "./api.js";
 
+const REGISTERED_ARTIFACT_STATUSES = new Set(["active", "ready_for_review", "approved"]);
+
 /** Registration, attribution and downloaded bytes must agree independently. */
 export async function readRegisteredArtifacts(api: RunnerApi, issueId: string, runId: string, names: readonly string[]) {
   if (names.length === 0) return [];
@@ -13,7 +15,7 @@ export async function readRegisteredArtifacts(api: RunnerApi, issueId: string, r
   return Promise.all(names.map(async name => {
     const registered = products.filter(product => product.issueId === issueId &&
       product.createdByRunId === runId && product.type === "artifact" &&
-      product.status === "active" && product.title === name);
+      REGISTERED_ARTIFACT_STATUSES.has(product.status) && product.title === name);
     if (registered.length !== 1) throw new Error(`Expected one registered artifact ${name} from the tested run; observed ${registered.length}`);
     const product = registered[0]!;
     const attachmentId = product.metadata?.attachmentId;

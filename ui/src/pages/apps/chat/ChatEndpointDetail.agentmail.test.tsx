@@ -24,6 +24,7 @@ vi.mock("./EmailEndpointSetup", () => ({ EmailEndpointSettings: () => <h1>Email 
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: () => {} }) }));
 vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ pushToast: () => {} }) }));
 vi.mock("@/lib/router", () => ({
+  useLocation: () => ({ state: null }),
   useParams: () => ({ endpointId: "inbox", tab: mocks.tab }), useNavigate: () => mocks.navigate,
   Link: ({ children, to, ...props }: React.ComponentProps<"a"> & { to: string }) => <a href={to} {...props}>{children}</a>,
   Navigate: () => null,

@@ -22,6 +22,7 @@ import {
   issues,
   toolConnections,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolProfiles,
   toolProfileBindings,
@@ -34,6 +35,8 @@ import {
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { browserUseViewports } from "../services/browser-use-viewport.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerBrowserUseCleanup } from "../services/browser-use-work.js";
 import { browserUseService } from "../services/browser-use.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../services/connector-runtime.js";
 import { registerAssignedMcpGateway } from "../services/native-runtime/assigned-mcp-tools.js";
@@ -313,6 +316,47 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
         },
       };
     }
+    it("wakes the app worker from request-service commits and restores durable poll and lease deadlines", async () => {
+      const f = await fixture();
+      const background = browserUseService(db, f.request);
+      const sweep = vi.spyOn(background, "sweep");
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await registerBrowserUseCleanup(coordinator, background, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(await background.nextSweepAt()).toBeNull();
+        const started = await f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", { task: "Read example.com" }) as { sessionId: string };
+        await vi.waitFor(() => expect(sweep.mock.calls.length).toBeGreaterThan(1));
+        await coordinator.stop();
+        expect(onError).not.toHaveBeenCalled();
+
+        const poll = new Date(Date.now() + 60_000);
+        const lease = new Date(Date.now() + 180_000);
+        await db.update(browserUseSessions).set({ nextPollAt: poll, leaseUntil: lease })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(lease.getTime());
+        const restarted = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        try {
+          await registerBrowserUseCleanup(restarted, browserUseService(db, f.request), () => true).ready;
+          expect(restarted.nextWakeAt()).toBe(lease.getTime());
+        } finally { await restarted.stop(); }
+        await db.update(browserUseSessions).set({ leaseUntil: new Date(0) })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(poll.getTime());
+        await db.update(browserUseSessions).set({ leaseUntil: null })
+          .where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBe(poll.getTime());
+        const [session] = await db.select().from(browserUseSessions).where(eq(browserUseSessions.id, started.sessionId));
+        await f.service.control(session, "end");
+        expect(await background.nextSweepAt()).toBeLessThan(poll.getTime());
+        await db.update(browserUseSessions).set({ status: "closed" }).where(eq(browserUseSessions.id, started.sessionId));
+        expect(await background.nextSweepAt()).toBeNull();
+      } finally {
+        await coordinator.stop();
+        await db.update(browserUseSessions).set({ status: "closed" }).where(eq(browserUseSessions.companyId, f.company.id));
+      }
+    });
     it("keeps Cloud instructions out of universal skills and unassigned runtime overlays", async () => {
       const skills = await listPaperclipSkillEntries(fileURLToPath(new URL("../", import.meta.url)), [fileURLToPath(new URL("../../../skills", import.meta.url))]);
       expect(skills.some(skill => skill.runtimeName === "paperclip")).toBe(true);
@@ -363,6 +407,71 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect(revoked.paperclipRuntimeSkills).toEqual([]);
       expect(revoked.paperclipConnectorSkillDigest).toBeNull();
       expect((await prepareConnectorSkillDelivery(revoked, "cursor_local")).instructions).toBe("");
+    });
+    it.each([false, true])("skips tool discovery without an active company Browser Use connection (foreign: %s)", async foreign => {
+      const f = await fixture();
+      await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connection.connectionId));
+      if (foreign) await fixture();
+      f.request.mockClear();
+      const discovery = vi.spyOn(db, "transaction");
+      try {
+        expect(await f.gateway.browserUseResources(f.binding)).toEqual([]);
+        expect(discovery).not.toHaveBeenCalled();
+        expect(f.request).not.toHaveBeenCalled();
+      } finally { discovery.mockRestore(); }
+    });
+    it("resolves only the Browser Use catalog even while full discovery is saturated", async () => {
+      const f = await fixture();
+      const [application] = await db.insert(toolApplications).values({
+        companyId: f.company.id, name: "Unrelated MCP", type: "mcp_http", status: "active",
+      }).returning();
+      const [connection] = await db.insert(toolConnections).values({
+        companyId: f.company.id, applicationId: application.id, name: "Unrelated MCP",
+        uid: randomUUID(), transport: "mcp_remote", status: "active", enabled: true, healthStatus: "ok",
+      }).returning();
+      await db.insert(toolCatalogEntries).values(Array.from({ length: 500 }, (_, i) => ({
+        companyId: f.company.id, applicationId: application.id, connectionId: connection.id,
+        entryKind: "tool" as const, name: `unrelated_${i}`, toolName: `unrelated_${i}`,
+        inputSchema: { type: "object" }, riskLevel: "read" as const, status: "active" as const,
+        versionHash: "fixture", schemaHash: "fixture",
+      })));
+      const { recordingDb } = await import("./helpers/tool-gateway-listing-fixture.js");
+      const { toolDiscoveryScheduler } = await import("../services/tool-discovery-scheduler.js");
+      const releases: Array<() => void> = [];
+      const blockers = [0, 1].map(() => toolDiscoveryScheduler.run(() => new Promise<void>(resolve => releases.push(resolve))));
+      await vi.waitFor(() => expect(releases).toHaveLength(2));
+      const recorded = recordingDb(db);
+      const gateway = createToolGatewayService(recorded.db);
+      const pending = gateway.browserUseResources(f.binding);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const resources = await Promise.race([pending, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("Assignment waited for unrelated discovery")), 5_000);
+        })]);
+        expect(resources).toEqual([{ id: f.connection.connectionId, connectionId: f.connection.connectionId, label: "Browser Use Cloud" }]);
+        const catalogReads = recorded.statements.flatMap((query, index) =>
+          query.includes('from "tool_catalog_entries"') && query.includes('inner join "tool_connections"') ? [recorded.statementParams[index]] : []);
+        expect(catalogReads).toHaveLength(1);
+        expect(catalogReads[0]).toContain(f.connection.connectionId);
+        expect(catalogReads[0]).not.toContain(connection.id);
+        expect(recorded.statements.some(query => query.includes('from "chat_endpoints"'))).toBe(false);
+      } finally {
+        clearTimeout(timeout);
+        releases.forEach(release => release());
+        await Promise.all(blockers);
+        await pending;
+      }
+    });
+    it.each(["policy", "catalog", "grant"])("rechecks Browser Use %s revocation without a cached assignment", async kind => {
+      const f = await fixture();
+      expect(await f.gateway.browserUseResources(f.binding)).toHaveLength(1);
+      if (kind === "policy") await db.insert(toolPolicies).values({
+        companyId: f.company.id, name: "Revoke Browser Use", policyType: "block",
+        selectors: { connectionId: f.connection.connectionId }, priority: 100,
+      });
+      if (kind === "catalog") await db.update(toolCatalogEntries).set({ quarantinedAt: new Date() }).where(eq(toolCatalogEntries.connectionId, f.connection.connectionId));
+      if (kind === "grant") await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+      expect(await f.gateway.browserUseResources(f.binding)).toEqual([]);
     });
     it("withholds Cloud instructions when connection tools are disabled", async () => {
       const f = await fixture();

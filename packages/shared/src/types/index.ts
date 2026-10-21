@@ -661,6 +661,7 @@ export type {
 } from "./external-object.js";
 export type {
   CompactIssue,
+  IssueSummary,
   Issue,
   IssueChangeReceiptEntry,
   IssueChanges,
@@ -804,6 +805,7 @@ export type {
   IssueAncestorProject,
   IssueAncestorGoal,
   IssueAttachment,
+  IssueCreationSource,
   IssueLabel,
   IssueWatchdog,
   IssueWatchdogStatus,
@@ -899,7 +901,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByUser, CostByUserReport, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, CostDataQualityItem, CostDataQualityReport, CostDataQualityReason, IssueCostSummary, CostByUser, CostByUserReport, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,
@@ -1098,3 +1100,7 @@ export type { AgentInstructionErrorCode, AgentInstructionErrorDetails, AgentInst
 export type { AgentInstructionCandidate } from "./agent.js";
 
 export * from "./skill-source.js";
+
+export * from "./agent-lifecycle.js";
+
+export * from "./task-workspace.js";

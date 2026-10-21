@@ -18,6 +18,52 @@ describe("assigned MCP runner tools", () => {
   const searchName = "paperclip_search_assigned_tools";
   const callName = "paperclip_call_assigned_tool";
 
+  it("deduplicates repeated app tools in direct and on-demand catalogs while retaining revocation", async () => {
+    const read = descriptor("memory.search");
+    const write = descriptor("memory.store", "write");
+    const f = fixture([read, structuredClone(read), write, structuredClone(write)]);
+    const assigned = await createAssignedMcpTools(f);
+    const direct = assigned.definitions();
+    expect(direct).toHaveLength(2);
+    expect(assigned.definitions(tools => tools.length <= 2)).toEqual(direct);
+    expect(assigned.definitions(tools => tools[0]?.name === searchName).map(tool => tool.name)).toEqual([searchName, callName]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } }, "planning"))
+      .resolves.toEqual({ tools: [direct[0]], nextOffset: null });
+    await assigned.execute({ tool: callName, arguments: { name: direct[0]!.name, arguments: { query: "fixture" } } });
+    expect(f.executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tool: read.name }));
+    f.listToolsForNamedGateway.mockResolvedValue([write, structuredClone(write)]);
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "" } }))
+      .resolves.toEqual({ tools: [direct[1]], nextOffset: null });
+  });
+
+  it.each([
+    { risk: "write" as const },
+    { connectionId: "another-connection" },
+    { parametersSchema: { type: "object", properties: { secret: { type: "string" } } } },
+  ])("rejects conflicting definitions with the same gateway name: %j", async change => {
+    const tool = descriptor("memory.search");
+    const f = fixture([tool, { ...tool, ...change }]);
+    await expect(createAssignedMcpTools(f)).rejects.toMatchObject({ reasonCode: "tool_name_collision" });
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("identifies the conflicting tool and both connection bindings without exporting descriptor metadata", async () => {
+    const tool = { ...descriptor("calendar.search"), connectionId: "first-connection", providerMetadata: { token: "private-token" } };
+    const f = fixture([tool, { ...tool, connectionId: "second-connection" }]);
+    await expect(createAssignedMcpTools(f)).rejects.toMatchObject({ reasonCode: "tool_name_collision",
+      message: 'Conflicting tool definitions share the name "calendar.search" (connections ["first-connection","second-connection"]).' });
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-action tools from distinct connections separately callable", async () => {
+    const f = fixture([descriptor("mcp.memory-first:search"), descriptor("mcp.memory-second:search")]);
+    const assigned = await createAssignedMcpTools(f);
+    const direct = assigned.definitions();
+    expect(new Set(direct.map(tool => tool.name)).size).toBe(2);
+    for (const tool of direct) await assigned.execute({ tool: tool.name as string, arguments: {} });
+    expect(f.executeTool.mock.calls.map(([call]) => call.tool)).toEqual(["mcp.memory-first:search", "mcp.memory-second:search"]);
+  });
+
   it("pages through an oversized catalog and calls every tool through the original gateway", async () => {
     const f = fixture(Array.from({ length: 224 }, (_, i) => descriptor(`app.action_${i}`)));
     const assigned = await createAssignedMcpTools(f);

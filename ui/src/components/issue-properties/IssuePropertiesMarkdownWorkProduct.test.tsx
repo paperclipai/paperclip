@@ -415,7 +415,7 @@ describe("markdown work product review row", () => {
     expect(container.querySelector("button[aria-expanded]")).toBeNull();
   });
 
-  it.each(["image/png", "application/octet-stream"])("renders %s media tiles without duplicates or user uploads", async (contentType) => {
+  it.each(["image/png", "application/octet-stream"])("renders %s media tiles with user uploads and without promoted duplicates", async (contentType) => {
     const image = { ...makeMarkdownAttachment(), contentType, originalFilename: "cover.png" };
     const looseImage = { ...image, id: "loose-image", contentPath: "/api/attachments/loose-image/content" };
     const video = { ...makeMarkdownAttachment(), id: "loose-video", contentType: "application/octet-stream", originalFilename: "clip.mp4", contentPath: "/api/attachments/loose-video/content" };
@@ -427,11 +427,11 @@ describe("markdown work product review row", () => {
     await renderTab({}, "Cover artwork");
     await waitForAssertion(() => {
       const buttons = container.querySelectorAll('button[aria-label^="View image:"], button[aria-label^="Open video:"]');
-      expect(buttons).toHaveLength(3);
+      expect(buttons).toHaveLength(4);
       expect(container.querySelectorAll("img")).toHaveLength(2);
-      expect(container.querySelectorAll("article")).toHaveLength(3);
+      expect(container.querySelectorAll("article")).toHaveLength(4);
       expect(container.querySelector("video")?.getAttribute("src")).toBe(video.contentPath);
-      expect(container.querySelectorAll("video")).toHaveLength(1);
+      expect(container.querySelectorAll("video")).toHaveLength(2);
     });
   });
 

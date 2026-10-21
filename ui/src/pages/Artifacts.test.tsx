@@ -186,7 +186,7 @@ describe("Artifacts page", () => {
         cursor: undefined,
       });
       const groupControl = container.querySelector('[data-testid="artifact-group-control"]') as HTMLButtonElement;
-      const allFilter = [...container.querySelectorAll('[role="tab"]')]
+      const allFilter = [...container.querySelectorAll('[aria-label="Filter artifacts by type"] button')]
         .find((element) => element.textContent === "All") as HTMLButtonElement;
       expect(groupControl).not.toBeNull();
       expect(groupControl.textContent).toBe("");

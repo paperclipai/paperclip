@@ -334,7 +334,7 @@ function buttonsNamed(node: ParentNode, name: string) {
   return Array.from(node.querySelectorAll("button")).filter((button) => button.textContent?.trim() === name);
 }
 
-async function click(button: HTMLButtonElement) {
+async function click(button: HTMLElement) {
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
@@ -373,6 +373,26 @@ describe("getSkillVersionDiffSelection", () => {
 });
 
 describe("DiscoveryGrid IA presentation", () => {
+  it("uses the shared cards and toolbar for My Skills and preserves opening and creation actions", async () => {
+    const onOpenCard = vi.fn();
+    const onCreate = vi.fn();
+    const skill: CompanySkillListItem = {
+      ...makeDetail(makeVersion(1, "# My Review Skill"), { id: "my-skill", name: "My Review Skill" }),
+      catalogKind: null, originHash: null, packageName: null, packageVersion: null,
+    };
+    const card = buildDiscoveryCards([skill], [])[0]!;
+    const node = await renderDiscoveryGrid({ collectionView: "authored", cards: [card], totalCount: 1, onOpenCard, onCreate, showBrowseRails: false });
+    expect(node.querySelector('input[aria-label="Search my skills"]')).not.toBeNull();
+    expect(node.querySelector('h1')?.textContent).toBe("My Skills");
+    const skillButton = Array.from(node.querySelectorAll<HTMLElement>('[role="button"]')).find(button => button.textContent?.includes("My Review Skill"))!;
+    await click(skillButton);
+    expect(onOpenCard).toHaveBeenCalledWith(card);
+    const create = buttonsNamed(node, "Create new skill")[0]!;
+    await click(create);
+    expect(onCreate).toHaveBeenCalledOnce();
+    expect(node.textContent).not.toContain("Recently visited");
+  });
+
   it("makes the search scope explicit for Installed and Discover", async () => {
     let node = await renderDiscoveryGrid({ tab: "installed" });
     expect(node.querySelector('input[aria-label="Search installed skills"]')).not.toBeNull();

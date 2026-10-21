@@ -700,18 +700,13 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("uses the structured run summary when no agent message was emitted", () => {
+  it("retains a report without manufacturing a provider final message", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
         kind: "run_result",
         summary: "Recovered final reply.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "Recovered final reply.",
-        channel: "final",
       }),
     ]);
   });
@@ -781,11 +776,6 @@ describe("nativeRunEventsToTranscript", () => {
       expect.objectContaining({
         kind: "run_result",
         summary: "The implementation is ready.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "The implementation is ready.",
-        channel: "final",
       }),
     ]);
   });

@@ -24,6 +24,13 @@ show an error rather than treating the user as signed out.
 Self-hosted authenticated instances retain their instance sign-in form, and
 `local_trusted` instances retain their normal access path.
 
+Cloud stack Admins can change experimental settings on their dedicated instance.
+This permission comes from the current trusted Cloud stack role and does not
+grant other instance-admin powers. Members, Support users, and agents cannot
+change experiments. Operator-hidden settings and Cloud-managed feature values
+remain protected. Staging allows saved overrides for its editable experiments;
+production retains its managed feature policy.
+
 ## 1. Purpose
 
 Paperclip supports two runtime modes:

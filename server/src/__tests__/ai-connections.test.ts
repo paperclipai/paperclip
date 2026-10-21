@@ -2,6 +2,9 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+// Background plan observations have their own provider-fixture coverage. Runtime
+// auth tests must not send the selected fixture credentials to a real provider.
+vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
@@ -16,21 +19,30 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
+import * as runnerProbe from "../vendor/paperclip-runner/index.js";
+import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
+import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
 import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
 import { validateAiApiKey } from "../routes/ai-connections.js";
+import * as copilotProbe from "../services/copilot-connection-probe.js";
+import * as settingsModule from "../services/instance-settings.js";
+import { agentRoutes } from "../routes/agents.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -60,6 +72,238 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it.each(["create", "hire", "edit"])("refuses Copilot %s before probing or persisting when forced Kubernetes is missing", async action => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = `copilot-kubernetes-${action}`, id = randomUUID();
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: "Kubernetes fixture", adapterType: "paperclip_runner", adapterConfig: config, runtimeConfig: { aiConnection } });
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Kubernetes fixture", apiKey: "github_pat_fixture_kubernetes", agentIds: [id], allAgents: false }, "github_pat_fixture_kubernetes");
+    await service.setDefault(companyId, owner, account.grantId);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    const before = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
+    const originalSettings = settingsModule.instanceSettingsService;
+    const settings = vi.spyOn(settingsModule, "instanceSettingsService").mockImplementation(database => {
+      const service = originalSettings(database);
+      return { ...service, getGeneral: async () => ({ ...await service.getGeneral(), executionMode: "kubernetes" as const }) };
+    });
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget");
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const changedConfig = { ...config, model: "prospective-model" };
+      const response = action === "edit"
+        ? await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: changedConfig })
+        : await request(app).post(`/api/companies/${companyId}/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: "Forced Kubernetes", role: "general", adapterType: "paperclip_runner", adapterConfig: changedConfig, runtimeConfig: { aiConnection } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details.code).toBe("copilot_environment_unavailable");
+      expect(probe).not.toHaveBeenCalled();
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toEqual(config);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId))).toHaveLength(before.length);
+    } finally {
+      probe.mockRestore(); settings.mockRestore();
+      await db.update(companies).set({ requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents }).where(eq(companies.id, companyId));
+    }
+  });
+  it.each(["create", "hire", "edit"].flatMap(action => [true, false].map(connectionProvided => ({ action, connectionProvided }))))(
+    "refuses unavailable Copilot models before $action persists configuration (connection binding: $connectionProvided)", async ({ action, connectionProvided }) => {
+    const { unprocessable } = await import("../errors.js");
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = `copilot-model-${action}-${connectionProvided}`, id = randomUUID();
+    const savedConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: `Copilot ${action} fixture`, adapterType: "paperclip_runner", adapterConfig: savedConfig, runtimeConfig: connectionProvided ? { aiConnection } : {} });
+    const token = `github_pat_fixture_model_${action}`;
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: `Model ${action}`, apiKey: token, agentIds: [id], allAgents: false }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    const before = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget").mockRejectedValue(unprocessable("The selected Copilot model is unavailable for this account.", { code: "COPILOT_MODEL_UNAVAILABLE" }));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const config = { ...savedConfig, model: "unavailable-copilot-model" };
+    try {
+      const response = action === "edit"
+        ? await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: config })
+        : await request(app).post(`/api/companies/${companyId}/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: `Unavailable ${action}`, role: "general", adapterType: "paperclip_runner", adapterConfig: config, ...(connectionProvided ? { runtimeConfig: { aiConnection } } : {}) });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body).toMatchObject({ error: "The selected Copilot model is unavailable for this account." });
+      expect(probe).toHaveBeenCalledExactlyOnceWith(token, null, "unavailable-copilot-model");
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toEqual(savedConfig);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId))).toHaveLength(before.length);
+      expect(JSON.stringify(response.body)).not.toContain(token);
+    } finally {
+      probe.mockRestore();
+      await db.update(companies).set({ requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents }).where(eq(companies.id, companyId));
+    }
+  });
+
+  it("verifies the exact available Copilot model before a model-only edit with an unchanged connection", async () => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = "copilot-model-valid", id = randomUUID();
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: "Copilot available model", adapterType: "paperclip_runner", adapterConfig: { ...config, model: "previous-model" }, runtimeConfig: { aiConnection } });
+    const token = "github_pat_fixture_model_valid";
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Valid model", apiKey: token, agentIds: [id], allAgents: false }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: config.model, label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const response = await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: config });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(token, null, config.model);
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toMatchObject(config);
+      expect(response.body.runtimeConfig.aiConnection).toEqual(aiConnection);
+    } finally { probe.mockRestore(); }
+  });
+  it("passes the live sandbox worker manager to Copilot connection verification", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({
+      status: "verified", version: "1.0.88", profileDigest: "fixture-profile",
+      promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }],
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { pluginWorkerManager }));
+    try {
+      const response = await request(app).post(`/api/companies/${companyId}/ai-connections`).send({
+        provider: "github", method: "api_key", name: "Copilot remote route", ownership: "personal",
+        apiKey: "github_pat_fixture_remote", agentIds: [], allAgents: false,
+      });
+      expect(response.status).toBe(201);
+      expect(probe).toHaveBeenCalledWith(db, companyId, "github_pat_fixture_remote", undefined, undefined, { pluginWorkerManager });
+    } finally { probe.mockRestore(); }
+  });
+
+  it("discovers Copilot models in the selected environment with its sandbox worker", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
+    const [environment] = await db.insert(environments).values({ name: "Copilot model discovery", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    const token = "github_pat_fixture_model_discovery";
+    const account = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Model discovery account", apiKey: token, agentIds: [agentId], allAgents: false }, token);
+    await service.setDefault(companyId, "alice", account.grantId);
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db, { pluginWorkerManager }));
+    try {
+      const response = await request(app).get(`/api/companies/${companyId}/adapters/paperclip_runner/models`).query({ provider: "acpx", acpxAgent: "copilot", environmentId: environment.id, agentId, aiConnection: JSON.stringify({ provider: "github", method: "api_key", mode: "responsible_user" }) });
+      expect(response.status).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).toEqual([{ id: "gpt-5.6-luna", label: "GPT" }]);
+      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager, targetAgentId: agentId });
+      expect(JSON.stringify(response.body)).not.toContain(token);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("keeps Copilot model discovery behind shared installation and agent configuration authority", async () => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = "copilot-discovery-owner", audience = "copilot-discovery-audience";
+    await db.insert(companyMemberships).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
+    await db.insert(principalPermissionGrants).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", permissionKey: "agents:create" })));
+    const token = "github_pat_fixture_shared_discovery";
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "shared", name: "Shared discovery", apiKey: token, agentIds: [], allAgents: false }, token);
+    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user", subjectId })));
+    const binding = { provider: "github", method: "api_key", mode: "shared", ...account };
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? audience), companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const url = `/api/companies/${companyId}/adapters/paperclip_runner/models`;
+    const query = { provider: "acpx", acpxAgent: "copilot", aiConnection: JSON.stringify(binding) };
+    try {
+      const denied = await request(app).get(url).query(query);
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+      expect(denied.body.error).toContain("not permitted for this agent");
+      expect(probe).not.toHaveBeenCalled();
+      const allowed = await request(app).get(url).set("x-test-user", owner).query(query);
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(db, companyId, token, null, undefined, { pluginWorkerManager: undefined });
+      probe.mockClear();
+      const foreign = await request(app).get(url).set("x-test-user", owner).query({ ...query, agentId: randomUUID() });
+      expect(foreign.status).toBe(404);
+      expect(probe).not.toHaveBeenCalled();
+      expect(JSON.stringify([denied.body, allowed.body, foreign.body])).not.toContain(token);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("preserves repository GitHub credentials for managed non-Copilot execution", async () => {
+    const owner = "repo-github-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    for (const configured of [{ GH_TOKEN: "repo-gh-fixture", GITHUB_TOKEN: "repo-github-fixture" }, {}]) {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: { env: configured } });
+      try {
+        expect(runtime.config.env).toMatchObject({ COPILOT_GITHUB_TOKEN: "", ANTHROPIC_API_KEY: `fixture-${owner}` });
+        for (const key of ["GH_TOKEN", "GITHUB_TOKEN"] as const) {
+          if (key in configured) expect(runtime.config.env?.[key]).toBe(configured[key as keyof typeof configured]);
+          else expect(runtime.config.env).not.toHaveProperty(key);
+        }
+      } finally { await runtime.cleanup(); }
+    }
+  });
+
+  it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
+    const owner = "copilot-owner";
+    const token = "github_pat_fixture_copilot";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Copilot", apiKey: token, agentIds: [agentId], allAgents: false }, token);
+    const selectedBinding = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", env: { COPILOT_GITHUB_TOKEN: "ambient-never-use", GH_TOKEN: "project-never-use" } };
+    const runInput = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner", binding: selectedBinding, config };
+    const selected = await service.select({ ...runInput, userId: owner, runnerProvider: "acpx", acpxAgent: "copilot", model: config.model });
+    expect(await service.credential(selected)).toBe(token);
+    expect(JSON.stringify(await service.list(companyId, owner))).not.toContain(token);
+    const runtime = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(runtime.config).toMatchObject({ provider: "acpx", acpxAgent: "copilot", model: config.model, env: { COPILOT_GITHUB_TOKEN: token, GH_TOKEN: "", GITHUB_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" } });
+      expect(runtime.attribution).toMatchObject({ provider: "github", method: "api_key", connectionId: account.connectionId, grantId: account.grantId });
+      expect(config.env.COPILOT_GITHUB_TOKEN).toBe("ambient-never-use");
+    } finally { await runtime.cleanup(); }
+    await expect(access(runtime.home!)).rejects.toThrow();
+    await expect(service.select({ ...runInput, userId: "bob", runnerProvider: "acpx", acpxAgent: "copilot" })).rejects.toThrow();
+    await expect(service.select({ ...runInput, companyId: otherCompanyId, userId: owner, binding: { ...selectedBinding, mode: "shared", ...account }, runnerProvider: "acpx", acpxAgent: "copilot" })).rejects.toThrow();
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("usage must not send credentials"));
+    try {
+      expect(await service.probeUsage(companyId, owner, account.connectionId, account.grantId)).toMatchObject({ provider: "github", status: "unsupported", limits: [] });
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow();
+  });
+
+  it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
+    const owner = "selection-blocker-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const expectSelectionFailure = async (promise: Promise<unknown>, reason: string) => {
+      const error = await promise.catch((error: unknown) => error);
+      expect(error).toMatchObject({ status: 422, details: { code: reason } });
+      expect(readAiConnectionConfigurationFailure(error)).toBe(reason);
+    };
+    await expectSelectionFailure(service.select({ ...input, userId: null }), "ai_connection_responsible_user_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, adapterType: "codex_local" }), "ai_connection_incompatible");
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_default_missing");
+    await expectSelectionFailure(service.select({ ...input, userId: owner, binding: {
+      ...binding, mode: "delegated", connectionId: randomUUID(), grantId: randomUUID(),
+    } }), "ai_connection_missing");
+    const account = await create(owner, "Selection blocker account");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expectSelectionFailure(service.select({ ...input, userId: owner }), "ai_connection_unavailable");
+  });
+
   it("persists first-time recovery directories before consuming a single-use token", async () => {
     const owner = "quota-durable-path";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -149,6 +393,42 @@ describe("managed AI connections", () => {
       expect(await service.credential(row)).toBe(auth("11"));
       expect(request).not.toHaveBeenCalled();
     } finally { release.resolve(); await Promise.allSettled([probing, refreshing]); lock?.mockRestore(); request.mockRestore(); }
+  });
+
+  it("persists native Codex setup's refreshed selected login without changing existing agents", async () => {
+    const owner = "native-codex-setup-refresh";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const [before] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agentId));
+    const runnerBinary = path.join(home, "fixture-runnerd");
+    const resolveBinary = vi.spyOn(nativeCodexRunner, "resolvePaperclipRunnerBinary").mockReturnValue(runnerBinary);
+    const probe = vi.spyOn(runnerProbe, "probeNativeRunnerEnvironment").mockImplementation(async input => {
+      expect(input.transportOptions?.runnerBinary).toBe(runnerBinary);
+      expect(input.transportOptions?.sourceCodexHome).toContain("/provider");
+      expect(await readFile(path.join(input.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth("10"));
+      const providerHome = path.join(input.runtimeDirectory, "codex-home");
+      await fs.mkdir(providerHome, { mode: 0o700 });
+      const refreshedFile = path.join(providerHome, "auth.json");
+      await writeFile(refreshedFile, auth("11"), { mode: 0o600 });
+      await input.onCodexCredentialRefresh!(refreshedFile);
+      await input.onCleanupConfirmed!();
+      return { provider: "codex", providerDriver: "codex_app_server", effectiveModel: "gpt-5.6-sol", helloProbePassed: true };
+    });
+    let managedHome: string | undefined;
+    try {
+      const result = await withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
+        binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: { provider: "codex" } }, async runtime => {
+        managedHome = runtime.home;
+        return testNativeRunnerAuthentication({ companyId, adapterType: "paperclip_runner", config: runtime.config, managedAiCredentialHome: path.join(runtime.home!, "provider") }, "codex", "gpt-5.6-sol");
+      });
+      expect(result.status, JSON.stringify(result)).toBe("pass"); expect(probe).toHaveBeenCalledOnce();
+      expect(await service.credential(row)).toBe(auth("11"));
+      await expect(access(managedHome!)).rejects.toMatchObject({ code: "ENOENT" });
+      const [after] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agentId));
+      expect(after).toEqual(before);
+    } finally { probe.mockRestore(); resolveBinary.mockRestore(); }
   });
 
   it("rejects preparation when reconnect replaces the selected credential reference", async () => {
@@ -787,12 +1067,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await expect(access(runtime.home!)).rejects.toThrow();
   });
 
-  it("preserves Google account defaults when the provider constraint migration is reapplied", async () => {
+  it("preserves Google and Copilot account defaults when the current provider constraint migration is reapplied", async () => {
     const saved = await service.save(companyId, "bob", {
       provider: "google", method: "api_key", ownership: "personal", name: "Google migration",
       apiKey: "fixture", allAgents: true, agentIds: [],
     }, "google-migration-key");
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0306_familiar_titania.sql", import.meta.url), "utf8");
+    await db.insert(companyMemberships).values({ companyId, principalId: "migration-copilot", principalType: "user", status: "active", membershipRole: "member" });
+    const copilot = await service.save(companyId, "migration-copilot", {
+      provider: "github", method: "api_key", ownership: "personal", name: "Copilot migration",
+      apiKey: "fixture", allAgents: true, agentIds: [],
+    }, "github_pat_fixture_migration");
+    await service.setDefault(companyId, "migration-copilot", copilot.grantId);
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0361_mighty_dracula.sql", import.meta.url), "utf8");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await db.transaction(async (tx) => {
         for (const statement of migration.split("--> statement-breakpoint")) {
@@ -805,6 +1091,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       binding: { provider: "google", method: "api_key", mode: "responsible_user" },
     });
     expect(selected.grant.id).toBe(saved.grantId);
+    const selectedCopilot = await service.select({
+      companyId, agentId, userId: "migration-copilot", adapterType: "paperclip_runner",
+      runnerProvider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+      binding: { provider: "github", method: "api_key", mode: "responsible_user" },
+    });
+    expect(selectedCopilot.grant.id).toBe(copilot.grantId);
   });
 
   it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
@@ -905,6 +1197,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
     await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("Reconnect");
   });
+  it.each(["openrouter", "gateway"] as const)("preserves Claude custom headers for managed %s connections", async (kind) => {
+    const provider = kind === "openrouter" ? "openrouter" : "anthropic";
+    const routing = { kind, protocol: "messages", auth: "bearer", ...(kind === "gateway" ? { baseUrl: "https://gateway.example/v1" } : {}), models: [] } as const;
+    const saved = await service.save(companyId, "alice", { provider, method: "api_key", name: `Headers ${kind}`, ownership: "personal", allAgents: true, agentIds: [], routing: { ...routing, models: [] } }, "fixture-credential");
+    const selected = { provider, method: "api_key", mode: "delegated", ...saved } as const;
+    const customHeaders = "X-Gateway-Route: account-route\nx-title: Previous harness";
+    const reference = { type: "secret_ref", secretId: randomUUID(), version: "latest" };
+    const inherited = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = "X-Gateway-Route: inherited-route";
+    try {
+      for (const adapterType of ["claude_local", "paperclip_runner"]) {
+        for (const configured of [customHeaders, reference, undefined]) {
+          const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", binding: selected, adapterType,
+            config: { provider: "acpx", acpxAgent: "claude", env: configured === undefined ? {} : { ANTHROPIC_CUSTOM_HEADERS: configured } } });
+          try {
+            const effective = configured ?? process.env.ANTHROPIC_CUSTOM_HEADERS;
+            const expected = kind === "openrouter" && typeof effective === "string"
+              ? openRouterClaudeHeaders(effective)
+              : configured;
+            expect(runtime.config.env.ANTHROPIC_CUSTOM_HEADERS).toEqual(expected);
+          } finally { await runtime.cleanup(); }
+        }
+      }
+    } finally {
+      if (inherited === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = inherited;
+    }
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
@@ -1184,6 +1505,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("requires a typed project authentication capability for task-only environments", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    const task = vi.fn(async () => description);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/unused", runnerTask: task } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    try {
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target)).rejects.toThrow("overrides");
+      expect(task).toHaveBeenCalledWith({ kind: "describe" });
+      task.mockResolvedValueOnce({ ...description, projectAuthCheckVersion: undefined } as never);
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
+      expect(execute).not.toHaveBeenCalled();
+    } finally { execute.mockRestore(); }
+  });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");
@@ -1210,7 +1546,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("uses human access for every selection; an agent delegation cannot override Just me", async () => {
     const personal = await service.select({ ...input, userId: "alice" });
     const delegated = { ...binding, mode: "delegated" as const, connectionId: personal.connection.id, grantId: personal.grant.id };
-    await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: delegated }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(rejection.details).toBeUndefined();
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     // Existing delegation records no longer confer an independent AI permission.
     await db.insert(connectionGrantDelegations).values({ companyId, grantId: personal.grant.id, agentId, createdByUserId: "alice" });
     await expect(service.select({ ...input, userId: "bob", binding: delegated })).rejects.toThrow("not shared");
@@ -1223,7 +1562,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const sharedBinding = { ...binding, mode: "shared" as const, ...shared };
     const tools = toolAccessService(db);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["alice"], { userId: "alice" });
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not shared");
+    const rejection = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(rejection).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(rejection)).toBe("ai_connection_credential_not_shared");
     expect((await service.list(companyId, "bob", agentId)).some(account => account.id === shared.connectionId)).toBe(false);
     await tools.replaceConnectionGrantMembers(shared.connectionId, shared.grantId, ["bob"], { userId: "alice" });
     expect((await service.select({ ...input, userId: "bob", binding: sharedBinding })).grant.id).toBe(shared.grantId);
@@ -1233,12 +1574,43 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     for (const userId of ["alice", "bob"]) {
       expect((await service.select({ ...input, userId, binding: sharedBinding })).grant.id).toBe(shared.grantId);
     }
-    await expect(service.select({ ...input, userId: null, binding: sharedBinding })).rejects.toThrow("not shared");
+    const missingIdentity = await service.select({ ...input, userId: null, binding: sharedBinding }).catch(error => error);
+    expect(missingIdentity).toMatchObject({ status: 403, message: "This credential is not shared with the responsible user" });
+    expect(readAiConnectionConfigurationFailure(missingIdentity)).toBeNull();
+    const inactiveMember = await service.select({ ...input, userId: "inactive-user", binding: sharedBinding }).catch(error => error);
+    expect(inactiveMember).toMatchObject({ status: 403, message: "The responsible user is not an active company member" });
+    expect(readAiConnectionConfigurationFailure(inactiveMember)).toBeNull();
     // Human permission still cannot bypass the separate agent-access setting.
     await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, shared.connectionId));
-    await expect(service.select({ ...input, userId: "bob", binding: sharedBinding })).rejects.toThrow("not permitted for this agent");
+    const missingAgentPermission = await service.select({ ...input, userId: "bob", binding: sharedBinding }).catch(error => error);
+    expect(missingAgentPermission).toMatchObject({ status: 403 });
+    expect(missingAgentPermission.message).toContain("not permitted for this agent");
+    expect(readAiConnectionConfigurationFailure(missingAgentPermission)).toBeNull();
     expect(sharedBinding).toEqual({ ...binding, mode: "shared", ...shared });
   });
+  it.each(["inactive_owner", "wrong_binding_kind", "wrong_company_membership"] as const)(
+    "does not classify other credential authorization denials as sharing configuration: %s", async (cause) => {
+      const owner = `sharing-${cause}-owner`;
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const account = await create(owner, "Sharing permission fixture");
+      const selected = { ...binding, mode: cause === "wrong_binding_kind" ? "shared" as const : "delegated" as const, ...account };
+      let userId = "bob";
+      if (cause === "inactive_owner") {
+        await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, owner)));
+      }
+      if (cause === "wrong_company_membership") {
+        userId = "other-company-sharing-user";
+        await db.insert(companyMemberships).values({ companyId: otherCompanyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      }
+      const error = await service.select({ ...input, userId, binding: selected }).catch(error => error);
+      expect(error).toMatchObject({ status: 403, message: cause === "inactive_owner"
+        ? "The account owner is no longer an active company member"
+        : cause === "wrong_binding_kind" ? "Select a company-shared account"
+        : "The responsible user is not an active company member" });
+      expect(readAiConnectionConfigurationFailure(error)).toBeNull();
+    },
+  );
+
   it("isolates concurrent homes and overrides ambient credentials without changing the model", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "ambient-never-use");
     const config = { model: "unchanged-model", env: { ANTHROPIC_API_KEY: "project-never-use" } };
@@ -1351,6 +1723,9 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     try {
       expect(child.identity).toBe(parent.identity);
       expect(child.attribution.grantId).toBe(account.grantId);
+      expect(parent.attribution.subscriptionId).toEqual(expect.any(String));
+      expect(child.attribution.subscriptionId).toBe(parent.attribution.subscriptionId);
+      expect(child.config.managedAiConnection).toMatchObject({ subscriptionId: parent.attribution.subscriptionId });
     } finally {
       await Promise.all([parent.cleanup(), child.cleanup()]);
     }
@@ -1493,6 +1868,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "agentmail" } }).success).toBe(true);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "rest_api", config: { provider: "slack" } }).success).toBe(false);
     expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "runtime_auth", config: { provider: "agentmail" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "speko" } }).success).toBe(true);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "voice", config: { provider: "slack" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "channel", transport: "chat_sdk", config: { provider: "speko" } }).success).toBe(false);
+    expect(connectionPurposeTransportSchema.safeParse({ connectionPurpose: "tool", transport: "voice", config: { provider: "speko" } }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "responsible_user" }).success).toBe(false);
     expect(aiConnectionBindingSchema.safeParse({ provider: "anthropic", mode: "shared", connectionId: randomUUID(), grantId: randomUUID() }).success).toBe(false);
     expect(isAiConnectionCompatible({ provider: "anthropic", method: "api_key", mode: "responsible_user" }, "paperclip_runner", "same-model", "acpx", "claude")).toBe(true);
@@ -1811,6 +2190,61 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
+  });
+
+  it("saves a restricted shared connection during setup and installs it only when setup finishes", async () => {
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const setupId = randomUUID();
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared setup", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-setup-key");
+    const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const initial = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy" });
+    expect(initial.status, JSON.stringify(initial.body)).toBe(201);
+    const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment");
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+    try {
+      const saved = await request(app).patch(`/api/agents/${setupId}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body).toMatchObject({ pauseReason: "setup", runtimeConfig: { aiConnection: selected } });
+      expect(probe).not.toHaveBeenCalled();
+      probe.mockResolvedValue({ adapterType: "claude_local", status: "pass", checks: [], testedAt: new Date().toISOString() });
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/claude_local/test-environment`).send({
+        agentId: setupId, runner: "legacy", adapterConfig: {}, aiConnection: selected,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
+      const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({
+        setupAgentId: setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy", runtimeConfig: { aiConnection: selected },
+      });
+      expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+      expect(finished.body.agent.id).toBe(setupId);
+      expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
+    } finally { probe.mockRestore(); providerRequest.mockRestore(); }
+  });
+
+  it.each([["responsible_user", "codex_local"], ["shared", "codex_local"], ["responsible_user", "claude_local"]] as const)("drops a superseded saved %s connection when %s setup changes authentication", async (mode, adapterType) => {
+    const setupId = randomUUID();
+    await db.insert(agents).values({ id: setupId, companyId, name: "Switch provider", createdByUserId: "alice",
+      adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
+      runtimeConfig: { aiConnection: mode === "shared"
+        ? { provider: "openai", method: "api_key", mode, connectionId: randomUUID(), grantId: randomUUID() }
+        : { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", mode } },
+    });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const saved = await request(app).patch(`/api/agents/${setupId}`).send({ adapterType: "claude_local", runner: "legacy",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: false } },
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.runtimeConfig).not.toHaveProperty("aiConnection");
+    const [row] = await db.select().from(agents).where(eq(agents.id, setupId));
+    expect(row.runtimeConfig).not.toHaveProperty("aiConnection");
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {

@@ -1,3 +1,4 @@
+import { beginIdleTrackedWork } from "./task-admission.js";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
 import { priceCodexReceipt } from "./codex-pricing.js";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
 import { pricingProvenanceSchema, usdToUnits } from "@paperclipai/shared";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
@@ -37,9 +38,10 @@ const envelopeSchema = z.object({
   adapterType: z.string().max(100), receipt: checkpointSchema,
 });
 export type UsageReceiptEnvelope = z.infer<typeof envelopeSchema>;
-export const usageReceiptSpoolPath = () => path.join(resolvePaperclipInstanceRoot(), "accounting-receipts");
+export const usageReceiptSpoolPath = idleAccountingSpoolPath;
 
 export async function spoolUsageReceipt(envelope: UsageReceiptEnvelope, directory = usageReceiptSpoolPath()) {
+  registerIdleSpoolDirectory(directory);
   const parsed = envelopeSchema.parse(envelope);
   await ensureDurableDirectory(directory);
   const target = path.join(directory, `${parsed.id}.json`);
@@ -185,6 +187,7 @@ export async function recoverPendingRunUsageReceipts(db: Db, input: { companyId:
 }
 
 export async function createRunUsageRecorder(db: Db, input: { companyId: string; runId: string; adapterType: string }, directory = usageReceiptSpoolPath()) {
+  registerIdleSpoolDirectory(directory);
   const sourceId = randomUUID();
   // Verify durable storage before starting paid work, including a directory
   // sync. The database binding fences checkpoints from replaced controllers.
@@ -211,26 +214,31 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
   }
   let chain = Promise.resolve();
   let captureFailed = bound[0].usageJson?.accountingCaptureFailed === true;
+  let finishFailedCapture: (() => void) | undefined;
   async function persistFailure() {
     if (!captureFailed) return;
-    await withAccountingTransaction(db, input.companyId, async tx => {
-      await tx.update(heartbeatRuns).set({
+    const persisted = await withAccountingTransaction(db, input.companyId, async tx => {
+      const rows = await tx.update(heartbeatRuns).set({
         costAccountingPending: true, accountingLastError: "usage_capture_failed",
         usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingCaptureFailed":true,"accountingReceiptReady":false}'::jsonb`,
       }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
-        isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`));
+        isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`)).returning({ id: heartbeatRuns.id });
+      return rows.length === 1;
     });
+    if (persisted) { finishFailedCapture?.(); finishFailedCapture = undefined; }
   }
   function enqueue(action: () => Promise<AdapterUsageCheckpoint>) {
+    const finishQueuedCapture = beginIdleTrackedWork();
     const result = chain.then(action).catch(async error => {
       captureFailed = true;
+      finishFailedCapture ??= beginIdleTrackedWork();
       // Persist before exposing rejection: the adapter's flush may throw before
       // complete(), and failure finalization must not settle an older receipt.
       try { await persistFailure(); }
       catch (failure) { logger.error({ err: failure, runId: input.runId }, "Usage capture failure fence requires retry before finalization"); }
       throw error;
     });
-    chain = result.then(() => undefined, () => undefined);
+    chain = result.then(() => undefined, () => undefined).finally(finishQueuedCapture);
     return result;
   }
   async function capture(raw: AdapterUsageCheckpoint) {

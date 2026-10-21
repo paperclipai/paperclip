@@ -16,6 +16,9 @@ describe("Codex CI sandbox trust boundary", () => {
     ["everyday-workflows.runner-codex.daytona.build-revise", false],
     ["core-compatibility.legacy-codex.local.message-marker", false],
     ["core-compatibility.runner-acpx-codex.local.message-marker", true],
+    ["case-handoffs.runner-codex-subscription.local.same-task-roundtrip", true],
+    ["case-handoffs.runner-codex-subscription.local.receipt-smoke", true],
+    ["case-handoffs.runner-codex.local.receipt-smoke", true],
   ] as const)("qualifies the native local Codex sandbox for %s: %s", (id, expected) => {
     const execution = runnerMatrix.find((cell) => cell.id === id);
     expect(execution, id).toBeDefined();

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
@@ -15,6 +16,20 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("retains an optional nonnegative integer version for prepared-task promotion", () => {
+    expect(updateIssueSchema.parse({ status: "todo", expectedStatusVersion: 0 }).expectedStatusVersion).toBe(0);
+    expect(updateIssueSchema.parse({}).expectedStatusVersion).toBeUndefined();
+    for (const version of [-1, 0.5, null, "0"]) {
+      expect(updateIssueSchema.safeParse({ status: "todo", expectedStatusVersion: version }).success).toBe(false);
+    }
+  });
+  it("preserves the exact expected execution policy snapshot without defaults", () => {
+    const snapshot = { mode: "normal", stages: [], monitor: { nextCheckAt: "2026-10-10T12:00:00Z" } };
+    expect(updateIssueSchema.parse({ expectedExecutionPolicy: snapshot }).expectedExecutionPolicy).toEqual(snapshot);
+    expect(updateIssueSchema.parse({ expectedExecutionPolicy: null }).expectedExecutionPolicy).toBeNull();
+    expect(updateIssueSchema.parse({}).expectedExecutionPolicy).toBeUndefined();
+    expect(updateIssueSchema.safeParse({ expectedExecutionPolicy: [] }).success).toBe(false);
+  });
   it("accepts private visibility without adding defaults to updates", () => {
     expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
     expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");
@@ -158,6 +173,17 @@ describe("issue validators", () => {
     });
 
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
+  });
+
+  it("preserves literal escapes in multiline issue descriptions and comments", () => {
+    const content = `${"0123456789abcdef".repeat(2)}\n`;
+    const description = ["Write the exact JSON content.", "```json", JSON.stringify({ content }), "```"].join("\n");
+    expect(createIssueSchema.parse({ title: "Native memory", description }).description).toBe(description);
+    expect(updateIssueSchema.parse({ description, comment: description }).description).toBe(description);
+    expect(updateIssueSchema.parse({ comment: description }).comment).toBe(description);
+    const storedJson = createIssueSchema.parse({ title: "Native memory", description }).description!.split("\n")[2]!;
+    expect(JSON.parse(storedJson).content).toBe(content);
+    expect(Buffer.byteLength(JSON.parse(storedJson).content, "utf8")).toBe(33);
   });
 
   it("validates structured unblock descriptors", () => {
@@ -633,6 +659,12 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
+  it.each(["preconfigured", "isolated"])("rejects task-level homeMode %s on create and update", homeMode => {
+    const overrides = { assigneeAdapterOverrides: { adapterConfig: { homeMode } } };
+    expect(createIssueSchema.safeParse({ title: "Task", ...overrides }).success).toBe(false);
+    expect(updateIssueSchema.safeParse(overrides).success).toBe(false);
+  });
+
   it("rejects retired model profiles in agent runtime config", () => {
     const parsed = createAgentSchema.safeParse({
       name: "Coder",
@@ -652,5 +684,29 @@ describe("issue validators", () => {
     });
 
     expect(parsed.success).toBe(false);
+  });
+});
+
+
+describe("persisted canonical question initial text", () => {
+  const question = { id: "draft", prompt: "Edit", required: true, answerMode: "text" };
+  const input = (patch: Record<string, unknown>) => ({ schema: "paperclip.question_set.v1", questions: [{ ...question, ...patch }] });
+  it("retains exact editable content through the server payload validator", () => {
+    for (const initialText of ["", "  Draft\n漢字\n", "x".repeat(100_000)]) {
+      expect(paperclipQuestionSetPayloadSchema.parse(input({ initialText }))).toEqual(input({ initialText }));
+    }
+  });
+  it("counts mixed BMP and astral draft text like JSON Schema", () => {
+    for (const codePoints of [100_000, 100_001]) {
+      const initialText = "a".repeat(codePoints - 1) + "😀";
+      expect(Buffer.byteLength(JSON.stringify(input({ initialText })))).toBeLessThan(196 * 1024);
+      expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(codePoints === 100_000);
+    }
+  });
+  it("rejects non-text modes and unbounded or nonstring defaults", () => {
+    for (const initialText of [null, 1, "x".repeat(100_001), "a".repeat(100_000) + "😀"]) {
+      expect(paperclipQuestionSetPayloadSchema.safeParse(input({ initialText })).success).toBe(false);
+    }
+    expect(paperclipQuestionSetPayloadSchema.safeParse(input({ answerMode: "single_select", options: [{ id: "a", label: "A" }], initialText: "a" })).success).toBe(false);
   });
 });

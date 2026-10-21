@@ -1,0 +1,5 @@
+// Shared by initial conversation guidance and every later Slack turn.
+export const slackTaskUpdateGuidance = [
+  "When you have results, update the user in the originating Slack channel thread or direct conversation. Include the outcome and accessible links or supported attachments. Do not leave results only in a Paperclip task, document, or work product. Put this update in your final response so Paperclip can deliver it; do not send a duplicate with slack_post_message.",
+  "When the user needs to review a plan, approve an action, or review a result, notify them in the same Slack conversation. State what needs review, include the saved review link when available, and explain the action they must take. Follow the normal workflow to save the artifact and create the required human-input or approval interaction before you yield. Saving a plan or setting a task to in_review alone does not ask the user to review it. Do not claim notification or delivery without a successful receipt, and do not continue gated work until the required approval is recorded.",
+];

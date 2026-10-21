@@ -1,0 +1,97 @@
+{
+  "schema": "paperclip.pi-startup-diagnostic.v1",
+  "recordedAt": "2026-09-28T20:14:44.089567+00:00",
+  "sourceRevision": "9f2d0420ed9a398e3bacd1d7e996614f3296ac56",
+  "providerPackDigest": "sha256:2a6f457205743487cdd35ed3634532028e6e0200001f70e087d0e084fc85d452",
+  "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+  "runnerdDigest": "sha256:3fdff11d17faf096fce29b57a8e762e6dd241ef5009771913eb4798d10a0deca",
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "node": "24.19.0"
+  },
+  "credentialFreeReproduction": {
+    "durationMs": 40572,
+    "result": "runner_local_connect_failed: PRP command session.open timed out",
+    "runPrepare": "completed",
+    "sessionOpen": "pending",
+    "providerIdentityReported": false,
+    "credentials": "none",
+    "promptCalls": 0,
+    "providerCalls": 0
+  },
+  "before": {
+    "closedFiles": 13827,
+    "closedBytes": 234019683,
+    "stages": [
+      {
+        "phase": "verifyInstallation",
+        "durationMs": 5168,
+        "elapsedMs": 5168
+      },
+      {
+        "phase": "openImmutableCommand",
+        "durationMs": 37423,
+        "elapsedMs": 42591
+      },
+      {
+        "phase": "closeImmutableCommand",
+        "durationMs": 5978,
+        "elapsedMs": 48568
+      }
+    ],
+    "sessionOpenDeadlineMs": 30000
+  },
+  "repair": {
+    "foundationCommit": "2a30219f194cb094b18b5a19ffc5991b47924088",
+    "moduleSha256": "ad88337545673913a24ed283bf0b53016737cae471ef4822b92cc2930e31398d",
+    "copyMs": 5851,
+    "cleanupMs": 1026,
+    "copyConcurrency": 8,
+    "copyBufferBudgetBytes": 33554432,
+    "oversizedFilePolicy": "one admitted file alone; unchanged384MiB file limit",
+    "focusedTestsPassed": 10,
+    "sourceAndSurfacesTypecheck": "passed",
+    "activeOrStartupTimeoutChanged": false,
+    "retainedGuarantees": [
+      "no-follow and realpath confinement",
+      "held descriptor identity before/after reads",
+      "content digest verification",
+      "root identity checks",
+      "canonical manifest ordering",
+      "all in-flight writes drained before failure cleanup"
+    ]
+  },
+  "limits": [
+    "The full post-fix credential-free Runner request settles within the unchanged deadline; this is not authenticated-session success.",
+    "No paid prompt or provider request was issued by either diagnostic.",
+    "Private process identifiers, credentials and raw traces are excluded."
+  ],
+  "postFixCredentialFreeRunnerProbe": {
+    "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+    "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+    "runnerdDigest": "sha256:f9aad049d57a2073ce4ec96b6577266afdba5b99db75bb8fc21825a5b7281e39",
+    "requestSettledMs": 10087,
+    "includingCloseMs": 10198,
+    "sessionOpenDeadlineMs": 30000,
+    "result": "terminal session_ensure_failed rejection",
+    "timedOut": false,
+    "underlyingErrorVisibility": "The outer PRP response does not preserve the missing-credential message. The independent immutable ACP launch from this exact pack asserted that message at session/new.",
+    "authenticatedSessionSuccess": false,
+    "credentials": "none",
+    "promptCalls": 0,
+    "providerCalls": 0
+  },
+  "version3CredentialFreeRunnerProbe": {
+    "sourceRevision": "7710736ca3924c655c5b0efd172cfd3c0173766a",
+    "runtimeCodeRevision": "06cf356a8bc94f709fcd15606fe05e17933fe3b2",
+    "providerPackDigest": "sha256:eb31cadae93805b901d2565912121fca6e79024c0120b1bd7982e05215b5aa5a",
+    "profileVersion": 3,
+    "profileDigest": "sha256:72cb225288376f733b9ed3afa5e13565eb4152f0de509bc1181382fa44bee472",
+    "runnerdDigest": "sha256:2c8efdc99f988b1c8ab0e270677a3321af0fd6d5789dbf1b671faa921031b42f",
+    "durationIncludingCloseMs": 12111,
+    "result": "typed session_ensure_failed rejection before prompt; direct ACP probe separately verified missing-bound-credential error",
+    "authenticatedSessionSuccess": false,
+    "promptCalls": 0
+  }
+}

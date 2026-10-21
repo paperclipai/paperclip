@@ -1,4 +1,8 @@
+import { runnerE2EPlaywrightInvocation } from "./web-server-command.js";
+import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
+import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
+import { createRunnerE2ETemporaryRoot } from "./server-config.js";
 import { randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
@@ -12,8 +16,8 @@ import {
   cp,
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   symlink,
@@ -38,6 +42,7 @@ import {
   isEphemeralCodexRuntimeAuthFile,
   isEphemeralPostgresScanFile,
   normalizedSecrets,
+  secretScanFailureEvidence,
   sanitizeJson,
 } from "./redaction.js";
 import {
@@ -262,7 +267,7 @@ async function prepareProviderPath(
 }
 
 async function runProcess(
-  args: string[],
+  invocation: { command: string; args: string[] },
   env: NodeJS.ProcessEnv,
   timeoutMs: number | null,
   logPath: string,
@@ -270,7 +275,7 @@ async function runProcess(
   interactive: boolean,
 ) {
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
-  const child = spawn("pnpm", args, {
+  const child = spawn(invocation.command, invocation.args, {
     cwd: repositoryRoot,
     env,
     stdio: ["inherit", "pipe", "pipe"],
@@ -477,15 +482,18 @@ async function runAttempt(input: {
       "One isolated runner E2E harness cannot mix profiles or environments",
     );
   }
+  assertInstalledCliSelection(process.env, executions);
+  const installedCli = await verifyInstalledCli(process.env, executions);
+  const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
   const startedAtMs = Date.now();
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
-  const temporaryRoot = await mkdtemp(
-    path.join(os.tmpdir(), "paperclip-runner-e2e-"),
-  );
+  const temporaryParent = await realpath(os.tmpdir());
+  const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
   const publishedResults: RunnerE2EResult[] = [];
   const publishedResultPaths = new Map<string, string>();
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
+  let startupReceiptPath: string | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
@@ -515,15 +523,18 @@ async function runAttempt(input: {
     const decisionSigningSecret = secret(48);
     const toolActionSigningSecret = secret(48);
     const betterAuthSecret = secret(48);
-    const credentials = normalizedSecrets([
-      ...CREDENTIAL_NAMES.map((name) => process.env[name]),
-      agentJwtSecret,
-      decisionSigningSecret,
-      toolActionSigningSecret,
-      betterAuthSecret,
-    ]);
+    const credentialSources = {
+      ...Object.fromEntries(CREDENTIAL_NAMES.map((name) => [name, process.env[name]])),
+      PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
+      PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret,
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
+      BETTER_AUTH_SECRET: betterAuthSecret,
+    };
+    const credentials = normalizedSecrets(Object.values(credentialSources));
     attemptSecrets = credentials;
-    const runnerBinary = resolvePaperclipRunnerBinaryForHarness(
+    if (installedCli) await writeFile(path.join(privateDir, "installed-cli-admission.json"), `${JSON.stringify(installedCli, null, 2)}\n`, { mode: 0o600 });
+    if (installedPlugin) await writeFile(path.join(privateDir, "installed-daytona-plugin-admission.json"), `${JSON.stringify(installedPlugin, null, 2)}\n`, { mode: 0o600 });
+    const runnerBinary = installedCli ? undefined : resolvePaperclipRunnerBinaryForHarness(
       executions,
       repositoryRoot,
     );
@@ -534,6 +545,7 @@ async function runAttempt(input: {
         executions.map((candidate) => candidate.id),
       ),
       PAPERCLIP_RUNNER_E2E_ATTEMPT: String(attempt),
+      PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY: options.installedStartupOnly ? "1" : undefined,
       PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp") ? "1" : "0",
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
@@ -542,7 +554,7 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
       PAPERCLIP_RUNNER_REMOTE_BINARY_PATH:
-        resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
+        installedCli ? undefined : resolvePaperclipRemoteRunnerBinaryForHarness(executions, runnerBinary),
       // Vite's optimized dependency cache embeds revision query strings. A
       // private per-attempt cache prevents an earlier cell or local rebuild
       // from producing `504 Outdated Optimize Dep` during browser bootstrap.
@@ -569,8 +581,6 @@ async function runAttempt(input: {
     delete childEnv.DATABASE_MIGRATION_URL;
 
     const playwrightArgs = [
-      "exec",
-      "playwright",
       "test",
       "--config",
       "tests/runner-e2e/playwright.config.ts",
@@ -590,7 +600,7 @@ async function runAttempt(input: {
           ) +
           5 * 60_000;
     const processResult = await runProcess(
-      playwrightArgs,
+      runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs, Boolean(installedCli)),
       childEnv,
       watchdog,
       path.join(privateDir, "playwright.log"),
@@ -600,6 +610,18 @@ async function runAttempt(input: {
       options.ui || options.debug,
     );
     processCleanupFailed = processResult.processCleanupError !== null;
+    if (options.installedStartupOnly) {
+      const proofDir = path.join(resultsRoot, campaignId, "installed-startup-only");
+      await mkdir(proofDir, { recursive: true });
+      // This is private setup evidence, never a successful provider case/result.
+      await cp(privateDir, path.join(proofDir, "private"), { recursive: true });
+      const probe = JSON.parse(await readFile(path.join(privateDir, "installed-startup-only.json"), "utf8"));
+      if (processResult.exitCode !== 0 || processResult.timedOut || processResult.spawnError || processCleanupFailed || probe.status !== "health_ui_zero_company_passed" || probe.providerCalls !== 0 || probe.qualified !== false) throw new Error("Installed startup-only actual launch chain failed");
+      await assertEmbeddedDatabaseIsolation(configPath, temporaryRoot);
+      startupReceiptPath = path.join(proofDir, "receipt.json");
+      await writeFile(startupReceiptPath, `${JSON.stringify({ status: "installed_launch_chain_pending_scratch_cleanup", qualified: false, providerCalls: 0, credentialsLoaded: false, installedCli, processResult, probe }, null, 2)}\n`, { mode: 0o600 });
+      return [];
+    }
     const processFailure = processResult.spawnError
       ? `Playwright failed to start: ${processResult.spawnError}`
       : processResult.timedOut
@@ -643,6 +665,7 @@ async function runAttempt(input: {
       isolationError = error;
     }
     let persistedStateError: unknown;
+    let persistedStateFinding: { file: string; stateArea: string; reason: string; matchCategory?: string } | undefined;
     // Onboarding evaluates behavior; credential persistence belongs to a separate layer.
     // Keep artifact redaction/publication checks independent of this filesystem scan.
     const persistenceCheckedExecutions = executions.filter(
@@ -660,6 +683,7 @@ async function runAttempt(input: {
             // fixtures with fake `sk-*` strings. Reject exact campaign credentials.
             const leak = await findSecretLeakInDirectory(directory, credentials, {
               includeShapes: false,
+              sources: credentialSources,
               ignoreFile: (file) => expectedEphemeralCredentials.has(file),
               allowDisappearedFile: (file) =>
                 label === "Paperclip home" &&
@@ -679,9 +703,8 @@ async function runAttempt(input: {
                 continue;
               }
             }
-            throw new Error(
-              `Secret leak in persisted ${label} state at ${path.relative(temporaryRoot, leak.file)}: ${leak.reason}`,
-            );
+            persistedStateFinding = { ...leak, stateArea: label, file: path.relative(temporaryRoot, leak.file) };
+            throw new Error(`Secret leak in persisted ${label} state at ${persistedStateFinding.file}: ${leak.reason}${leak.matchCategory ? ` (${leak.matchCategory})` : ""}`);
           }
         }
       } catch (error) {
@@ -756,6 +779,16 @@ async function runAttempt(input: {
       );
       await mkdir(casePrivateDir, { recursive: true });
       await copySharedEvidence(privateDir, casePrivateDir);
+      if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
+        const snapshots = path.join(casePrivateDir, "snapshots");
+        await mkdir(snapshots, { recursive: true });
+        const original = results[index];
+        await writeFile(path.join(snapshots, "persisted-state-scan.json"), `${JSON.stringify(secretScanFailureEvidence({
+          scanError: persistedStateError instanceof Error ? persistedStateError.message : String(persistedStateError),
+          finding: persistedStateFinding,
+          originalResult: { status: original.status, failureClass: original.failureClass, error: original.error },
+        }, credentials), null, 2)}\n`, { mode: 0o600 });
+      }
       await writeFile(
         resultPath,
         `${JSON.stringify(sanitizeJson(result, credentials), null, 2)}\n`,
@@ -822,7 +855,7 @@ async function runAttempt(input: {
       await chmod(temporaryRoot, 0o700);
       console.warn(`Retained private failed-case diagnostics: ${temporaryRoot}`);
     } else if (
-      temporaryRoot.startsWith(`${os.tmpdir()}${path.sep}paperclip-runner-e2e-`)
+      temporaryRoot.startsWith(`${temporaryParent}${path.sep}paperclip-runner-e2e-`)
     ) {
       for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt += 1) {
         try {
@@ -843,6 +876,12 @@ async function runAttempt(input: {
       cleanupError = new Error(
         `Refusing to remove unexpected temporary path ${temporaryRoot}`,
       );
+    }
+    if (startupReceiptPath) {
+      const receipt = JSON.parse(await readFile(startupReceiptPath, "utf8"));
+      receipt.status = cleanupError ? "installed_launch_chain_cleanup_failed" : "installed_launch_chain_passed";
+      receipt.temporaryRootRemoved = !cleanupError;
+      await writeFile(startupReceiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
     }
     if (cleanupError) {
       const message = `Temporary runner E2E state cleanup failed at ${temporaryRoot}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`;
@@ -868,6 +907,7 @@ async function runAttempt(input: {
       // Cleanup failure is a failed cell, but must not suppress later cells in
       // the same campaign. The result above carries the terminal failure.
       console.error(message);
+      if (options.installedStartupOnly) throw new Error(message);
     }
   }
 }
@@ -942,6 +982,14 @@ async function main() {
     throw error;
   }
   const executions = selectRunnerExecutions(options, runnerMatrix);
+  if (options.installedStartupOnly) {
+    assertInstalledStartupOnly(process.env, executions, options);
+    assertRunnerE2EPrerequisites(executions);
+    const campaignId = cleanId(process.env.PAPERCLIP_E2E_CAMPAIGN_ID ?? `installed-startup-${Date.now()}`);
+    await runAttempt({ executions, attempt: 1, campaignId, options });
+    console.log(`PASS installed launch chain (no provider qualification) -> ${path.join(resultsRoot, campaignId, "installed-startup-only")}`);
+    return;
+  }
   if (options.list) {
     printList(executions);
     return;

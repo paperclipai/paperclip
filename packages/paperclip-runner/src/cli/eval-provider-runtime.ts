@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { resolveCodexCommand } from "../drivers/codex/codex-command.js";
 
 import type { CapabilityRunnerdCodexTransportOptions } from "../live/runnerd-codex-transport.js";
 
@@ -8,6 +6,7 @@ import type { CapabilityRunnerdCodexTransportOptions } from "../live/runnerd-cod
 export function evalProviderTransportOptions(
   provider: "codex" | "opencode" | "acpx" | "claude_managed" | "aws_agentcore",
   turnTimeoutMs = 120_000,
+  workingDirectory = process.cwd(),
 ): Pick<CapabilityRunnerdCodexTransportOptions,
   "codexCommand" | "acpxPermissionMode" | "acpxPermissionModePinned" | "turnStartTimeoutMs"
 > {
@@ -22,15 +21,5 @@ export function evalProviderTransportOptions(
     return { acpxPermissionMode: "approve-all", acpxPermissionModePinned: true };
   }
   if (provider !== "codex") return {};
-  const runnerRequire = createRequire(import.meta.url);
-  const codexRequire = createRequire(
-    runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json"),
-  );
-  const manifestPath = codexRequire.resolve("@openai/codex/package.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-    bin?: string | Record<string, string>;
-  };
-  const executable = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.codex;
-  if (!executable) throw new Error("Pinned Codex dependency does not expose its executable");
-  return { codexCommand: resolve(dirname(manifestPath), executable) };
+  return { codexCommand: resolveCodexCommand(undefined, undefined, workingDirectory) };
 }

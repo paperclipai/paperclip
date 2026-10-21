@@ -44,28 +44,65 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
 
+function cursorProviderIdentity(mode: unknown) {
+  return {
+    kind: "acpx",
+    normalizedSessionId: "normalized-cursor-recovery",
+    acpxRecordId: "acpx-record-1",
+    backendSessionId: "backend-session-1",
+    agentSessionId: "agent-session-1",
+    profileDigest: `sha256:${"a".repeat(64)}`,
+    workspaceDigest: `sha256:${"b".repeat(64)}`,
+    requestedModel: "explicit-cursor-model",
+    effectiveModel: "explicit-cursor-model",
+    permissionMode: "approve-all",
+    ...(mode === undefined ? {} : { mode }),
+    providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+  };
+}
+
 describe("Codex app-server Codex driver", () => {
-  it("does not resend a restart continuation when its history anchor is missing", async () => {
-    const first = new FakeCodexTransport();
-    const second = new FakeCodexTransport();
+  it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {
+    const identity = cursorProviderIdentity(mode);
+    const first = new FakeCodexTransport("thread-1", "provider-session-1", identity);
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", identity);
     const driver = makeDriver([first, second]);
     const original = await driver.openSession({
-      runId: "run-restart-anchor", normalizedSessionId: "session-restart-anchor", workingDirectory: WORKSPACE,
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
     });
-    await original.startTurn({ message: { role: "user", text: "Finish the request." } });
-    first.push("turn/completed", { threadId: "thread-1", turn: {
-      id: "turn-1", status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true }, items: [],
-    } });
-    await collectUntilTerminal(original.events());
     const snapshot = await original.snapshot();
-    await original.close({ reason: "controller lost before continuation checkpoint" });
-    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
-      turns: [{ id: "uncheckpointed-turn", status: "completed", items: [] }],
-    } };
-    await expect(driver.recoverSession?.(snapshot)).resolves.toMatchObject({
-      recovered: false, reason: "restart interruption history is incomplete",
+    expect(snapshot.providerIdentity).toEqual(identity);
+    await original.close({ reason: "controller disconnected" });
+
+    const recovery = await driver.recoverSession(snapshot);
+    expect(recovery.recovered).toBe(true);
+    expect((await recovery.session!.snapshot()).providerIdentity).toEqual(identity);
+    await recovery.session!.close({ reason: "test complete" });
+  });
+
+  it.each([undefined, "agent", "ask"])("refuses recovery when native Cursor plan mode becomes %s", async (changedMode) => {
+    const first = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity("plan"));
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity(changedMode));
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
     });
-    expect(second.calls.some(call => call.method === "turn/start")).toBe(false);
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller disconnected" });
+
+    await expect(driver.recoverSession(snapshot)).resolves.toEqual({
+      recovered: false, reason: "provider resumed with a different tagged session identity",
+    });
+    expect(second.calls.some((call) => call.method === "turn/start")).toBe(false);
+  });
+
+  it.each([null, "", 3])("rejects malformed native provider mode %j before opening a session", async (mode) => {
+    const transport = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity(mode));
+    const driver = makeDriver([transport]);
+    await expect(driver.openSession({
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
+    })).rejects.toThrow("ACPX provider identity contains an invalid provider mode");
+    expect(transport.calls.some((call) => call.method === "turn/start")).toBe(false);
   });
 
   it.each([null, "checkpointed-prior-turn"])("recovers an autonomous goal turn beyond checkpoint %s", async (checkpointTurnId) => {
@@ -1263,6 +1300,31 @@ describe("Codex app-server Codex driver", () => {
     expect(await recovered!.usage?.()).toEqual({
       total: { inputTokens: 21, outputTokens: 8 },
     });
+  });
+
+  it("refreshes authorized tools on resume without replacing the provider thread", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const original = await makeDriver([first], { conversationMode: "prepared", dynamicTools: [] }).openSession({
+      runId: "run-connect", normalizedSessionId: "normalized-connect", workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "waiting for connection" });
+    const githubTool = { name: "github_search", description: "Search authorized repositories", inputSchema: { type: "object" } };
+    const handler = vi.fn(async () => ({ repositories: ["paperclip"] }));
+    const resumedDriver = makeDriver([second], { conversationMode: "prepared", dynamicTools: [githubTool], dynamicToolHandler: handler });
+    expect((await resumedDriver.descriptor()).capabilities.toolRefreshOnResume).toBe(true);
+    const recovery = await resumedDriver.recoverSession(snapshot);
+    expect(recovery.recovered).toBe(true);
+    await recovery.session!.startTurn({ message: { role: "user", text: "Continue with GitHub connected" } });
+    expect(second.calls.some(call => call.method === "thread/start")).toBe(false);
+    expect(second.calls.find(call => call.method === "thread/resume")?.params).toMatchObject({ threadId: "thread-1", dynamicTools: expect.arrayContaining([githubTool]) });
+    const result = await second.invoke({ id: "rpc-github", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "github-call", tool: "github_search", arguments: { query: "paperclip" },
+    } });
+    expect(result).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ tool: "github_search", threadId: "thread-1" }));
+    await recovery.session?.close({ reason: "test done" });
   });
 
 });

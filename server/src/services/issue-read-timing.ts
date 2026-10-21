@@ -5,7 +5,7 @@ import { SpanStatusCode, trace } from "@opentelemetry/api";
 type IssueReadPhase = "lookup" | "authorization" | "project_goal" | "ancestors"
   | "mentions" | "documents" | "relations" | "blockers" | "review"
   | "references" | "handoff" | "retry" | "recovery" | "cases" | "inbox"
-  | "channel" | "workspace" | "work_products" | "execution_blocker"
+  | "channel" | "workspace" | "work_products" | "created_from" | "execution_blocker"
   | "relation_recovery" | "revalidate_recovery" | "mentioned_projects";
 
 export function createIssueReadTiming() {

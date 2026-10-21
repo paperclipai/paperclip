@@ -47,6 +47,31 @@ restart, a verified first download supplies the persistence checkpoint; the
 controller is interrupted during a subsequent revision with another queued
 requirement.
 
+The native Codex Daytona restart cell now requires a completed native tool
+receipt while that revision is still running. Before and after restart it pins
+the same run, normalized session, Runner identity, PID/start time, and active
+sandbox lease. The original receipt prefix must remain unchanged. A run that
+ends before either active observation leaves the fault boundary unexercised;
+it cannot pass from the final ZIP alone. The cell no longer exempts an original
+Codex remote run that fails with `process_lost` and is replaced.
+
+Completion requires one original provider turn and control-plane terminal,
+the same native receipt prefix, no duplicate completed tool execution IDs,
+a committed run and successful `workspace_finalize` receipt, and no pending
+workspace operation or recovery. Existing independent ZIP and preserved-download
+checks still apply. These receipt checks do not prove that arbitrary external
+effects with different tool IDs cannot repeat.
+
+`remote-restart-before.json`, `remote-restart-after.json` and
+`remote-restart-final.json` retain receipt identities and hashes. They exclude
+provider text, tool arguments, command output, and raw provider sandbox IDs.
+The suite definition version and harness digest change with this oracle.
+Its deterministic calibration is not a claim that a live Daytona run passed.
+
+```sh
+pnpm test:e2e:runner -- --id everyday-workflows.runner-codex.daytona.recover-controller --max-automatic-retries 0
+```
+
 ```sh
 pnpm test:e2e:runner -- --list --suite everyday-workflows
 pnpm test:e2e:runner -- --suite everyday-workflows --environment local --max-parallel 2
@@ -238,3 +263,25 @@ revision, harness digest, and existing usage/cost evidence accompany each attemp
 routing, incorrect ordering, early calls, duplicate questions, and fabricated reads.
 Run a single `everyday-workflows.runner-codex-mini.local.provider-decline` cell
 first; do not treat these fixtures as live provider compatibility tests.
+
+### Connection-guidance observation boundaries
+
+The explicit `native-connection-guidance` suite keeps one attempt per cell.
+For decline cases, Done and a succeeded run are insufficient: settlement waits
+within the existing cell deadline for a saved reply attributed by run ID to the
+lead agent's final successful run on this task. Readiness checks storage and
+identity, not favorable wording. A missing reply times out; an incorrect reply
+settles and fails the independent explanation check. Both decline explanation
+checks use the same bounded matcher, including unavailable/rejected access and
+“wasn't able to pull” wording. This is textual evidence, not proof of cognition.
+
+An executed approval or a recorded tool-action rejection with `wake_assignee`
+may precede its continuation run. Only a response bound to the same task, company,
+agent, and completed source run can defer the stranded-blocker check, and only
+within the original deadline. A failed execution, unrelated card, or already
+consumed response cannot extend that wait.
+
+`connection-guidance-decline-grade.json` and the workflow's
+`declineGradeEvidence` retain the exact cloned assertion input and original
+checks. Later final-state or cleanup observations cannot overwrite that input.
+Earlier campaign grades remain unchanged when the evaluator is corrected.

@@ -41,6 +41,23 @@ describe("provider-neutral completion result schema", () => {
     expect(providerValidate(report)).toBe(true);
     expect(validate({ ...report, continuation: { ...report.continuation, kind: "invented" } })).toBe(false);
   });
+  it("requires a persisted handoff identifier for a case handoff continuation", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+      kind: "case_handoff", handoffId: "accepted-handoff-id", summary: "Next phase", idempotencyKey: "handoff-1" } };
+    expect(validate(report)).toBe(true);
+    const providerValidate = new Ajv2020({ allErrors: true, strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    const { handoffId: _omitted, ...withoutId } = report.continuation;
+    expect(validate({ ...report, continuation: withoutId })).toBe(false);
+    expect(providerValidate({ ...report, continuation: withoutId })).toBe(false);
+  });
+
+  it("lets the controller resolve an omitted provider continuation without weakening canonical results", () => {
+    const report = { ...baseResult, reportedWorkDisposition: "yielded" };
+    const providerValidate = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    expect(providerValidate(report)).toBe(true);
+    expect(validate(report)).toBe(false);
+  });
 
   it("allows done with no verification and no actionable attention", () => {
     expect(validate(structuredClone(baseResult))).toBe(true);
@@ -182,8 +199,8 @@ describe("provider-neutral completion result schema", () => {
       },
     };
     expect(providerValidate(yielded)).toBe(true);
-    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(false);
-    expect(providerValidate({ ...yielded, continuation: null })).toBe(false);
+    expect(providerValidate({ ...yielded, continuation: undefined })).toBe(true);
+    expect(providerValidate({ ...yielded, continuation: null })).toBe(true);
     expect(providerValidate({ ...yielded, continuation: { kind: "response_wake" } })).toBe(false);
     expect(providerValidate({
       ...yielded, continuation: { ...yielded.continuation, kind: "same_agent" },

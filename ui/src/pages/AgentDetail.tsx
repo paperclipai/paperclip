@@ -1,3 +1,6 @@
+import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
+import { grokBotApi } from "@/api/grokBot";
+import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
 import { PrimaryAgentIndicator, SetPrimaryAgentButton } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AiConnectionPoolRunDetails } from "@/components/ai-connections/AiConnectionPoolRunDetails";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
@@ -34,7 +37,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
-import { getAdapterDisplay } from "../adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
@@ -44,9 +47,12 @@ import { assetsApi } from "../api/assets";
 import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
+import { AgentLifecycleStatus, useAgentLifecycleStatus } from "../components/AgentLifecycleStatus";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { IssueRow } from "../components/IssueRow";
+import { TaskSummaryList } from "../components/TaskSummaryList";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
@@ -64,7 +70,7 @@ import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
-import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
+import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
@@ -129,6 +135,7 @@ import {
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { humanAgentCreatorUserId, resolveAgentCreatorLabel } from "../lib/agent-creator";
 import {
   isStarred,
   resourceMembershipState,
@@ -367,6 +374,7 @@ function setsEqual<T>(left: Set<T>, right: Set<T>) {
 function runMetrics(run: HeartbeatRun) {
   const usage = (run.usageJson ?? null) as Record<string, unknown> | null;
   const result = (run.resultJson ?? null) as Record<string, unknown> | null;
+  const usageUnavailable = hasUnavailableProviderAccounting(result);
   const input = usageNumber(usage, "inputTokens", "input_tokens");
   const output = usageNumber(usage, "outputTokens", "output_tokens");
   const cached = usageNumber(
@@ -380,11 +388,12 @@ function runMetrics(run: HeartbeatRun) {
   const provider = asNonEmptyString(usage?.provider) ?? null;
   const model = asNonEmptyString(usage?.model) ?? null;
   return {
-    input,
-    output,
-    cached,
-    cost,
-    totalTokens: visibleRunTokenTotal(usage),
+    usageUnavailable,
+    input: usageUnavailable ? null : input,
+    output: usageUnavailable ? null : output,
+    cached: usageUnavailable ? null : cached,
+    cost: usageUnavailable ? null : cost,
+    totalTokens: usageUnavailable ? null : visibleRunTokenTotal(usage),
     provider,
     model,
   };
@@ -815,6 +824,7 @@ export function AgentDetail() {
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  const lifecycle = useAgentLifecycleStatus(agent);
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const handleLegacyTabChange = useCallback((next: string) => {
@@ -984,17 +994,21 @@ export function AgentDetail() {
   }, [agent?.companyId, selectedCompanyId, setSelectedCompanyId]);
 
   // Invoke / pause / resume / terminate / duplicate / reset live in the shared
-  // AgentActionButtons component. The detail header keeps only "approve" here,
-  // which is surfaced via the pending-approval banner below.
+  // AgentActionButtons component. Approval and lifecycle retry stay in the detail header.
   const agentAction = useMutation({
-    mutationFn: async (action: "approve") => {
+    mutationFn: async (action: "approve" | "retryLifecycle") => {
       if (!agentLookupRef) return Promise.reject(new Error("No agent reference"));
       if (action === "approve") {
         return agentsApi.approve(agentLookupRef, resolvedCompanyId ?? undefined);
       }
+      return agentsApi.retryLifecycle(agentLookupRef, resolvedCompanyId ?? undefined);
     },
-    onSuccess: () => {
+    onSuccess: (_data, action) => {
       setActionError(null);
+      if (action === "retryLifecycle") {
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.agents.detail(agentLookupRef), "lifecycle"] });
+        return;
+      }
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(routeAgentRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentLookupRef) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentLookupRef) });
@@ -1160,7 +1174,9 @@ export function AgentDetail() {
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
-  const isPendingApproval = agent.status === "pending_approval";
+  const currentAgent = lifecycle.data && (lifecycle.data.lifecycleVersion ?? 0) >= (agent.lifecycleVersion ?? 0)
+    ? { ...agent, ...lifecycle.data } : agent;
+  const isPendingApproval = currentAgent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (
@@ -1245,7 +1261,7 @@ export function AgentDetail() {
       <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
         <div className="flex min-w-0 items-center gap-4">
           <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
-            <AgentCharacter agent={agent} state={characterStateForAgent(agent.status)} size={96} trackingScope="page" />
+            <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status)} size={96} trackingScope="page" />
           </div>
           <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2"><h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1><PrimaryAgentIndicator agentId={agent.id} companyId={agent.companyId} /></div>
@@ -1253,9 +1269,10 @@ export function AgentDetail() {
               {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
                 ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
                 : null}
-              <span>{getAdapterDisplay(agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "openai_dot" ? "openai_dot" : agent.adapterType).label}</span><span>·</span>
+              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span><span>·</span>
               <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
             </div>
+            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
             <SetPrimaryAgentButton agent={agent} />
           </div>
         </div>
@@ -1273,11 +1290,11 @@ export function AgentDetail() {
             })}
           />
           <AgentActionButtons
-            agent={agent}
+            agent={currentAgent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            canRunWithProviderTrace={canUseProviderTrace}
+            canRunWithProviderTrace={canUseProviderTrace && supportsRawProviderTrace(currentAgent.adapterType, currentAgent.adapterConfig)}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -1720,12 +1737,15 @@ export function AgentOverview({
   skillNames: string[];
   agentRouteId: string;
 }) {
+  const designSandbox = useDesignSandbox();
   const issuesById = useMemo(() => {
     const map = new Map<string, (typeof assignedIssues)[number]>();
     for (const issue of assignedIssues) map.set(issue.id, issue);
     return map;
   }, [assignedIssues]);
-  const configuredModel = asNonEmptyString(agent.adapterConfig?.model)
+  const configuredModel = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse"
+    ? "Managed by Muse"
+    : asNonEmptyString(agent.adapterConfig?.model)
     ?? asNonEmptyString(agent.adapterConfig?.modelName)
     ?? asNonEmptyString(agent.runtimeConfig?.model)
     ?? "Adapter default";
@@ -1734,6 +1754,14 @@ export function AgentOverview({
     queryKey: [...queryKeys.agents.identity(agent.id), lastRun?.id, lastRun?.status],
     queryFn: () => agentsApi.getIdentity(agent.id, agent.companyId),
   });
+  const hasHumanCreator = Boolean(humanAgentCreatorUserId(agent.createdByUserId));
+  const userDirectory = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
+    queryFn: () => accessApi.listUserDirectory(agent.companyId),
+    enabled: hasHumanCreator,
+    retry: false,
+  });
+  const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   return (
     <div className="space-y-6">
       <LatestRunCard runs={runs} agentId={agentRouteId} issuesById={issuesById} />
@@ -1755,6 +1783,11 @@ export function AgentOverview({
               ) : <span className="text-sm">Board</span>}
             </SummaryRow>
             <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
+            {hasHumanCreator && userDirectory.isError ? (
+              <SummaryRow label="Created by"><span className="text-sm text-destructive">Could not load creator</span></SummaryRow>
+            ) : creatorLabel ? (
+              <SummaryRow label="Created by"><span className="text-sm">{creatorLabel}</span></SummaryRow>
+            ) : null}
             <SummaryRow label="Public key">
               {identity.isPending ? <span className="text-sm text-muted-foreground">Loading…</span>
                 : identity.isError ? <span className="text-sm text-destructive">Could not load public key</span>
@@ -1778,12 +1811,13 @@ export function AgentOverview({
             <Link className="text-xs text-muted-foreground hover:text-foreground" to={agentDetailHref(agentRouteId, "runtime")}>Configure</Link>
           </div>
           <div className="space-y-3">
-            <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "openai_dot" ? "openai_dot" : agent.adapterType).label}</span></SummaryRow>
-            <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>
+            <SummaryRow label="Adapter"><span className="text-sm">{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span></SummaryRow>
+            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" ? <><SummaryRow label="Execution"><span className="text-sm">Runs in Grok Bot</span></SummaryRow><SummaryRow label="Usage"><span className="text-sm">Not reported</span></SummaryRow></> : <SummaryRow label="Model"><span className="max-w-64 truncate text-sm font-mono">{configuredModel}</span></SummaryRow>}
             <SummaryRow label="Session"><span className="max-w-64 truncate text-sm font-mono">{runtimeState?.sessionDisplayId ?? runtimeState?.sessionId ?? "No session"}</span></SummaryRow>
             <SummaryRow label="Last run">
               <span className="text-sm">{lastRun ? `${lastRun.status} · ${relativeTime(lastRun.createdAt)}` : "No runs"}</span>
             </SummaryRow>
+            {agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "grok_bot" && <GrokBotWorkSummary companyId={agent.companyId} agentId={agent.id} />}
           </div>
         </section>
 
@@ -1826,7 +1860,7 @@ export function AgentOverview({
           <p className="text-sm text-muted-foreground">No recent tasks.</p>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
-            {assignedIssues.slice(0, 6).map((issue) => (
+            {designSandbox ? <TaskSummaryList issues={assignedIssues.slice(0, 6)} /> : assignedIssues.slice(0, 6).map((issue) => (
               <IssueRow
                 key={issue.id}
                 issue={issue}
@@ -1994,7 +2028,7 @@ export function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && content === "runtime",
+    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot", "muse"].includes(catalogProvider ?? ""),
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
@@ -3279,17 +3313,18 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
           {summary.slice(0, 60)}
         </span>
       )}
-      {(metrics.totalTokens > 0 || metrics.cost > 0) && (
+      {(metrics.usageUnavailable || (metrics.totalTokens ?? 0) > 0 || (metrics.cost ?? 0) > 0) && (
         <div className="flex items-center gap-2 pl-5.5 text-(length:--text-micro) text-muted-foreground tabular-nums">
-          {metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
-          {metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
+          {metrics.usageUnavailable && <span>Usage and cost unavailable</span>}
+          {metrics.totalTokens !== null && metrics.totalTokens > 0 && <span>{formatTokens(metrics.totalTokens)} tok</span>}
+          {metrics.cost !== null && metrics.cost > 0 && <span>${metrics.cost.toFixed(3)}</span>}
         </div>
       )}
     </Link>
   );
 }
 
-function RunsTab({
+export function RunsTab({
   runs,
   companyId,
   agentId,
@@ -3308,10 +3343,6 @@ function RunsTab({
 }) {
   const { isMobile } = useSidebar();
 
-  if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
-  }
-
   // Sort by created descending
   const sorted = [...runs].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -3319,7 +3350,16 @@ function RunsTab({
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
   const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
+  const selectedRun = selection.run;
+  if (selectedRunId && !selectedRun) {
+    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    return <div role="alert">
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+    </div>;
+  }
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -3387,6 +3427,27 @@ export function AgentFileRunNotice({ resultJson }: { resultJson: HeartbeatRun["r
   </>;
 }
 
+export function RunAccountingMetrics({ run }: { run: HeartbeatRun }) {
+  const metrics = runMetrics(run);
+  if (!metrics.usageUnavailable && ![metrics.input, metrics.output, metrics.cached, metrics.cost].some(value => (value ?? 0) > 0)) return null;
+  const values = [
+    ["Input", metrics.input === null ? "Unavailable" : formatTokens(metrics.input)],
+    ["Output", metrics.output === null ? "Unavailable" : formatTokens(metrics.output)],
+    ["Cached", metrics.cached === null ? "Unavailable" : formatTokens(metrics.cached)],
+    ["Cost", metrics.cost === null ? "Unavailable" : metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"],
+  ];
+  return (
+    <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
+      {values.map(([label, value]) => (
+        <div key={label}>
+          <div className="text-xs text-muted-foreground">{label}</div>
+          <div className="text-sm font-medium font-mono">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }: { run: HeartbeatRun; agentRouteId: string; adapterType: string; adapterConfig: Record<string, unknown> }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -3413,6 +3474,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
   const paperclipDeveloperMode =
     experimentalSettings?.enablePaperclipDeveloperMode === true;
+  const canRerunWithProviderTrace = canUseProviderTrace && supportsRawProviderTrace(adapterType, adapterConfig);
   const { data: providerTraceRows } = useQuery({
     queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
     queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
@@ -3445,8 +3507,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     setClaudeLoginResult(null);
   }, [run.id]);
 
+  const grokWork = run.driverKind === "grok_bot_mcp";
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
+    mutationFn: () => grokWork ? grokBotApi.stop(run.companyId, run.agentId, run.id) : heartbeatsApi.cancel(run.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
@@ -3586,7 +3649,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     ? Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)
     : null;
   const displayDurationSec = durationSec ?? (isRunning ? elapsedSec : null);
-  const hasMetrics = metrics.input > 0 || metrics.output > 0 || metrics.cached > 0 || metrics.cost > 0;
   const hasSession = !!(run.sessionIdBefore || run.sessionIdAfter);
   const sessionChanged = run.sessionIdBefore && run.sessionIdAfter && run.sessionIdBefore !== run.sessionIdAfter;
   const sessionId = run.sessionIdAfter || run.sessionIdBefore;
@@ -3599,6 +3661,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           break-glass handlers as the task detail page. */}
       <RunWorkspaceRecoverySurface run={run} />
       <AiConnectionPoolRunDetails context={run.contextSnapshot} />
+      {grokWork && <p className="text-sm text-muted-foreground">Runs in Grok Bot. Usage not reported. Stopping this session revokes Paperclip authority; remote execution may continue. Open the Grok Bot desktop app to inspect it. This view contains Paperclip-reported activity.</p>}
       {/* Run summary card */}
       <div className="border border-border rounded-lg overflow-hidden">
         <div className="flex flex-col sm:flex-row">
@@ -3619,7 +3682,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {grokWork ? cancelRun.isPending ? "Stopping Paperclip work…" : "Stop Paperclip work" : cancelRun.isPending ? "Cancelling…" : "Cancel"}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -3659,7 +3722,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 runId={run.id}
                 enabled={paperclipDeveloperMode && canUseProviderTrace}
               />
-              {canUseProviderTrace && !["queued", "running"].includes(run.status) ? (
+              {canRerunWithProviderTrace && !["queued", "running"].includes(run.status) ? (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3824,27 +3887,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             <RunRetryDetails run={run} agentRouteId={agentRouteId} />
           </div>
 
-          {/* Right column: metrics */}
-          {hasMetrics && (
-            <div className="border-t sm:border-t-0 sm:border-l border-border p-4 grid grid-cols-2 gap-x-4 sm:gap-x-8 gap-y-3 content-center tabular-nums">
-              <div>
-                <div className="text-xs text-muted-foreground">Input</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.input)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Output</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.output)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cached</div>
-                <div className="text-sm font-medium font-mono">{formatTokens(metrics.cached)}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Cost</div>
-                <div className="text-sm font-medium font-mono">{metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}</div>
-              </div>
-            </div>
-          )}
+          <RunAccountingMetrics run={run} />
         </div>
 
         {/* Collapsible session row */}
@@ -3960,7 +4003,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
         open={inspectorOpen}
         onOpenChange={setInspectorOpen}
         onRerunWithTrace={
-          canUseProviderTrace && !["queued", "running"].includes(run.status)
+          canRerunWithProviderTrace && !["queued", "running"].includes(run.status)
             ? () => rerunWithTrace.mutate()
             : undefined
         }

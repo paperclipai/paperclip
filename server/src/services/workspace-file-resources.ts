@@ -1,4 +1,4 @@
-import { issueReadSqlCondition, executionWorkspaceReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { issueReadSqlCondition, projectReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -113,6 +113,7 @@ type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 
 type WorkspaceCandidate = {
+  companyId: string;
   workspaceKind: WorkspaceFileWorkspaceKind;
   workspaceId: string;
   projectId?: string | null;
@@ -474,6 +475,7 @@ function candidateFromExecutionWorkspace(row: ExecutionWorkspaceRow): WorkspaceC
   const rootPath = row.cwd || row.providerRef || null;
   const remote = !["local_fs", "git_worktree"].includes(provider) || !rootPath || row.status !== "active" || row.closedAt != null;
   return {
+    companyId: row.companyId,
     workspaceKind: "execution_workspace",
     workspaceId: row.id,
     provider,
@@ -491,6 +493,7 @@ function candidateFromProjectWorkspace(
   const rootPath = row.cwd ?? null;
   const remote = !LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(row.sourceType) || !rootPath;
   return {
+    companyId: row.companyId,
     workspaceKind: "project_workspace",
     workspaceId: row.id,
     projectId: project?.id ?? row.projectId,
@@ -1039,17 +1042,47 @@ async function listChangedWorkspaceFiles(input: {
 }
 
 export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor) {
-  async function visibleCandidates(candidates: WorkspaceCandidate[]) {
+  async function visibleCandidates(candidates: WorkspaceCandidate[], skipDeniedSources = false, task?: IssueRow) {
     if (!actor) return candidates;
     const visible: WorkspaceCandidate[] = [];
     for (const candidate of candidates) {
       const rows = candidate.workspaceKind === "execution_workspace"
         ? await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), await executionWorkspaceReadSqlCondition(db, actor)))
+          .where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, candidate.companyId)))
         : await db.select({ id: projectWorkspaces.id }).from(projectWorkspaces)
           .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
           .where(and(eq(projectWorkspaces.id, candidate.workspaceId), await projectReadSqlCondition(db, actor)));
-      if (rows.length) visible.push(candidate);
+      if (!rows.length) continue;
+      if (candidate.workspaceKind === "execution_workspace") {
+        // A task-bound root grants file navigation, never disclosure of the workspace record.
+        if (!task || task.companyId !== candidate.companyId) continue;
+        if (task.executionWorkspaceId !== candidate.workspaceId) {
+          const [owner] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, candidate.workspaceId), eq(executionWorkspaces.companyId, task.companyId)));
+          if (owner?.sourceIssueId !== task.id) {
+            if (!task.parentId || owner?.sourceIssueId !== task.parentId) continue;
+            const [parent] = await db.select({ id: issues.id }).from(issues).where(and(
+              eq(issues.id, task.parentId), eq(issues.companyId, task.companyId), await issueReadSqlCondition(db, actor)));
+            if (!parent) continue;
+          }
+        }
+        candidate.label = "Task workspace";
+      }
+      if (candidate.rootPath && (!candidate.remote || candidate.provider === "local_fs" || LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES.has(candidate.provider))) {
+        try {
+          const canonicalCwd = await fs.realpath(candidate.rootPath);
+
+          candidate.rootPath = canonicalCwd;
+        } catch (error) {
+          if (isHttpStatus(error, 403) || isHttpStatus(error, 404)
+            || ["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+            if (skipDeniedSources) continue;
+            throw notFound("Workspace file not found");
+          }
+          throw error;
+        }
+      }
+      visible.push(candidate);
     }
     return visible;
   }
@@ -1094,7 +1127,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     if (explicitTarget) return [explicitTarget];
 
     const candidates: WorkspaceCandidate[] = [];
-    if ((selector === "auto" || selector === "execution") && issue.projectId) {
+    if (selector === "auto" || selector === "execution") {
       const executionIds = [issue.executionWorkspaceId].filter((id): id is string => Boolean(id));
       let executionRows: ExecutionWorkspaceRow[] = [];
       if (executionIds.length > 0) {
@@ -1110,7 +1143,6 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
         const activeRows = await db.select().from(executionWorkspaces).where(
           and(
             eq(executionWorkspaces.companyId, issue.companyId),
-            eq(executionWorkspaces.projectId, issue.projectId),
             inArray(executionWorkspaces.sourceIssueId, sourceIssueIds),
             eq(executionWorkspaces.status, "active"),
             isNull(executionWorkspaces.closedAt),
@@ -1126,30 +1158,29 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       }
     }
 
-    if ((selector === "auto" || selector === "project") && issue.projectId) {
+    if ((selector === "auto" || selector === "project") && (issue.projectId || issue.projectWorkspaceId)) {
       if (issue.projectWorkspaceId) {
         const rows = await db.select().from(projectWorkspaces).where(
           and(
             eq(projectWorkspaces.companyId, issue.companyId),
-            eq(projectWorkspaces.projectId, issue.projectId),
             eq(projectWorkspaces.id, issue.projectWorkspaceId),
           ),
         ).limit(1);
         if (rows[0]) candidates.push(candidateFromProjectWorkspace(rows[0]));
       }
-      const primaryRows = await db.select().from(projectWorkspaces).where(
+      const primaryRows = issue.projectId ? await db.select().from(projectWorkspaces).where(
         and(
           eq(projectWorkspaces.companyId, issue.companyId),
           eq(projectWorkspaces.projectId, issue.projectId),
           eq(projectWorkspaces.isPrimary, true),
         ),
-      ).limit(1);
+      ).limit(1) : [];
       if (primaryRows[0] && !candidates.some((candidate) => candidate.workspaceId === primaryRows[0]!.id)) {
         candidates.push(candidateFromProjectWorkspace(primaryRows[0]));
       }
     }
 
-    return visibleCandidates(candidates);
+    return visibleCandidates(candidates, selector === "auto", issue);
   }
 
   async function loadAvailabilityTargets(
@@ -1189,8 +1220,13 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
           error: unprocessable("Workspace does not belong to the selected project", { code: "workspace_project_mismatch" }),
         });
       } else {
-        const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
-        targets.set(targetKey, candidate ? { candidate } : { error: notFound("Project workspace not found") });
+        try {
+          const [candidate] = await visibleCandidates([candidateFromProjectWorkspace(workspace, { id: project.id, name: project.name })]);
+          targets.set(targetKey, candidate ? { candidate } : { error: notFound("Project workspace not found") });
+        } catch (error) {
+          if (!(error instanceof HttpError) || !expectedAvailabilityReason(error)) throw error;
+          targets.set(targetKey, { error });
+        }
       }
     }
     return targets;
@@ -1222,7 +1258,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
       seen.add(row.workspace.id);
       candidates.push(candidateFromProjectWorkspace(row.workspace, row.project));
     }
-    return visibleCandidates(candidates);
+    return visibleCandidates(candidates, true);
   }
 
   async function discoverUniqueProjectWorkspaceMatch<T>(
@@ -1270,7 +1306,17 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     const untargetedQueries = queries.filter(
       (item) => !item.unavailableReason && !item.query.projectId && !item.query.workspaceId,
     );
-    const initialCandidates = untargetedQueries.length > 0 ? await listCandidates(issue, "auto") : [];
+    const candidatesBySelector = new Map<WorkspaceFileSelector, WorkspaceCandidate[]>();
+    const selectorErrors = new Map<WorkspaceFileSelector, unknown>();
+    for (const selector of new Set(untargetedQueries.map(item => item.query.workspace))) {
+      try {
+        candidatesBySelector.set(selector, await listCandidates(issue, selector));
+      } catch (error) {
+        if (!expectedAvailabilityReason(error)) throw error;
+        selectorErrors.set(selector, error);
+      }
+    }
+    const initialCandidates = candidatesBySelector.get("auto") ?? [];
     const needsDiscovery = initialCandidates.some((candidate) => !candidate.remote)
       && untargetedQueries.some((item) => item.query.workspace === "auto");
     const discoveryCandidates = needsDiscovery
@@ -1291,13 +1337,10 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
             : null;
           if (explicitTarget?.error) throw explicitTarget.error;
 
+          if (!explicitTarget && selectorErrors.has(item.query.workspace)) throw selectorErrors.get(item.query.workspace);
           const candidates = explicitTarget?.candidate
             ? [explicitTarget.candidate]
-            : initialCandidates.filter((candidate) => {
-                if (item.query.workspace === "execution") return candidate.workspaceKind === "execution_workspace";
-                if (item.query.workspace === "project") return candidate.workspaceKind === "project_workspace";
-                return true;
-              });
+            : candidatesBySelector.get(item.query.workspace) ?? [];
           if (candidates.length === 0) {
             throw unprocessable("No workspace is available for this issue", { code: "no_workspace" });
           }

@@ -9,7 +9,7 @@ pnpm --filter @paperclipai/ui exec storybook dev --port 6010 --host 127.0.0.1 --
 ## Connector catalog chips
 
 **Apps → Catalog source selection → Chips** is the focused catalog preview.
-The four text chips are **Paperclip**, **Composio**, **Installed**, and **All**.
+The five text chips are **Paperclip**, **Composio**, **Arcade**, **Installed**, and **All**.
 The selected chip has a neutral pill background; the other choices are plain text.
 Connected accounts stay above discovery. Installed shows only saved native and
 Composio apps. All includes every catalog source, including Arcade. Searching

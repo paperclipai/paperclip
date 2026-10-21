@@ -1,0 +1,43 @@
+{
+  "commandDigest": "sha256:790f8b954be995ef63aef0ebdb0e06215e4c0d1416d40d605b33966a3d6ba053",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "pi",
+    "agentProfileVersion": 15,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "0.0.33",
+    "agentRuntimeVersion": "1.0.0",
+    "nodeVersion": "24.21.0",
+    "closure": {
+      "darwin-arm64": "729947513854dadc2d596a34186f7f19beaffead0fc97698d8eeac96b8479533",
+      "darwin-x64": "80de2913634f83e958792ddebc17e94f6dbbe5aa9aed3cea3ff5b40f44c90a59",
+      "linux-x64": "5fedea5f04f4f76d0e2ead0637b00322583d6c859f9df4f4dc8b332aca416eda"
+    },
+    "wrapperSha256": "8ef777e9e6a3cef37775bab2b800e4931330c23a0b151ce07fdc5b943f28435d",
+    "helperSha256": "2191b1e5f281d24508ec7eaff39011ee863a8a70bf54f4aa0490ad0172b323da",
+    "extensionSha256": "71a85bf2e736d4108ea88a4aed01df3f547e8e4ccdeadea8251220e40cb05394",
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "nativeQuestions": "select-confirm-input-editor-v3-method-specific-fields",
+    "pathPolicy": "sdk-normalization-v1",
+    "mcpToolNames": "provider-safe-exact-source-v1",
+    "acpxPatchSha256": "c0139d0b3af085ec5272a7812c9f89aff0e8618d1d44d9c9e9a59525d1972436",
+    "nativeAssistantMessages": "pi1-rpc-deltas-v3-bound-message-and-tool-receipts",
+    "nativeNotices": "session-extension-v2-bounded-runtime-failure",
+    "messageProjectionSha256": "17d1e91b948dfa6a56e1905645add52b502041ad843c8d50a13b07956f22aadd",
+    "noticeProjectionSha256": "014485adc690998e395d334ea3ae67f72be6060a2fc78a1185df7b8d1da28fbf",
+    "sharedRuntimeContract": "paperclip.acpx-runtime-contract.v1",
+    "nativeInputDisposition": "queued-only-v1",
+    "cacheWarming": "disabled-owned-decision-v1",
+    "thinkingLevel": {
+      "supported": [
+        "off",
+        "low",
+        "high",
+        "max"
+      ],
+      "newConfigurationDefault": "low",
+      "admission": "explicit-native-effective-before-prompt-v1",
+      "recovery": "mode-bound-v1"
+    }
+  }
+}

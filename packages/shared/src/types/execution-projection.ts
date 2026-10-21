@@ -13,13 +13,24 @@ export interface ExecutionBlocker {
   canRetry?: boolean;
   /** Required workspace files must be recovered before another provider turn. */
   workspaceRepairRequired?: boolean;
+  canRecordWorkspaceRepair?: boolean;
+  canReconstructWorkspace?: boolean;
+  workspaceReconstructionPending?: boolean;
+  workspaceRecoveryStatusVersion?: number;
   savedMessageCount?: number;
+  workspaceRecovery?: {
+    status: "queued" | "recovering" | "blocked" | "recovered";
+    stage: "verifying_stop" | "restoring_files" | "saving_receipts";
+    canRetry: boolean;
+    message: string;
+  };
 }
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
   phase:
     | "working"
+    | "waiting_for_provider"
     | "reconnecting"
     | "retry_scheduled"
     | "finishing"
@@ -75,4 +86,25 @@ export interface ExecutionReconciliation {
   outcomeEvidence: string;
   /** Operator evidence bound to this failed run; required after workspace restore failure. */
   workspaceRepairEvidence?: string;
+  workspaceReconstruction?: {
+    schema: "paperclip.workspace-reconstruction.v1";
+    leaseId: string;
+    resultId: string;
+    descriptorSha256: string;
+    missingWork: string;
+    sources: Array<{ attachmentId: string; sha256: string; byteSize: number; filename: string | null }>;
+    interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
+  };
+}
+/** A task-level view of one interruption. Diagnostics keep the underlying runs
+ * and recovery records; ordinary product surfaces render this projection. */
+export interface TaskInterruptionPresentation {
+  intentId: string | null;
+  responsibility: "system" | "user";
+  state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
+  nextRetryAt: string | null;
+  canRetry: boolean;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | null;
+  sourceRunIds: string[];
+  observedRunId: string | null;
 }

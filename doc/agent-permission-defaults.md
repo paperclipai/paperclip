@@ -18,7 +18,7 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 ## Not granted by default
 
-These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, `pipelines:write`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
+These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
 
 The new direct grants do not grant company administration, user permission management, blanket tool administration, or cross-company access. The responsible user's permissions, route checks, and the normal approval gates still apply.
 

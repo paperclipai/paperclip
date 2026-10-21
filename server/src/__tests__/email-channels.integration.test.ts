@@ -1,3 +1,6 @@
+import { aiConnectionService } from "../services/ai-connections.js";
+import { fastResponseService } from "../services/fast-responses.js";
+import { fastResponseReceipt } from "../services/fast-response-provider.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
@@ -40,6 +43,7 @@ import {
   emailEndpoints,
   emailMessages,
   emailSends,
+  fastResponseRequests,
   issueComments,
   heartbeatRuns,
   issues,
@@ -194,12 +198,20 @@ describe("AgentMail durable email pipeline", () => {
 
   it("can replay the additive email migration without losing existing data", async () => {
     const migration = readFileSync(new URL("../../../packages/db/src/migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
-    await db.execute(sql.raw(migration));
-    await db.execute(sql.raw(migration));
-    expect(await db.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
+    // Replaying this historical migration reinstates its older connection constraint.
+    // Roll back the probe so later tests keep the current AI-connection schema.
+    const rollback = new Error("migration replay probe complete");
+    await expect(db.transaction(async tx => {
+      await tx.execute(sql.raw(migration));
+      await tx.execute(sql.raw(migration));
+      expect(await tx.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
+      throw rollback;
+    })).rejects.toBe(rollback);
   });
 
-  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService) {
+  async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
+    beforeSetup?: (input: { fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+  ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       endpointId = randomUUID();
@@ -312,6 +324,7 @@ describe("AgentMail durable email pipeline", () => {
       storage,
     });
     services.push(service);
+    await beforeSetup?.({ fetcher, wakeup });
     await service.setup(
       companyId,
       {
@@ -374,6 +387,100 @@ describe("AgentMail durable email pipeline", () => {
       setWebhookError: (status: number) => { webhookError = status; },
     };
   }
+  it("activates an empty running worker from another service and drains committed inbound and outbound work", async () => {
+    // Connector setup and tool calls construct short-lived service objects.
+    // Their committed writes must wake the app-owned worker sharing this DB.
+    let running!: EmailChannelService;
+    const f = await fixture("webhook", undefined, async ({ fetcher, wakeup }) => {
+      running = emailChannelService(db, { heartbeat: { wakeup }, fetch: fetcher });
+      services.push(running);
+      await running.start();
+      const select = vi.spyOn(db, "select");
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(select).not.toHaveBeenCalled();
+      select.mockRestore();
+    });
+    await vi.waitFor(async () => {
+      const [config] = await db.select().from(emailEndpoints).where(eq(emailEndpoints.endpointId, f.endpointId));
+      expect(config.lastSyncAt).not.toBeNull();
+    }, { timeout: 5000 });
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await f.service.control(f.endpointId, "resume", { userId: "email-board" });
+    const message = f.message();
+    f.messages.set(message.message_id, message);
+    await f.service.admit(await f.service.getEndpoint(f.endpointId), {
+      event_type: "message.received", message,
+    });
+    await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledTimes(1), { timeout: 5000 });
+    const [parent] = await db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, parentIssueId: parent.id,
+      to: ["recipient@example.test"], subject: "Wake on send", text: "Hello", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    await vi.waitFor(async () => expect((await f.service.publication(input.idempotencyKey, f.companyId)).outcome).toBe("sent"), { timeout: 5000 });
+    expect(f.sends).toHaveLength(1);
+    await running.tick();
+    await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("restores a retry deadline without polling replies blocked behind that send", async () => {
+    const f = await fixture();
+    const message = f.message("received", "outbound-thread");
+    await f.receive(message);
+    const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId));
+    const input = emailSendSchema.parse({ endpointId: f.endpointId, conversationId: conversation.id,
+      replyToMessageId: message.message_id, text: "First reply", idempotencyKey: randomUUID() });
+    await f.service.queueSend(f.companyId, input, { userId: "email-board" });
+    const second = { ...input, text: "Second reply", idempotencyKey: randomUUID() };
+    await f.service.queueSend(f.companyId, second, { userId: "email-board" });
+    // Simulate a previous process persisting a provider retry deadline. The
+    // second reply has no deadline but cannot overtake this first reply.
+    await db.update(chatPublications).set({ state: "retry", nextAttemptAt: new Date(Date.now() + 5000) })
+      .where(eq(chatPublications.id, input.idempotencyKey));
+    await f.service.start();
+    expect(f.sends).toHaveLength(0);
+    const select = vi.spyOn(db, "select");
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    expect(select).not.toHaveBeenCalled();
+    expect(f.sends).toHaveLength(0);
+    await vi.waitFor(() => expect(f.sends).toHaveLength(2), { timeout: 8000 });
+    await f.service.tick();
+    expect(f.sends.map(send => send.key)).toEqual([input.idempotencyKey, second.idempotencyKey]);
+    for (const id of [input.idempotencyKey, second.idempotencyKey])
+      expect((await f.service.publication(id, f.companyId)).outcome).toBe("sent");
+  });
+
+  it("publishes one sponsored fast response only to the originating email sender", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableFastResponses: true });
+    const f = await fixture();
+    const binding = await aiConnectionService(db).save(f.companyId, "email-board", { provider: "openrouter", method: "api_key", name: "Fast email", ownership: "shared", apiKey: "fixture-key", agentIds: [], allAgents: true }, "fixture-key");
+    const provider = vi.fn(async () => ({ text: "I’ll check the settings panel border.", receipt: fastResponseReceipt({ usage: { inputTokens: 80, outputTokens: 9 }, response: { body: { usage: { cost: 0.00001 } } } }) }));
+    const fast = fastResponseService(db, { provider, authorizeExternal: f.service.authorizeFastResponse,
+      publishExternal: async (...args) => { await f.service.publishFastResponse(...args); return true; } });
+    await fast.configure(f.companyId, "email-board", { enabled: true, ...binding, model: "openai/gpt-oss-120b", allowSponsored: true });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    const incoming = f.message("fast-email", "fast-thread", { text: "Please check the settings panel border.", cc: ["bystander@example.test"] });
+    await f.receive(incoming);
+    const [job] = await db.select().from(fastResponseRequests).where(eq(fastResponseRequests.companyId, f.companyId));
+    expect(job).toMatchObject({ sponsored: true, responsibleUserId: null });
+    expect(f.wakeup).toHaveBeenCalled();
+    await f.service.start();
+    await fast.process(job);
+    await vi.waitFor(() => expect(f.sends).toHaveLength(1), { timeout: 5000 });
+    await f.service.flushPublications();
+    expect(f.sends).toHaveLength(1);
+    expect(f.sends[0].body.text).toBe("I’ll check the settings panel border.");
+    expect(f.sends[0].body.cc ?? []).not.toContain("bystander@example.test");
+    expect(f.sends[0].path).toContain("fast-email/reply");
+    const [receipt] = await db.select().from(issueComments).where(and(eq(issueComments.issueId, job.issueId!), eq(issueComments.origin, "fast_response")));
+    expect(receipt).toMatchObject({ authorAgentId: f.agentId, createdByRunId: null });
+    expect((await issueService(db).getById(job.issueId!))?.status).not.toBe("done");
+  });
+
   it("admits signed webhooks through the durable queue and rejects a valid signature for another inbox", async () => {
     const f = await fixture();
     const endpoint = await f.service.getEndpoint(f.endpointId);
@@ -405,6 +512,64 @@ describe("AgentMail durable email pipeline", () => {
       await db.select().from(issues).where(eq(issues.companyId, f.companyId)),
     ).toHaveLength(1);
   });
+  it("snapshots email workspace defaults only when a conversation creates a task", async () => {
+    const f = await fixture();
+    await db.update(chatEndpoints).set({ executionDefaults: { workspace: { kind: "task_directory" } } }).where(eq(chatEndpoints.id, f.endpointId));
+    const first = f.message();
+    await f.receive(first);
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    const [task] = await tasks();
+    expect(task.workspaceSelection).toEqual({ version: 1, selection: { kind: "task_directory" }, source: "channel" });
+    expect(task.projectId).toBeNull();
+    await db.update(chatEndpoints).set({ executionDefaults: null }).where(eq(chatEndpoints.id, f.endpointId));
+    await f.receive(f.message(randomUUID(), first.thread_id));
+    expect((await tasks())[0].workspaceSelection).toEqual(task.workspaceSelection);
+    await f.receive(f.message());
+    expect(await tasks()).toEqual(expect.arrayContaining([expect.objectContaining({ workspaceSelection: null })]));
+  });
+
+  it("checks sponsor and agent assignment grants for protected email organizational defaults", async () => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected email tasks",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    const fetcher = vi.mocked(f.fetcher);
+    const fetch = fetcher.getMockImplementation()!;
+    let changedDefaults = false;
+    fetcher.mockImplementation(async (...args) => {
+      if (!changedDefaults && String(args[0]).includes("/threads/")) {
+        changedDefaults = true;
+        await db.update(chatEndpoints).set({ executionDefaults: { projectId: project.id, workspace: { kind: "task_directory" } } })
+          .where(eq(chatEndpoints.id, f.endpointId));
+      }
+      return fetch(...args);
+    });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent",
+      principalId: f.agentId, status: "active", membershipRole: "member" });
+    const tasks = () => db.select().from(issues).where(eq(issues.companyId, f.companyId));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    const [sponsorGrant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "user", principalId: "email-board", permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } }).returning();
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(0);
+    expect(f.wakeup).not.toHaveBeenCalled();
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId,
+      principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope",
+      scope: { projectId: project.id, assigneeAgentId: f.agentId } });
+    await f.receive(f.message());
+    expect(await tasks()).toEqual([expect.objectContaining({ projectId: project.id,
+      assigneeAgentId: f.agentId,
+      workspaceSelection: { version: 1, selection: { kind: "task_directory" }, source: "channel" } })]);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, sponsorGrant.id));
+    await f.receive(f.message());
+    expect(await tasks()).toHaveLength(1);
+    expect(f.wakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(chatConversations).where(eq(chatConversations.endpointId, f.endpointId))).toHaveLength(1);
+  });
+
   it("deduplicates events/messages, keeps identical subjects separate, and never grants sender board identity", async () => {
     const f = await fixture();
     const m = f.message();

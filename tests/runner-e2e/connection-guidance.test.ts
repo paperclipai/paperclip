@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import { everydayTasks } from "./everyday-cases.js";
 import { CONNECTION_GUIDANCE_SUITE, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
-import { gradeConnectionGuidanceDecline } from "./connection-guidance-evidence.js";
+import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply } from "./connection-guidance-evidence.js";
+import { pollUntil } from "./api.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
 describe("neutral connection guidance selection", () => {
@@ -58,9 +59,11 @@ describe("neutral decline evidence", () => {
     for (const body of [
       "HubSpot isn't connected because you chose None for now.",
       "HubSpot isn’t connected after the provider decision.",
+      "I wasn't able to pull your recent HubSpot contacts. You chose None for now, so no connection was made.",
+      "The page service approval was rejected, so the data was unavailable.",
       "The pages aren't retrievable after the connection decision.",
     ]) expect(passes({ ...valid, replies: [{ ...valid.replies[0], body }] })).toBe(true);
-    for (const body of ["HubSpot is connected.", "HubSpot isn't disconnected.", "HubSpot isn't slow.", "Contacts are available."]) {
+    for (const body of ["HubSpot is connected.", "HubSpot isn't disconnected.", "HubSpot isn't slow.", "Contacts are available.", "The request was not declined.", "The request was not rejected.", "Contacts are not unavailable.", "I wasn't able to finish my coffee."]) {
       expect(passes({ ...valid, replies: [{ ...valid.replies[0], body }] })).toBe(false);
     }
   });
@@ -81,6 +84,38 @@ describe("neutral decline evidence", () => {
       { ...valid, runs: [{ ...valid.runs[0], status: "failed" }] },
       { ...valid, runs: [{ ...valid.runs[0], finishedAt: "2026-10-06T21:59:00Z" }] },
     ]) expect(passes(input)).toBe(false);
+  });
+  it("requires output from the final successful task run, not a late comment from an earlier wait", () => {
+    const runs = [...valid.runs, { ...valid.runs[0], id: "final", finishedAt: "2026-10-06T22:00:06Z" }];
+    expect(hasConnectionGuidanceDeclineReply({ ...valid, runs })).toBe(false);
+    expect(passes({ ...valid, runs })).toBe(false);
+    const input = { ...valid, runs, replies: [{ ...valid.replies[0], createdByRunId: "final", createdAt: "2026-10-06T22:00:07Z" }] };
+    expect(hasConnectionGuidanceDeclineReply(input)).toBe(true);
+    expect(passes(input)).toBe(true);
+  });
+  it.each(["delayed", "missing", "wrong-run", "wrong-content"])("waits for durable output within the original deadline: %s", async variant => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const input = structuredClone({ ...valid, replies: [] as typeof valid.replies });
+      const pending = pollUntil({ label: "final decline reply", deadlineAt: start + 30_000, intervalMs: 1000,
+        load: async () => {
+          if (variant !== "missing" && Date.now() >= start + 20_000) input.replies = [{ ...valid.replies[0],
+            createdByRunId: variant === "wrong-run" ? "other" : "run",
+            body: variant === "wrong-content" ? "Done." : valid.replies[0].body }];
+          return input;
+        },
+        accept: hasConnectionGuidanceDeclineReply,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_001);
+      const result = await pending;
+      if (variant === "missing" || variant === "wrong-run") expect(result).toBeInstanceOf(Error);
+      else {
+        expect(result).toEqual(input);
+        // Readiness must not wait for favorable wording or silently convert a bad answer into a pass.
+        expect(passes(input)).toBe(variant === "delayed");
+      }
+    } finally { vi.useRealTimers(); }
   });
   it("rejects wrong or repeated decisions, early use, missing call evidence and connection changes", () => {
     for (const input of [

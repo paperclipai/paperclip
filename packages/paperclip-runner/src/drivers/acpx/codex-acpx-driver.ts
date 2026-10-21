@@ -1,6 +1,10 @@
+import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
+
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
+import { createPiMessageProjection, piBoundaryClearsFinal, type PiProjectedMessageEvent } from "./pi-message-projection.js";
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -56,6 +60,7 @@ import {
 } from "../runner-tool-bridge.js";
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
+  AcpxProviderProcessLostError,
   openCodexAcpxRuntime,
 } from "./codex-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
@@ -85,7 +90,7 @@ import {
 } from "./runtime-sandbox.js";
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
-import { acpxUsageEstimateNotice, persistedAcpxTurnUsage } from "./usage-accounting.js";
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
 const MAX_BUFFERED_EVENTS = 512;
 const TERMINAL_EVENT_RESERVE = 3;
@@ -144,6 +149,8 @@ export interface CodexAcpxDriverOptions {
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
   mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerPolicy?: { readOnly: boolean };
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
@@ -458,6 +465,8 @@ export class CodexAcpxDriver implements HarnessDriver {
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-all",
         mode: this.#options.mode,
+        piThinkingLevel: this.#options.piThinkingLevel,
+        claudeEffort: this.#options.claudeEffort,
         providerPolicy: this.#options.providerPolicy,
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
@@ -470,6 +479,7 @@ export class CodexAcpxDriver implements HarnessDriver {
           : {}),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         semanticTools: {
+          ...(this.#options.agent === "copilot" ? { captureSemanticReceipt: () => session?.captureSemanticReceipt() } : {}),
           tools: this.#options.dynamicTools ?? [],
           handler: (call) => {
             if (!session) {
@@ -752,6 +762,7 @@ class CodexAcpxSession implements HarnessSession {
   >;
   #sourceSequence = 0;
   #activeTurnId: string | null = null;
+  #copilotToolEvidence: CopilotToolEvidence | undefined;
   #semanticResult: PrpStructuredRunResult | null = null;
   #semanticFingerprint: string | null = null;
   #semanticCallId: string | null = null;
@@ -910,6 +921,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) throw new Error("ACP tool activity could not be retained");
       },
     });
+    this.#copilotToolEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let turn: AcpxRuntimeTurn;
     const usageBefore = await readUsageStatus(this.#host);
     try {
@@ -1106,6 +1118,10 @@ class CodexAcpxSession implements HarnessSession {
     return { result: "handed_off", cleanup };
   }
 
+  captureSemanticReceipt() {
+    return this.#copilotToolEvidence?.captureSemanticReceipt();
+  }
+
   async dispatchTool(call: RunnerToolCall): Promise<unknown> {
     this.#assertOpen();
     if (this.#pendingTerminal) {
@@ -1120,7 +1136,16 @@ class CodexAcpxSession implements HarnessSession {
     }
     const tool = canonicalRunnerToolName(call.tool);
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
+      const completionInput = await resolveCompletionContinuation(call.arguments, this.#input.runId,
+        this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+          tool: "get_task_context", callId: `${call.callId}:continuation`,
+          providerSessionId: this.#host.identity().agentSessionId, turnId, arguments: {}, signal: call.signal,
+        }) : undefined);
+      this.#assertOpen();
+      if (this.#activeTurnId !== turnId || this.#pendingTerminal || call.signal.aborted) {
+        throw new Error("The turn ended while resolving completion");
+      }
+      const validation = validatePrpStructuredRunResult(completionInput);
       if (!validation.ok) throw new Error("Invalid semantic run result");
       const blocked = validation.result.reportedWorkDisposition === "blocked";
       if (
@@ -1175,6 +1200,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#semanticFingerprint === null ||
         (claimsLaterTurn && !repeatsPendingTransfer)
       ) {
+        const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
         if (
           !this.#emit("run.result.proposed", validation.result, {
             turnId,
@@ -1186,6 +1212,7 @@ class CodexAcpxSession implements HarnessSession {
             "the event consumer must drain provider events before a semantic result can be accepted",
           );
         }
+        commitNormalizedInput?.();
         if (claimsLaterTurn) {
           // A reaffirming retry does not own the durable result until its
           // provider turn completes successfully. A failed or interrupted
@@ -1275,6 +1302,8 @@ class CodexAcpxSession implements HarnessSession {
         effectiveModel: identity.effectiveModel,
         permissionMode: identity.permissionMode,
         ...(identity.mode === undefined ? {} : { mode: identity.mode }),
+        ...(identity.piThinkingLevel === undefined ? {} : { piThinkingLevel: identity.piThinkingLevel }),
+        ...(identity.claudeEffort === undefined ? {} : { claudeEffort: identity.claudeEffort }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -1444,7 +1473,8 @@ class CodexAcpxSession implements HarnessSession {
       let index = 0;
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-      const normalizeMessage = this.#agent === "grok"
+      const piMessages = this.#agent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+      const normalizeMessage = piMessages ? piMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
         toolEvidence?.tool(event);
@@ -1453,6 +1483,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(projected)), turnId, ++index);
       }
       const result = await turn.result;
+      if (result.status === "completed") piMessages?.settle();
       await drainExtensions();
       const usageAfter = await readUsageStatus(this.#host);
       // Diagnostic projection failures cannot replace the provider's terminal result.
@@ -1480,7 +1511,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#emit(
             "item.completed",
             { kind: "agentMessage", channel: "final", text: finalText },
-            { turnId, itemId: `${turnId}:assistant-message` },
+            { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) },
           );
         }
         this.#publishTerminal(
@@ -1551,7 +1582,7 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
-      this.#cancelPendingRuntimeRequests("provider turn failed", turnId);
+      this.#cancelPendingRuntimeRequests(error instanceof AcpxProviderProcessLostError ? error : "provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1582,7 +1613,7 @@ class CodexAcpxSession implements HarnessSession {
               : { reaffirmedSemanticResult }),
           }),
           "turn.failed",
-          { status: "failed", error: { message: safeMessage(error) } },
+          { status: "failed", error: { ...(error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}), message: safeMessage(error) } },
         );
       }
     }
@@ -1637,8 +1668,13 @@ class CodexAcpxSession implements HarnessSession {
     if (this.#activeTurnId === turnId) this.#activeTurnId = null;
   }
 
+  #assistantItemId(turnId: string, messageId: string | null): string {
+    if (this.#agent !== "copilot") return `${turnId}:assistant-message`;
+    return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
+  }
+
   #mapRuntimeEvent(
-    event: AcpRuntimeEvent,
+    event: PiProjectedMessageEvent<AcpRuntimeEvent>,
     turnId: string,
     index: number,
   ): void {
@@ -1647,9 +1683,18 @@ class CodexAcpxSession implements HarnessSession {
       const output = boundedText(event.text, 64 * 1024);
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
-      if (!isReasoning) {
-        const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
-        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) this.#assistantText = "";
+      const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+      // The pinned Copilot mapper supplies actual native identity, including
+      // empty starts. Unidentified session info/warnings remain activity only.
+      if (!isReasoning && !event.piMessageHistory && (this.#agent !== "copilot" || messageId)) {
+        if (piBoundaryClearsFinal(event)) this.#assistantText = "";
+        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) {
+          if (this.#agent === "copilot" && this.#assistantText) {
+            this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: this.#assistantText },
+              { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) });
+          }
+          this.#assistantText = "";
+        }
         if (messageId) this.#assistantMessageId = messageId;
         this.#assistantText = boundedText(
           `${this.#assistantText}${output}`,
@@ -1667,7 +1712,7 @@ class CodexAcpxSession implements HarnessSession {
           turnId,
           itemId: isReasoning
             ? `${turnId}:reasoning`
-            : `${turnId}:assistant-message`,
+            : this.#assistantItemId(turnId, messageId),
         },
       );
     }
@@ -1712,9 +1757,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(request, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId });
+        this.#emitRequestAbort(request, context.signal.reason);
         settle(input.cancel());
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1763,9 +1806,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(runtimeRequest, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        this.#emitRequestAbort(runtimeRequest, signal.reason);
         settle({ outcome: "cancel" });
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1899,14 +1940,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!pending || pending.settling) return;
         if (!this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit(
-          "runtime_request.cancelled",
-          harnessRuntimeRequestOutcome(runtimeRequest, {
-            action: "cancel",
-            reason: "provider request aborted",
-          }),
-          { turnId, itemId: requestId },
-        );
+        this.#emitRequestAbort(runtimeRequest, context.signal.reason);
         settle({ action: "cancel" });
       };
       context.signal.addEventListener("abort", cancel, { once: true });
@@ -1924,22 +1958,23 @@ class CodexAcpxSession implements HarnessSession {
     });
   }
 
-  #cancelPendingRuntimeRequests(reason: string, turnId?: string): void {
+  #emitRequestAbort(request: HarnessRuntimeRequest, reason: unknown): void {
+    const lost = reason instanceof AcpxProviderProcessLostError;
+    this.#emit(lost ? "runtime_request.expired" : "runtime_request.cancelled", {
+      ...harnessRuntimeRequestOutcome(request, {
+        ...(lost ? {} : { action: "cancel" as const }),
+        reason: lost ? "provider_process_lost" : typeof reason === "string" ? boundedText(reason, 1_000) : "provider request aborted",
+      }),
+      ...(lost ? { replayAllowed: false } : {}),
+    }, { turnId: request.turnId, itemId: request.itemId });
+  }
+
+  #cancelPendingRuntimeRequests(reason: string | AcpxProviderProcessLostError, turnId?: string): void {
     for (const [requestId, pending] of this.#pendingRuntimeRequests) {
       if (turnId && pending.request.turnId !== turnId) continue;
       if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
       pending.cleanup();
-      this.#emit(
-        "runtime_request.cancelled",
-        harnessRuntimeRequestOutcome(pending.request, {
-          action: "cancel",
-          reason: boundedText(safeMessage(reason), 1_000),
-        }),
-        {
-          turnId: pending.request.turnId,
-          itemId: pending.request.itemId,
-        },
-      );
+      this.#emitRequestAbort(pending.request, reason);
       pending.cancel();
     }
   }
@@ -2122,6 +2157,8 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
         identity.permissionMode,
       )) ||
     (identity.mode !== undefined && !isProviderMode(identity.mode)) ||
+    (identity.claudeEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(identity.claudeEffort)) ||
+    (identity.piThinkingLevel !== undefined && !["off", "low", "high", "max"].includes(identity.piThinkingLevel)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,
     )

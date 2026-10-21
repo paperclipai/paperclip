@@ -13,6 +13,7 @@ const validatorsOutputPath = resolve(
   "src/protocol/generated/standalone-validators.ts",
 );
 const schemaNames = [
+  "auth-credentials",
   "identity",
   "capabilities",
   "capabilities-v2",
@@ -66,6 +67,7 @@ const ajv = new Ajv2020({
 });
 for (const { value } of schemas) ajv.addSchema(value);
 const standaloneValidators = standaloneCode(ajv, {
+  authCredentialsValidator: schemaByName["auth-credentials"].$id,
   fixtureValidator: schemaByName.fixture.$id,
   eventValidator: schemaByName.event.$id,
   eventV2Validator: schemaByName["event-v2"].$id,
@@ -87,9 +89,9 @@ const validatorsWithRuntimeImports = standaloneValidators.replace(
   equalRuntimePattern,
   "const $1 = typeof equalModule === \"function\" ? equalModule : equalModule.default;",
 );
-const validatorExportPattern = /export const (fixtureValidator|eventValidator|resultValidator) =/g;
+const validatorExportPattern = /export const (authCredentialsValidator|fixtureValidator|eventValidator|resultValidator) =/g;
 const validatorExports = [...validatorsWithRuntimeImports.matchAll(validatorExportPattern)];
-if (validatorExports.length !== 3) {
+if (validatorExports.length !== 4) {
   throw new Error("Ajv standalone output no longer has the expected validator exports");
 }
 // Ajv's generated functions are intentionally unchecked runtime JavaScript.

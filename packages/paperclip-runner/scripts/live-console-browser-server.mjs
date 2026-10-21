@@ -11,8 +11,22 @@ import { resolve } from "node:path";
  * `PAPERCLIP_LIVE_CONSOLE_DRIVER=codex` swaps in the real Codex app-server driver
  * behind exactly the same routes.
  */
-async function loadRunner() {
-  return import(new URL("../dist/index.js", import.meta.url).href);
+export async function loadLiveConsoleRunner(loadModule = (url) => import(url)) {
+  // Demo helpers are intentionally absent from the public runtime entrypoint.
+  // Load their owning modules, as the local-runner devtool transport does.
+  const [server, manifests, scripted, codex] = await Promise.all([
+    "../dist/mock-core/live-console-demo-server.js",
+    "../dist/mock-core/live-console-demo-manifests.js",
+    "../dist/mock-core/live-console-scripted-driver.js",
+    "../dist/drivers/codex/codex-app-server-driver.js",
+  ].map((path) => loadModule(new URL(path, import.meta.url).href)));
+  return {
+    assertLiveConsoleLoopbackBindHost: server.assertLiveConsoleLoopbackBindHost,
+    LiveConsoleDemoServer: server.LiveConsoleDemoServer,
+    liveConsoleDemoManifestCatalogue: manifests.liveConsoleDemoManifestCatalogue,
+    LiveConsoleScriptedDriver: scripted.LiveConsoleScriptedDriver,
+    CodexAppServerDriver: codex.CodexAppServerDriver,
+  };
 }
 
 async function createWorkingDirectory() {
@@ -22,7 +36,7 @@ async function createWorkingDirectory() {
 }
 
 export function createLiveConsoleBrowserMiddleware(options = {}) {
-  const load = options.loadRunner ?? loadRunner;
+  const load = options.loadRunner ?? loadLiveConsoleRunner;
   const driverMode = options.driverMode ?? process.env.PAPERCLIP_LIVE_CONSOLE_DRIVER ?? "demo";
   const chunkDelayMs = Number.parseInt(
     options.chunkDelayMs ?? process.env.PAPERCLIP_LIVE_CONSOLE_CHUNK_DELAY_MS ?? "45",

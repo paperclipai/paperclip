@@ -1810,6 +1810,41 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(await auth.decide({ actor, action: "agent:wake", resource: { ...resource, companyId: otherCompany.id } })).toMatchObject({ allowed: false });
   });
 
+  it.each(["session", "cloud_tenant"] as const)("restricts %s workspace-owner stop confirmation to administrators", async source => {
+    const company = await createCompany(db, "OwnerStop");
+    const otherCompany = await createCompany(db, "OtherOwnerStop");
+    const userId = await createUser(db);
+    await db.insert(companyMemberships).values({ companyId: company.id,
+      principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
+    const actor = { type: "board" as const, source, userId, companyIds: [company.id] };
+    const auth = authorizationService(db);
+    const request = { actor, action: "runtime:confirm_owner_stop" as const,
+      resource: { type: "company" as const, companyId: company.id } };
+    for (const membershipRole of ["owner", "admin", "operator", "member", "viewer", null]) {
+      await db.update(companyMemberships).set({ membershipRole }).where(eq(companyMemberships.principalId, userId));
+      expect((await auth.decide(request)).allowed, `role ${membershipRole}`).toBe(membershipRole === "owner" || membershipRole === "admin");
+    }
+    await db.update(companyMemberships).set({ membershipRole: "admin", status: "suspended" }).where(eq(companyMemberships.principalId, userId));
+    expect((await auth.decide(request)).allowed).toBe(false);
+    await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, userId));
+    expect((await auth.decide({ ...request, resource: { type: "company", companyId: otherCompany.id } })).allowed).toBe(false);
+  });
+
+  it("does not allow agent delegation or stale cloud admin rows to confirm an owner stop", async () => {
+    const company = await createCompany(db, "OwnerStopDelegation");
+    const userId = await createUser(db);
+    const agent = await createAgent(db, company.id, { role: "ceo" });
+    await db.insert(companyMemberships).values({ companyId: company.id,
+      principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    const auth = authorizationService(db);
+    const request = { action: "runtime:confirm_owner_stop" as const, resource: { type: "company" as const, companyId: company.id } };
+    expect((await auth.decide({ ...request, actor: { type: "board", userId, source: "cloud_tenant", isInstanceAdmin: false } })).allowed).toBe(false);
+    expect((await auth.decide({ ...request, actor: { type: "agent", agentId: agent.id, companyId: company.id, onBehalfOfUserId: userId } })).allowed).toBe(false);
+    expect((await auth.decide({ ...request, actor: { type: "board", userId, source: "cloud_tenant", isInstanceAdmin: true } })).allowed).toBe(true);
+    expect((await auth.decide({ ...request, actor: { type: "board", source: "local_implicit" } })).allowed).toBe(true);
+  });
+
   it("limits viewer members to read-only visibility actions", async () => {
     const company = await createCompany(db, "BoardViewerVisibility");
     const userId = `user-${randomUUID()}`;

@@ -53,6 +53,15 @@ Paperclip can usually store `http://127.0.0.1:8642` as the gateway URL. For
 Docker, LAN, tailnet, or reverse-proxy setups, use a URL reachable by the
 Paperclip server process.
 
+If a run reports a loopback connection refusal, check the listener from the
+Paperclip server's host or container. Its loopback address does not refer to
+your browser's machine or an agent sandbox. `hermes_gateway` does not start
+Hermes: start the API server at the configured address, or set `apiBaseUrl`
+to its reachable address. Choose `hermes_local` when Paperclip should launch
+the Hermes CLI itself. Connection guidance does not prove whether a remote
+run was accepted before a redirect failed; the task remains failed and the
+normal failure reporting and retry rules still apply.
+
 Plain HTTP is accepted for loopback. Non-loopback HTTP is denied by default in
 the join flow; use HTTPS for real remote gateways. For private local
 development only, the join payload can set

@@ -3,7 +3,6 @@ import { z } from "zod";
 import { buildOpenApiDocument } from "../../routes/openapi.js";
 import { badRequest, notFound } from "../../errors.js";
 import { runnerApiReference } from "./runner-api-reference.js";
-import { runnerApiRestriction } from "./runner-api-policy.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
 type Json = Record<string, any>;
@@ -24,7 +23,7 @@ export interface RunnerApiOperation {
   dedicatedToolGuidance: string;
   dedicatedToolCapabilities?: { name: string; description: string; supportedParameters: string[] }[];
   runnerRestrictions?: string[];
-  callPolicy: "rest" | "restricted" | "protocol";
+  callPolicy: "rest" | "protocol";
 }
 
 const METHODS = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
@@ -54,6 +53,8 @@ function dedicatedTools(method: string, path: string): string[] {
   if (/\/project-repositories$/.test(path) && method === "GET") return ["list_project_repositories"];
   if (/\/issues\/\{[^}]+\}\/comments$/.test(path)) return method === "GET" ? ["get_task_history"] : ["report_progress"];
   if (/\/issues\/\{[^}]+\}\/documents/.test(path)) return method === "DELETE" ? [] : method === "GET" ? ["list_documents", "read_document", "list_document_revisions"] : ["write_document"];
+  if (/\/case-handoffs$/.test(path) && method === "POST") return ["handoff_case", "create_case"];
+  if (/\/cases\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["read_case"] : method === "PATCH" ? ["update_case"] : [];
   if (/\/issues$/.test(path)) return method === "GET" ? ["search_tasks"] : ["create_task"];
   if (/\/issues\/\{[^}]+\}$/.test(path)) return method === "GET" ? ["get_task_context"] : ["reassign_task", "set_dependencies", "finish_task", "block_task", "request_review"];
   if (/\/agents$/.test(path) && method === "GET") return ["list_agents"];
@@ -82,7 +83,6 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
     for (const [verb, operation] of Object.entries<Json>(item)) {
       if (!METHODS.has(verb)) continue;
       const method = verb.toUpperCase();
-      const restriction = runnerApiRestriction(method, path);
       const conversationalConfirmation = method === "POST"
         && /^\/api\/issues\/\{[^}]+\}\/interactions\/\{[^}]+\}\/resolve-from-comment$/.test(path);
       const taskTitleUpdate = method === "PUT" && /^\/api\/issues\/\{[^}]+\}\/title$/.test(path);
@@ -99,20 +99,21 @@ export function buildRunnerApiCatalog(document: Json = buildOpenApiDocument()): 
         responses: dereference(operation.responses ?? {}),
         authorization: operation["x-paperclip-authorization"] ?? { actor: "board_or_agent" },
         transport: protocol ? "protocol" : "rest",
-        callPolicy: protocol ? "protocol" : restriction ? "restricted" : "rest",
+        callPolicy: protocol ? "protocol" : "rest",
         dedicatedTools: dedicatedTools(method, path),
         dedicatedToolCapabilities: dedicatedTools(method, path).flatMap(name => {
           const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === name);
           return descriptor ? [{ name, description: descriptor.description, supportedParameters: Object.keys((descriptor.inputSchema as Json).properties ?? {}) }] : [];
         }),
-        runnerRestrictions: [...(restriction ? [restriction] : []), "Active run and assignment must remain authorized.",
+        runnerRestrictions: ["Active run and assignment must remain authorized.",
           conversationalConfirmation
             ? "This records an ordinary conversational confirmation under existing resolver permissions. It cannot decide governed approvals or impersonate the user."
-            : "Cannot replace checkout, completion, task status/ownership changes, governed approval decisions, or runner execution control. Dedicated tools retain their existing permissions."],
+            : "The HTTP route enforces the same endpoint, payload, company, resource and approval permissions as agent REST access."],
         dedicatedToolGuidance: dedicatedTools(method, path).includes("hire_agent")
-          ? "Use hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime; never use call_api to supply adapter, environment, or credential configuration."
-          : "Use an available dedicated tool for its supported fields. Inspect that tool's advertised schema; call_api may be used for additional API fields, subject to lifecycle restrictions.",
-        allowedModes: method === "GET" || method === "HEAD" || taskTitleUpdate ? ["standard", "ask", "planning", "skill_test"]
+          ? "Prefer hire_agent for native teammate identity and persona fields. It fixes the reportsTo and source task context and inherits the caller's native runtime. Additional API fields use the route's existing agent permissions."
+          : "Prefer an available dedicated tool for its supported fields. call_api supports the route's other operations and fields under the same agent permissions.",
+        allowedModes: method !== "GET" && (path.endsWith("/case-handoffs") || /\/handoffs\//.test(path)) ? ["standard"]
+          : method === "GET" || method === "HEAD" || taskTitleUpdate ? ["standard", "ask", "planning", "skill_test"]
           : conversationalConfirmation ? ["standard", "planning", "skill_test"] : ["standard", "skill_test"],
         ...(skillReference ? { skillReference } : {}),
       });

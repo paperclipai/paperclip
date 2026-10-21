@@ -2,6 +2,30 @@
 
 Target specification for the Paperclip control plane. Living document — updated incrementally during spec interviews.
 
+Experimental standalone cases provide persistent structured work records that can
+exist independently of execution. Prompt-driven handoffs move their primary
+ordinary task between agents while retaining case data and history. Existing task
+permissions, execution ownership, budgets, and review gates remain authoritative;
+the concrete contract is in `SPEC-implementation.md` and the persistent case
+handoff implementation plan.
+
+A terminal handoff to `done` explicitly requests case closure on accepted
+completion of its primary task. Existing completion and review gates remain
+authoritative; an open case alone never creates an execution requirement.
+
+Native agents have dedicated case creation/read/update and handoff tools.
+Native creation requires first-task kickoff and explicit `workflow_document_text`,
+stored as the primary task's `workflow` Markdown document, with optional additional
+initial documents. Recommend both a Mermaid `stateDiagram-v2` map and prose
+defining every transition's conditions, evidence, destination and wait/retry rules;
+the server does not parse graph labels as executable transition rules.
+Documents belong to ordinary tasks; cases surface authorized document references
+and history without copying bodies. Historical case document storage is retained.
+Case
+awareness is supplied by the harness; compatible session continuations carry
+fresh routing information and changed facts, with full context retained for
+new sessions and resume failure.
+
 ---
 
 ## 1. Company Model [DRAFT]
@@ -22,7 +46,7 @@ A Company is a first-order object. One Paperclip instance runs multiple Companie
 Every Company has a **Board** that governs high-impact decisions. The Board is the human oversight layer.
 
 Human invitations default to Operator, with company editing, invitations,
-connections, tools, environments, pipelines, and audit views available by
+connections, tools, environments, and audit views available by
 default. Join approval and member-permission management remain separate grants.
 An inviter must hold these membership grants to invite a role that includes them.
 See [human Operator defaults](SPEC-implementation.md#91-board-auth).
@@ -323,6 +347,9 @@ should name the rejected action and the specific restriction.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
+Experimental external chat and voice connections are transports into this task
+system. They preserve the selected agent, task context, current caller authority,
+and governed-action checks; a voice session is not a separate authority or inbox.
 Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. Chat has a searchable secondary sidebar with agent avatars that lists every eligible agent, conversations first; adding an agent starts or reopens their single conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
 
 ### Question recipients
@@ -648,6 +675,13 @@ Operators must release the effective task or ancestor pause before sending a new
 message. The draft stays intact. This applies to both task interfaces and to
 board comment API requests; an agent may still report interrupted work.
 
+### External channel failure scope
+
+An operation-level permission denial must not disable unrelated channel work.
+Authentication failures pause runtime use while preserving the user's connection
+setting. Explicit disconnect and provider installation revocation remain enforced.
+See the implementation spec for publication, provider-reply, and form-open rules.
+
 ### Experimental iMessage Photon channel
 
 A Photon Cloud project can represent one agent through the existing
@@ -712,7 +746,18 @@ A source tracks repository identity, branch, selected paths, and installed commi
 an existing GitHub connection supplies caller-authorized reads. Manual refresh publishes
 complete local immutable versions, preserving skill identity and assignments. Selection
 operates on whole skill packages, with inspectable included files, declared runtime
-requirements, and advisory warnings for missing or external references. New
+requirements, and advisory warnings for missing or external references. A repository
+package retains supported source files while the user selects which skill entrypoints
+appear in the library. Authored content remains unchanged and shared files travel to
+the runtime. A declarative manifest can suggest public entrypoints and setup requirements;
+new imports keep repository files together and select all discovered skills. Missing
+references, setup problems and omitted files produce persistent warnings. Files rejected
+for unsafe execution or secret disclosure are excluded without blocking other files.
+Oversized repositories use a bounded package of skill folders and referenced files
+with their original paths. Missing references do not block a valid selected skill;
+fallback preserves previously installed shared dependencies or retains the old version.
+The installed file viewer exposes saved repository dependencies. Importing never runs
+setup or configures host tools. New
 upstream skills require reviewed selection; removed or deselected skills remain
 installed. Editing starts with an independent copy. Write-back and PR publication
 are a later milestone; exact path and commit provenance provide their base.
@@ -735,6 +780,14 @@ while preserving agent pairing, normal run admission and task authority.
 Personal grants cannot authorize Runner operations. See
 [OpenAI Dot Runner](openai-dot-runner.md) for its supported release boundary.
 
+Personal Meta Muse is another experimental named Runner agent. Its managed
+receiver uses short-lived pairing and rotating private credentials; its human
+authorizer remains distinct from the agent identity. Paperclip owns admission,
+task authority, and native finalization. Detector health alone does not prove
+execution, and uncertain remote effects prevent overlapping dispatch. See
+[Personal Muse receiver](muse-personal-agent.md) for setup, stopping limits, and
+the required live qualification before release.
+
 ### Experimental connection routing
 
 A virtual AI connection can rotate new task/agent allocations through an
@@ -743,6 +796,12 @@ durable recovery remain host responsibilities; policy can be supplied by an
 opt-in plugin. See [the experimental contract](connections/AI-CONNECTION-ROUTERS.md).
 
 ## Internal agent commentary
+
+The Audit → Commentary tab exposes searchable suggestions and complaints,
+with agent/type filters, message previews and full attributed context. The viewer
+preserves company, commentary-permission and task-privacy boundaries independently
+of the agent submission path. All human company members can read commentary by
+default, including viewers, without receiving agent-action audit access.
 
 `agent_commentary` stores company-scoped, attributed complaints and suggestions
 as free-form text in the instance database. Legacy agents use the default
@@ -754,3 +813,46 @@ authentication, replay, document-sized limits, inspection, and deletion semantic
 ### Managed decision models
 
 A company may configure a shared decision model for optional Paperclip features. The instance owns credential resolution, authorization, budget admission, and attributable service charges. Company-sponsored background use is enabled by default during configuration; explicit opt-out persists. User and agent requests keep their own access boundaries and cannot become sponsored background requests after denial. Availability is a cheap local capability check, and metadata-only request history makes service usage inspectable. The implemented V1 contract is in [decision-models.md](decision-models.md).
+
+
+### Task workspace ownership (2026-10-09)
+
+Organizational projects, task files, personal agent home, and provider home are separate concepts. App and chat tasks share one workspace policy: preserve a binding or explicit configured folder, otherwise allocate a stable task directory. A repository is optional and can be prepared without creating a project. Optional connection and destination defaults feed the same task policy; they do not grant permissions or relocate existing conversations.
+
+Agents select authorized workspace/repository intent while the harness owns paths, preparation, persistence and safe transitions. Intentional simultaneous sharing of one physical local/SSH folder remains supported. Provider sessions keep their admitted root through completion and recovery. See [SPEC-implementation.md](SPEC-implementation.md) and [the layer architecture](plans/2026-10-09-task-workspaces.md) for the versioned contracts and rollout constraints.
+
+### Fast responses
+
+A company may use a shared API model to acknowledge accepted human messages across tasks, agent chat and external channels while normal work starts. Acknowledgements retain their platform provenance and cannot satisfy execution or completion requirements. The bounded inference, authorization, sponsorship and independent accounting contract is defined in [fast-responses.md](fast-responses.md).
+
+### Retired Pipelines experiment
+
+Pipelines is no longer a product feature. Its database tables remain for existing
+data preservation; Cases and Routines continue independently.
+
+### Recent task navigation summaries
+
+Recent-task navigation refreshes a bounded, authorized summary projection for
+its saved task IDs. The projection avoids full task/workspace enrichment and
+preserves company/task access rules. The HTTP contract is defined in
+`SPEC-implementation.md` section 10.4.
+
+### Filesystem access boundary (2026-10-20)
+
+Filesystem isolation belongs to the OS, execution environment, and storage layout.
+Paperclip authorizes the current task/run, company, explicitly selected configuration,
+execution policy, and repository credentials. It does not infer file permissions from
+other tasks or agents that previously used the same directory, overlapping roots,
+symlink aliases, or shared Git storage. Existing files under an authorized task root
+may be read subject to OS access and API path containment.
+
+Private task records, comments, attachments, run logs, full workspace metadata, and
+operation logs retain their app authorization. Workspace `_issuePrivacySources` and
+operation privacy metadata protect app-record disclosure; they do not grant or deny
+filesystem execution or task-bound file browsing. Current trust and sandbox policy,
+publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
+optionally classifies existing tool-result boundaries through a shared OpenRouter
+connection. Settings → Connections is permanent; valid model verdicts take
+precedence and dependency failures use the original built-in detector.

@@ -22,12 +22,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "pi",
-    "agentProfileVersion": 1,
+    "agentProfileVersion": 28,
     "agentServerPackage": "pi-acp",
     "agentServerVersion": "0.0.33",
     "agentRuntimePackage": "@earendil-works/pi-coding-agent",
-    "agentRuntimeVersion": "0.84.2",
-    "commandDigest": "sha256:8c696f38296d53d0061fa11534570c5ddd951b63532aed30e0f1fcc676dc169f",
+    "agentRuntimeVersion": "1.0.0",
+    "commandDigest": "sha256:4918a4d5472d66b22b1ec642b68b5c60a8092a39c84ec1ab1c9ad0289cb8c68c",
     "permissionPolicy": "interactive"
   },
   "cursor": {
@@ -35,12 +35,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "cursor",
-    "agentProfileVersion": 14,
+    "agentProfileVersion": 15,
     "agentServerPackage": "cursor-agent",
     "agentServerVersion": "2026.09.26-dd393fe",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:a5e70580e4933a1a9248cd3c1b16500c6c93e1e14913e0a98cd5ef878bd53d39",
+    "commandDigest": "sha256:ac8092119542c8fbe95dae18ba5ef4d3689803fec56b7d2735fa193eea42f59b",
     "permissionPolicy": "interactive"
   },
   "copilot": {
@@ -48,13 +48,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "copilot",
-    "agentProfileVersion": 2,
+    "agentProfileVersion": 52,
     "agentServerPackage": "@github/copilot",
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
-    "qualificationStatus": "pending",
+    "commandDigest": "sha256:3614db52d3ddcbc0153c79361a0db2c4324249475d3be490f152b64f916bdd53",
     "permissionPolicy": "interactive"
   },
   "claude": {
@@ -80,7 +79,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1.6.2",
     "agentRuntimePackage": "@openai/codex",
     "agentRuntimeVersion": "0.160.0",
-    "commandDigest": "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
+    "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
     "permissionPolicy": "interactive"
   }
 } as const;

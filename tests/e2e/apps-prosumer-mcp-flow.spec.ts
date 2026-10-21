@@ -178,11 +178,40 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
 
-    // Return through the UI so a page reload cannot hide a stale catalog cache.
+    const connectionsResponse = await request.get(`/api/companies/${seed.companyId}/tools/connections`);
+    expect(connectionsResponse.ok(), `list connections failed ${connectionsResponse.status()}`).toBe(true);
+    const connectionsPayload = await connectionsResponse.json();
+    const savedConnection = connectionsPayload.connections.find(
+      (connection: { config?: { url?: string } }) => connection.config?.url === mock.url,
+    );
+    expect(savedConnection?.id).toBeTruthy();
+    const mockPort = new URL(savedConnection.config.url).port;
+    expect(mockPort).toBeTruthy();
+
+    // View the exact saved connection and confirm its discovered actions survive a reload.
     await page.getByRole("button", { name: "View connection" }).click();
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByRole("heading", { name: `${new URL(mock.url).host} for the organization`, exact: true })).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    const savedHeading = page.getByRole("heading", { level: 1 });
+    await expect(savedHeading).toBeVisible();
+    const savedHeadingText = (await savedHeading.textContent())?.trim();
+    expect(savedHeadingText).toBeTruthy();
+    expect(savedHeadingText).toContain(mockPort);
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    await expect(page.getByRole("heading", { name: savedHeadingText, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-permissions.png`, fullPage: true });
   });
 
   test("Expired key → health sweep → Needs attention → reconnect → green", async ({ page, request }) => {

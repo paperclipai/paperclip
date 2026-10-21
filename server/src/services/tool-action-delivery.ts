@@ -345,6 +345,12 @@ export function toolActionDeliveryService(
   }
   return {
     deliver,
+    async hasPending() {
+      // Include receipts awaiting review/execution: their later terminal write
+      // must remain recoverable even if its optional fast-path callback fails.
+      return (await db.select({ id: toolActionDeliveries.actionRequestId }).from(toolActionDeliveries)
+        .where(isNull(toolActionDeliveries.deliveredAt)).limit(1)).length > 0;
+    },
     async deliverForRun(input: { companyId: string; runId: string }) {
       // A review can settle before its source run yields. Retry that run's
       // receipts as soon as execution cleanup finishes; the periodic sweep

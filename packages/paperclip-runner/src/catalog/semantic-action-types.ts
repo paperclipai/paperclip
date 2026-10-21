@@ -29,10 +29,18 @@ export type PaperclipSemanticActionId =
   | "set_dependencies"
   | "create_skill"
   | "update_skill"
+  | "get_workspace"
+  | "list_workspaces"
+  | "select_workspace"
+  | "prepare_repository"
   | "create_project"
   | "list_project_repositories"
   | "list_projects"
   | "create_task"
+  | "handoff_case"
+  | "read_case"
+  | "update_case"
+  | "create_case"
   | "request_approval"
   | "decide_approval"
   | "comment_on_approval"
@@ -61,6 +69,7 @@ export interface PaperclipJsonSchema {
   readonly additionalProperties?: boolean | PaperclipJsonSchema;
   readonly items?: PaperclipJsonSchema;
   readonly enum?: readonly PaperclipJsonValue[];
+  readonly const?: PaperclipJsonValue;
   readonly oneOf?: readonly PaperclipJsonSchema[];
   readonly anyOf?: readonly PaperclipJsonSchema[];
   readonly minimum?: number;

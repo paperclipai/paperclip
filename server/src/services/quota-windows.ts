@@ -8,6 +8,7 @@ import { companySecrets, companySecretVersions, userSecretDefinitions, type Db }
 import { fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
 import { aiConnectionService } from "./ai-connections.js";
+import { trackIdleWork } from "./task-admission.js";
 
 const accountRequests = new Map<string, { expires: number; result: Promise<ProviderQuotaResult> }>();
 const publicError = "Subscription quota is currently unavailable. Check usage with your provider.";
@@ -51,7 +52,9 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
     let pending = accountRequests.get(key);
     if (!pending || pending.expires <= Date.now()) {
       const controller = new AbortController();
-      const result = (async (): Promise<ProviderQuotaResult> => {
+      // The HTTP deadline can expire while an OAuth exchange still needs to
+      // save its consumed token. Track the actual work, not its timeout wrapper.
+      const result = trackIdleWork((async (): Promise<ProviderQuotaResult> => {
         let credentialResolved = false;
         try {
           const value = await service.credential(row);
@@ -104,7 +107,7 @@ export async function fetchCompanyQuotaWindows(db: Db, companyId: string, userId
           return { ...base, ok: false, windows: [], error: publicError,
             errorFamily };
         }
-      })();
+      })());
       const bounded: Promise<ProviderQuotaResult> = withQuotaTimeout(base.provider, result, () => controller.abort()).then(quota => {
         const observation = { ...base, ...quota, ...(quota.ok ? {} : { error: publicError }) };
         if (observation.ok && observation.accountKey !== accountKey) {

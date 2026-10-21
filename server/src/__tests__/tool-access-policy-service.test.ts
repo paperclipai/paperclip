@@ -149,6 +149,56 @@ async function createApprovedToolAction(input: {
   return { decisionInput, invocation: recorded.invocation, actionRequest: updated };
 }
 
+type IdRef = { id: string };
+
+function sendEmailGrantRow(company: IdRef, agent: IdRef): typeof principalPermissionGrants.$inferInsert {
+  return {
+    companyId: company.id,
+    principalType: "agent",
+    principalId: agent.id,
+    permissionKey: "tools:use",
+    scope: { toolName: "send_email" },
+  };
+}
+
+function agentProfileBindingRow(company: IdRef, profile: IdRef, agent: IdRef): typeof toolProfileBindings.$inferInsert {
+  return {
+    companyId: company.id,
+    profileId: profile.id,
+    targetType: "agent",
+    targetId: agent.id,
+  };
+}
+
+function sendEmailDecisionInput(company: IdRef, agent: IdRef, connection: IdRef, catalogEntry: IdRef): Parameters<ReturnType<typeof toolAccessPolicyService>["decide"]>[0] {
+  return {
+    companyId: company.id,
+    actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+    request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+  };
+}
+
+function reviewSendPolicyRow(company: IdRef, name: string): typeof toolPolicies.$inferInsert {
+  return {
+    companyId: company.id,
+    name: name,
+    policyType: "require_approval",
+    selectors: { toolName: "send_email" },
+  };
+}
+
+function executedActionInput(db: ReturnType<typeof createDb>, company: IdRef, agent: IdRef, connection: IdRef, catalogEntry: IdRef, args: Record<string, unknown>): Parameters<typeof createApprovedToolAction>[0] {
+  return {
+    db,
+    companyId: company.id,
+    agentId: agent.id,
+    connectionId: connection.id,
+    catalogEntryId: catalogEntry.id,
+    argumentsValue: args,
+    status: "executed",
+  };
+}
+
 describeEmbeddedPostgres("tool access policy service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -190,11 +240,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -213,12 +259,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Write tools",
       defaultAction: "deny",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     await db.insert(toolProfileEntries).values({
       companyId: company.id,
       profileId: profile.id,
@@ -227,11 +268,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       toolName: "send_email",
     });
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: true,
@@ -468,11 +505,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     ]);
 
     for (const agent of [draftAgent, archivedAgent]) {
-      const result = await toolAccessPolicyService(db).decide({
-        companyId: company.id,
-        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-        request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-      });
+      const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
       expect(result).toMatchObject({
         allowed: false,
         decision: "deny",
@@ -486,13 +519,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { application, connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -615,12 +642,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Write tools",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const wildcardPolicy = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review wildcard-looking sends",
@@ -825,13 +847,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -857,13 +873,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -889,13 +899,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "One send per minute",
@@ -925,13 +929,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "One concurrent send per minute",
@@ -1105,12 +1103,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [redactPolicy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Legacy redact",
@@ -1128,17 +1121,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 2,
     }).returning();
 
-    const redactDecision = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const redactDecision = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
     await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, redactPolicy!.id));
-    const validateDecision = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const validateDecision = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(redactDecision).toMatchObject({
       allowed: false,
@@ -1164,12 +1149,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [policy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Legacy conditional allow",
@@ -1179,11 +1159,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 1,
     }).returning();
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -1203,12 +1179,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [policy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Broken rate limit",
@@ -1218,11 +1189,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 1,
     }).returning();
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -1311,12 +1278,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const agentA = await createAgent(db, company.id);
     const agentB = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review scoped sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review scoped sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
     await createApprovedToolAction({
       db,
@@ -1348,35 +1310,14 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review versioned sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review versioned sends"));
     const args = { to: "ops@example.com", body: "same payload after tool change" };
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await db
       .update(toolCatalogEntries)
       .set({ versionHash: randomUUID(), schemaHash: randomUUID(), updatedAt: new Date() })
       .where(eq(toolCatalogEntries.id, catalogEntry.id));
-    const currentVersionAction = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const currentVersionAction = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1389,31 +1330,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review scoped sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review scoped sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1435,31 +1355,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review exact payload sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review exact payload sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1475,22 +1374,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review changed sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review changed sends"));
     const args = { to: "ops@example.com", body: "repeatable" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await createApprovedToolAction({
       db,
       companyId: company.id,
@@ -1523,22 +1409,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review revocable sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review revocable sends"));
     const args = { to: "ops@example.com", body: "revocable" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await createApprovedToolAction({
       db,
       companyId: company.id,

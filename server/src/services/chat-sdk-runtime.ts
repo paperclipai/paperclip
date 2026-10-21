@@ -14,10 +14,8 @@ import {
   type DiscordAdapter,
   type DiscordAdapterConfig,
 } from "@chat-adapter/discord";
-import {
-  createSlackAdapter,
-  type SlackAdapterConfig,
-} from "@chat-adapter/slack";
+import type { SlackAdapterConfig } from "@chat-adapter/slack";
+import { PaperclipSlackAdapter } from "./chat-channels/slack/adapter.js";
 import {
   createTeamsAdapter,
   type TeamsAdapter,
@@ -1374,7 +1372,7 @@ function createProviderAdapter(
           timeout: SLACK_WEB_API_TIMEOUT_MS,
         },
       };
-      const adapter = createSlackAdapter(adapterConfig);
+      const adapter = new PaperclipSlackAdapter(adapterConfig);
       (
         adapter as unknown as SlackAdapterInternals
       ).paperclipFileUploadReceiptContext = new AsyncLocalStorage<

@@ -87,9 +87,11 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableMcpAggregators: true,
     enablePublicMcp: false,
     enableOpenAiDot: false,
+    enableGrokBot: false,
+    enableMuse: false,
     enableChatConnectors: false,
+    enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
-    enablePipelines: false,
     enableCases: false,
     enableAgentChat: false,
     enableCombinedInboxTasks: false,
@@ -103,6 +105,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
+    enableFastResponses: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
@@ -270,6 +273,17 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("saves the personal Muse opt-in separately and names independent readiness evidence", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Muse — Personal agent");
+    expect(container.textContent).toContain("independent background reply");
+    expect(container.textContent).toContain("Provider usage and cost are unavailable");
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle Muse experimental setting"]')!;
+    await act(() => toggle.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMuse: true });
+  });
+
   it("names Dot prerequisites and saves its opt-in independently in both directions", async () => {
     await renderPage();
     const selector = 'button[aria-label="Toggle OpenAI Dot experimental setting"]';
@@ -297,20 +311,27 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("toggles GitHub review bots without enabling chat connectors", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle GitHub review bots experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGitHubReviewBots: enabled });
+      expect(currentExperimentalSettings.enableChatConnectors).toBe(false);
+    }
+  });
+
   it("does not render the Conference Room Chat experimental setting for now", async () => {
     await renderPage();
 
     const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
-    expect(headings).not.toContain("Conference Room Chat");
-    expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
-  });
 
-  it("does not render the Pipelines experimental setting for now", async () => {
-    await renderPage();
-
-    const headings = [...container.querySelectorAll("section h2")].map((h) => h.textContent);
     expect(headings).not.toContain("Pipelines");
     expect(container.querySelector('button[aria-label="Toggle pipelines experimental setting"]')).toBeNull();
+    expect(headings).not.toContain("Conference Room Chat");
+    expect(container.querySelector(CONFERENCE_TOGGLE_SELECTOR)).toBeNull();
   });
 
   it("does not render the toggle even when the stored flag is currently enabled", async () => {
@@ -372,7 +393,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
 
     expect(container.textContent).toContain("Paperclip Runner");
-    expect(container.textContent).toContain("Onboarding continues to use legacy adapters");
+    expect(container.textContent).toContain("First-run setup offers qualified GitHub Copilot");
     const toggle = container.querySelector<HTMLButtonElement>(
       PAPERCLIP_RUNNER_TOGGLE_SELECTOR,
     );
@@ -456,6 +477,17 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableDecisions: true,
     });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the fast responses experimental toggle", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Experimental fast responses");
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle fast responses experimental setting"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle?.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableFastResponses: true });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
@@ -570,6 +602,14 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     setWorktreeRuntimeMeta(true);
     await renderPage();
 
+    expect(container.textContent).toContain(
+      "Only tasks created after enabling will run automatically",
+    );
+    expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
+    // Off => no armed banner and no fail-closed hint.
+    expect(container.textContent).not.toContain("Running tasks created after");
+    expect(container.textContent).not.toContain("Execution is suppressed");
+
     expect(container.textContent).toContain("Run tasks in this worktree");
     expect(container.textContent).toContain(
       "isolated git-worktree preview instance",
@@ -587,19 +627,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       enableWorktreeRunExecution: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("shows the cutoff-copy for the worktree run-execution toggle when off", async () => {
-    setWorktreeRuntimeMeta(true);
-    await renderPage();
-
-    expect(container.textContent).toContain(
-      "Only tasks created after enabling will run automatically",
-    );
-    expect(container.textContent).toContain("Toggling off and on resets the cutoff.");
-    // Off => no armed banner and no fail-closed hint.
-    expect(container.textContent).not.toContain("Running tasks created after");
-    expect(container.textContent).not.toContain("Execution is suppressed");
   });
 
   it("shows the armed timestamp when the flag matches the current instance", async () => {

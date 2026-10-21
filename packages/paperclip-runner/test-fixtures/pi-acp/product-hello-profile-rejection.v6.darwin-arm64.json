@@ -1,0 +1,71 @@
+{
+  "schema": "paperclip.pi-product-evidence.v1",
+  "recordedAt": "2026-09-29T15:02:32.094914+00:00",
+  "profileVersion": 6,
+  "qualification": "pending",
+  "attemptId": "pi-v6-local-hello-20260929-01",
+  "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+  "sourceRevision": "6f163033a4a8c6a7590d227f7054bf2356dfe477",
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "platform": "darwin-arm64",
+  "providerPackDigest": "sha256:844c245d85c529bbe40ca87393a1da3716d57dfc030b1d56240ab7cb7512aea9",
+  "providerPackManifestSha256": "849a4cd00afb05acd7f22366bc4b8b1f719c50993f0d53e31b837b75fd8963df",
+  "profileDigest": "sha256:d2b470e940115a1cd8a31cd5d2ddde2837912e965d3475deede09d67bff6346f",
+  "closureDigest": "sha256:b2ce6bb2d9b93c4265b2c363cbf1433e06bb3349327f59b6f8eb3fdbd1b03d6a",
+  "actualRuntime": {
+    "sidecarSha256": "7c10054f7382826b6c330e75d5e27c08a3f2e3d8352debc04865f0687bfe67c7",
+    "nodeSha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+    "daemonSha256": "f04278d1464872bbed087fca101dbbd56251b4b6bdcc2958e6c9995ef45ff387",
+    "sourceBinding": "entire frozen Runner dist and Pi assets copied into actual controller package root and independently hashed before launch"
+  },
+  "build": {
+    "privateFreshPnpmStore": true,
+    "packageImportMethod": "copy",
+    "pnpmVersion": "9.15.4",
+    "trackedLockSha256": "e0c928a494f90ddad3c00791e83f09315ee8c82df2a0418a809dcf93649a8ab3",
+    "stagingResolvedLockSha256": "5e79e3fce2173814528e6e55a0404249f8b677f2d1c56530d9947b6d0efe6827",
+    "installedWrapperAndNativeSdkTestsPassed": 25,
+    "credentialFreeProductSupportTestsPassed": 642,
+    "productTypecheck": "passed"
+  },
+  "result": {
+    "status": "failed",
+    "classification": "pre-provider profile validation failure",
+    "message": "input.provider.profile does not match the qualified ACPX v1 profile",
+    "cause": "Shared native-execution runtime parser only admitted agentProfileVersion 1 through 5 while the declared qualified profile was version 6.",
+    "providerInferenceStarted": false,
+    "runCount": 2,
+    "runSources": [
+      "assignment",
+      "automation"
+    ],
+    "terminalRunStatuses": [
+      "failed",
+      "failed"
+    ],
+    "terminalUsageReceipts": 0,
+    "durationSeconds": 46.424,
+    "harnessAutomaticRetries": 0
+  },
+  "billing": {
+    "reservationUsd": 2,
+    "watchdogDeltaUsd": 0.5,
+    "observedExclusiveKeyDeltaUsd": 0,
+    "beforeObservedAt": "2026-09-29T15:01:45.669895+00:00",
+    "afterObservedAt": "2026-09-29T15:02:32.029924+00:00",
+    "finality": "early key observations; delayed charges must be reconciled independently",
+    "missingRunUsageMeans": "unknown, not zero"
+  },
+  "cleanup": {
+    "product": "passed",
+    "supervisorOwnedProcessesObserved": 40,
+    "remainingOwnedProcesses": 0
+  },
+  "requiredFollowup": [
+    "Add shared runtime parser regression for exact v6 profile",
+    "Rebuild frozen source, sidecar and provider pack",
+    "Obtain new central reservation before another attempt",
+    "Complete five basic Product journeys, seven Runner cases and native Product cases",
+    "Qualify authenticated Linux x64 Daytona and macOS x64 separately"
+  ]
+}

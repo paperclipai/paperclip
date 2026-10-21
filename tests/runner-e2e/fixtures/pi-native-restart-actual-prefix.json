@@ -1,0 +1,182 @@
+{
+  "description": "Sanitized identity-only projection of Pi 1.0.0 profile13 pending-input stream; original submission omits turnId before turn.started assigns it. No restart was reached in the original failing attempt. Prompt, reasoning, timestamps and private execution metadata omitted.",
+  "state": {
+    "issue": {
+      "id": "issue",
+      "companyId": "company",
+      "status": "in_progress"
+    },
+    "runs": [
+      {
+        "id": "run",
+        "companyId": "company",
+        "nativeIssueId": "issue",
+        "runtimeMode": "native",
+        "status": "running",
+        "nativeSessionId": "session",
+        "runnerInstanceId": "runner"
+      }
+    ],
+    "interactions": [
+      {
+        "id": "interaction",
+        "companyId": "company",
+        "issueId": "issue",
+        "kind": "ask_user_questions",
+        "status": "pending",
+        "result": null,
+        "sourceRunId": "run",
+        "continuationPolicy": "none",
+        "resolverPolicy": "human_only",
+        "idempotencyKey": "paperclip-runner-question:run:request",
+        "payload": {
+          "version": 1,
+          "title": "Pi native restart",
+          "submitLabel": "Submit answers",
+          "supersedeOnUserComment": false,
+          "questions": [
+            {
+              "id": "answer",
+              "prompt": "Answer",
+              "helpText": "Pi native restart",
+              "selectionMode": "single",
+              "required": true,
+              "allowOther": true,
+              "options": [
+                {
+                  "id": "paperclip_text_answer",
+                  "label": "Pi native restart",
+                  "description": "Expected text input",
+                  "freeText": true
+                }
+              ]
+            }
+          ],
+          "questionSet": {
+            "schema": "paperclip.question_set.v1",
+            "title": "Pi native restart",
+            "submitLabel": "Submit answers",
+            "questions": [
+              {
+                "id": "answer",
+                "header": "Pi native restart",
+                "prompt": "Answer",
+                "required": true,
+                "answerMode": "text",
+                "textValidation": {
+                  "inputType": "text"
+                }
+              }
+            ]
+          },
+          "runtimeRequestId": "request"
+        }
+      }
+    ]
+  },
+  "events": [
+    {
+      "companyId": "company",
+      "runId": "run",
+      "seq": 25,
+      "protocolSchemaVersion": 1,
+      "eventType": "turn.submitted",
+      "payload": {
+        "prpEvent": {
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "sourceKind": "runner",
+          "eventType": "turn.submitted",
+          "runId": "run",
+          "normalizedSessionId": "session",
+          "sourceInstanceId": "runner",
+          "sourceSeq": 6,
+          "sourceEventId": "runner:run:6",
+          "payload": {
+            "text": "Sanitized fixture request"
+          }
+        }
+      }
+    },
+    {
+      "companyId": "company",
+      "runId": "run",
+      "seq": 28,
+      "protocolSchemaVersion": 1,
+      "eventType": "turn.started",
+      "payload": {
+        "prpEvent": {
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "sourceKind": "runner",
+          "eventType": "turn.started",
+          "runId": "run",
+          "turnId": "turn",
+          "normalizedSessionId": "session",
+          "sourceInstanceId": "runner",
+          "sourceSeq": 7,
+          "sourceEventId": "runner:run:7",
+          "payload": {
+            "status": "inProgress"
+          }
+        }
+      }
+    },
+    {
+      "companyId": "company",
+      "runId": "run",
+      "seq": 222,
+      "protocolSchemaVersion": 1,
+      "eventType": "runtime_request.created",
+      "payload": {
+        "prpEvent": {
+          "schema": "paperclip.prp.event.v1",
+          "schemaVersion": 1,
+          "sourceKind": "runner",
+          "eventType": "runtime_request.created",
+          "runId": "run",
+          "turnId": "turn",
+          "itemId": "item-run",
+          "normalizedSessionId": "session",
+          "sourceInstanceId": "runner",
+          "sourceSeq": 195,
+          "sourceEventId": "runner:run:195",
+          "payload": {
+            "request": {
+              "type": "input",
+              "input": {
+                "title": "Pi native restart",
+                "schema": "paperclip.question_set.v1",
+                "questions": [
+                  {
+                    "id": "answer",
+                    "header": "Pi native restart",
+                    "prompt": "Answer",
+                    "required": true,
+                    "answerMode": "text",
+                    "textValidation": {
+                      "inputType": "text"
+                    }
+                  }
+                ],
+                "submitLabel": "Submit answers"
+              },
+              "itemId": "item-run",
+              "origin": {
+                "method": "elicitation/create",
+                "adapter": "acpx-runtime-sidecar",
+                "provider": "pi"
+              },
+              "prompt": "Pi native restart",
+              "schema": "paperclip.runtime_request.v2",
+              "status": "pending",
+              "turnId": "turn",
+              "requestId": "request",
+              "requestKind": "runtime"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

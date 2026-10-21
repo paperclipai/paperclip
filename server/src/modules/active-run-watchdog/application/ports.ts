@@ -53,6 +53,7 @@ export type RunningAgentSnapshot = {
 export interface WatchdogRunReader {
   findCandidateSilentRuns(input: FindCandidateSilentRunsInput): Promise<RunSnapshot[]>;
   findRunForCompany(companyId: string, runId: string): Promise<RunSnapshot | null>;
+  isRuntimeSettlementPending(companyId: string, runId: string): Promise<boolean>;
   findLatestDecision(companyId: string, runId: string, now: Date): Promise<FindLatestDecisionResult>;
   findOpenStaleRunEvaluation(companyId: string, runId: string): Promise<EvaluationIssueSnapshot | null>;
   findLatestSameRunTerminalEvidence(

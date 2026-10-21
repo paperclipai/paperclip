@@ -1,3 +1,7 @@
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { fastResponseService, enqueueFastResponse, fastResponseSourceCurrent, fastResponseTurnQueued } from "./fast-responses.js";
+import { fastResponseRequests } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
@@ -43,6 +47,7 @@ import { resolveExecutionWorkspaceEnvironmentId } from "./execution-workspace-po
 import { emailConnectionService } from "./email-connections.js";
 import { secretService } from "./secrets.js";
 import { authorizationService } from "./authorization.js";
+import { assertChatTaskCreationAccess, resolveChatExecutionDefaults } from "./chat-execution-defaults.js";
 import { issueService } from "./issues.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -77,6 +82,8 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export interface EmailChannelOptions {
   /** Suppress periodic database work while an unclaimed Cloud app stands by. */
   isBackgroundWorkEnabled?: () => boolean;
+  /** Allow transaction outcome checks during idle drain, but not warm standby. */
+  isReconciliationEnabled?: () => boolean;
   heartbeat: Pick<ReturnType<typeof heartbeatService>, "wakeup">;
   storage?: StorageService;
   publicBaseUrl?: string;
@@ -130,7 +137,12 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   let stopped = false;
   let ticking = false;
   let activeTick: Promise<void> | null = null;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+  let worker: ReturnType<ReturnType<typeof createDeliveryWorkCoordinator>["register"]> | undefined;
+  let nextWorkAt: number | null = null;
+  function needWorkAt(at: number) {
+    nextWorkAt = Math.min(nextWorkAt ?? Infinity, Math.max(Date.now() + 1000, at));
+  }
 
   async function getEndpoint(id: string) {
     const [row] = await db
@@ -881,6 +893,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       }
       const now = new Date();
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
         await tx
           .update(emailEndpoints)
           .set({
@@ -909,7 +922,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       return summary(await getEndpoint(endpoint.id));
     });
     if (!result) throw conflict("Inbox setup is already running");
-    if (timer) void tick().catch(() => {});
     return result;
   }
 
@@ -919,22 +931,24 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     if (!event) return;
     if (event.inbox_id !== endpoint.botExternalId)
       throw forbidden("Email event belongs to a different inbox");
-    await db
-      .insert(chatDeliveries)
-      .values({
-        companyId: endpoint.companyId,
-        endpointId: endpoint.id,
-        providerEventId: event.eventId,
-        deduplicationKey: `${event.kind}:${event.message_id}`,
-        eventKind: "message",
-        normalizedEvent: event,
-      })
-      .onConflictDoNothing();
-    await db
-      .update(chatEndpoints)
-      .set({ lastEventAt: new Date() })
-      .where(eq(chatEndpoints.id, endpoint.id));
-    if (timer) void tick().catch(() => {});
+    await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
+      await tx
+        .insert(chatDeliveries)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          providerEventId: event.eventId,
+          deduplicationKey: `${event.kind}:${event.message_id}`,
+          eventKind: "message",
+          normalizedEvent: event,
+        })
+        .onConflictDoNothing();
+      await tx
+        .update(chatEndpoints)
+        .set({ lastEventAt: new Date() })
+        .where(eq(chatEndpoints.id, endpoint.id));
+    });
   }
   async function webhook(
     publicId: string,
@@ -1304,22 +1318,42 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         }
         if (!conversation) {
           const placement = await inboundPlacement(
-            endpoint.companyId,
-            endpoint.assignedAgentId,
+            current.companyId,
+            current.assignedAgentId,
           );
+          const defaults = resolveChatExecutionDefaults(current.executionDefaults, null);
+          if ("projectId" in placement && defaults.projectId !== undefined && defaults.projectId !== placement.projectId) {
+            throw forbidden("Default project conflicts with the assigned agent's trust boundary");
+          }
+          await assertChatTaskCreationAccess(db, {
+            companyId: current.companyId,
+            assigneeAgentId: current.assignedAgentId,
+            actor: current.sponsorUserId ? { type: "board", userId: current.sponsorUserId, source: "session", ignoreInstanceAdmin: true } : { type: "none" },
+            defaults: { ...defaults, ...("projectId" in placement ? { projectId: placement.projectId } : {}) },
+            parentIssueId: "parentId" in placement ? placement.parentId : null,
+          }, tx);
+          await assertChatTaskCreationAccess(db, {
+            companyId: current.companyId,
+            assigneeAgentId: current.assignedAgentId,
+            actor: { type: "agent", agentId: current.assignedAgentId, companyId: current.companyId, onBehalfOfUserId: current.sponsorUserId, source: "agent_key" },
+            defaults: { ...defaults, ...("projectId" in placement ? { projectId: placement.projectId } : {}) },
+            parentIssueId: "parentId" in placement ? placement.parentId : null,
+          }, tx);
           const task = await issueService(db).create(
-            endpoint.companyId,
+            current.companyId,
             {
+              ...(defaults.projectId !== undefined ? { projectId: defaults.projectId } : {}),
               ...placement,
+              ...(defaults.workspace ? { workspaceSelection: defaults.workspace, workspaceSelectionSource: "channel" as const } : {}),
               title: message.subject.slice(0, 200),
-              description: `Email conversation for ${endpoint.botExternalId}`,
+              description: `Email conversation for ${current.botExternalId}`,
               status: "todo",
               priority: "medium",
-              assigneeAgentId: endpoint.assignedAgentId,
-              responsibleUserId: endpoint.sponsorUserId,
+              assigneeAgentId: current.assignedAgentId,
+              responsibleUserId: current.sponsorUserId,
               originKind: "chat_channel",
-              originId: `email:${endpoint.id}:${message.thread_id}`,
-              idempotencyKey: `email:${endpoint.id}:${message.thread_id}`,
+              originId: `email:${current.id}:${message.thread_id}`,
+              idempotencyKey: `email:${current.id}:${message.thread_id}`,
             },
             tx,
           );
@@ -1395,6 +1429,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             state: event.wakePending ? "active" : conversation.state,
           })
           .where(eq(chatConversations.id, conversation.id));
+        if (event.wakePending && link?.commentId) await enqueueFastResponse(tx as unknown as Db, {
+          companyId: endpoint.companyId, issueId: task.id, agentId: endpoint.assignedAgentId, responsibleUserId: null, sponsored: true,
+          sourceKey: `comment:${link.commentId}`, sourceCommentId: link.commentId, acceptedAt: new Date(), endpointId: endpoint.id, conversationId: conversation.id, deliveryId: delivery.id,
+        });
       });
     }
     if (event.wakePending && event.issueId) {
@@ -1441,6 +1479,32 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       })
       .where(eq(chatDeliveries.id, delivery.id));
   }
+  async function authorizeFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect) {
+    const [endpoint] = await tx.select().from(chatEndpoints).where(and(eq(chatEndpoints.companyId, request.companyId), eq(chatEndpoints.id, request.endpointId!)));
+    if (!endpoint || endpoint.provider !== "agentmail" || endpoint.status !== "active" || endpoint.assignedAgentId !== request.agentId || !endpoint.sponsorUserId) throw forbidden();
+    await active(endpoint);
+    await authorize(endpoint, request.issueId!, { userId: endpoint.sponsorUserId, localImplicit: endpoint.sponsorUserId === "local-board" });
+    const [link] = await tx.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.companyId, request.companyId), eq(chatMessageLinks.deliveryId, request.deliveryId!), eq(chatMessageLinks.commentId, request.sourceCommentId!), eq(chatMessageLinks.direction, "inbound")));
+    if (!link || link.endpointId !== request.endpointId || link.conversationId !== request.conversationId) throw forbidden();
+    const [message] = await tx.select().from(emailMessages).where(and(eq(emailMessages.companyId, request.companyId), eq(emailMessages.endpointId, request.endpointId!), eq(emailMessages.providerMessageId, link.providerMessageId)));
+    if (!message || message.automatic || message.direction !== "inbound") throw forbidden();
+    const [agent] = await tx.select({ name: agents.name }).from(agents).where(and(eq(agents.companyId, request.companyId), eq(agents.id, request.agentId!)));
+    return { agentName: agent?.name ?? "Assistant", message: message.text, queued: await fastResponseTurnQueued(tx, request) };
+  }
+  async function publishFastResponse(tx: Db, request: typeof fastResponseRequests.$inferSelect, commentId: string, text: string) {
+    await authorizeFastResponse(tx, request);
+    const [endpoint] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, request.endpointId!));
+    const [link] = await tx.select().from(chatMessageLinks).where(and(eq(chatMessageLinks.companyId, request.companyId), eq(chatMessageLinks.deliveryId, request.deliveryId!), eq(chatMessageLinks.commentId, request.sourceCommentId!)));
+    const input: EmailSendInput = { endpointId: endpoint.id, conversationId: request.conversationId!, replyToMessageId: link.providerMessageId, replyAll: false,
+      text, attachmentIds: [], idempotencyKey: request.id };
+    const actor = { userId: endpoint.sponsorUserId!, localImplicit: endpoint.sponsorUserId === "local-board" };
+    await policy(endpoint, input, actor, true);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
+    await tx.insert(chatPublications).values({ id: request.id, companyId: request.companyId, endpointId: endpoint.id, conversationId: request.conversationId!, issueId: request.issueId!, commentId,
+      idempotencyKey: `fast-response:${request.id}`, payload: { text } });
+    await tx.insert(emailSends).values({ companyId: request.companyId, endpointId: endpoint.id, publicationId: request.id, request: input, actor, digest: hash({ input, actor }) });
+  }
+
   async function queueSend(
     companyId: string,
     input: EmailSendInput,
@@ -1550,6 +1614,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         if (!reply)
           throw badRequest("Reply target is not in this inbox conversation");
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
       await tx.insert(chatPublications).values({
         id: input.idempotencyKey,
         companyId,
@@ -1571,7 +1636,6 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     await audit(endpoint, "email.queued", actor, {
       publicationId: input.idempotencyKey,
     });
-    if (timer) void tick().catch(() => {});
     return publication(input.idempotencyKey, companyId);
   }
   async function publication(
@@ -1635,6 +1699,22 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             "The send confirmation window has expired. Check AgentMail before resolving this delivery.",
         })
         .where(eq(chatPublications.id, pub.id));
+      return;
+    }
+    const fastResponseEligible = async () => {
+      if (!pub.idempotencyKey.startsWith("fast-response:")) return true;
+      return db.transaction(async tx => {
+        const [request] = await tx.select().from(fastResponseRequests).where(and(eq(fastResponseRequests.id, pub.id), eq(fastResponseRequests.companyId, pub.companyId)));
+        if (!request || !(await fastResponseSourceCurrent(tx as unknown as Db, request))) return false;
+        try { await fastResponseService(tx as unknown as Db).authorize(tx as unknown as Db, request); await authorizeFastResponse(tx as unknown as Db, request); return request.expiresAt.getTime() > Date.now(); } catch { return false; }
+      });
+    };
+    if (pub.idempotencyKey.startsWith("fast-response:") && send.firstAttemptAt) {
+      await db.update(chatPublications).set({ state: "delivery_unknown", redactedError: "Fast response delivery needs reconciliation" }).where(eq(chatPublications.id, pub.id));
+      return;
+    }
+    if (!(await fastResponseEligible())) {
+      await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, pub.id));
       return;
     }
     const input = send.request;
@@ -1740,6 +1820,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
         throw badRequest("The reply has no external recipient");
       await active(endpoint);
       await fence();
+      if (!(await fastResponseEligible())) {
+        await db.update(chatPublications).set({ state: "cancelled" }).where(eq(chatPublications.id, pub.id));
+        return;
+      }
       attempted = true;
       const result = await api.send(
         endpoint.botExternalId!,
@@ -1968,6 +2052,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             .update(emailEndpoints)
             .set({ lastSyncAt: null })
             .where(eq(emailEndpoints.endpointId, endpoint.id));
+          worker?.wake();
         } else await admit(endpoint, value);
       })().catch(async () => {
         await markError(
@@ -1988,6 +2073,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       const delay = Math.min(60_000, (backoff.get(endpoint.id) ?? 1000) * 2);
       backoff.set(endpoint.id, delay);
       reconnectAt.set(endpoint.id, Date.now() + delay);
+      worker?.wake();
       void db
         .delete(chatEndpointLeases)
         .where(
@@ -2056,6 +2142,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   async function runTick() {
     if (ticking || stopped) return;
     ticking = true;
+    nextWorkAt = null;
     try {
       const endpoints = await db
         .select()
@@ -2096,7 +2183,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
                   ne(chatPublications.state, "delivery_unknown"),
                 ),
               )
-              .orderBy(asc(chatPublications.createdAt))
+              .orderBy(asc(chatPublications.createdAt), asc(chatPublications.id))
               .limit(25);
             // Each conversation is serial, while independent inbox threads can make progress.
             const firstSends = [
@@ -2199,7 +2286,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             );
             if (
               !config.lastSyncAt ||
-              Date.now() - config.lastSyncAt.getTime() > 60_000
+              Date.now() - config.lastSyncAt.getTime() >= 60_000
             )
               await withLease(
                 endpoint,
@@ -2208,7 +2295,40 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
                 },
                 "email-catchup",
               );
+            // Catch-up is a real scheduled obligation; an empty queue is not.
+            const refreshed = await getConfig(endpoint.id);
+            needWorkAt((refreshed.lastSyncAt?.getTime() ?? 0) + 60_000);
+            if (refreshed.receiveMode === "websocket" && !sockets.has(endpoint.id))
+              needWorkAt(reconnectAt.get(endpoint.id) ?? Date.now() + 1000);
+            const [inbound] = await db
+              .select({ at: sql<Date | null>`min(coalesce(${chatDeliveries.nextAttemptAt}, now()))` })
+              .from(chatDeliveries)
+              .where(and(
+                eq(chatDeliveries.endpointId, endpoint.id),
+                inArray(chatDeliveries.state, ["received", "processing", "retry"]),
+              ));
+            // A later reply cannot run ahead of its conversation's first send.
+            // Its null deadline must not turn a delayed retry into 1s polling.
+            const sendHeads = db
+              .selectDistinctOn([chatPublications.conversationId], {
+                nextAttemptAt: chatPublications.nextAttemptAt,
+              })
+              .from(emailSends)
+              .innerJoin(chatPublications, eq(chatPublications.id, emailSends.publicationId))
+              .where(and(
+                eq(emailSends.endpointId, endpoint.id),
+                inArray(emailSends.outcome, ["queued", "uncertain"]),
+                ne(chatPublications.state, "delivery_unknown"),
+              ))
+              .orderBy(asc(chatPublications.conversationId), asc(chatPublications.createdAt), asc(chatPublications.id))
+              .as("email_send_heads");
+            const [outbound] = await db
+              .select({ at: sql<Date | null>`min(coalesce(${sendHeads.nextAttemptAt}, now()))` })
+              .from(sendHeads);
+            for (const pending of [inbound, outbound])
+              if (pending?.at) needWorkAt(new Date(pending.at).getTime());
           } catch (e) {
+            needWorkAt(Date.now() + 1000);
             await markError(endpoint, diagnostic(e));
           }
         }),
@@ -2219,6 +2339,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
   }
   async function stopEndpoint(endpoint: Endpoint) {
     await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
       await tx
         .select()
         .from(chatEndpoints)
@@ -2319,6 +2440,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           await removeUnusedSecret(secretId);
       }
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.email);
         await tx
           .update(chatEndpoints)
           .set({
@@ -2599,12 +2721,15 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     setup,
     getEndpoint,
     summary,
+    authorizeFastResponse,
+    publishFastResponse,
     queueSend,
     publication,
     thread,
     webhook,
     admit,
     tick,
+    async flushPublications() { await activeTick; await tick(); },
     control,
     reconnect,
     resolveUncertain,
@@ -2642,17 +2767,28 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       };
     },
     start: () => {
-      if (!timer) {
-        timer = setInterval(() => {
-          void tick().catch(() => {});
-        }, 1000);
-        timer.unref();
-        void tick().catch(() => {});
-      }
+      if (coordinator || stopped) return;
+      coordinator = createDeliveryWorkCoordinator({
+        owner: db,
+        canRun: () => options.isBackgroundWorkEnabled?.() !== false,
+        canReconcile: () => options.isReconciliationEnabled?.() ?? (options.isBackgroundWorkEnabled?.() !== false),
+        onError: (error) => process.emitWarning(`Email background work failed: ${diagnostic(error)}`),
+      });
+      worker = coordinator.register(DELIVERY_QUEUES.email, {
+        retryMs: 1000,
+        run: tick,
+        // Retries and maintenance have deadlines; only unresolved writes need
+        // the coordinator's pending-intent hold, not a configured idle inbox.
+        hasPending: async () => false,
+        nextRunAt: () => options.isBackgroundWorkEnabled?.() === false
+          ? Date.now() + 1000
+          : nextWorkAt,
+      });
+      return worker.ready;
     },
     shutdown: async () => {
       stopped = true;
-      clearInterval(timer);
+      await coordinator?.stop();
       await activeTick;
       const heldSockets = [...sockets.entries()];
       sockets.clear();

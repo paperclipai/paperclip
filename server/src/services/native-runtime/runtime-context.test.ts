@@ -11,10 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const serviceMocks = vi.hoisted(() => ({
   exportFiles: vi.fn(),
   readCommittedForRuntime: vi.fn(),
-  getEffectiveProfilesForAgent: vi.fn(),
+  getEffectiveToolAssignmentsForAgent: vi.fn(),
   githubBotConnectionIdsForRun: vi.fn(),
+  spekoToolsForSession: vi.fn(),
 }));
 
+vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
 vi.mock("../chat-github-tools.js", () => ({
   githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));
@@ -30,11 +32,15 @@ vi.mock("../agent-instruction-revisions.js", () => ({
 
 vi.mock("../tool-access.js", () => ({
   toolAccessService: () => ({
-    getEffectiveProfilesForAgent: serviceMocks.getEffectiveProfilesForAgent,
+    getEffectiveToolAssignmentsForAgent: serviceMocks.getEffectiveToolAssignmentsForAgent,
   }),
 }));
 
 import { createHash } from "node:crypto";
+import { context as otelContext, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
@@ -58,13 +64,14 @@ beforeEach(async () => {
   vi.clearAllMocks();
   serviceMocks.readCommittedForRuntime.mockResolvedValue(null);
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set());
+  serviceMocks.spekoToolsForSession.mockResolvedValue([]);
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
   previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-native-context-"));
   temporaryRoots.push(root);
   process.env.PAPERCLIP_HOME = root;
   process.env.PAPERCLIP_INSTANCE_ID = "runtime_context_test";
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     agentId: "agent-1",
     profiles: [],
     entries: [{ effect: "include", connectionId: "connection-1" }],
@@ -158,7 +165,7 @@ describe("buildNativeRuntimeContext", () => {
         entryFile: "AGENTS.md",
         files: { "AGENTS.md": "Continue work without unavailable apps.\n" },
       });
-      serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+      serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
         agentId: "agent-1",
         profiles: [],
         entries: [{ effect: "include", connectionId: "connection-1" }],
@@ -198,7 +205,7 @@ describe("buildNativeRuntimeContext", () => {
       entryFile: "AGENTS.md",
       files: { "AGENTS.md": "Continue work with the apps that are available.\n" },
     });
-    serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+    serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
       agentId: "agent-1",
       profiles: [],
       entries: [
@@ -286,7 +293,7 @@ describe("buildNativeRuntimeContext", () => {
     const repeated = await buildNativeRuntimeContext(input);
 
     expect(serviceMocks.exportFiles).toHaveBeenCalledWith(input.agent, { rejectSymlinks: true });
-    expect(serviceMocks.getEffectiveProfilesForAgent).toHaveBeenCalledWith("company-1", "agent-1");
+    expect(serviceMocks.getEffectiveToolAssignmentsForAgent).toHaveBeenCalledWith("company-1", "agent-1");
     expect(context.instructions.entryPath).toBe("AGENTS.md");
     expect(await readFile(path.join(context.instructions.bundle.rootPath, "AGENTS.md"), "utf8"))
       .toBe("Follow the agent instructions.\n");
@@ -315,6 +322,18 @@ describe("buildNativeRuntimeContext", () => {
     expect(repeated.aggregateDigest).toBe(context.aggregateDigest);
     expect(repeated.instructions.bundle.rootPath).toBe(context.instructions.bundle.rootPath);
     expect(repeated.skills[0]!.bundle.rootPath).toBe(context.skills[0]!.bundle.rootPath);
+  });
+
+  it("does not materialize assigned skills or external MCP in preconfigured mode", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Test\n" } });
+    const context = await buildNativeRuntimeContext({ db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-1", runtimeConfig: { homeMode: "preconfigured", paperclipSkillSync: { desiredSkills: ["missing"] } },
+      runtimeSkillEntries: [{ key: "missing", runtimeName: "missing", source: "/does/not/exist", sourceStatus: "missing" }],
+    });
+    expect(context.skills).toEqual([]);
+    expect(context.mcp.bindingId).toBeNull();
+    expect(serviceMocks.getEffectiveToolAssignmentsForAgent).not.toHaveBeenCalled();
   });
 
   it("fails closed for a missing assigned skill and omits a stale legacy operational skill", async () => {
@@ -374,7 +393,7 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
     id, status: "active", enabled: true, healthStatus: "missing_secret", transport: "mcp_remote",
     config: { sourceTemplateKey: "github" }, transportConfig: {},
   }));
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     entries: connections.map((connection) => ({ effect: "include", connectionId: connection.id })),
     installedConnections: connections,
     allowedTools: connections.map((connection) => ({ id: `${connection.id}-get_me`, connectionId: connection.id })),
@@ -392,7 +411,7 @@ it("pins both permitted GitHub tool catalogs even when another user’s health p
 });
 
 it("pins channel tools only when the current task run is bound to that bot", async () => {
-  serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({
     entries: [{ effect: "include", connectionId: "bot-connection" }],
     installedConnections: [{
       id: "bot-connection", status: "active", enabled: true, healthStatus: "healthy",
@@ -405,4 +424,65 @@ it("pins channel tools only when the current task run is bound to that bot", asy
   serviceMocks.githubBotConnectionIdsForRun.mockResolvedValue(new Set(["bot-connection"]));
   expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
   expect(serviceMocks.githubBotConnectionIdsForRun).toHaveBeenLastCalledWith(input.db, "company-1", "agent-1", "run-1");
+});
+
+it("pins a voice tool only when the current requester can call through that assigned endpoint", async () => {
+  serviceMocks.getEffectiveToolAssignmentsForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
+  const limit = vi.fn().mockResolvedValue([{ issueId: "task-1", activeIdentityContextId: "identity-1" }]);
+  const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
+  const input = { db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();
+  serviceMocks.spekoToolsForSession.mockResolvedValue([{ connectionId: "voice-connection" }]);
+  expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
+  expect(serviceMocks.spekoToolsForSession).toHaveBeenLastCalledWith(db, { companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "task-1", identityContextId: "identity-1" });
+});
+
+it("keeps instructions, selected skills, and MCP concurrent and distinguishes cold materialization from warm verification", async () => {
+  vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+  const exporter = new InMemorySpanExporter();
+  const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+  const manager = new AsyncLocalStorageContextManager().enable();
+  expect(otelContext.setGlobalContextManager(manager)).toBe(true);
+  expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  serviceMocks.exportFiles.mockImplementation(async () => {
+    await gate;
+    return { entryFile: "AGENTS.md", files: { "AGENTS.md": "Private fixture instructions" } };
+  });
+  const source = path.join(temporaryRoots.at(-1)!, "selected-skill");
+  await mkdir(source);
+  await writeFile(path.join(source, "SKILL.md"), "Private skill fixture");
+  const input = {
+    db: {} as Db, agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterConfig: {} },
+    runId: "concurrent-context", runtimeConfig: { paperclipSkillSync: { desiredSkills: ["selected"] } },
+    runtimeSkillEntries: [{ key: "selected", runtimeName: "selected", source }],
+  };
+  const pending = withRunExecutionTiming(input.runId, () => buildNativeRuntimeContext(input));
+  try {
+    await vi.waitFor(() => {
+      expect(exporter.getFinishedSpans().map(span => span.name)).toEqual(expect.arrayContaining(["runtime_context.skills", "runtime_context.mcp"]));
+    });
+    expect(exporter.getFinishedSpans().some(span => span.name === "runtime_context.instructions")).toBe(false);
+    release();
+    const cold = await pending;
+    expect(cold.skills).toHaveLength(1);
+    expect(exporter.getFinishedSpans().some(span => span.name === "runtime_context.asset_materialize")).toBe(true);
+    exporter.reset();
+    const warm = await withRunExecutionTiming(input.runId, () => buildNativeRuntimeContext(input));
+    expect(warm.aggregateDigest).toBe(cold.aggregateDigest);
+    const spans = exporter.getFinishedSpans();
+    expect(spans.some(span => span.name === "runtime_context.asset_verify")).toBe(true);
+    expect(spans.some(span => span.name === "runtime_context.asset_materialize")).toBe(false);
+    expect(JSON.stringify(spans.map(span => span.attributes))).not.toContain("Private");
+    const siblings = spans.filter(span => ["runtime_context.instructions", "runtime_context.skills", "runtime_context.mcp"].includes(span.name));
+    expect(siblings).toHaveLength(3);
+    expect(new Set(siblings.map(span => span.parentSpanContext?.spanId)).size).toBe(1);
+  } finally {
+    release();
+    await pending.catch(() => undefined);
+    trace.disable(); otelContext.disable(); manager.disable();
+    await provider.shutdown();
+    vi.unstubAllEnvs();
+  }
 });

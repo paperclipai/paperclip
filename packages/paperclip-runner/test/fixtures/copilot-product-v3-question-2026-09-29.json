@@ -1,0 +1,78 @@
+{
+  "schema": "paperclip.copilot-product-v3-question.v1",
+  "centralReservationId": "copilot-v3-local-question-20260929-01",
+  "attempt": "copilot-final-question-20260929t151802z",
+  "model": "gpt-5.6-luna",
+  "providerVersion": "1.0.88",
+  "profileVersion": 3,
+  "build": {
+    "sourceRevision": "3d0c45920c326821c2f5ff48dc985ef8158b46e4",
+    "sourceRoot": "/private/tmp/paperclip-copilot-frozen-3d0c45920/source",
+    "sourceArchiveSha256": "7f802e5fed2b5dede8b6bfc23affafb7f2c542e98dc09b5e3d111ede0d2e33c7",
+    "originalLockSha256": "e0c928a494f90ddad3c00791e83f09315ee8c82df2a0418a809dcf93649a8ab3",
+    "resolvedLockSha256": "60ae61439844519b104cdf014f0f7b7972804cd1c04a10a8a8777cc8da7dc2f2",
+    "actualControllerPackageRoot": "/private/tmp/paperclip-copilot-frozen-3d0c45920/source/packages/paperclip-runner",
+    "providerPackDigest": "sha256:977d464241d8a8f36bc879fd1cdddf1e675f72fd6f1f2d3fe2f8e273fafc160e",
+    "nodeBinary": "/private/tmp/paperclip-pi-v5-node-20260928/darwin-arm64/node",
+    "nodeSha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+    "runnerBinary": "/private/tmp/paperclip-copilot-frozen-3d0c45920/paperclip-runnerd",
+    "runnerSha256": "2b51c48198c3724255756241cddc1b5efea87dab1c49a6ef7eb897513c7c043b",
+    "sidecarSha256": "7cfee6ca612b3d7bcc266fdd36f2e77d7bb027169c56e0c9c36b9676232f33a4",
+    "acpxPatchSha256": "a64405199b381688ffd72fdbb88396e423394cb407813d7b6f1db43bae9c3933",
+    "frozenBuildRecordSha256": "0a756acca0cc44534465757c4dd01b7039fbe9320a613c7df0e373f96bad7644"
+  },
+  "status": "failed",
+  "failureClass": "candidate_failure",
+  "failureStage": "native session recovery after answered question",
+  "diagnosis": "Product retained an unclassified session.open rejection. Credential-free exact-native recovery reproduces ENOENT when the persisted descriptor references the collected prior-run instruction directory, and succeeds with the current registered directory. This is the supported cause, not directly retained Product wire evidence. No paid retry performed.",
+  "durationMs": 72086,
+  "outerDeadlineSeconds": 300,
+  "activeProviderDeadlineSeconds": 120,
+  "automaticRetries": 0,
+  "cleanup": "passed",
+  "runs": [
+    {
+      "status": "failed",
+      "providerUsage": null,
+      "errorCode": "native_session_interrupted"
+    },
+    {
+      "status": "succeeded",
+      "providerUsage": {
+        "provider": "github",
+        "model": "gpt-5.6-luna",
+        "costStatus": "unpriced",
+        "inputTokens": 28545,
+        "outputTokens": 525,
+        "cachedInputTokens": 13818,
+        "sessionReused": false
+      },
+      "errorCode": null
+    }
+  ],
+  "interactionStatuses": [
+    {
+      "kind": "ask_user_questions",
+      "status": "answered"
+    }
+  ],
+  "providerCostUsd": null,
+  "upstreamModelRequestCount": null,
+  "githubReconciliation": {
+    "baselineIncludedCredits": 5,
+    "afterIncludedCredits": 6,
+    "accountCreditDelta": 1,
+    "includedCreditTotal": 1500,
+    "additionalUsageEnabled": false,
+    "additionalCashBudgetUsd": 0,
+    "accountCashChargesUsd": 0,
+    "snapshotSource": "Lead observed refreshed GitHub billing UI after attempt, approximately 2026-09-29 15:24 UTC",
+    "recordedAt": "2026-09-29T15:26:24.763193+00:00",
+    "perRunUsdAllocation": null
+  },
+  "evidence": {
+    "result.json": "e67192baff115744fdb122f275e3e1f9d0405898327d984986ed774545ebfef4",
+    "snapshots/api-state.json": "044f6d79d1c99a4fb4da89e80b82f6ac2de0c7f536148a5f6d701b149f76d6a3",
+    "evidence-manifest.json": "6da9b164991c6c4b0005f9e1ad94c790018254c5c78be6049111c0a4ff7d695d"
+  }
+}

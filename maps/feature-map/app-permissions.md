@@ -1,0 +1,90 @@
+---
+navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order":20}
+---
+
+# App access and action permissions
+
+After connecting an app, an operator decides which agents may use it and whether each action is off, requires approval, or is allowed. Activity and action tests help verify the resulting access.
+
+Feature ID: `app-permissions`.
+
+Implementation: [app detail](../../ui/src/pages/apps/AppDetail.tsx), [permissions](../../ui/src/pages/apps/app-detail/PermissionsPanel.tsx), [activity](../../ui/src/pages/apps/app-detail/ActivityPanel.tsx).
+
+Agent access: [companion](../agent-access-map/app-permissions.md).
+
+## Sub-features
+
+- `agent-access`: `app-permissions/agent-access` — grant the connection to all or selected eligible agents.
+- `action-policy`: `app-permissions/action-policy` — set off/ask/allowed independently for available actions.
+- `catalog-change`: `app-permissions/catalog-change` — review newly discovered/quarantined actions before enabling them.
+- `test-action`: `app-permissions/test-action` — choose an actor and inputs and inspect a real action result.
+- `account-maintenance`: `app-permissions/account-maintenance` — inspect accounts, reconnect/revoke, and review connection activity.
+
+## How to get to it (user POV)
+
+### `permissions`
+
+Open an app at `/apps/:connectionId/permissions`; this is the default connected-app view.
+
+### `test-and-maintain`
+
+Use the action test control in Permissions, then the connection’s Activity and available account/advanced controls.
+
+## Driving it
+
+Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prepare a connection to a fixture or test provider, two agents, and a harmless action. Record provider and credential ownership.
+
+### `permissions`
+
+Automated: [app detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers agent/action controls, quarantined actions, and navigation using mocked requests.
+
+[Runtime assignment tests](../../server/src/__tests__/agent-runtime-assignments.test.ts)
+use PostgreSQL to verify committed assignment notifications, bounded snapshots,
+rollback, and concurrent AI adoption. The owning lifecycle plugin can read
+standing assignments through `ctx.agents.getRuntime`; this does not grant tool
+execution access or replace task-specific authorization.
+
+[Tool-definition runtime tests](../../server/src/__tests__/agent-runtime-tool-definitions.test.ts)
+cover catalog invalidation, scoped policy/profile-entry recipients, ignored
+bookkeeping, profile-entry edits concurrent with setup finalization, and profile
+replacement concurrent with application deletion using PostgreSQL. They do not
+qualify live provider access.
+
+[Connector access runtime tests](../../server/src/__tests__/agent-runtime-connector-access.test.ts)
+cover grants, delegation, membership cleanup, referenced vault changes, and
+agent-scoped secret bindings. OAuth and Railway tests exercise the corresponding
+credential lock order. Slack search and membership cleanup tests cover lock
+contention and complete transaction retries. Provider calls use fixtures; no live credentials are
+qualified by this coverage.
+
+Manual: Grant one agent access, leave another excluded, and exercise off, ask, and allowed states for a harmless action. Reload between changes. Verify actual denied calls stay denied and ask-first creates a decision rather than executing early.
+
+### `test-and-maintain`
+
+Automated: [app detail tests](../../ui/src/pages/apps/AppDetail.test.tsx) cover test-dialog/UI contracts. Real provider execution and revocation require the selected provider’s live check.
+
+Manual: Run a read-only action with explicit inputs and inspect returned data and activity. Refresh discovery and review new actions. Revoke or disconnect only the disposable credential, then verify subsequent use fails with an actionable reconnect state.
+
+For Daytona, opening an older saved catalog discovers the current native
+contract. Removed diagnostic actions disappear from Permissions and agent
+discovery; new or changed actions require review. Existing Off/Allowed choices
+remain in place. [Daytona regressions](../../server/src/__tests__/daytona-connection.test.ts)
+cover shared/personal catalog upgrades, failed refresh, permission preservation,
+run-bound file transfers, and revocation with fixture provider responses.
+
+## Gotchas
+
+- Connected does not imply an agent has access or an action is allowed.
+- Credential-only connections may replace tool-action controls with account-specific controls.
+- See [connection setup](./connection-setup.md) for auth and [questions and approvals](./questions-and-approvals.md) for pending action review.
+
+### Storybook verification
+
+#### `catalog-change`
+
+Capability ID: `app-permissions/catalog-change`.
+
+Scope: ui
+Storybook: Mount PermissionsPanel/AppDetail with quarantined actions, selection/review, refresh pending, empty and failed discovery states. Existing auto-allowed NewToolsAllowed examples are not quarantine review.
+Production: Exercise catalog refresh and new-tool review with permitted/denied actors; unreviewed actions stay quarantined, prior Off/Ask choices survive refresh, and approved review persists.
+Sources: Source: [PermissionsPanel.tsx](../../ui/src/pages/apps/app-detail/PermissionsPanel.tsx), [AppDetail.tsx](../../ui/src/pages/apps/AppDetail.tsx), [tool-access.ts](../../server/src/routes/tool-access.ts). Tests: [AppDetail.test.tsx](../../ui/src/pages/apps/AppDetail.test.tsx), [tool-access-service.test.ts](../../server/src/__tests__/tool-access-service.test.ts), [tool-access-policy-service.test.ts](../../server/src/__tests__/tool-access-policy-service.test.ts)

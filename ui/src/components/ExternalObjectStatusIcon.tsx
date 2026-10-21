@@ -59,7 +59,8 @@ export function ExternalObjectStatusIcon({
   const livenessSuffix = liveness === "fresh" || liveness === "unknown"
     ? ""
     : ` (${externalObjectLivenessLabel(liveness)})`;
-  const ariaLabel = `${label ?? externalObjectCategoryLabel(category)}${livenessSuffix}`;
+  const baseLabel = label ?? externalObjectCategoryLabel(category);
+  const ariaLabel = `${baseLabel}${baseLabel.includes(externalObjectLivenessLabel(liveness)) ? "" : livenessSuffix}`;
 
   // The clock overlay needs a positioned wrapper. Inline mode keeps the icon
   // tight to the surrounding text; pill mode expects to size by sizeClassName.

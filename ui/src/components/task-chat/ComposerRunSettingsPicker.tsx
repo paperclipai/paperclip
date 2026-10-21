@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
-import { aiRuntimeConnectionBindingSchema, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import { aiRuntimeConnectionBindingSchema, agentHarnessType, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
+import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS, copilotTaskModelCatalogOptions } from "@/lib/copilot-task-model-catalog";
 import { cn } from "@/lib/utils";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
@@ -51,7 +52,7 @@ const HARNESS_LABELS: Record<string, string> = {
 
 function harnessLabel(agent: Agent | undefined): string {
   if (!agent) return "Choose an agent";
-  const harness = HARNESS_LABELS[agent.adapterType] ?? agent.adapterType;
+  const harness = HARNESS_LABELS[agentHarnessType(agent.adapterType, agent.adapterConfig)] ?? agent.adapterType;
   const provider = composerCatalogProvider(agent);
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
@@ -60,6 +61,7 @@ function harnessLabel(agent: Agent | undefined): string {
 
 function unavailableModelReason(agent: Agent | undefined): string {
   if (!agent) return "Choose an agent to select its model and effort.";
+  if (agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "muse") return "Muse chooses its model and effort. Paperclip has no per-task override.";
   if (agent?.adapterType === "process") return "This agent runs a command. Its harness does not expose a model or effort setting.";
   if (agent?.adapterType === "http") return "This agent calls an HTTP endpoint. The destination service chooses its model.";
   return "This gateway chooses its model remotely; Paperclip has no per-task model setting for it.";
@@ -86,7 +88,7 @@ export function ComposerRunSettingsPicker({
   initialOpen = false, initialView = "settings", initialModelSearch = "", initialAssigneeSearch = "",
 }: Props) {
   const [open, setOpen] = useState(initialOpen);
-  const [view, setView] = useState<"settings" | "agents" | "models">(initialView);
+  const [requestedView, setView] = useState<"settings" | "agents" | "models">(initialView);
   const [modelSearch, setModelSearch] = useState(initialModelSearch);
   const [assigneeSearch, setAssigneeSearch] = useState(initialAssigneeSearch);
   const [highlightedAssignee, setHighlightedAssignee] = useState(0);
@@ -103,18 +105,30 @@ export function ComposerRunSettingsPicker({
   const agentId = assigneeValue.startsWith("agent:") ? assigneeValue.slice(6) : "";
   const agent = agents.get(agentId);
   const modelSupported = supportsComposerModel(agent);
+  const view = requestedView === "models" && !modelSupported ? "settings" : requestedView;
   const provider = composerCatalogProvider(agent);
+  const isMuseRunner = agent?.adapterType === "paperclip_runner" && provider === "muse";
+  useEffect(() => {
+    if (isMuseRunner && settings !== null) onSettingsChange(null);
+  }, [isMuseRunner, settings, onSettingsChange]);
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
-  const { data: fetchedModels = [], isPending: modelsPending } = useQuery({
+  const copilotCatalog = copilotTaskModelCatalogOptions(agent);
+  const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
+  const requestCopilotModels = Boolean(copilotCatalog && open && view !== "agents" && !modelOptionsOverride);
+  const { data: fetchedModels = [], isPending: modelsPending, refetch: refreshModels } = useQuery({
     queryKey: agent && modelSupported
-      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null]
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, copilotCatalog ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, ...copilotCatalog,
     }),
-    enabled: Boolean(agent && modelSupported && !modelOptionsOverride),
+    ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(agent && modelSupported && !modelOptionsOverride && (!copilotCatalog || requestCopilotModels)),
   });
+  useEffect(() => {
+    if (requestCopilotModels) void refreshModels();
+  }, [requestCopilotModels, copilotCatalogScope, companyId, agent?.defaultEnvironmentId, refreshModels]);
   // The server resolves instance-declared models first and otherwise returns the
   // adapter's curated catalog. Do not replace a declared Codex list locally.
   const models: readonly (AdapterModel & { detail?: string })[] = modelOptionsOverride
@@ -262,6 +276,6 @@ export function ComposerRunSettingsPicker({
 
   const onOpenChange = (next: boolean) => { setOpen(next); if (!next) { setView("settings"); setModelSearch(""); setAssigneeSearch(""); } };
   // The desktop portal needs its own scroll lock inside the new-task dialog.
-  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}>{triggers}<DialogContent aria-describedby={undefined} showCloseButton={false} style={mobileViewportStyle} className="composer-mobile-dialog gap-0 overflow-hidden p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">{view === "agents" ? "Select assignee" : "Select model and effort"}</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
+  return mobile ? <Dialog open={open} onOpenChange={onOpenChange}>{triggers}<DialogContent aria-describedby={undefined} showCloseButton={false} style={mobileViewportStyle} className="composer-mobile-dialog gap-0 overflow-hidden p-0" data-testid="composer-mobile-dialog"><DialogTitle className="sr-only">{view === "agents" ? "Select assignee" : modelSupported ? "Select model and effort" : "Agent run settings"}</DialogTitle><AnimatedBody>{body}</AnimatedBody></DialogContent></Dialog>
     : <Popover modal open={open} onOpenChange={onOpenChange}><PopoverAnchor asChild>{triggers}</PopoverAnchor><PopoverContent side="top" align="end" sideOffset={8} className="w-80 max-w-full p-0 shadow-sm" data-testid="composer-model-popover"><AnimatedBody>{body}</AnimatedBody></PopoverContent></Popover>;
 }

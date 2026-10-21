@@ -1,0 +1,23 @@
+{
+  "commandDigest": "sha256:d2b470e940115a1cd8a31cd5d2ddde2837912e965d3475deede09d67bff6346f",
+  "declaration": {
+    "schema": "paperclip.acpx_profile_declaration.v1",
+    "agent": "pi",
+    "agentProfileVersion": 6,
+    "acpxVersion": "0.13.1",
+    "agentServerVersion": "0.0.33",
+    "agentRuntimeVersion": "0.84.2",
+    "nodeVersion": "24.21.0",
+    "closure": {
+      "darwin-arm64": "b2ce6bb2d9b93c4265b2c363cbf1433e06bb3349327f59b6f8eb3fdbd1b03d6a",
+      "darwin-x64": "a9269f6e0675ad1b50b24e76d47b971d4238ff25ddd57074b707db2a9bc83a74",
+      "linux-x64": "05eb422d9ce9e32b081cb2d2a3433dc113d66a55f993125b74b1666002cf3b67"
+    },
+    "wrapperSha256": "dc4786faff30942e82106c87a8984a75fb979a925ff1d62648500a642b920cac",
+    "helperSha256": "2df24aee67ca6a5cc813e1f87324f51a72f6a104757daed97a09cbbcb63626d4",
+    "extensionSha256": "d479d4f510295077b8904645e161a527531233a688760a80cca8db9ae01f3b02",
+    "agentFilesBinding": "registered-runtime-context-v1",
+    "nativeQuestions": "select-confirm-input-editor-v1",
+    "pathPolicy": "sdk-normalization-v1"
+  }
+}

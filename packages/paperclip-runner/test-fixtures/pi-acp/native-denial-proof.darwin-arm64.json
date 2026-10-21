@@ -1,0 +1,121 @@
+{
+  "schema": "paperclip.pi-native-denial-proof.v1",
+  "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+  "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+  "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+  "actualSelectedModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "modelPromptRequests": 1,
+  "permissionRequests": 1,
+  "decisions": [
+    {
+      "requestId": 0,
+      "toolTitle": "Pi write",
+      "options": [
+        {
+          "optionId": "allow_once",
+          "name": "Allow once",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "allow_always",
+          "name": "Allow for this session",
+          "kind": "allow_always"
+        },
+        {
+          "optionId": "reject_once",
+          "name": "Deny",
+          "kind": "reject_once"
+        }
+      ],
+      "decisionOptionId": "reject_once",
+      "persistedBeforeResponse": true,
+      "pipeWriteAcknowledged": true,
+      "toolCallIdSha256": "caa61c37ddbe3dddc3a077f55a4450da3c70e4f98e8913e8a229bb3fc507307b",
+      "durableOriginalDecisionRecordSha256": "68ab7a1eb4cf5ea29417223f66448b3cba53d2dc4c37c5de3617c52804379436"
+    }
+  ],
+  "providerFailedToolUpdates": [
+    {
+      "status": "failed",
+      "toolCallIdSha256": "caa61c37ddbe3dddc3a077f55a4450da3c70e4f98e8913e8a229bb3fc507307b"
+    }
+  ],
+  "settlement": {
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 1735,
+      "outputTokens": 125,
+      "cachedReadTokens": 1792,
+      "cachedWriteTokens": 0,
+      "totalTokens": 3652,
+      "_meta": {
+        "paperclipPi": {
+          "provenance": "assistant_message_receipts",
+          "costUsd": 0.00032807600000000006,
+          "costSource": "pi_pricing_estimate"
+        }
+      }
+    },
+    "metadata": null
+  },
+  "oracle": {
+    "markerExistedBefore": false,
+    "markerExistsAfter": false,
+    "method": "independent filesystem stat before cleanup"
+  },
+  "limits": [
+    "Direct ACP permission delivery and owned extension denial; durable PRP restart replay is not exercised.",
+    "Pipe write acknowledgement is followed by the matching failed tool update and settled prompt."
+  ],
+  "executionTrees": {
+    "packages/paperclip-runner/src": "a8123cb4396c77ce0127d5ccf49d3584b63a9a58",
+    "packages/paperclip-runner/scripts": "9ede97769bb3f2bbfa8e02be220b5ce06e438a99",
+    "packages/paperclip-runner/runner": "2cc84e150aecbd5faf2c8bcecc4b6352c24dbca8",
+    "packages/paperclip-runner/protocol": "1d50458fb572d0c75f9a398f419209c52c23ba6f",
+    "patches": "1e2f846b8b2dda202b79ee83baeb0860a3b9ab64",
+    "server/src": "b267adc1e0ad36955b68314829cfd4256ab88d37",
+    "tests/runner-e2e": "5ff4b8a85a14e3e005e3e240c145899c0bc742b5"
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local immutable ACP wrapper and owned extension"
+  },
+  "identityHandling": "Original JSON-RPC id, toolCallId and offered optionId were persisted privately before responding. Public toolCallId hashes preserve request/update equality without exposing invocation identifiers.",
+  "cost": {
+    "catalogEstimateUsd": 0.000328076,
+    "estimateSource": "pi_pricing_estimate",
+    "observedKeyDeltaBeforeNextCaseUsd": 0,
+    "providerBillVerified": false,
+    "status": "accounted_in_aggregate",
+    "explanation": "Three immediate post-probe billing observations were unchanged, followed by a delayed increase before the file case. All spend is accounted in the combined exclusive-key delta; no free-inference or per-generation attribution claim.",
+    "aggregateBillingGroup": "pi-denial-file-01",
+    "aggregateDenialAndFileDeltaUsd": 0.010995043
+  },
+  "supervision": {
+    "reservationUsd": 2,
+    "combinedDenialAndFileReservationUsd": 4,
+    "billingWatchdogUsd": 0.5,
+    "activeTimeoutSeconds": 120,
+    "outerTimeoutSeconds": 180,
+    "deadlineClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "sleepAssertion": "caffeinate -i",
+    "automaticRetries": 0
+  },
+  "cleanup": {
+    "wrapperClosed": true,
+    "immutableSnapshotClosed": true,
+    "workspaceRemoved": true,
+    "residualAttemptProcesses": 0
+  },
+  "qualificationStatus": "pending",
+  "publicationBoundary": {
+    "credentialsIncluded": false,
+    "hiddenReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false
+  }
+}

@@ -1,4 +1,5 @@
 import type { AgentAppearance } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
   HeartbeatRun,
@@ -22,6 +23,8 @@ export interface ActiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -55,6 +58,8 @@ export interface LiveRunForIssue {
   execution?: HeartbeatRun["execution"];
   id: string;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   invocationSource: string;
   triggerDetail: string | null;
@@ -120,7 +125,7 @@ export const heartbeatsApi = {
   list: (
     companyId: string,
     agentId?: string,
-    limit?: number,
+    limit = HEARTBEAT_RUN_LIST_DEFAULT_LIMIT,
     options: HeartbeatRunListOptions = {},
   ) => {
     const searchParams = new URLSearchParams();

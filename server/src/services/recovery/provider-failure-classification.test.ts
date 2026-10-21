@@ -21,6 +21,12 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyContinuationFailure(unknown as never).kind).toBe("transient_infra");
     expect(isConfigurationIncompleteFailedRun(unknown)).toBe(false);
   });
+  it("retries a continuation whose host lost the controller lease before dispatch", () => {
+    expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
+      .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
+    expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never).kind)
+      .toBe("non_retryable");
+  });
   it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
     const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });
     const run = { errorCode, ...classification };

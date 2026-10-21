@@ -45,6 +45,7 @@ import {
   chatEndpointResources,
   issueAttachments,
   assets,
+  toolConnections,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../helpers/embedded-postgres.js";
 import {
@@ -363,6 +364,29 @@ describe("iMessage Photon channel control plane", () => {
       },
     };
   }
+  it("keeps publication authentication failures stopped across receiver reconciliation and restart", async () => {
+    const t = await setup();
+    const conversation = await t.start();
+    await t.qualify();
+    const callbacks = t.callbacks();
+    vi.spyOn(PhotonChatAdapter.prototype, "publish").mockRejectedValueOnce(new PhotonError("credentials", "Rejected credentials"));
+    const comment = await issueService(db).addComment(conversation.issueId!, "Response with rejected credentials", { userId: t.userId }, { authorType: "user" });
+    await t.service.publishComment(t.endpoint.id, conversation.id, comment.id);
+    expect(await db.select().from(chatPublications).where(eq(chatPublications.commentId, comment.id))).toEqual([
+      expect.objectContaining({ state: "failed", attempts: 1, nextAttemptAt: null }),
+    ]);
+    expect(await t.service.get(t.endpoint.id)).toMatchObject({ status: "attention" });
+    expect(await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId))).toEqual([
+      expect.objectContaining({ status: "active", enabled: true, healthStatus: "failed" }),
+    ]);
+    await expect(callbacks.onPhotonAssertOwned!()).rejects.toThrow();
+    await t.service.reconcileProviderRuntimes();
+    expect(t.service.runtime.get(t.endpoint.id)).toBeFalsy();
+    const restarted = await t.restart();
+    expect(restarted.runtime.get(t.endpoint.id)).toBeFalsy();
+    expect(await restarted.get(t.endpoint.id)).toMatchObject({ status: "attention" });
+  });
+
   it("supports shared project DMs while rejecting groups, duplicate ownership and allocation changes", async () => {
     const t = await setup(true);
     const snapshot = await t.service.get(t.endpoint.id);

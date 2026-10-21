@@ -1,4 +1,5 @@
-import { eligibleIssueMonitorWait } from "../issue-monitors.js";
+import { scheduledIssueMonitorWait } from "../issue-monitors.js";
+import { readNativeMonitorDelivery, type NativeMonitorDelivery } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -1556,6 +1557,7 @@ export async function commitNativeStatusDecision(input: {
   requireExternalChatResponseWaitAuthorization?: { agentId: string };
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
+  requireMonitorDelivery?: NativeMonitorDelivery;
   requireNoPendingChildCompletion?: NativeChildCompletionRecipient;
   requireModelRejectionOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
   requireProviderFailureOwner?: { agentId: string; reviewContext: NativeReviewAssignmentContext | null };
@@ -1651,9 +1653,18 @@ export async function commitNativeStatusDecision(input: {
       if (!expected || issue.workMode !== "standard" || issue.executionRunId !== input.runId ||
           input.decision.statusAction !== "preserve" || input.decision.effects.length !== 1 ||
           input.decision.effects[0]?.kind !== "release_checkout" ||
-          eligibleIssueMonitorWait(issue, expected.agentId) !== expected.nextCheckAt) {
+          scheduledIssueMonitorWait(issue, expected.agentId) !== expected.nextCheckAt) {
         throw new NativeStatusRaceError();
       }
+    }
+    if (reasonCode === "scheduled_monitor_dispatched") {
+      const expected = input.requireMonitorDelivery;
+      const actual = expected ? await readNativeMonitorDelivery(tx as unknown as Db, input) : null;
+      if (!expected || !actual || actual.wakeId !== expected.wakeId ||
+          actual.successorRunId !== expected.successorRunId ||
+          issue.executionRunId === input.runId || issue.checkoutRunId === input.runId ||
+          input.decision.statusAction !== "preserve" || input.decision.toStatus !== issue.status ||
+          input.decision.effects.length !== 0) throw new NativeStatusRaceError();
     }
     // Recheck under the parent status lock: a child can finish between the
     // finalizer's read and this commit. Re-arbitrate instead of discarding its wake.
@@ -1872,6 +1883,7 @@ export async function commitNativeStatusDecision(input: {
         : {}),
       ...(boardResponseWaitOrigin ? { boardResponseWaitOrigin } : {}),
       ...(planWait ? { planWait: planWait.source, planWaitResult } : {}),
+      ...(reasonCode === "scheduled_monitor_dispatched" ? { monitorDelivery: input.requireMonitorDelivery } : {}),
       priorStatusVersion: input.priorStatusVersion,
       projectedStatusVersion:
         input.decision.statusAction === "preserve"

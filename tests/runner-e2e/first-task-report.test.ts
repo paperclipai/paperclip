@@ -304,9 +304,10 @@ describe("first-task conversation report", () => {
     expect(rendered).not.toContain(
       'href="evidence/codex/html-report/index.html"',
     );
-    expect(rendered.indexOf("Full run / tool-event JSON")).toBeLessThan(
-      rendered.indexOf("Matchers and test context</summary>"),
-    );
+    const diagnostics = rendered.indexOf('class="case-context case-diagnostics"');
+    expect(diagnostics).toBeGreaterThan(0);
+    expect(rendered.indexOf("Credential-persistence check failed")).toBeLessThan(diagnostics);
+    expect(rendered.indexOf("Full run / tool-event JSON")).toBeGreaterThan(diagnostics);
     expect(rendered).toContain(
       'id="first-task-first-task.legacy-codex.local.clear-task-first-response-response"',
     );

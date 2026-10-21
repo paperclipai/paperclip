@@ -23,6 +23,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -977,6 +978,7 @@ export function issueTreeControlService(db: Db) {
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
+        for (const issueId of issueIdsForStatus) await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
         const rows = await tx
           .update(issues)
           .set({

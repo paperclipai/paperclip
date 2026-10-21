@@ -2,21 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { approvalService } from "../services/approvals.ts";
 import { companies } from "@paperclipai/db";
 
-vi.mock("../services/budgets.js", () => ({
+vi.mock("../services/budgets.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/budgets.js")>(),
   budgetService: () => ({ deliverPendingEnforcement: vi.fn(async () => {}) }),
   budgetServiceInTransaction: () => ({ upsertPolicy: vi.fn(async () => {}) }),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
+  getById: vi.fn(async () => ({ id: "agent-1" })),
   create: vi.fn(),
   terminate: vi.fn(),
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
 
-vi.mock("../services/agents.js", () => ({
-  agentService: vi.fn(() => mockAgentService),
+vi.mock("../modules/agent-lifecycle/adapters/records.js", () => ({
+  agentRecords: vi.fn(() => ({ ...mockAgentService, rejectPendingHire: mockAgentService.terminate })),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -114,7 +116,7 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload, approved.requestedByUserId);
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 
@@ -139,6 +141,7 @@ describe("approvalService resolution idempotency", () => {
       requestedByUserId,
       payload: {
         name: "New Agent",
+        adapterType: "codex_local",
         adapterConfig: {
           env: {
             API_KEY: {
@@ -159,9 +162,10 @@ describe("approvalService resolution idempotency", () => {
     expect(mockAgentService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
+        adapterType: "codex_local",
         adapterConfig: approved.payload.adapterConfig,
       }),
-      { createdByUserId: expectedCreator },
+      { runnerResolved: true, createdByUserId: expectedCreator, responsibleUserId: requestedByUserId },
     );
   });
 });

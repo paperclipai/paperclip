@@ -81,6 +81,7 @@ export function aiRoutingHarness(
   acpxAgent?: unknown,
 ): string {
   if (adapter !== "paperclip_runner") return adapter;
+  if (provider === "acpx" && acpxAgent === "copilot") return "copilot_runtime";
   const runner =
     provider === "acpx" && (acpxAgent === "claude" || acpxAgent === "grok")
       ? acpxAgent

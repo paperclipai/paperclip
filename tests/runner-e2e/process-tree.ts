@@ -159,6 +159,14 @@ const diagnosticProcessKinds = new Set([
   "tsx",
 ]);
 
+export function diagnosticProcessKind(command: string, platform: NodeJS.Platform = process.platform) {
+  const name = path.basename(command);
+  // Linux comm is limited to 15 bytes. This is a diagnostic role only;
+  // preservation still requires the trusted run PID/start/group and ancestry.
+  if (platform === "linux" && name === "paperclip-runne") return "paperclip-runnerd";
+  return diagnosticProcessKinds.has(name) ? name : "other";
+}
+
 export async function readProcessTable(startInspector?: () => ChildProcess): Promise<ProcessObservation[] | null> {
   if (process.platform === "win32") {
     return null;
@@ -212,8 +220,7 @@ export async function readProcessTable(startInspector?: () => ChildProcess): Pro
           // A target process can choose its own argv and process name. Emit a
           // fixed category instead of target-controlled text so diagnostics
           // can never turn that metadata into a secret-exfiltration channel.
-          const command = path.basename(match[6]!);
-          const kind = diagnosticProcessKinds.has(command) ? command : "other";
+          const kind = diagnosticProcessKind(match[6]!);
           return {
             pid: Number(match[1]),
             parentPid: Number(match[2]),

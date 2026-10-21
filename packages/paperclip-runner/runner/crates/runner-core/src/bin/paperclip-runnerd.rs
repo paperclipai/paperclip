@@ -120,6 +120,7 @@ fn build_metadata() -> serde_json::Value {
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
         "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
+        "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -348,6 +349,12 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
+    if args.first().map(String::as_str) == Some("--stdio-mcp")
+        && (args.len() == 2 || (args.len() == 3 && args[2] == "--content-images"))
+    {
+        return paperclip_runner_core::stdio_mcp::run_proxy(Path::new(&args[1]), args.len() == 3)
+            .map_err(|e| LocalRunnerError::invalid(e.to_string()));
+    }
     if args == ["--build-metadata"] {
         println!("{}", build_metadata());
         return Ok(());
@@ -445,6 +452,10 @@ mod tests {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["externalProviderCapabilities"],
+            json!(["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"])
+        );
         assert_eq!(
             metadata["durableSessionCapabilities"],
             json!(["unlimited_runtime", "connection_lease_renewal"])

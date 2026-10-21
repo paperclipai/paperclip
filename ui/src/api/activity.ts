@@ -7,6 +7,8 @@ export interface RunForIssue {
   runId: string;
   execution?: ExecutionProjection | null;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   agentId: string;
   adapterType: string;
@@ -16,7 +18,7 @@ export interface RunForIssue {
   invocationSource: string;
   responsibleUserId?: string | null;
   errorCode?: string | null;
-  /** Bounded provider message for a failed model rejection. */
+  /** Bounded model rejection or the fixed credential-sharing denial message. */
   error?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;

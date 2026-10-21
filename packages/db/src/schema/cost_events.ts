@@ -6,6 +6,7 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
+import { aiSubscriptions } from "./ai_subscriptions.js";
 
 export const costEvents = pgTable(
   "cost_events",
@@ -19,6 +20,7 @@ export const costEvents = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     goalId: uuid("goal_id").references(() => goals.id),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id),
+    subscriptionId: uuid("subscription_id").references(() => aiSubscriptions.id),
     billingCode: text("billing_code"),
     idempotencyKey: text("idempotency_key"),
     receiptHash: text("receipt_hash"),
@@ -38,13 +40,16 @@ export const costEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    usageKindCheck: check("cost_events_usage_kind_check", sql`${table.usageKind} = 'decision' or (${table.usageKind} = 'agent' and ${table.agentId} is not null)`),
+    usageKindCheck: check("cost_events_usage_kind_check", sql`${table.usageKind} in ('decision', 'fast_response', 'prompt_injection') or (${table.usageKind} = 'agent' and ${table.agentId} is not null)`),
     receiptUniqueIdx: uniqueIndex("cost_events_company_receipt_idx").on(table.companyId, table.idempotencyKey),
     providerRequestIdx: index("cost_events_provider_request_idx").on(table.companyId, table.biller, table.providerRequestId),
     nonnegativeAmounts: check("cost_events_nonnegative_amounts", sql`${table.costCents} >= 0 and ${table.inputTokens} >= 0 and ${table.cachedInputTokens} >= 0 and ${table.outputTokens} >= 0`),
     companyProjectOccurredIdx: index("cost_events_company_project_occurred_idx").on(table.companyId, table.projectId, table.occurredAt),
     unpricedIdx: index("cost_events_unpriced_idx").on(table.companyId, table.occurredAt, table.id).where(sql`${table.costStatus} = 'unpriced' and ${table.billingType} <> 'subscription_included'`),
+    dataQualityIdx: index("cost_events_data_quality_idx").on(table.companyId, table.occurredAt.desc(), table.id)
+      .where(sql`${table.billingType} = 'unknown' or (${table.costStatus} = 'unpriced' and ${table.billingType} <> 'subscription_included')`),
     companyOccurredIdx: index("cost_events_company_occurred_idx").on(table.companyId, table.occurredAt),
+    companySubscriptionOccurredIdx: index("cost_events_company_subscription_occurred_idx").on(table.companyId, table.subscriptionId, table.occurredAt),
     companyAgentOccurredIdx: index("cost_events_company_agent_occurred_idx").on(
       table.companyId,
       table.agentId,

@@ -46,7 +46,7 @@ describe("native continuation event projection", () => {
 });
 
 
-describe("plain-text Slack continuation projection", () => {
+describe("plain-text external chat continuation projection", () => {
   const slackComment = { ...message, author: { type: "user", id: "board" } };
   const slackWake = {
     ...wake,
@@ -63,8 +63,8 @@ describe("plain-text Slack continuation projection", () => {
     previousIssue: slackWake.issue,
     allowExternalChat: true,
   });
-  it("sends the new message once without prior titles, history or instructions", () => {
-    const text = buildChat()!;
+  it.each(["slack", "github"])("sends the new %s message once without prior titles, history or instructions", (externalChatProvider) => {
+    const text = buildChat({ ...slackWake, externalChatProvider })!;
     expect(text).not.toBeNull();
     expect(JSON.parse(text)).toEqual({ messages: [message] });
     expect(text).not.toContain("OLD_EXACT_REPLY");
@@ -90,6 +90,17 @@ describe("plain-text Slack continuation projection", () => {
       issue: { ...slackWake.issue, description: "Updated scope" }, previousIssue: slackWake.issue,
     });
     expect(JSON.parse(text!).taskChanges).toEqual({ description: "Updated scope" });
+  });
+  it("delivers changed GitHub configuration while retaining unchanged configuration in the provider session", () => {
+    const config = { key: "a".repeat(64), instructions: "CURRENT_REVIEW_POLICY" };
+    const args = { wakePayload: { ...slackWake, externalChatProvider: "github", githubReviewConfigurations: [config] },
+      previousRunId: "prior", issue: slackWake.issue, previousIssue: slackWake.issue, allowExternalChat: true };
+    const changed = buildNativeContinuationPrompt(args)!;
+    expect(JSON.parse(changed).reviewConfigurations).toEqual([config]);
+    const unchanged = buildNativeContinuationPrompt({ ...args, previousGitHubReviewConfigurationKeys: [config.key] })!;
+    expect(unchanged).not.toContain(config.instructions);
+    expect(JSON.parse(unchanged).messages).toEqual([message]);
+    expect(buildNativeContinuationPrompt({ ...args, previousRunId: "wrong" })).toBeNull();
   });
   it("accepts the verified non-assignee chat binding", () => {
     expect(buildChat({ ...slackWake, checkedOutByHarness: false, externalChatExecutionBound: true })).not.toBeNull();

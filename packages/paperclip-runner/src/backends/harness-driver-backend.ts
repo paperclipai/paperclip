@@ -13,6 +13,7 @@ import type {
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import type { NativeRunRuntimeGrant } from "../contracts/runtime-context.js";
 import type {
   PrpEvent,
   PrpTerminalState,
@@ -154,6 +155,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
     };
     const recoveryOptions: HarnessSessionRecoveryOptions = {
       signal: options.signal,
+      normalizeReplayPayload: options.normalizeReplayPayload,
     };
     const recovered = await this.#driver.recoverSession(
       persisted,
@@ -376,11 +378,12 @@ function assertProviderSessionIdentity(
   stage: "session.open" | "session.recover",
 ): void {
   const ids = session.ids();
+  const external = provider === "openai_dot_mcp" || provider === "grok_bot_mcp" || provider === "muse_external";
   if (
     typeof ids.driverSessionId !== "string" ||
     ids.driverSessionId.trim().length === 0 ||
-    (provider !== "openai_dot_mcp" && (typeof ids.providerSessionId !== "string" || ids.providerSessionId.trim().length === 0))
-    || (provider === "openai_dot_mcp" && ids.providerSessionId !== null)
+    (!external && (typeof ids.providerSessionId !== "string" || ids.providerSessionId.trim().length === 0))
+    || (external && ids.providerSessionId !== null)
   ) {
     throw new Error(
       `provider_initialize_protocol_error: provider=${provider} stage=${stage} missing durable provider session identity`,
@@ -454,6 +457,7 @@ class HarnessNativeSession implements NativeSession {
     return {
       resume: true,
       typedEvents: true,
+      perTurnReasoning: this.#session.supportsTurnReasoning?.() === true,
       steering: (negotiated?.steering ?? this.#steeringSupported) && this.#session.steer !== undefined,
       queuedFollowUp: negotiated?.queuedFollowUp === true && this.#session.steer !== undefined,
       interruption: this.#session.interrupt !== undefined,
@@ -471,6 +475,7 @@ class HarnessNativeSession implements NativeSession {
 
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
+    currentRunGrant?: NativeRunRuntimeGrant;
   }): Promise<void> {
     this.#assertProtocolIntegrity();
     const currentIdentity = this.#input.identity;
@@ -486,7 +491,9 @@ class HarnessNativeSession implements NativeSession {
       throw new Error("native_session_multi_run_unavailable");
     }
     try {
-      await this.#session.attachRun({ runId: input.identity.runId });
+      await this.#session.attachRun({ runId: input.identity.runId,
+        ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+      });
       this.#assertProtocolIntegrity();
     } catch (error) {
       this.#rethrowProtocolIntegrity(error);
@@ -507,7 +514,7 @@ class HarnessNativeSession implements NativeSession {
     let sourceInstanceId: string | null = null;
     let lastSourceSequence = 0;
     let sawTerminal = false;
-    let synthesizedDurableWait = false;
+    let synthesizedProviderFailure = false;
     let streamFailure: unknown = null;
     const observedPendingInputs = new Map<string, Record<string, unknown>>();
     try {
@@ -630,7 +637,7 @@ class HarnessNativeSession implements NativeSession {
         this.#rethrowProtocolIntegrity(error);
         return null;
       });
-      let governedWaitTurnId: string | undefined;
+      let providerLossTurnId: string | undefined;
       for (const request of observedPendingInputs.values()) {
         const sourceSeq =
           Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
@@ -638,7 +645,7 @@ class HarnessNativeSession implements NativeSession {
         const requestId = String(request.requestId);
         const turnId =
           typeof request.turnId === "string" ? request.turnId : undefined;
-        governedWaitTurnId ??= turnId;
+        providerLossTurnId ??= turnId;
         const itemId =
           typeof request.itemId === "string" ? request.itemId : requestId;
         yield {
@@ -670,16 +677,18 @@ class HarnessNativeSession implements NativeSession {
           },
         };
       }
-      if (governedWaitTurnId) {
+      if (providerLossTurnId) {
+        // Expiring input preserves its durable human fallback. The unexpected
+        // transport loss remains a failed provider execution, never a yield.
         const sourceSeq =
           Math.max(lastSourceSequence, snapshot?.lastSourceSequence ?? 0) + 1;
         lastSourceSequence = sourceSeq;
-        synthesizedDurableWait = true;
+        synthesizedProviderFailure = true;
         sawTerminal = true;
         this.#terminal = {
           schema: "paperclip.prp.terminal.v1",
-          turnTerminalState: "interrupted",
-          runTerminalState: "cancelled",
+          turnTerminalState: "failed",
+          runTerminalState: "failed",
           reportedWorkDisposition: "yielded",
         };
         yield {
@@ -690,16 +699,16 @@ class HarnessNativeSession implements NativeSession {
           sourceKind: "runner",
           runId: this.#input.identity.runId,
           normalizedSessionId: this.#input.identity.sessionId,
-          turnId: governedWaitTurnId,
-          eventType: "turn.interrupted",
+          turnId: providerLossTurnId,
+          eventType: "turn.failed",
           schemaVersion: 1,
           priority: 0,
           emittedAt: new Date().toISOString(),
-          payload: { status: "interrupted", reason: "provider_process_lost" },
+          payload: { status: "failed", reason: "provider_process_lost" },
         };
       }
     }
-    if (streamFailure && !synthesizedDurableWait) throw streamFailure;
+    if (streamFailure && !synthesizedProviderFailure) throw streamFailure;
   }
 
   async startTurn(input: Parameters<HarnessSession["startTurn"]>[0]) {
@@ -708,6 +717,9 @@ class HarnessNativeSession implements NativeSession {
     // The provider has no active turn to interrupt yet. Do not launch work
     // whose events cancellation would suppress and leave the owner waiting.
     if (this.#explicitlyCancelled) throw new Error("native_session_cancelled");
+    if (input.reasoningMode !== undefined && this.#session.supportsTurnReasoning?.() !== true) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     this.#terminal = null;
     try {
       const started = await this.#session.startTurn(input);
@@ -767,6 +779,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   resolveRuntimeRequest(input: {
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: Parameters<

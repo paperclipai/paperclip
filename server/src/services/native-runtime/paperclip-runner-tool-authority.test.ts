@@ -1,7 +1,8 @@
+import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { upsertIssueDocumentSchema } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   activityLog,
@@ -23,9 +24,11 @@ import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity
 import { documentService } from "../documents.js";
 import { issueService } from "../issues.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
 import { READ_CURRENT_WAKE_COMMENTS_TOOL_NAME } from "./current-wake-comments.js";
+import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
@@ -96,6 +99,18 @@ describe("PaperclipRunnerToolAuthority", () => {
     await temporary?.cleanup();
   });
 
+  it("registers pinned connector definitions without discovery and rejects revoked assignments at use", async () => {
+    const connectorAssignments = connectorToolDefinitionsForSkills(new Set([
+      "paperclipai/paperclip/slack", "paperclipai/paperclip/browser-use-cloud", "custom/agentmail",
+    ]));
+    expect(connectorAssignments).toHaveLength(1);
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, connectorAssignments });
+    expect(authority.definitions().some(tool => tool.name === "slack_history")).toBe(true);
+    expect(authority.definitions().some(tool => String(tool.name).startsWith("agentmail_"))).toBe(false);
+    await expect(authority.execute({ tool: "slack_history", callId: randomUUID(), arguments: { channel: "CEXAMPLE" } }))
+      .rejects.toThrow("This connector is no longer assigned or authorized");
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -103,7 +118,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(44);
+    expect(authority.definitions()).toHaveLength(48);
+    expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
+      "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
+    ]));
     expect(authority.definitions().map(tool => tool.name)).not.toContain("read_chat_attachment");
     expect(authority.definitions().map(tool => tool.name)).not.toContain("read_current_wake_comments");
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
@@ -178,6 +196,109 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_not_advertised");
+  });
+
+  it("preserves platform receipt provenance in both mixed task history readers", async () => {
+    const at = new Date("2026-10-10T12:00:00Z");
+    const commentIds = Array.from({ length: 4 }, () => randomUUID());
+    const requestId = randomUUID();
+    await db.insert(issueComments).values([
+      { id: commentIds[0], companyId, issueId, authorUserId: "board-user", authorType: "user",
+        body: "Check the configuration.", createdAt: at },
+      { id: commentIds[1], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", fastResponseRequestId: requestId, body: "I will check the configuration.",
+        createdAt: new Date(at.getTime() + 1000) },
+      { id: commentIds[2], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "Verified the configuration: two settings need updates.", createdAt: new Date(at.getTime() + 2000) },
+      { id: commentIds[3], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", body: "Deleted acknowledgement", createdAt: new Date(at.getTime() + 3000),
+        deletedAt: new Date(at.getTime() + 4000) },
+    ]);
+    try {
+      const tool = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const semantic = new PaperclipRunnerSemanticAuthority(db, { companyId, agentId, issueId, runId });
+      const histories = [
+        async (limit: number) => tool.execute({ tool: "get_task_history", callId: `mixed-tool-history-${limit}`, arguments: { limit } }),
+        async (limit: number) => {
+          const result = await semantic.dispatch({ callId: `mixed-semantic-history-${limit}`, operationId: "get_task_history", input: { limit },
+            correlation: { runId, normalizedSessionId: randomUUID(), turnId: "history", itemId: "history" } });
+          expect(result).toMatchObject({ ok: true });
+          return result.ok ? result.value : null;
+        },
+      ];
+      const expected = [
+        { id: commentIds[0], authorAgentId: null, authorUserId: "board-user", origin: "comment", body: "Check the configuration." },
+        { id: commentIds[1], authorAgentId: agentId, authorUserId: null, origin: "fast_response",
+          body: "[Paperclip acknowledgement; not agent work] I will check the configuration." },
+        { id: commentIds[2], authorAgentId: agentId, authorUserId: null, origin: "comment",
+          body: "Verified the configuration: two settings need updates." },
+      ];
+      for (const history of histories) {
+        expect(await history(3)).toMatchObject({ comments: expected });
+        expect(await history(2)).toMatchObject({ comments: expected.slice(1) });
+      }
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentIds[1])))[0])
+        .toMatchObject({ id: commentIds[1], origin: "fast_response", fastResponseRequestId: requestId,
+          authorAgentId: agentId, body: "I will check the configuration." });
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it.each([false, true])("legacy history preserves source trust for a current reader run (low trust: %s)", async (lowTrustReader) => {
+    const commentIds = Array.from({ length: 4 }, () => randomUUID());
+    const [originalRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [originalIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const quarantine = buildLowTrustSourceTrust({ issueId, runId, agentId });
+    const promotion = buildPromotedSourceTrust({
+      sourceIssueId: issueId, sourceArtifactKind: "comment", sourceArtifactId: commentIds[2],
+      promotedByActorType: "user", promotedByActorId: "board-user",
+    });
+    const at = new Date("2026-10-13T12:00:00Z");
+    await db.insert(issueComments).values([
+      { id: commentIds[0], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "QUARANTINED legacy history canary", sourceTrust: quarantine, createdAt: at },
+      { id: commentIds[1], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        origin: "fast_response", body: "QUARANTINED acknowledgement canary", sourceTrust: quarantine,
+        createdAt: new Date(at.getTime() + 1000) },
+      { id: commentIds[2], companyId, issueId, authorAgentId: agentId, authorType: "agent",
+        body: "Reviewed and promoted summary", sourceTrust: promotion, createdAt: new Date(at.getTime() + 2000) },
+      { id: commentIds[3], companyId, issueId, authorUserId: "board-user", authorType: "user",
+        body: "Trusted coordination message", createdAt: new Date(at.getTime() + 3000) },
+    ]);
+    try {
+      if (lowTrustReader) {
+        const executionPolicy = { authorizationPolicy: { trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET, companyId, rootIssueId: issueId,
+        } } };
+        await db.update(issues).set({ executionPolicy }).where(eq(issues.id, issueId));
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionPolicy } }).where(eq(heartbeatRuns.id, runId));
+        // Relaxing the live task must not relabel the already-admitted reader run.
+        await db.update(issues).set({ executionPolicy: null }).where(eq(issues.id, issueId));
+      }
+      const semantic = new PaperclipRunnerSemanticAuthority(db, { companyId, agentId, issueId, runId });
+      const result = await semantic.dispatch({
+        callId: `legacy-trust-history-${lowTrustReader}`, operationId: "get_task_history", input: { limit: 4 },
+        correlation: { runId, normalizedSessionId: randomUUID(), turnId: "history", itemId: "history" },
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(result.ok ? result.value : null).toMatchObject({ comments: [
+        { id: commentIds[0], sourceTrust: quarantine,
+          body: lowTrustReader ? "QUARANTINED legacy history canary" : LOW_TRUST_QUARANTINED_BODY },
+        { id: commentIds[1], origin: "fast_response", sourceTrust: quarantine,
+          body: `[Paperclip acknowledgement; not agent work] ${lowTrustReader ? "QUARANTINED acknowledgement canary" : LOW_TRUST_QUARANTINED_BODY}` },
+        { id: commentIds[2], sourceTrust: promotion, body: "Reviewed and promoted summary" },
+        { id: commentIds[3], sourceTrust: null, body: "Trusted coordination message" },
+      ] });
+      if (!lowTrustReader) expect(JSON.stringify(result)).not.toContain("QUARANTINED legacy history canary");
+      if (!lowTrustReader) expect(JSON.stringify(result)).not.toContain("QUARANTINED acknowledgement canary");
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, commentIds[0])))[0])
+        .toMatchObject({ body: "QUARANTINED legacy history canary", sourceTrust: quarantine });
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: originalRun!.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
+      await db.update(issues).set({ executionPolicy: originalIssue!.executionPolicy }).where(eq(issues.id, issueId));
+      await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
   });
 
   it("returns public task URLs from the current claimed origin in context and search results", async () => {

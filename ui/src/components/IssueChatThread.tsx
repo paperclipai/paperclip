@@ -1,5 +1,9 @@
+import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
+import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { TaskChatRunnerTurn } from "./task-chat/TaskChatRunnerTurn";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
 import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
 import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
@@ -538,6 +542,9 @@ interface IssueChatComposerProps {
 }
 
 interface IssueChatThreadProps {
+  executionBlocked?: boolean;
+  interruption?: import("@paperclipai/shared").TaskInterruptionPresentation | null;
+  retryPreparing?: boolean;
   /** Browser sessions are placed chronologically by the default task thread. */
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
@@ -793,14 +800,16 @@ class IssueChatErrorBoundary extends Component<
 
 export function IssueAssigneePausedNotice({
   agent,
+  issueStatus,
   onResume,
   resuming,
 }: {
   agent: Agent | null;
+  issueStatus: string | undefined;
   onResume?: () => Promise<void> | void;
   resuming?: boolean;
 }) {
-  if (!agent || agent.status !== "paused") return null;
+  if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
@@ -1163,30 +1172,7 @@ function formatInteractionActorLabel(args: {
   return "System";
 }
 
-export function resolveIssueChatHumanAuthor(args: {
-  authorName?: string | null;
-  authorUserId?: string | null;
-  currentUserId?: string | null;
-  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-}) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
-  const profile = authorUserId
-    ? (userProfileMap?.get(authorUserId) ?? null)
-    : null;
-  const isCurrentUser = Boolean(
-    authorUserId && currentUserId && authorUserId === currentUserId,
-  );
-  const resolvedAuthorName =
-    profile?.label?.trim() ||
-    authorName?.trim() ||
-    (authorUserId === "local-board" ? "Board" : isCurrentUser ? "You" : "User");
-
-  return {
-    isCurrentUser,
-    authorName: resolvedAuthorName,
-    avatarUrl: profile?.image ?? null,
-  };
-}
+export { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   if (toolParts.length === 0) return null;
@@ -2507,6 +2493,7 @@ function IssueChatAssistantMessage({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {custom.origin === "fast_response" && <div className="max-w-xs px-2 py-2 text-xs text-muted-foreground">Platform-generated acknowledgement. The agent’s substantive response follows separately.</div>}
           <DropdownMenuItem
             onClick={() => {
               void copyTextToClipboard(copyText).catch((error) => {
@@ -3518,6 +3505,8 @@ function SystemNoticeCommentContent({
     ? custom.commentMetadata
     : null;
   const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(commentMetadata);
+  const workspaceRetry = useWorkspaceRetry(commentMetadata);
   const runAgentId =
     typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -3613,6 +3602,9 @@ function SystemNoticeCommentContent({
         });
       });
   };
+
+  if (authorType === "system" && workspaceRetry) return null;
+  if (authorType === "system" && branchRecovery) return <div id={anchorId}><WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} /></div>;
 
   if (authorType === "system" && recoverySnapshot) {
     return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;
@@ -4779,6 +4771,12 @@ const IssueChatComposer = forwardRef<
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue =
     suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(
     effectiveSuggestedAssigneeValue,
   );
@@ -4935,8 +4933,12 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   useEffect(() => {
     setPendingWorkMode(resolvedIssueWorkMode);
@@ -5081,6 +5083,7 @@ const IssueChatComposer = forwardRef<
       setComposerAttachments((current) =>
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
       setRunSettings(null);
     } catch (error) {
@@ -5622,7 +5625,7 @@ const IssueChatComposer = forwardRef<
             overrides={assigneeAdapterOverrides}
             settings={runSettings}
             onSettingsChange={setRunSettings}
-            onAssigneeChange={setReassignTarget}
+            onAssigneeChange={selectAssignee}
             triggerRef={reassignTriggerRef}
             renderAssigneeIdentity={(value) => {
               const selected = value.startsWith("agent:") ? agentMap.get(value.slice(6)) : null;
@@ -5638,7 +5641,7 @@ const IssueChatComposer = forwardRef<
             noneLabel="No responsible"
             searchPlaceholder="Search responsible..."
             emptyMessage="No responsible found."
-            onChange={setReassignTarget}
+            onChange={selectAssignee}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
               if (!option)
@@ -5771,6 +5774,8 @@ export function IssueChatThread({
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
+  interruption,
+  retryPreparing = false,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending = false,
@@ -5852,6 +5857,7 @@ export function IssueChatThread({
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
+  const workspaceRetry = useCurrentWorkspaceRetry();
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const didInitialHashScrollDecisionRef = useRef(false);
@@ -6091,14 +6097,47 @@ export function IssueChatThread({
     return true;
   }
 
+  const [submissionPending, setSubmissionPending] = useState(false);
+  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
+  const submissionRequestId = useRef<string | null>(null);
+  useEffect(() => {
+    const confirmed = submissionRequestId.current && comments.some(comment =>
+      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
+    // The previous intent's projection cannot acknowledge this submission.
+    if (isRunning || confirmed) {
+      setSubmissionPending(false);
+      setSubmissionTakingLonger(false);
+    }
+  }, [isRunning, comments, submissionPending]);
+  useEffect(() => {
+    if (!submissionPending) return;
+    const timer = window.setTimeout(() => {
+      setSubmissionTakingLonger(true);
+      void onRefreshLatestComments?.();
+    }, 10_000);
+    return () => window.clearTimeout(timer);
+  }, [submissionPending, onRefreshLatestComments]);
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      return runSettings
-        ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
-        : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
+      if (issueAssigneeAgentId) {
+        submissionRequestId.current = clientRequestId ?? null;
+        setSubmissionPending(true);
+        setSubmissionTakingLonger(false);
+      }
+      try {
+        await (runSettings
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
+          : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
+        setSubmissionPending(false);
+        setSubmissionTakingLonger(false);
+      } catch (error) {
+        setSubmissionPending(error instanceof CommentSubmissionUnknownError);
+        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
+        throw error;
+      }
     },
-    [onAdd],
+    [onAdd, issueAssigneeAgentId],
   );
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -6627,6 +6666,12 @@ export function IssueChatThread({
                     />
                   ))
                 )}
+                {!isRunning && issueAssigneeAgentId && (submissionPending || retryPreparing || interruption?.state === "working") ? (
+                  <TaskChatRunnerTurn items={[]} status="queued" startedAtMs={null}
+                    agent={agentMap?.get(issueAssigneeAgentId)}
+                    agentName={agentMap?.get(issueAssigneeAgentId)?.name}
+                    preparationLabel={submissionTakingLonger ? "Taking longer than usual…" : undefined} />
+                ) : null}
                 {showComposer ? (
                   <div
                     data-testid="issue-chat-thread-notices"
@@ -6639,7 +6684,7 @@ export function IssueChatThread({
                       onResume={onResumeFromBacklog}
                       resuming={resumeFromBacklogPending}
                     />
-                    {recoveryAction ? (
+                    {recoveryAction && !workspaceRetry ? (
                       <IssueRecoveryActionCard
                         action={recoveryAction}
                         agentMap={agentMap}
@@ -6711,6 +6756,7 @@ export function IssueChatThread({
                     />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />
@@ -6723,6 +6769,7 @@ export function IssueChatThread({
                   >
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />

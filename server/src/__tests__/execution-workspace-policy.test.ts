@@ -11,6 +11,7 @@ import {
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
+  parseIssueAssigneeAdapterOverrides,
   parseProjectExecutionWorkspacePolicy,
   ManagedSandboxUnavailableError,
   resolveEffectiveWorkspaceStrategyType,
@@ -22,6 +23,10 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it("ignores operator-owned homeMode in stored task overrides while retaining task settings", () => {
+    expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
+      .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
+  });
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({
@@ -755,5 +760,13 @@ describe("operator default isolated execution workspaces", () => {
         resolvedStrategy: resolveEffectiveWorkspaceStrategyType(mode, config),
       }),
     ).toBe(false);
+  });
+});
+
+ describe("task-scoped low-trust environment", () => {
+  it("uses the explicit phone-task sandbox while preserving ordinary agent defaults", () => {
+    const defaults = {agentDefaultEnvironmentId: "agent-env", instanceDefaultEnvironmentId: "instance-env", localDefaultEnvironmentId: "local-env"};
+    expect(resolveExecutionWorkspaceEnvironmentId({...defaults, lowTrustIssueEnvironmentId: "phone-sandbox"})).toEqual({environmentId: "phone-sandbox", source: "issue"});
+    expect(resolveExecutionWorkspaceEnvironmentId(defaults)).toEqual({environmentId: "agent-env", source: "agent"});
   });
 });

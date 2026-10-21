@@ -46,6 +46,7 @@ import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { QuestionForm } from "./task-chat/QuestionForm";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -1196,7 +1197,46 @@ function AskUserQuestionsCard({
         </span>
       </div>
 
-      {interaction.status === "pending" ? (
+      {interaction.status === "pending" && interaction.payload.questionSet ? (
+        <QuestionForm
+          id={interaction.id}
+          questionSet={interaction.payload.questionSet}
+          draftKey={`issue-question:${interaction.companyId}:${interaction.id}`}
+          disabled={!onSubmitInteractionAnswers}
+          initialResponse={interaction.result?.answers ? {
+            schema: "paperclip.question_response.v1",
+            answers: Object.fromEntries(interaction.result.answers.map((answer) => [
+              answer.questionId,
+              interaction.payload.questionSet!.questions.find((question) => question.id === answer.questionId)?.answerMode === "text"
+                ? { text: answer.otherText ?? "" }
+                : { selectedOptionIds: answer.optionIds, ...(typeof answer.otherText === "string" ? { customText: answer.otherText } : {}) },
+            ])),
+          } : null}
+          onSubmit={async (response) => {
+            const answers = interaction.payload.questionSet!.questions.map((question) => {
+              const answer = response.answers[question.id];
+              const otherText = question.answerMode === "text" ? answer?.text : answer?.customText?.trim();
+              return {
+                questionId: question.id,
+                optionIds: question.answerMode === "text" ? [] : (answer?.selectedOptionIds ?? []),
+                ...(otherText !== undefined ? { otherText } : {}),
+              };
+            });
+            try {
+              await onSubmitInteractionAnswers?.(interaction, answers);
+            } catch (error) {
+              throw new Error(resolutionErrorMessage(error));
+            }
+          }}
+          onCancel={onCancelInteraction ? async () => {
+            try {
+              await onCancelInteraction(interaction);
+            } catch (error) {
+              throw new Error(resolutionErrorMessage(error));
+            }
+          } : undefined}
+        />
+      ) : interaction.status === "pending" ? (
         <div className="space-y-4">
           {questions.map((question, index) => {
             const hasFreeTextOption = question.options.some(
@@ -1438,6 +1478,15 @@ function AskUserQuestionsCard({
   );
 }
 
+/** A custom target key is a machine identifier (e.g. `github:org/repo:pull:16`),
+ * not display copy, so unlabeled custom targets render no chip. */
+function isDisplayableRequestConfirmationTarget(
+  target: RequestConfirmationTarget | null | undefined,
+): target is RequestConfirmationTarget {
+  if (!target) return false;
+  return target.type !== "custom" || Boolean(target.label);
+}
+
 function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
   if (target.label) return target.label;
   const revision = target.revisionNumber ? ` v${target.revisionNumber}` : "";
@@ -1471,7 +1520,7 @@ function RequestConfirmationTargetChip({
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
-  if (!target) return null;
+  if (!isDisplayableRequestConfirmationTarget(target)) return null;
 
   const href = requestConfirmationTargetHref({ interaction, target });
   const className = cn(
@@ -1612,7 +1661,8 @@ function RequestConfirmationResolution({
               target={staleTarget}
               tone="subtle"
             />
-            {staleTarget && target ? (
+            {isDisplayableRequestConfirmationTarget(staleTarget)
+            && isDisplayableRequestConfirmationTarget(target) ? (
               <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
             ) : null}
             <RequestConfirmationTargetChip interaction={interaction} target={target} />

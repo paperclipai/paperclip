@@ -53,6 +53,7 @@ export function RuntimeTestCard({
   onTest,
   disabled = false,
   variant = "connection",
+  metadataOnly = false,
 }: {
   state: TestState | "warn";
   result: AdapterEnvironmentTestResult | null;
@@ -60,8 +61,19 @@ export function RuntimeTestCard({
   onTest: () => void;
   disabled?: boolean;
   variant?: "connection" | "prerequisites";
+  metadataOnly?: boolean;
 }) {
-  const content = (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
+  const missingRuntime = state === "fail"
+    ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
+    : undefined;
+  const content = missingRuntime
+    ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
+  const description = metadataOnly && state === "idle"
+    ? "Verify your saved token, runtime installation, and selected model without sending a model prompt."
+    : metadataOnly && state === "running"
+      ? "Checking the saved token, runtime, and selected model…"
+      : content.description;
   const Icon =
     state === "running"
       ? Loader2
@@ -102,7 +114,7 @@ export function RuntimeTestCard({
           >
             <h3 className="text-sm font-medium">{content.title}</h3>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {state === "fail" && error ? error : content.description}
+              {state === "fail" && error ? error : description}
             </p>
           </div>
           <Button

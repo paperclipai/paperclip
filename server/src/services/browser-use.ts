@@ -43,6 +43,7 @@ import { createCostEventInTransaction } from "./costs.js";
 import { createFinanceEventInTransaction } from "./finance.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity } from "./activity-log.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { browserUseViewports } from "./browser-use-viewport.js";
 import { forbidden, notFound, conflict } from "../errors.js";
 
@@ -64,6 +65,7 @@ const argsSchema = z
   })
   .strict();
 const terminalSessions = ["closed", "failed"];
+const liveSessions = ["starting", "running", "idle", "stopping"];
 const requestMarker = (invocationId: string) => `\n\n[Paperclip request: ${invocationId}]`;
 
 export function browserUseService(
@@ -422,6 +424,7 @@ export function browserUseService(
     );
     const sid = args.sessionId;
     const s = await db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
       let row: Session;
       if (sid) {
         await owned(binding, grant, sid);
@@ -429,6 +432,7 @@ export function browserUseService(
           .update(sessions)
           .set({
             status: "starting",
+            nextPollAt: new Date(),
             idleDeadline: null,
             updatedAt: new Date(),
           })
@@ -486,6 +490,7 @@ export function browserUseService(
         ...(maxCostUsd === undefined ? {} : { maxCostUsd }),
       });
       await db.transaction(async (tx) => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
         await tx
           .update(runs)
           .set({ providerRunId: result.id, status: result.status })
@@ -507,6 +512,7 @@ export function browserUseService(
       const message = rejected ? error.message :
         "Browser run creation could not be confirmed. Paperclip is locating and stopping possible provider work. Do not start another run yet.";
       await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
         const [current] = await tx.select().from(sessions).where(eq(sessions.id, s.id)).for("update");
         // A restart must not leave a drained rejection attached to a starting
         // session: that combination has neither recovery work nor an idle timer.
@@ -566,25 +572,28 @@ export function browserUseService(
         throw conflict("Only an idle browser can be kept open.");
     } else {
       if (terminalSessions.includes(s.status)) return;
-      await db
-        .update(sessions)
-        .set({
-          stopRequested: action,
-          ...(action === "end" ? { status: "stopping" } : {}),
-          nextPollAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(sessions.id, s.id),
-            action === "cancel"
-              ? or(
-                  isNull(sessions.stopRequested),
-                  ne(sessions.stopRequested, "end"),
-                )
-              : undefined,
-          ),
-        );
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
+        await tx
+          .update(sessions)
+          .set({
+            stopRequested: action,
+            ...(action === "end" ? { status: "stopping" } : {}),
+            nextPollAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(sessions.id, s.id),
+              action === "cancel"
+                ? or(
+                    isNull(sessions.stopRequested),
+                    ne(sessions.stopRequested, "end"),
+                  )
+                : undefined,
+            ),
+          );
+      });
     }
     await signal(
       s,
@@ -1218,97 +1227,109 @@ export function browserUseService(
         );
     }
   }
-  let sweeping = false;
-  async function sweep(connectionId?: string) {
-    if (sweeping) return;
-    sweeping = true;
-    try {
-      const due = await db
-        .select()
-        .from(sessions)
+  // Wait for a concurrent sweep rather than reporting completion while its
+  // lease is still held. A filtered cleanup must still inspect its own scope.
+  let sweeping: Promise<void> | null = null;
+  async function sweep(connectionId?: string): Promise<void> {
+    if (sweeping) {
+      await sweeping;
+      return sweep(connectionId);
+    }
+    sweeping = reconcileDue(connectionId);
+    try { await sweeping; } finally { sweeping = null; }
+  }
+  async function reconcileDue(connectionId?: string) {
+    const due = await db
+      .select()
+      .from(sessions)
+      .where(
+        and(
+          connectionId ? eq(sessions.connectionId, connectionId) : undefined,
+          inArray(sessions.status, liveSessions),
+          lte(sessions.nextPollAt, new Date()),
+          or(
+            isNull(sessions.leaseUntil),
+            lte(sessions.leaseUntil, new Date()),
+          ),
+        ),
+      )
+      .limit(30);
+    for (const s of due) {
+      const token = randomUUID();
+      const lease = await db
+        .update(sessions)
+        .set({
+          leaseToken: token,
+          leaseUntil: new Date(Date.now() + 180_000),
+        })
         .where(
           and(
-            connectionId ? eq(sessions.connectionId, connectionId) : undefined,
-            inArray(sessions.status, [
-              "starting",
-              "running",
-              "idle",
-              "stopping",
-            ]),
-            lte(sessions.nextPollAt, new Date()),
+            eq(sessions.id, s.id),
             or(
               isNull(sessions.leaseUntil),
               lte(sessions.leaseUntil, new Date()),
             ),
           ),
         )
-        .limit(30);
-      for (const s of due) {
-        const token = randomUUID();
-        const lease = await db
+        .returning();
+      if (!lease.length) continue;
+      // Renew while paginating provider events or stopping multiple browsers.
+      const renewal = setInterval(() => {
+        void db
+          .update(sessions)
+          .set({ leaseUntil: new Date(Date.now() + 180_000) })
+          .where(and(eq(sessions.id, s.id), eq(sessions.leaseToken, token)))
+          .catch(() => {});
+      }, 30_000);
+      renewal.unref?.();
+      let delay = s.status === "idle" ? 15000 : 3000;
+      try {
+        await reconcile(s);
+      } catch (e) {
+        delay = Math.max(
+          10000,
+          e instanceof BrowserUseError ? e.retryAfterMs : 0,
+        );
+        await db
           .update(sessions)
           .set({
-            leaseToken: token,
-            leaseUntil: new Date(Date.now() + 180_000),
+            error:
+              s.stopRequested === "end"
+                ? "Browser shutdown is not confirmed. Paperclip will retry."
+                : "Browser synchronization failed. Paperclip will retry.",
           })
-          .where(
-            and(
-              eq(sessions.id, s.id),
-              or(
-                isNull(sessions.leaseUntil),
-                lte(sessions.leaseUntil, new Date()),
-              ),
-            ),
-          )
-          .returning();
-        if (!lease.length) continue;
-        // Renew while paginating provider events or stopping multiple browsers.
-        const renewal = setInterval(() => {
-          void db
-            .update(sessions)
-            .set({ leaseUntil: new Date(Date.now() + 180_000) })
-            .where(and(eq(sessions.id, s.id), eq(sessions.leaseToken, token)))
-            .catch(() => {});
-        }, 30_000);
-        renewal.unref?.();
-        let delay = s.status === "idle" ? 15000 : 3000;
-        try {
-          await reconcile(s);
-        } catch (e) {
-          delay = Math.max(
-            10000,
-            e instanceof BrowserUseError ? e.retryAfterMs : 0,
-          );
-          await db
-            .update(sessions)
-            .set({
-              error:
-                s.stopRequested === "end"
-                  ? "Browser shutdown is not confirmed. Paperclip will retry."
-                  : "Browser synchronization failed. Paperclip will retry.",
-            })
-            .where(eq(sessions.id, s.id));
-        } finally {
-          clearInterval(renewal);
-          await db
-            .update(sessions)
-            .set({
-              leaseToken: null,
-              leaseUntil: null,
-              nextPollAt: new Date(
-                Date.now() + delay + Math.floor(Math.random() * 500),
-              ),
-            })
-            .where(and(eq(sessions.id, s.id), eq(sessions.leaseToken, token)));
+          .where(eq(sessions.id, s.id));
+      } finally {
+        clearInterval(renewal);
+        const release = (tx: Pick<Db, "update">) => tx.update(sessions).set({
+          leaseToken: null,
+          leaseUntil: null,
+          nextPollAt: new Date(Date.now() + delay + Math.floor(Math.random() * 500)),
+        }).where(and(eq(sessions.id, s.id), eq(sessions.leaseToken, token)));
+        if (connectionId) {
+          // Credential-removal sweeps can race the app worker. Wake it when
+          // their lease ends so it does not wait for the old lease expiry.
+          await db.transaction(async tx => {
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
+            await release(tx);
+          });
+        } else {
+          await release(db);
         }
       }
-    } finally {
-      sweeping = false;
     }
+  }
+  async function nextSweepAt(): Promise<number | null> {
+    const [row] = await db.select({
+      // An overdue row owned by another sweep cannot run before its lease ends.
+      at: sql<string | null>`min(greatest(${sessions.nextPollAt}, ${sessions.leaseUntil}))`,
+    }).from(sessions).where(inArray(sessions.status, liveSessions));
+    return row?.at == null ? null : new Date(row.at).getTime();
   }
   return {
     execute,
     sweep,
+    nextSweepAt,
     list,
     viewer,
     resize,
@@ -1322,16 +1343,19 @@ export function browserUseService(
       const scope = and(
         eq(sessions.companyId, companyId),
         eq(sessions.connectionId, connectionId),
-        inArray(sessions.status, ["starting", "running", "idle", "stopping"]),
+        inArray(sessions.status, liveSessions),
       );
-      await db
-        .update(sessions)
-        .set({
-          stopRequested: "end",
-          nextPollAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(scope);
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
+        await tx
+          .update(sessions)
+          .set({
+            stopRequested: "end",
+            nextPollAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(scope);
+      });
       await sweep(connectionId);
       const [pending] = await db
         .select({ id: sessions.id })
