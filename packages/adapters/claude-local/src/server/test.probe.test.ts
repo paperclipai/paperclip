@@ -491,10 +491,12 @@ describe("claude sandbox hello probe diagnostics", () => {
 
 describe("claude CLI hello probe control output", () => {
   const hello = '{"type":"result","subtype":"success","is_error":false,"result":"hello","num_turns":7}';
+  // Pin a model without a CLI version floor: these tests target hello control
+  // output, not version gating, and the default model now requires probing it.
   const runProbe = () => testEnvironment({
     companyId: "company-1",
     adapterType: "claude_local",
-    config: { engine: "cli", command: "claude" },
+    config: { engine: "cli", command: "claude", model: "claude-opus-5" },
     executionTarget: sandboxTarget,
     environmentName: "Daytona",
   });
