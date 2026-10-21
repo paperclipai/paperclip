@@ -458,6 +458,25 @@ describe("OpenCode cost accounting when redaction hides a display record", () =>
     expect(result.costUsd).toBeNull();
   });
 
+  it("reports unknown when every step is unread and control clipped an earlier step", async () => {
+    // No readable checkpoint record exists, so the consumer never runs — but
+    // the unread records still force coverage-aware reconciliation.
+    const result = await run(
+      [step(marker).replace(`"${marker}"`, marker), step(marker).replace(`"${marker}"`, marker)],
+      [step(6)],
+    );
+    expect(result.usageComplete).toBe(false);
+    expect(result.costUsd).toBeNull();
+  });
+
+  it("keeps the control total when every step is unread but control holds all records", async () => {
+    const result = await run(
+      [step(marker).replace(`"${marker}"`, marker), step(marker).replace(`"${marker}"`, marker)],
+      [step(0), step(5)],
+    );
+    expect(result.costUsd).toBeCloseTo(0.005, 6);
+  });
+
   async function runRedacted(records: string[], onUsage?: (receipt: AdapterUsageCheckpoint) => Promise<void>) {
     const raw = records.join("\n");
     const control = createSecretEnvRedactionScanner(["123456"], 1024 * 1024);

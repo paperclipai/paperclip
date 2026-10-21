@@ -792,7 +792,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // from the full stream, including when no checkpoint callback is installed.
       // Parse the redaction-aware control output when present.
       const parsed = parsePiProcessOutput(proc);
-      if (hasAccounting) {
+      // Unread records force reconciliation even when no readable record ran
+      // the consumer: a partial control suffix must not pose as a priced total.
+      if (hasAccounting || accountingLog.unreadRecords() > 0) {
         const retained = consumeAccounting("");
         // Merge, never overwrite: a usage counter matching a secret value is
         // unparseable in the redacted display stream (checkpoint totals stay
