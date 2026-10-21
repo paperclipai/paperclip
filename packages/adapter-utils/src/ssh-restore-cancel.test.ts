@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, promises as fsPromises, readdirSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -100,6 +100,17 @@ describe("ssh workspace restore cancellation", () => {
       reads += 1;
       return reads > maxReads;
     });
+  }
+
+  // Polls until a backgrounded staging delete lands. Only the *cleanup*
+  // wait polls: the cancellation itself is gated on on-disk state, so the
+  // prompt-return half of the staging-cleanup pins stays deterministic.
+  async function waitForPathGone(target: string, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (existsSync(target) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(existsSync(target)).toBe(false);
   }
 
   it("classifies the typed cancellation error", () => {
@@ -611,4 +622,183 @@ describe("ssh workspace restore cancellation", () => {
       expect((await stat(path.join(targetDir, s))).isDirectory()).toBe(true);
     }
   });
+
+  it("syncDirectoryFromSsh returns promptly when a cancelled restore still owes its staging delete", async () => {
+    // The recursive staging delete is held open behind a gate while Stop
+    // lands mid-copy. Pre-fix the restore awaited the delete in `finally`,
+    // so the run stayed alive for the whole-tree delete; post-fix the
+    // restore rejects with workspace_restore_cancelled while the delete is
+    // still pending, and the tracked background cleanup removes the staging
+    // dir once the gate opens.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping staging-cleanup pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(remoteTree, `f-${String(i).padStart(2, "0")}.txt`), `remote ${i}\n`, "utf8");
+    }
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(localDir).length >= 3;
+      } catch {
+        return false;
+      }
+    });
+
+    const gatedStagingDeletes: string[] = [];
+    let releaseStagingDeletes: () => void = () => {};
+    const stagingDeleteGate = new Promise<void>((resolve) => {
+      releaseStagingDeletes = resolve;
+    });
+    const realRm = fsPromises.rm;
+    const rmSpy = vi.spyOn(fsPromises, "rm").mockImplementation(
+      (async (...args: unknown[]) => {
+        const target = args[0];
+        if (gated.aborted && typeof target === "string" && target.includes("paperclip-ssh-sync-back-")) {
+          gatedStagingDeletes.push(target);
+          await stagingDeleteGate;
+        }
+        return (realRm as (...callArgs: unknown[]) => Promise<void>)(...args);
+      }) as unknown as typeof fsPromises.rm,
+    );
+
+    let raceTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const restoreOutcome = syncDirectoryFromSsh({
+        spec: unreachableSpec(),
+        remoteDir: "/nonexistent",
+        localDir,
+        signal: gated,
+      }).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      );
+      const outcome = await Promise.race([
+        restoreOutcome,
+        new Promise<"timed-out">((resolve) => {
+          raceTimer = setTimeout(() => resolve("timed-out"), 5000);
+        }),
+      ]);
+      expect(outcome).not.toBe("timed-out");
+      expect(outcome).not.toBe("resolved");
+      expect(isWorkspaceRestoreCancelled(outcome)).toBe(true);
+      // The restore rejected while its staging delete was still gated.
+      expect(gatedStagingDeletes).toHaveLength(1);
+    } finally {
+      if (raceTimer) clearTimeout(raceTimer);
+      releaseStagingDeletes();
+      rmSpy.mockRestore();
+    }
+
+    // The tracked background cleanup finishes the owed delete once unblocked.
+    for (const target of gatedStagingDeletes) {
+      await waitForPathGone(target);
+    }
+  }, 20000);
+
+  it("baseline restores return promptly when a cancelled merge still owes its staging delete", async () => {
+    // Baseline restores stage twice: the download staging dir is deleted when
+    // the inner sync finishes, then the merge applies from the outer staging
+    // dir. Stop landing mid-merge must not wait for the outer recursive
+    // delete: pre-fix the outer `finally` awaited it; post-fix the restore
+    // rejects while the delete is still gated, and the tracked background
+    // cleanup removes the staging dir once the gate opens.
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync("tar", ["--version"]);
+    } catch {
+      console.warn("Skipping baseline staging-cleanup pin: tar is not available");
+      return;
+    }
+
+    const remoteTree = await makeTempDir("paperclip-restore-remote-");
+    await writeFile(path.join(remoteTree, "sentinel.txt"), "untouched\n", "utf8");
+    for (let i = 0; i < 50; i += 1) {
+      await writeFile(path.join(remoteTree, `new-${String(i).padStart(2, "0")}.txt`), `remote ${i}\n`, "utf8");
+    }
+    const tarball = path.join(await makeTempDir("paperclip-restore-tarball-"), "remote.tar");
+    await execFileAsync("tar", ["-cf", tarball, "-C", remoteTree, "."]);
+
+    const binDir = await makeTempDir("paperclip-fake-ssh-bin-");
+    await writeFile(path.join(binDir, "ssh"), `#!/bin/sh\ncat ${JSON.stringify(tarball)}\n`, "utf8");
+    await chmod(path.join(binDir, "ssh"), 0o755);
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+
+    const localDir = await makeTempDir("paperclip-restore-live-");
+    await writeFile(path.join(localDir, "sentinel.txt"), "untouched\n", "utf8");
+    const baseline = await captureDirectorySnapshot(localDir, { exclude: [] });
+    const gated = cancelWhen(() => {
+      try {
+        return readdirSync(localDir).length >= 4;
+      } catch {
+        return false;
+      }
+    });
+
+    const gatedStagingDeletes: string[] = [];
+    let releaseStagingDeletes: () => void = () => {};
+    const stagingDeleteGate = new Promise<void>((resolve) => {
+      releaseStagingDeletes = resolve;
+    });
+    const realRm = fsPromises.rm;
+    const rmSpy = vi.spyOn(fsPromises, "rm").mockImplementation(
+      (async (...args: unknown[]) => {
+        const target = args[0];
+        // Only post-cancellation deletes are gated: the inner download
+        // staging delete runs before the merge flips the signal, so it must
+        // pass through untouched.
+        if (gated.aborted && typeof target === "string" && target.includes("paperclip-ssh-sync-back-")) {
+          gatedStagingDeletes.push(target);
+          await stagingDeleteGate;
+        }
+        return (realRm as (...callArgs: unknown[]) => Promise<void>)(...args);
+      }) as unknown as typeof fsPromises.rm,
+    );
+
+    let raceTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const restoreOutcome = restoreWorkspaceFromSshExecution({
+        spec: unreachableSpec(),
+        localDir,
+        baselineSnapshot: baseline,
+        signal: gated,
+      }).then(
+        () => "resolved" as const,
+        (error: unknown) => error,
+      );
+      const outcome = await Promise.race([
+        restoreOutcome,
+        new Promise<"timed-out">((resolve) => {
+          raceTimer = setTimeout(() => resolve("timed-out"), 5000);
+        }),
+      ]);
+      expect(outcome).not.toBe("timed-out");
+      expect(outcome).not.toBe("resolved");
+      expect(isWorkspaceRestoreCancelled(outcome)).toBe(true);
+      // Only the outer staging delete was still owed at cancellation time.
+      expect(gatedStagingDeletes).toHaveLength(1);
+    } finally {
+      if (raceTimer) clearTimeout(raceTimer);
+      releaseStagingDeletes();
+      rmSpy.mockRestore();
+    }
+
+    for (const target of gatedStagingDeletes) {
+      await waitForPathGone(target);
+    }
+  }, 20000);
 });

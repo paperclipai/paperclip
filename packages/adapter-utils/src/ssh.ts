@@ -1617,6 +1617,27 @@ async function throwIfWorkspaceRestoreAbortedWithProgress(
   throw workspaceRestoreCancelledError();
 }
 
+/**
+ * Staging dirs whose recursive delete was moved off the cancellation path.
+ * A multi-GB staging tree can take minutes to delete on slow storage, so a
+ * cancelled restore hands its delete to {@link cleanupStagingDirInBackground}
+ * instead of awaiting it: Stop returns promptly and tmpdir reclamation
+ * follows in the background. Entries are dropped once the delete settles, so
+ * the set always reflects deletes still owed.
+ */
+const pendingStagingCleanups = new Set<string>();
+
+function cleanupStagingDirInBackground(stagingDir: string): void {
+  if (pendingStagingCleanups.has(stagingDir)) return;
+  pendingStagingCleanups.add(stagingDir);
+  void fs
+    .rm(stagingDir, { recursive: true, force: true })
+    .catch(() => undefined)
+    .finally(() => {
+      pendingStagingCleanups.delete(stagingDir);
+    });
+}
+
 export async function syncDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
@@ -1781,7 +1802,16 @@ export async function syncDirectoryFromSsh(input: {
     await progress?.fail();
     throw error;
   } finally {
-    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    if (input.signal?.aborted) {
+      // Stop must return promptly even when the staging tree is huge: the
+      // recursive delete runs as a tracked background cleanup instead of
+      // blocking the cancellation. Live restores still delete synchronously
+      // so no residue outlives the call. Auth cleanup only removes tiny key
+      // files, so it stays on the path.
+      cleanupStagingDirInBackground(stagingDir);
+    } else {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    }
     await auth.cleanup();
   }
 }
@@ -1962,7 +1992,14 @@ async function restoreWorkspaceRootFromSsh(input: {
           maxBuffer: 16 * 1024,
         }).catch(() => undefined);
       }
-      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      // Same cancellation split as syncDirectoryFromSsh: Stop skips the
+      // whole-tree delete wait via a tracked background cleanup. The
+      // update-ref above is a single fast op, so it stays awaited.
+      if (input.signal?.aborted) {
+        cleanupStagingDirInBackground(stagingDir);
+      } else {
+        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      }
     }
     return;
   }
