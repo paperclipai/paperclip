@@ -13,35 +13,34 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function parseModelsOutput(stdout: string): AdapterModel[] {
+export function parseModelsOutput(stdout: string): AdapterModel[] {
   const parsed: AdapterModel[] = [];
   const lines = stdout.split(/\r?\n/);
-  
-  // Skip header line if present
-  let startIndex = 0;
-  if (lines.length > 0 && (lines[0].includes("provider") || lines[0].includes("model"))) {
-    startIndex = 1;
-  }
-  
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = lines[i].trim();
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
     if (!line) continue;
-    
+    // Skip banners/warnings that Pi may interleave before the table
+    // (for example `Warning: No models match pattern "claude-*"`).
+    if (/^(warning|error|info|debug)\b/i.test(line)) continue;
+
     // Parse format: "provider   model   context  max-out  thinking  images"
     // Split by 2+ spaces to handle the columnar format
     const parts = line.split(/\s{2,}/);
     if (parts.length < 2) continue;
-    
+
     const provider = parts[0].trim();
     const model = parts[1].trim();
-    
+
     if (!provider || !model) continue;
     if (provider === "provider" && model === "model") continue; // Skip header
-    
+    // Guard against any other non-identifier noise row
+    if (!/^[A-Za-z0-9._-]+$/.test(provider) || !/^[A-Za-z0-9._:/-]+$/.test(model)) continue;
+
     const id = `${provider}/${model}`;
     parsed.push({ id, label: id });
   }
-  
+
   return parsed;
 }
 
@@ -131,9 +130,13 @@ export async function discoverPiModels(input: {
     throw new Error(detail ? `\`pi --list-models\` failed: ${detail}` : "`pi --list-models` failed.");
   }
 
-  // Pi outputs model list to stderr, but fall back to stdout for older versions
-  const output = result.stderr || result.stdout;
-  return sortModels(dedupeModels(parseModelsOutput(output)));
+  // Pi prints the model table to stdout and may emit warnings (for example
+  // `Warning: No models match pattern "claude-*"`) to stderr. Parse stdout
+  // first, and only fall back to stderr when stdout has no table rows so an
+  // older Pi that really does print to stderr still works.
+  const fromStdout = parseModelsOutput(result.stdout);
+  const models = fromStdout.length > 0 ? fromStdout : parseModelsOutput(result.stderr);
+  return sortModels(dedupeModels(models));
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
