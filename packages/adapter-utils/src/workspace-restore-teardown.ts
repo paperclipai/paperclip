@@ -16,6 +16,14 @@ export interface WorkspaceRestoreTeardownRuntime {
 }
 
 /**
+ * The ACP managed-home teardown step. The engine caches it with the staged
+ * runtime and reuses it on compatible resumes, so each invocation passes the
+ * CURRENT run's cancellation signal; the one captured at construction belongs
+ * to the run that first built it and is only a fallback.
+ */
+export type WorkspaceRestoreTeardownStep = (signal?: AbortSignal | null) => Promise<WorkspaceRestoreOutcome>;
+
+/**
  * Builds the shared ACP adapter teardown step. The Claude, Codex, and Gemini
  * adapters run the same five steps at teardown and differ only in two log
  * strings: the start message and the failure prefix. Give this factory the
@@ -33,16 +41,17 @@ export function createWorkspaceRestoreTeardown(input: {
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   startMessage: string;
   failurePrefix: string;
-  /** Run-scoped operator cancellation, forwarded to the staged restore so an
-   * operator Stop raised while the sandbox copy-back is pending yields
-   * promptly instead of holding the run until the restore finishes. */
+  /** Fallback run-scoped cancellation for callers that invoke the step without
+   * one. A cached step outlives the run that built it, so the engine passes the
+   * current run's signal on every call; that one wins over this. */
   signal?: AbortSignal | null;
-}): () => Promise<WorkspaceRestoreOutcome> {
+}): WorkspaceRestoreTeardownStep {
   const { stagedRuntime, onLog, startMessage, failurePrefix, signal } = input;
-  return () => withWorkspaceRestoreDiagnosticCapture(async () => {
+  return (callSignal) => withWorkspaceRestoreDiagnosticCapture(async () => {
+    const effectiveSignal = callSignal ?? signal ?? null;
     try {
       await onLog("stdout", startMessage);
-      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line), signal ?? null);
+      await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line), effectiveSignal);
       return { ok: true };
     } catch (err) {
       // An operator Stop during the staged restore is a skip, not a

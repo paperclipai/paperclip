@@ -62,6 +62,7 @@ import {
   type SyncOperationTask,
 } from "./sync-operation-schedule.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import { cleanupStagingDirInBackground } from "./staging-cleanup.js";
 import {
   recordWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep,
   type WorkspaceRestoreDiagnostic,
@@ -846,12 +847,19 @@ export function sandboxExecutionSessionMatches(saved: unknown, current: SandboxR
   );
 }
 
-async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): Promise<T> {
+async function withTempDir<T>(
+  prefix: string,
+  fn: (dir: string) => Promise<T>,
+  options: { signal?: AbortSignal | null } = {},
+): Promise<T> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   try {
     return await fn(dir);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    // A cancelled run must not wait on a multi-GB recursive delete: hand it to
+    // the tracked background cleanup so Stop returns promptly.
+    if (options.signal?.aborted) cleanupStagingDirInBackground(dir);
+    else await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -2329,7 +2337,7 @@ export async function prepareSandboxManagedRuntime(input: {
                   await withWorkspaceRestoreStep("git_ref_cleanup", () => deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef! }));
                 }
               }
-            }));
+            }, { signal: restoreSignal }));
           }), restoreSink, (diagnostic) => { outboundDiagnostics[0] = diagnostic; }),
         );
       }

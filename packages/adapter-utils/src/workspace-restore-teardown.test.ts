@@ -52,6 +52,24 @@ describe.each(ADAPTER_MESSAGE_PAIRS)("createWorkspaceRestoreTeardown ($adapter)"
     } });
   });
 
+  it("forwards the signal passed at call time over the one captured at construction", async () => {
+    // The ACP engine caches the step with the staged runtime and reuses it on
+    // a compatible resume, so the construction-time signal belongs to the
+    // first run. Stopping a later run must stop its own restore.
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const first = new AbortController();
+    const second = new AbortController();
+    const teardown = createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace: async (_progress, signal) => { seen.push(signal); } },
+      onLog: async () => {}, startMessage, failurePrefix,
+      signal: first.signal,
+    });
+    await teardown(second.signal);
+    await teardown();
+    expect(seen[0]).toBe(second.signal);
+    expect(seen[1]).toBe(first.signal);
+  });
+
   it("logs the start message to stdout and returns ok on a clean restore", async () => {
     const logLines: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
     const teardown = createWorkspaceRestoreTeardown({

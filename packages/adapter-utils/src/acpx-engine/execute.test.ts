@@ -5266,6 +5266,44 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
   });
 
+  // Greptile P1 "Resumed runs ignore Stop": the teardown step is cached with the
+  // staged runtime, so a compatible resume must hand it ITS OWN run's signal.
+  it("test_reused_resume_teardown_receives_the_current_run_signal", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const ensureInputs: Array<Record<string, unknown>> = [];
+    const teardownSignals: Array<AbortSignal | null | undefined> = [];
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      createRuntime: () => recordingRuntime({ ensureInputs }) as never,
+      prepareRemoteManagedHome: async (input) => {
+        const stagedRuntime = await input.stage([]);
+        return {
+          stagedRuntime,
+          teardown: async (signal) => {
+            teardownSignals.push(signal);
+            return { ok: true };
+          },
+        };
+      },
+    });
+    const base = baseExecuteArgs({ stateDir, localCwd, executionTarget });
+    const firstRun = new AbortController();
+    const secondRun = new AbortController();
+
+    const first = await execute({ runId: "run-a", runtime: {}, ...base, signal: firstRun.signal } as never);
+    await execute({
+      runId: "run-b",
+      runtime: { sessionParams: first.sessionParams },
+      ...base,
+      signal: secondRun.signal,
+    } as never);
+
+    expect(vi.mocked(prepareAdapterExecutionTargetRuntime)).toHaveBeenCalledTimes(1);
+    expect(teardownSignals).toEqual([firstRun.signal, secondRun.signal]);
+    expect(teardownSignals[1]).not.toBe(firstRun.signal);
+  });
+
   // Greptile P1 "Teardown Invalidates Cached Runtime": the per-run copy-back must
   // fire on every run (incl. a reused resume) while the one-time host staged-temp
   // cleanup must NOT fire between clean runs — otherwise the reused staged runtime
