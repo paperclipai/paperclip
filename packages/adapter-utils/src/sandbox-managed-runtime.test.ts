@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -516,8 +516,8 @@ describe("sandbox managed runtime", () => {
     const gated: string[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const realRm = fsPromises.rm;
-    const rmSpy = vi.spyOn(fsPromises, "rm").mockImplementation(
+    const realRm = fs.rm;
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(
       (async (...args: unknown[]) => {
         const target = args[0];
         if (typeof target === "string" && path.basename(target).startsWith("paperclip-sandbox-restore-")) {
@@ -525,7 +525,7 @@ describe("sandbox managed runtime", () => {
           await gate;
         }
         return (realRm as (...callArgs: unknown[]) => Promise<void>)(...args);
-      }) as unknown as typeof fsPromises.rm,
+      }) as unknown as typeof fs.rm,
     );
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
