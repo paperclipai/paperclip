@@ -69,6 +69,14 @@ describe("redactRunResultSecrets", () => {
     expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
     expect(out.stdout).not.toContain(GH);
   });
+  it.each([
+    JSON.stringify({ status: "passed", data: "A".repeat(1100) }),
+    `https://example.invalid/auth-report?data=${"A".repeat(1100)}`,
+    `token-count=${"A".repeat(1100)}`,
+  ])("preserves long output without credential patterns (%s)", stdout => {
+    const input = { stdout };
+    expect(redactRunResultSecrets(input)).toBe(input);
+  });
   it.each(["", "\u0000", "\u00000\u0000"])("redacts arbitrary credentials beside long output and NUL bytes (%j)", nul => {
     const secret = "opaque-host-credential-123456";
     const padding = "A".repeat(1100);

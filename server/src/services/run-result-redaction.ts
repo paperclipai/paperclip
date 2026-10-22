@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import { REDACTED_EVENT_VALUE, redactSensitiveText } from "../redaction.js";
 
 const LONG_SEGMENT = 1024;
-const LONG_SEGMENT_RE = new RegExp(String.raw`\S{${LONG_SEGMENT + 1},}`, "g");
-const HAS_LONG_SEGMENT_RE = new RegExp(String.raw`\S{${LONG_SEGMENT + 1}}`);
-const SECRET_HINT_RE = /api.?key|token|auth|bearer|secret|pass|credential|jwt|private.?key|cookie|connectionstring|sk-|gh[pousr]_|github_pat_/i;
+const LONG_SEGMENT_RE = new RegExp(String.raw`[A-Za-z0-9_-]{${LONG_SEGMENT + 1},}`, "g");
+const HAS_LONG_SEGMENT_RE = new RegExp(String.raw`[A-Za-z0-9_-]{${LONG_SEGMENT + 1}}`);
 const LINEAR_TOKEN_RES = [
   /gh[pousr]_[A-Za-z0-9_]{20,}/g,
   /github_pat_[A-Za-z0-9_]{20,}/g,
@@ -17,6 +16,7 @@ function redactLinear(input: string): string {
 }
 
 function redactString(input: string): string {
+  input = redactLinear(input);
   if (!HAS_LONG_SEGMENT_RE.test(input)) {
     return redactLinear(redactSensitiveText(input));
   }
@@ -24,7 +24,7 @@ function redactString(input: string): string {
   do { marker = `\u0000${randomUUID()}:`; } while (input.includes(marker));
   const long: string[] = [];
   const masked = input.replace(LONG_SEGMENT_RE, segment => {
-    long.push(SECRET_HINT_RE.test(segment) ? REDACTED_EVENT_VALUE : redactLinear(segment));
+    long.push(segment);
     return `${marker}${long.length - 1}\u0000`;
   });
   const placeholders = new RegExp(`${marker}(\\d+)\u0000`, "g");
