@@ -4,10 +4,11 @@ import {
   buildInventories,
   encodeInventory,
   renderContractModule,
-  renderDocumentation,
   validateInventorySchema,
   validateInventories,
 } from "./lib/capability-inventory.mjs";
+
+import { inventoryOutputs, documentationOutputs } from "./lib/capability-inventory-storage.mjs";
 
 const packageRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(packageRoot, "../..");
@@ -39,11 +40,11 @@ const errors = [
 if (errors.length > 0) throw new Error(`Capability inventory generation failed:\n${errors.join("\n")}`);
 
 const outputs = {
-  [outputPaths.capabilities]: encodeInventory(inventories.capabilities),
+  ...inventoryOutputs(packageRoot, inventories.capabilities),
   [outputPaths.evaluations]: encodeInventory(inventories.evaluations),
   [outputPaths.legacyMcpAliases]: encodeInventory(inventories.legacyMcpAliases),
   [outputPaths.contract]: renderContractModule(inventories),
-  [outputPaths.documentation]: renderDocumentation(inventories),
+  ...documentationOutputs(packageRoot, inventories),
 };
 
 if (process.argv.includes("--check")) {

@@ -1226,6 +1226,24 @@
       "expectedMockState": "runtime_decision_record"
     },
     {
+      "id": "skill:skills/paperclip/references/issue-comments.md:1",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-comments.md#L1:comments-and-mentions",
+      "heading": "Comments and @-mentions",
+      "primaryDisposition": "always_agent_tool",
+      "semanticOperation": "report_progress",
+      "expectedMockState": "operation_result"
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-comments.md:8",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-comments.md#L8:update",
+      "heading": "Update",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
       "id": "skill:skills/paperclip/references/issue-workspaces.md:1",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/issue-workspaces.md#L1:issue-workspace-runtime-controls",

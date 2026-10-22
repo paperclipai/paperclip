@@ -1,0 +1,125 @@
+# GENERATED FILE — DO NOT EDIT. Run pnpm generate:capability-inventory.
+{
+  "rows": [
+    {
+      "id": "skill:skills/paperclip/references/routines.md:updating-a-routine:212",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:212",
+      "title": "Updating a Routine",
+      "expectedSemantics": "Skill guidance headed “Updating a Routine”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:212"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:reading-routines-and-runs:223",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:223",
+      "title": "Reading Routines and Runs",
+      "expectedSemantics": "Skill guidance headed “Reading Routines and Runs”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:223"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:paperclip-workflow-playbooks:1",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:1",
+      "title": "Paperclip Workflow Playbooks",
+      "expectedSemantics": "Skill guidance headed “Paperclip Workflow Playbooks”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:1"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:project-setup-ceo-manager:7",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:7",
+      "title": "Project Setup (CEO/Manager)",
+      "expectedSemantics": "Skill guidance headed “Project Setup (CEO/Manager)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:7"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:openclaw-invite-ceo:22",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:22",
+      "title": "OpenClaw Invite (CEO)",
+      "expectedSemantics": "Skill guidance headed “OpenClaw Invite (CEO)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:22"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:setting-agent-instructions-path:50",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:50",
+      "title": "Setting Agent Instructions Path",
+      "expectedSemantics": "Skill guidance headed “Setting Agent Instructions Path”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:50"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:company-import-export:79",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:79",
+      "title": "Company Import / Export",
+      "expectedSemantics": "Skill guidance headed “Company Import / Export”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:79"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/workflows.md:self-test-playbook-app-level:106",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/workflows.md:106",
+      "title": "Self-Test Playbook (App-Level)",
+      "expectedSemantics": "Skill guidance headed “Self-Test Playbook (App-Level)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/workflows.md:106"
+      ]
+    }
+  ]
+}
