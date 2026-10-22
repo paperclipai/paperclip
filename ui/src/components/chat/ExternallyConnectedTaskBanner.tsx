@@ -20,6 +20,7 @@ import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
+import { createUuid } from "@/lib/uuid";
 import { useChatConnectorsEnabled, chatProviderVisible } from "@/hooks/useChatConnectorsEnabled";
 import { issuesApi } from "@/api/issues";
 import {
@@ -850,7 +851,7 @@ function ConnectedTaskComposer({
                   retainedScopeKey.current !== storageKey
                 )
                   return;
-                idempotencyKey.current ??= crypto.randomUUID();
+                idempotencyKey.current ??= createUuid();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
                   attachmentNames: selectedAttachmentIds.map((id) => ({
