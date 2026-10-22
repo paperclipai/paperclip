@@ -949,6 +949,81 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("cancelled this recurring-run artifact");
   });
 
+  it("takes the routine lock before the issue lock so it cannot deadlock with scheduled dispatch (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 910,
+      withExecutionRun: true,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const dispatchDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const probeDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    let release!: () => void;
+    let ready!: () => void;
+    let holderPid = 0;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // Stands in for `dispatchRoutineRun`, which holds the routine row while it
+    // goes on to wait for the company privacy-tree lock.
+    const dispatch = dispatchDb.transaction(async (tx) => {
+      await tx.select({ id: routines.id }).from(routines)
+        .where(eq(routines.id, routineIssue.originId!)).for("update");
+      holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      ready();
+      await gate;
+    });
+    await locked;
+    const escalation = recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+    try {
+      let waiting = false;
+      const deadline = Date.now() + 5_000;
+      while (!waiting && Date.now() < deadline) {
+        const [state] = await probeDb.execute<{ waiting: boolean }>(sql`
+          select exists (select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and ${holderPid} = any(pg_blocking_pids(pid))) as waiting
+        `);
+        waiting = state!.waiting;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+      // While recovery waits on the routine it must not hold the issue row,
+      // otherwise child creation (privacy-tree lock, then the issue row) closes
+      // the cycle with the dispatch above.
+      const issueRowFree = await probeDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '200ms'`);
+        try {
+          await tx.select({ id: issues.id }).from(issues)
+            .where(eq(issues.id, routineIssue.id)).for("update", { noWait: true });
+          return true;
+        } catch {
+          return false;
+        }
+      }).catch(() => false);
+      expect(issueRowFree).toBe(true);
+    } finally {
+      release();
+      await dispatch;
+    }
+    const result = await escalation;
+    expect(result?.status).toBe("cancelled");
+  });
+
   it("cancels a dead routine_execution firing that left a pending native question (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineIssue = await seedRoutineExecutionIssue({

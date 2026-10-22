@@ -4210,13 +4210,14 @@ export function recoveryService(
     recoveryCause: StrandedRecoveryCause;
   }) {
     // Greptile follow-up: decide eligibility and apply the cancellation in one
-    // transaction. The issue row is locked and its status re-checked against the
-    // status recovery observed. Blockers are then re-read under that lock, while
+    // transaction. `escalateStrandedAssignedIssue` already holds the issue row
+    // lock (taken after the routine row lock, see there) and rejected a stale
+    // observation. Blockers are re-read here under that lock, while
     // `routineExecutionWillFireAgain` takes `for share` on the routine, trigger,
-    // project and instance-settings rows. Neither issue dependencies nor the
-    // schedule gates can move between the checks and the write. A changed issue
-    // disposition or execution identity is returned untouched, while a failed
-    // eligibility check falls through to the pre-existing board-escalation path.
+    // project and instance-settings rows. Neither issue
+    // dependencies nor the schedule gates can move between the checks and the
+    // write. A failed eligibility check falls through to the pre-existing
+    // board-escalation path.
     //
     // Clear the execution-lock columns as we finalize so the cancelled artifact
     // does not linger as an "open" routine execution holding the run pointer.
@@ -4328,6 +4329,22 @@ export function recoveryService(
     const publications: ActivityPublication[] = [];
     const postCommitActions: IssuePostCommitAction[] = [];
     const updated = await db.transaction(async (tx) => {
+      // Lock order for a routine firing: routine row first, then the issue row.
+      // `dispatchRoutineRun` holds the routine row while `create` waits for the
+      // company `issue-privacy-tree` lock, and `createChild` holds that company
+      // lock while waiting for the parent issue row. Taking the issue row here
+      // before the routine (inside `routineExecutionWillFireAgain`) would close
+      // a wait cycle between recovery, scheduled dispatch and child creation.
+      const originRoutineId = input.issue.originKind === "routine_execution"
+        ? readNonEmptyString(input.issue.originId)
+        : null;
+      if (originRoutineId) {
+        await tx.select({ id: routines.id }).from(routines).where(and(
+          eq(routines.companyId, input.issue.companyId),
+          eq(routines.id, originRoutineId),
+        )).for("share");
+      }
+
       // Recovery observes candidates before asynchronous policy checks. Serialize
       // its effects with operator decisions; a stale observation grants no new
       // authority to block, assign, or create a recovery action for this task.
