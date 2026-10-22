@@ -1024,6 +1024,85 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result?.status).toBe("cancelled");
   });
 
+  it("takes the project lock before the issue lock so it cannot deadlock with a project edit (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 911,
+      withExecutionRun: true,
+      projectPaused: false,
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    const dispatchDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const probeDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    let release!: () => void;
+    let ready!: () => void;
+    let holderPid = 0;
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const [routineRow] = await db.select({ projectId: routines.projectId }).from(routines)
+      .where(eq(routines.id, routineIssue.originId!));
+    expect(routineRow?.projectId).toBeTruthy();
+    // Stands in for a project edit, which holds the project row while it goes
+    // on to rewrite the project's issues.
+    const dispatch = dispatchDb.transaction(async (tx) => {
+      await tx.select({ id: projects.id }).from(projects)
+        .where(eq(projects.id, routineRow!.projectId!)).for("update");
+      holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
+      ready();
+      await gate;
+    });
+    await locked;
+    const escalation = recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+    try {
+      let waiting = false;
+      const deadline = Date.now() + 5_000;
+      while (!waiting && Date.now() < deadline) {
+        const [state] = await probeDb.execute<{ waiting: boolean }>(sql`
+          select exists (select 1 from pg_stat_activity
+            where datname = current_database() and wait_event_type = 'Lock'
+              and ${holderPid} = any(pg_blocking_pids(pid))) as waiting
+        `);
+        waiting = state!.waiting;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(waiting).toBe(true);
+      // While recovery waits on the project it must not hold the issue row,
+      // otherwise the project edit (project row, then its issues) closes the
+      // cycle with recovery.
+      const issueRowFree = await probeDb.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '200ms'`);
+        try {
+          await tx.select({ id: issues.id }).from(issues)
+            .where(eq(issues.id, routineIssue.id)).for("update", { noWait: true });
+          return true;
+        } catch {
+          return false;
+        }
+      }).catch(() => false);
+      expect(issueRowFree).toBe(true);
+    } finally {
+      release();
+      await dispatch;
+    }
+    const result = await escalation;
+    expect(result?.status).toBe("cancelled");
+  });
+
   it("cancels a dead routine_execution firing that left a pending native question (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     const routineIssue = await seedRoutineExecutionIssue({

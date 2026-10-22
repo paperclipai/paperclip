@@ -4329,7 +4329,8 @@ export function recoveryService(
     const publications: ActivityPublication[] = [];
     const postCommitActions: IssuePostCommitAction[] = [];
     const updated = await db.transaction(async (tx) => {
-      // Lock order for a routine firing: routine row first, then the issue row.
+      // Lock order for a routine firing: routine row, its project row, then the
+      // issue row.
       // `dispatchRoutineRun` holds the routine row while `create` waits for the
       // company `issue-privacy-tree` lock, and `createChild` holds that company
       // lock while waiting for the parent issue row. Taking the issue row here
@@ -4339,10 +4340,20 @@ export function recoveryService(
         ? readNonEmptyString(input.issue.originId)
         : null;
       if (originRoutineId) {
-        await tx.select({ id: routines.id }).from(routines).where(and(
+        const lockedRoutine = await tx.select({ projectId: routines.projectId }).from(routines).where(and(
           eq(routines.companyId, input.issue.companyId),
           eq(routines.id, originRoutineId),
-        )).for("share");
+        )).for("share").then((rows) => rows[0] ?? null);
+        // The project row comes next, still before the issue row: a project
+        // edit locks the project and then rewrites its issues, so reading the
+        // project after the issue (inside `routineExecutionWillFireAgain`)
+        // would wait in the opposite order.
+        if (lockedRoutine?.projectId) {
+          await tx.select({ id: projects.id }).from(projects).where(and(
+            eq(projects.companyId, input.issue.companyId),
+            eq(projects.id, lockedRoutine.projectId),
+          )).for("share");
+        }
       }
 
       // Recovery observes candidates before asynchronous policy checks. Serialize
