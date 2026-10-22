@@ -104,6 +104,36 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await queuedRuns(f.companyId)).toHaveLength(1);
   });
 
+  it("does not let a full window of still-gated waits starve a wake whose gate has cleared", async () => {
+    // Another task whose gate is still up holds the oldest 50 waits.
+    const gated = await seed();
+    const gatedWake = await park(gated);
+    const { id: _id, idempotencyKey: _key, ...copy } = gatedWake;
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 49 }, () => ({ ...copy })));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) })
+      .where(eq(agentWakeupRequests.companyId, gated.companyId));
+
+    // A newer wake in another company, parked behind a gate that has cleared.
+    const f = await seed();
+    const parked = await park(f);
+    await clearGate(f.sourceRunId);
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(1_000) })
+      .where(eq(agentWakeupRequests.id, parked.id));
+
+    // The first pass reads only the gated window. It must move those waits
+    // past the scan, so the next pass reaches the cleared wake.
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    expect(await queuedRuns(f.companyId)).toHaveLength(0);
+    await heartbeatService(db).readmitUnblockedExecutionWaits();
+    expect(await queuedRuns(f.companyId)).toHaveLength(1);
+
+    // The gated waits stay parked: moving past them is not admitting them.
+    expect(await queuedRuns(gated.companyId)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, gated.companyId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution")))).toHaveLength(50);
+  });
+
   it("keeps the receipt held when admission fails, and re-admits it on a later pass", async () => {
     const f = await seed();
     const parked = await park(f);
