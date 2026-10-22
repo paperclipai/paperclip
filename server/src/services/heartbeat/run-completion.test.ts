@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { callbacks } from "./run-completion-fixture.js";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -10,63 +11,19 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
-import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
+import { getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
 
-vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
+vi.mock("../fast-response-provider.js", () => ({
+  fastResponsePrompt: vi.fn(),
+  fastResponseReceipt: vi.fn(),
+  runFastResponseProvider: vi.fn(),
+}));
 
-type Dependencies = HeartbeatRunCompletionDependencies;
-function callbacks(db: Db) {
-  const state = createHeartbeatRunState(db);
-  const lifecycleDeps = {
-    ...state, ...createHeartbeatRunPreparation(db),
-    issuesSvc: { addComment: vi.fn(), listReviewAttention: vi.fn() },
-    recovery: { escalateStrandedAssignedIssue: vi.fn() },
-    companySkills: { completeTestRunForIssue: vi.fn() },
-    budgets: { getInvocationBlock: vi.fn(async () => null) },
-    treeControlSvc: { getActivePauseHoldGate: vi.fn(async () => null) },
-    enqueueWakeup: vi.fn(),
-    getCurrentUserRedactionOptions: vi.fn(async () => ({ enabled: false })),
-    getAgentInvokability: vi.fn<HeartbeatLifecycleDependencies["getAgentInvokability"]>(async () => ({ invokable: true })),
-    emitTerminalAgentTaskRun: vi.fn(), budgetHooks: {},
-  } satisfies HeartbeatLifecycleDependencies;
-  const lifecycle = createHeartbeatLifecycle(db, lifecycleDeps);
-  return {
-    ...state, ...lifecycle,
-    setRunStatusIfRunning: vi.fn(lifecycle.setRunStatusIfRunning),
-    setWakeupStatus: vi.fn(lifecycle.setWakeupStatus),
-    upsertTaskSession: vi.fn(state.upsertTaskSession),
-    clearTaskSessions: vi.fn(state.clearTaskSessions),
-    classifyAndPersistRunLiveness: vi.fn<Dependencies["classifyAndPersistRunLiveness"]>(async run => run),
-    completeSkillTestRunForHeartbeatOutcome: vi.fn<Dependencies["completeSkillTestRunForHeartbeatOutcome"]>(async () => null),
-    refreshContinuationSummaryForRun: vi.fn<Dependencies["refreshContinuationSummaryForRun"]>(async () => null),
-    findRunIssueComment: vi.fn<Dependencies["findRunIssueComment"]>(async () => null),
-    findLatestCompletedFinalAgentMessage: vi.fn<Dependencies["findLatestCompletedFinalAgentMessage"]>(async () => null),
-    finalizeIssueCommentPolicy: vi.fn<Dependencies["finalizeIssueCommentPolicy"]>(async () => ({ outcome: "not_applicable", queuedRun: null })),
-    handleIssueReviewPathDisposition: vi.fn<Dependencies["handleIssueReviewPathDisposition"]>(async () => undefined),
-    handleRunLivenessContinuation: vi.fn<Dependencies["handleRunLivenessContinuation"]>(),
-    handleSuccessfulRunHandoff: vi.fn<Dependencies["handleSuccessfulRunHandoff"]>(),
-    updateRuntimeState: vi.fn<Dependencies["updateRuntimeState"]>(),
-    scheduleBoundedRetryForRun: vi.fn<Dependencies["scheduleBoundedRetryForRun"]>(),
-    scheduleInteractionContinuationInfrastructureRetryIfEligible: vi.fn<Dependencies["scheduleInteractionContinuationInfrastructureRetryIfEligible"]>(async () => null),
-    timerClaimWasFirstHeartbeat: vi.fn<Dependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
-    releaseIssueExecutionAndPromote: vi.fn<Dependencies["releaseIssueExecutionAndPromote"]>(async () => undefined),
-    finalizeAgentStatus: vi.fn<Dependencies["finalizeAgentStatus"]>(async () => undefined),
-    enqueueWakeup: vi.fn<Dependencies["enqueueWakeup"]>(),
-    issuesSvc: { addComment: vi.fn<Dependencies["issuesSvc"]["addComment"]>() },
-    recovery: { reconcileLegacyContinuation: vi.fn<Dependencies["recovery"]["reconcileLegacyContinuation"]>(), reconcileResolvedDependencyWakeBackstop: vi.fn<Dependencies["recovery"]["reconcileResolvedDependencyWakeBackstop"]>() },
-    getCurrentUserRedactionOptions: lifecycleDeps.getCurrentUserRedactionOptions,
-    budgetHooks: {},
-    runLogStore: { finalize: vi.fn<Dependencies["runLogStore"]["finalize"]>(async () => ({ bytes: 123, sha256: "log-hash", compressed: true })) },
-    traceStore: { finalize: vi.fn<Dependencies["traceStore"]["finalize"]>() },
-    processRunCancellationSettlements: new Map<string, { settled: Promise<void>; failed: boolean }>(),
-    failedProcessRunCancellations: new Map<string, { settled: Promise<void>; failed: boolean }>(),
-  } satisfies Dependencies;
-}
+vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
 it("constructs completion handlers without querying or starting work", () => {
   const access = vi.fn(() => { throw new Error("Unexpected database access"); });
@@ -143,6 +100,21 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
     expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
+  });
+
+  it("redacts host credentials from the final persisted result and summary", async () => {
+    const f = await fixture();
+    const secret = `gho_${"Ab1Cd2Ef3G".repeat(5)}`;
+    Object.assign(f.input.adapterResult, {
+      summary: `Host token ${secret}`,
+      resultJson: { stdout: `Authorization: Bearer ${secret}`, accessToken: "opaque-host-credential-123456" },
+    });
+    await f.completion.completeRun(f.input);
+    const stored = (await read(f.run.id)).resultJson;
+    expect(stored).not.toBeNull();
+    expect(JSON.stringify(stored)).not.toContain(secret);
+    expect(JSON.stringify(stored)).not.toContain("opaque-host-credential-123456");
+    expect(JSON.stringify(stored)).toContain("***REDACTED***");
   });
 
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {

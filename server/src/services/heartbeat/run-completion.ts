@@ -599,8 +599,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ),
     };
 
-    // Host-side credentials that Paperclip did not inject can reach captured output or the summary;
-    // mask token-shaped text in the final merged result before it is stored.
     const persistedResultJson = redactRunResultSecrets(cancellationResultJson(latestRun ?? run, outcome, mergeHeartbeatRunResultJson(
       mergeRunStopMetadataForAgent(agent, outcome, {
         resultJson: mergeAdapterRecoveryMetadata({

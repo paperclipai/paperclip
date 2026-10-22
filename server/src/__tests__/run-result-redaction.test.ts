@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { redactRunResultSecrets } from "../services/run-result-redaction.js";
 
-// Synthetic, well-formed but fake credential shapes.
 const GH = `gho_${"A1b2C3d4E5".repeat(4)}`;
 const SK = `sk-${"abcDEF123456".repeat(2)}`;
 const PAT = `github_pat_${"Ab1Cd2Ef3G".repeat(5)}`;
@@ -70,4 +69,20 @@ describe("redactRunResultSecrets", () => {
     expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
     expect(out.stdout).not.toContain(GH);
   });
+  it.each(["", "\u0000", "\u00000\u0000"])("redacts arbitrary credentials beside long output and NUL bytes (%j)", nul => {
+    const secret = "opaque-host-credential-123456";
+    const padding = "A".repeat(1100);
+    for (const stdout of [
+      `${nul}{"padding":"${padding}","accessToken":"${secret}"}`,
+      `${padding}${nul} Authorization: Bearer ${secret}`,
+      `${padding} ${nul}{"accessToken":"${secret}"}`,
+      `password=${padding}`,
+    ]) {
+      const out = redactRunResultSecrets({ stdout });
+      expect(out.stdout).not.toContain(secret);
+      expect(out.stdout).toContain(REDACTED_EVENT_VALUE);
+      if (stdout.startsWith("password=")) expect(out.stdout).not.toContain(padding);
+    }
+  });
+
 });
