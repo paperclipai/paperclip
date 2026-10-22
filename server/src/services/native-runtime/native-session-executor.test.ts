@@ -1520,7 +1520,7 @@ describe("remote provider pack manifest", () => {
     const payload = {
       pins: {
         nodeMinimum: "24.11.0",
-        codex: "0.160.0",
+        codex: "0.163.0",
         opencode: "1.18.34",
         acpx: "0.13.1",
         claudeAcp: "0.73.0",

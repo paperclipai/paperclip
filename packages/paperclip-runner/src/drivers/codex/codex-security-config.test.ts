@@ -18,7 +18,7 @@ describe("Codex security configuration", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
     expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
-      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.160.0");
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.163.0");
   });
 
   it("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {

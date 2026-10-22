@@ -48,9 +48,13 @@ const nativeSessionExecutor = await readFile(
 );
 
 test("the runner pins every qualified ACPX production dependency", () => {
-  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.160.0");
+  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.163.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
+  assert.equal(
+    workspace.match(/"@agentclientprotocol\/codex-acp@1\.6\.2>@openai\/codex": "([^"]+)"/)?.[1],
+    runnerPackage.dependencies["@openai/codex"],
+  );
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.286");
   assert.deepEqual(runnerPackage.optionalDependencies, {
     "@github/copilot-darwin-arm64": "1.0.88",
@@ -67,6 +71,15 @@ test("the runner pins every qualified ACPX production dependency", () => {
     runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"],
     "0.73.0",
   );
+});
+
+test("Codex ACP resolves the same installed runtime as the runner", async () => {
+  const require = createRequire(import.meta.url);
+  const bridgePackagePath = require.resolve("@agentclientprotocol/codex-acp/package.json");
+  const bridgeRequire = createRequire(bridgePackagePath);
+  const runtime = JSON.parse(await readFile(bridgeRequire.resolve("@openai/codex/package.json"), "utf8"));
+  assert.equal(runtime.version, runnerPackage.dependencies["@openai/codex"]);
+  assert.equal(runtime.version, profiles.profiles.codex.agentRuntimeVersion);
 });
 
 test("the patched Codex ACP executable digest stays aligned across launch boundaries", async () => {
@@ -125,7 +138,7 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
     providerPackBuilder,
     /copyFileSync\(process\.execPath, stableNodeCommand\)/,
   );
-  assert.match(codexPatch, /\+    "@openai\/codex": "0\.160\.0"/);
+  assert.match(codexPatch, /\+    "@openai\/codex": "0\.163\.0"/);
 });
 
 test("the ACPX patch preserves launch-only state and verified spawning", () => {

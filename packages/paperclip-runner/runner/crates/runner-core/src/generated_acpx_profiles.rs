@@ -47,7 +47,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:7fbf0b3a48250c0c1852503d0dfd0af238c402d19c53573b573cc81f07c6016f",
+                "sha256:396d23135b996c007cac2c7126f97636b003d4ea5f3188194f0cc175eaa949db",
             requires_provider_policy: true,
         },
         "claude" => AcpxReleaseProfile {
@@ -63,7 +63,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_server_package: "@agentclientprotocol/codex-acp",
             agent_server_version: "1.6.2",
             agent_runtime_package: Some("@openai/codex"),
-            agent_runtime_version: Some("0.160.0"),
+            agent_runtime_version: Some("0.163.0"),
             command_digest:
                 "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
             requires_provider_policy: false,

@@ -46,8 +46,8 @@ would hide the runtime that executed the task.
 
 ## Remote Codex version window
 
-Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.161.0`**.
-The install pin is `0.160.0`. A sandbox image can therefore use an older
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.164.0`**.
+The install pin is `0.163.0`. A sandbox image can therefore use an older
 compatible Codex without failing startup or installing another copy.
 
 The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
@@ -65,7 +65,7 @@ release follows a backward-compatible protocol.
 - The same check applies to discovered, explicitly staged, and npm-installed
   remote Codex executables, including the final executable after linking.
 - For an incompatible image, the existing
-  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0` configuration
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.163.0` configuration
   allows installation of the pinned runtime. Without that configuration,
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
@@ -93,6 +93,29 @@ app-server protocol break; the Linux CI qualification workflow covers the real
 startup and session-resume probes for the new pin.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
+
+## Codex subscription client version
+
+The bundled Codex ACP server starts its own Codex app-server dependency. Updating
+a global Codex CLI does not update that dependency. The workspace override and
+the provider runtime pin must stay aligned. The current pin is `0.163.0`.
+
+An older client can reject `gpt-6.1-sol` with a ChatGPT account even when the
+same account can use that model through a newer CLI. This error alone does not
+prove that the account lacks model access. Check the actual ACP runtime version
+before changing the model or authentication method.
+
+For an existing installation, `codex_local` supports an explicit `agentCommand`
+for a separately managed ACP server. Keep the ACP server and its Codex dependency
+pinned in that installation. The setting is per agent. No API key is required
+when the agent uses a valid ChatGPT OAuth login.
+
+The shared executable-admission module is also bound into the immutable Copilot
+profile identity. The Codex runtime admission refresh therefore publishes Copilot
+profile v59, while retaining v58 as historical data. Only the shared guard source
+hash and profile-compatibility hash change in that declaration; Copilot model,
+permission, and tool policies do not change. A new identity requires fresh live
+Copilot qualification before claiming release qualification for that profile.
 
 ## Direct adapter boundary
 

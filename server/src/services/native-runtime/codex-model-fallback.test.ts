@@ -66,6 +66,13 @@ describe("remote model compatibility preflight", () => {
       args: ["--version"], cwd: "/workspace", bypassSession: true, timeoutMs: 30_000 });
   });
 
+  it.each(["0.161.0", "0.162.0", "0.163.0"])("preserves GPT-6.1 Sol on supported Codex %s", async (expectedVersion) => {
+    const { target } = remoteTarget(`codex-cli ${expectedVersion}`);
+    const version = await readRemoteCodexModelCliVersion({ model: "gpt-6.1-sol", target });
+    expect(version).toBe(expectedVersion);
+    expect(compatibleCodexModel("gpt-6.1-sol", version)).toBe("gpt-6.1-sol");
+  });
+
   it.each([
     { remoteCodexPath: "/controller/codex" },
     { remoteCodexNpmSpec: "@openai/codex@0.160.0" },
@@ -79,7 +86,7 @@ describe("remote model compatibility preflight", () => {
   });
 
   it.each([
-    ["codex-cli 0.148.9", {}], ["codex-cli 0.161.0", {}], ["codex-cli 0.160.0-alpha.1", {}],
+    ["codex-cli 0.148.9", {}], ["codex-cli 0.164.0", {}], ["codex-cli 0.160.0-alpha.1", {}],
     ["codex-cli 0.156.0\ncodex-cli 0.160.0", {}], ["codex-cli 0.156.0", { timedOut: true }],
     ["codex-cli 0.156.0", { exitCode: 1 }],
   ])("keeps the launch verifier authoritative for invalid probes: %s %j", async (stdout, overrides) => {
