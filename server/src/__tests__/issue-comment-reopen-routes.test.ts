@@ -1,3 +1,4 @@
+import { makeIssue, makeIssueUpdateReceipt, createScheduledRetry, registerNoWakeRouteTests } from "./issue-comment-no-wake.cases.js";
 import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
@@ -263,51 +264,6 @@ async function normalizePolicy(input: {
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(
-  status:
-    | "backlog"
-    | "todo"
-    | "done"
-    | "blocked"
-    | "cancelled"
-    | "in_progress"
-    | "in_review",
-) {
-  return {
-    id: "11111111-1111-4111-8111-111111111111",
-    companyId: "company-1",
-    status,
-    assigneeAgentId: "22222222-2222-4222-8222-222222222222",
-    assigneeUserId: null,
-    createdByUserId: "local-board",
-    identifier: "PAP-580",
-    title: "Comment reopen default",
-  };
-}
-
-function makeIssueUpdateReceipt(
-  existing: ReturnType<typeof makeIssue>,
-  patch: Record<string, unknown>,
-) {
-  const fields = Object.fromEntries(
-    Object.entries(patch).filter(
-      ([key]) => key !== "actorAgentId" && key !== "actorUserId",
-    ),
-  );
-  const changes = Object.fromEntries(
-    Object.entries(fields)
-      .filter(
-        ([key, value]) =>
-          !Object.is(existing[key as keyof typeof existing], value),
-      )
-      .map(([key, value]) => [
-        key,
-        { from: existing[key as keyof typeof existing], to: value },
-      ]),
-  );
-  return { ...existing, ...fields, changes };
-}
-
 function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
   return {
     type: "agent",
@@ -354,21 +310,6 @@ function createReviewIssue(policy: NonNullable<Awaited<ReturnType<typeof normali
       lastDecisionId: null,
       lastDecisionOutcome: null,
     },
-  };
-}
-
-function createScheduledRetry() {
-  return {
-    runId: "retry-run-1",
-    status: "scheduled_retry",
-    agentId: "22222222-2222-4222-8222-222222222222",
-    agentName: "CodexCoder",
-    retryOfRunId: "source-run-1",
-    scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
-    scheduledRetryAttempt: 1,
-    scheduledRetryReason: "transient_failure",
-    error: null,
-    errorCode: null,
   };
 }
 
@@ -3907,4 +3848,6 @@ describe("issue comment reopen routes", () => {
       ),
     );
   });
+  registerNoWakeRouteTests({ mockHeartbeatService, mockIssueService, createApp, installActor, waitForWakeup });
+
 });

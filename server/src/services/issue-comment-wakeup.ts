@@ -1,10 +1,3 @@
-/**
- * Info-only comment marker (synthiq fork, 2026-10-16). A comment whose body starts with `[no-wake]` (case-insensitive,
- * leading whitespace allowed) is recorded and shown normally, but it does not wake the assignee and does not
- * implicitly reopen a blocked or closed issue. An explicit `resume: true` or `reopen: true` on the same request still
- * wins. Without the marker nothing changes. Use it for status notes that need no action; a comment that carries a
- * decision the assignee must act on must not carry it.
- */
 export const NO_WAKE_COMMENT_MARKER = "[no-wake]";
 
 export function isNoWakeComment(body: unknown): boolean {
@@ -39,5 +32,20 @@ export function shouldWakeAssigneeForIssueComment(input: {
   return (
     input.reopened ||
     (input.currentStatus !== "done" && input.currentStatus !== "cancelled")
+  );
+}
+
+export function shouldHumanCommentResumeInProgressScheduledRetry(input: {
+  hasComment: boolean;
+  issueStatus: string | null | undefined;
+  assigneeAgentId: string | null | undefined;
+  actorType: "agent" | "user";
+}) {
+  if (!input.hasComment) return false;
+  if (input.actorType !== "user") return false;
+  if (input.issueStatus !== "in_progress") return false;
+  return (
+    typeof input.assigneeAgentId === "string" &&
+    input.assigneeAgentId.length > 0
   );
 }
