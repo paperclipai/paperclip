@@ -14,36 +14,22 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * Managed checkout clone timeout. `PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS` raises it for big repositories on slow links
- * (a ~400 MB repository at ~500 KB/s needs ~15 min; with the fixed 10 min every first clone fails from zero).
- * Values below 1 min or not numeric use the 10 min default; values above Node's timer maximum are clamped to it
- * (Node would otherwise fire the timer after 1 ms).
- */
 export function managedCloneTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env.PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS);
   return Number.isFinite(raw) && raw >= 60_000 ? Math.min(Math.floor(raw), 2_147_483_647) : MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS;
 }
 
-/**
- * Optional partial clone for checkouts cloned from a URL: `PAPERCLIP_MANAGED_CLONE_FILTER=blob:none` (or
- * `blob:limit=<n>[kmg]`, `tree:0`). Off by default. Later git commands fetch missing blobs on demand, so private
- * repositories need working auth for them too.
- */
 export function managedCloneFilterArgs(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = (env.PAPERCLIP_MANAGED_CLONE_FILTER ?? "").trim();
   return /^(blob:none|blob:limit=\d+[kmg]?|tree:0)$/.test(raw) ? [`--filter=${raw}`] : [];
 }
 
-/**
- * The cause of a failed clone, cause first: a timeout says so, otherwise the last lines of git's stderr. The bare
- * execFile message starts with the whole command line (including an inline credential helper), and run errors are
- * stored truncated, so a timeout used to read like an auth failure.
- */
 export function describeManagedCloneFailure(error: unknown, timeoutMs: number): string {
   const e = error as { killed?: boolean; signal?: string | null; stderr?: unknown; message?: string } | null;
   const stderr = typeof e?.stderr === "string" ? e.stderr : Buffer.isBuffer(e?.stderr) ? e!.stderr.toString("utf8") : "";
-  const tail = stderr.split("\n").map((l) => l.trim()).filter((l) => l && !/^Cloning into /.test(l)).slice(-3).join(" | ");
+  const lines = stderr.split("\n").map((line) => line.trim()).filter((line) => line && !/^Cloning into /.test(line));
+  const causes = lines.filter((line) => /permission denied|could not resolve|connection refused|connection timed out|host key verification failed|fatal:|error:/i.test(line));
+  const tail = (causes.length > 0 ? causes : lines.slice(-3)).join(" | ");
   if (e?.killed || e?.signal === "SIGTERM") {
     return `git clone timed out after ${Math.round(timeoutMs / 60_000)} min (set PAPERCLIP_MANAGED_CLONE_TIMEOUT_MS for big repositories)${tail ? `; last git output: ${tail}` : ""}`;
   }
@@ -141,14 +127,13 @@ export async function materializeManagedProjectWorkspace(
         await clone(null);
       }
     } catch (error) {
-      // Name the cause before any wrapping: the wrapper keeps only the message, not git's stderr.
       const cause = describeManagedCloneFailure(error, cloneTimeoutMs);
       const connectionFailure = !input.localSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
       if (connectionFailure) throw new GitConnectionFailureError(cause, connectionFailure);
       if (error instanceof Error && !isWorkspaceGitScanError(error)) error.message = cause;
       throw error;
     }
-    if (objectCache && !reference) await measureRunPhase("workspace.checkout.cache_publish", () => publishRepositoryObjectCache(objectCache!, cloneTmpDir));
+    if (objectCache && !reference && filterArgs.length === 0) await measureRunPhase("workspace.checkout.cache_publish", () => publishRepositoryObjectCache(objectCache!, cloneTmpDir));
     if (input.localSource) {
       const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
       if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
@@ -162,7 +147,6 @@ export async function materializeManagedProjectWorkspace(
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
-      // With a partial clone this checkout may fetch missing blobs, so it gets the clone's auth.
       await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", [...(auth?.configArgs ?? []), "-C", cloneTmpDir, "checkout", input.repoRef!], {
         timeout: cloneTimeoutMs,
         env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...(auth?.env ?? {}) },

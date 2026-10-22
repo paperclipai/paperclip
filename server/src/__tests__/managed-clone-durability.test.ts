@@ -42,6 +42,17 @@ describe("describeManagedCloneFailure", () => {
   });
 });
 
+describe("SSH clone failure causes", () => {
+  it.each([
+    "git@example.test: Permission denied (publickey).",
+    "ssh: Could not resolve hostname example.test: Name or service not known",
+  ])("retains %s before generic advice", (cause) => {
+    const stderr = `${cause}\nfatal: Could not read from remote repository.\nPlease make sure you have the correct access rights\nand the repository exists.\n`;
+    expect(describeManagedCloneFailure({ stderr }, 600_000)).toContain(cause);
+    expect(describeManagedCloneFailure({ stderr }, 600_000).indexOf(cause)).toBeLessThan(50);
+  });
+});
+
 describe("materializeManagedProjectWorkspace error text", () => {
   let dir: string;
   beforeAll(async () => { dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-clone-durability-")); });
