@@ -1,6 +1,11 @@
+import { registerInteractionLocationTests } from "./interaction-location.cases.js";
 import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -3326,30 +3331,7 @@ describe("issue thread interaction routes", () => {
       ]);
     },
   );
-});
 
-describe("interaction location route", () => {
-  const INTERACTION_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  registerInteractionLocationTests({ mockInteractionService, mockIssueService, mockAccessDecide, createApp, createIssue, ISSUE_ID, ASSIGNEE_AGENT_ID });
 
-  it("returns the fixed v1 location for a readable card", async () => {
-    mockInteractionService.getById.mockResolvedValueOnce({ id: INTERACTION_ID, companyId: "company-1", issueId: ISSUE_ID, status: "pending" });
-    mockIssueService.getById.mockResolvedValue(createIssue({ status: "in_review", assigneeAgentId: ASSIGNEE_AGENT_ID }));
-    const res = await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`);
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ version: 1, companyId: "company-1", interactionId: INTERACTION_ID, issueId: ISSUE_ID });
-  });
-
-  it("answers 404 for an unknown or malformed id and for another company's card", async () => {
-    mockInteractionService.getById.mockResolvedValueOnce(null);
-    await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`).expect(404);
-    await request(await createApp()).get("/api/companies/company-1/interaction-locations/not-a-uuid").expect(404);
-    mockInteractionService.getById.mockResolvedValueOnce({ id: INTERACTION_ID, companyId: "company-2", issueId: ISSUE_ID, status: "pending" });
-    await request(await createApp()).get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`).expect(404);
-  });
-
-  it("refuses a board actor without access to the company", async () => {
-    const res = await request(await createApp({ type: "board", userId: "u", companyIds: ["company-9"], source: "session", isInstanceAdmin: false }))
-      .get(`/api/companies/company-1/interaction-locations/${INTERACTION_ID}`);
-    expect(res.status).toBe(403);
-  });
 });

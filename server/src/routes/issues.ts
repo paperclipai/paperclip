@@ -8869,11 +8869,9 @@ export function issueRoutes(
     res.json(result);
   });
 
-  // Exact-id card lookup: which issue owns this interaction. Lets a client open a card from its id without
-  // scanning issues. The response is a fixed v1 shape; unknown, foreign-company and unreadable ids are all 404.
   router.get("/companies/:companyId/interaction-locations/:interactionId", async (req, res) => {
     const companyId = req.params.companyId as string;
-    const interactionId = req.params.interactionId as string;
+    const interactionId = (req.params.interactionId as string).trim();
     assertCompanyAccess(req, companyId);
     if (!isUuidLike(interactionId)) {
       res.status(404).json({ error: "Interaction not found" });
