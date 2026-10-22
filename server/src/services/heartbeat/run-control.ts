@@ -807,6 +807,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
         sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+        // Chat-inbound wakes have their own resume path. Filtering them here,
+        // not in the loop, keeps them from holding the scan window.
+        sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
         // Only the gate that leaves no recovery action behind. A wait backed by
         // a recovery action is `resumeExecutionWaitComments`'s to resume, and
         // its action is the record of work this pass must not step over.
@@ -822,22 +825,28 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     for (const { wake } of parked) {
       const payload = parseObject(wake.payload);
       const issueId = readNonEmptyString(payload.issueId);
-      if (!issueId || wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
-      // One re-admission per task per pass: the queued run it produces serves
-      // every wake parked behind the same gate.
-      if (seen.has(`${wake.agentId}:${issueId}`)) continue;
-      seen.add(`${wake.agentId}:${issueId}`);
-      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
+      if (!issueId) continue;
+      const taskKey = `${wake.agentId}:${issueId}`;
+      const firstForTask = !seen.has(taskKey);
+      seen.add(taskKey);
       // Claim the receipt by its own age, exactly as `resumeExecutionWaitComments`
-      // does, so a concurrent pass cannot promote the same wake. The receipt
-      // stays held until admission answers: an interrupted server leaves the
-      // wake queued for a later pass, never silently retired.
+      // does, so a concurrent pass cannot promote the same wake. The claim also
+      // advances the scan cursor before the gate is read: a wake whose gate is
+      // still up, or a duplicate behind it, moves to the back of the queue
+      // instead of holding this bounded window, which spans every company,
+      // and starving a later wake whose gate has cleared. The receipt stays
+      // held until admission answers: an interrupted server leaves the wake
+      // queued for a later pass, never silently retired.
       const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
         eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - READMIT_EXECUTION_WAIT_AFTER_MS)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
+      // One re-admission per task per pass: the queued run it produces serves
+      // every wake parked behind the same gate.
+      if (!firstForTask) continue;
+      if (await getExecutionBlocker(db, wake.companyId, issueId)) continue;
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
       // The wait itself is a receipt of the old gate, never wake input.
       const { executionWait: _retiredWait, ...wakePayload } = payload;
