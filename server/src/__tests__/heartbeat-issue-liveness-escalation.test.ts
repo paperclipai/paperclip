@@ -31,6 +31,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { recoveryService } from "../services/recovery/service.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -758,6 +759,120 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
         blockerIssueIds: [blockerIssueId],
       }),
     });
+  });
+
+  it("escalates a blocked dependent whose dependency wakes all end in a failed workspace validation", async () => {
+    const { companyId, agentId, blockedIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    const enqueueWakeup = vi.fn(
+      async (
+        wakeAgentId: string,
+        input?: {
+          idempotencyKey?: string | null;
+          reason?: string | null;
+          payload?: Record<string, unknown> | null;
+        },
+      ) => {
+        await db.insert(agentWakeupRequests).values({
+          id: randomUUID(),
+          companyId,
+          agentId: wakeAgentId,
+          source: "automation",
+          status: "failed",
+          reason: input?.reason ?? "issue_blockers_resolved",
+          payload: input?.payload ?? {},
+          idempotencyKey: input?.idempotencyKey ?? null,
+        });
+        const [run] = await db
+          .insert(heartbeatRuns)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            issueId: blockedIssueId,
+            status: "failed",
+            errorCode: "workspace_validation_failed",
+            contextSnapshot: { issueId: blockedIssueId },
+            resultJson: {
+              workspaceValidation: {
+                reason: "persisted_workspace_source_conflict",
+              },
+            },
+            finishedAt: new Date(),
+          })
+          .returning();
+        return run ?? null;
+      },
+    );
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const firstPass = await recovery.reconcileStrandedAssignedIssues();
+    expect(firstPass.blockedWorkspaceValidationEscalated).toBe(0);
+    expect(
+      (await recovery.reconcileResolvedDependencyWakeBackstop()).healed,
+    ).toBe(1);
+
+    const secondPass = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondPass.blockedWorkspaceValidationEscalated).toBe(0);
+    expect(
+      (await recovery.reconcileResolvedDependencyWakeBackstop()).healed,
+    ).toBe(1);
+
+    const thirdPass = await recovery.reconcileStrandedAssignedIssues();
+    expect(thirdPass.escalated).toBe(1);
+    expect(thirdPass.blockedWorkspaceValidationEscalated).toBe(1);
+    expect(thirdPass.issueIds).toContain(blockedIssueId);
+    expect(
+      (await recovery.reconcileResolvedDependencyWakeBackstop()).healed,
+    ).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+
+    const wakes = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+        ),
+      );
+    expect(wakes).toHaveLength(2);
+    expect(wakes.every((wake) => wake.status === "failed")).toBe(true);
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, blockedIssueId));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      kind: "workspace_validation",
+      cause: "workspace_validation_failed",
+    });
+
+    const edges = await db
+      .select()
+      .from(issueRelations)
+      .where(
+        and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, blockedIssueId),
+          eq(issueRelations.type, "blocks"),
+        ),
+      );
+    expect(edges).toHaveLength(0);
+
+    const fourthPass = await recovery.reconcileStrandedAssignedIssues();
+    expect(fourthPass.blockedWorkspaceValidationEscalated).toBe(0);
+    const actionsAfterRepeat = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, blockedIssueId));
+    expect(actionsAfterRepeat).toHaveLength(1);
+
+    expect(
+      (await recovery.reconcileResolvedDependencyWakeBackstop()).healed,
+    ).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
   });
 
   async function seedExecutionWait(status: "active" | "resolved" = "resolved") {
