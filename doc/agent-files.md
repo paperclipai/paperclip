@@ -29,6 +29,10 @@ The canonical host directory keeps its existing physical location:
       live/                   writable copy for the provider lifetime
 ```
 
+A capture marks an entry `racy` when the gap between the capture time and the
+file's last change time is under 2,000 ms. The next capture hashes a racy entry
+again, so a rewrite inside one coarse timestamp tick cannot keep a stale hash.
+
 The process starts in its existing task workspace. `AGENT_HOME` points to the
 registered writable agent copy. Adapter `HOME` and `CODEX_HOME` keep their
 existing meanings and are not personal-file storage. Local copies are outside

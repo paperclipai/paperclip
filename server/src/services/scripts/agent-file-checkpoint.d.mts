@@ -1,4 +1,4 @@
-export interface AgentFileManifestEntry { kind: "dir" | "file"; size?: number; mode?: number; hash?: string; stamp?: string }
+export interface AgentFileManifestEntry { kind: "dir" | "file"; size?: number; mode?: number; hash?: string; stamp?: string; racy?: boolean }
 export interface AgentFileManifest { version?: number; entries: Array<[string, AgentFileManifestEntry]>; totalBytes?: number }
 export interface AgentFileCheckpointStats { hashedBytes: number; copiedBytes: number; copiedFiles: number; scannedEntries: number }
 export function checkpointPath(name: string): string;
