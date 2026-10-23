@@ -12,10 +12,14 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentSyncInParams,
+  PluginEnvironmentSyncOutParams,
+  PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
 import { CloudflareBridgeError, createCloudflareBridgeClient } from "./bridge-client.js";
+import { performSyncIn, performSyncOut, type FileSyncContext } from "./file-sync.js";
 import {
   parseCloudflareDriverConfig,
   validateCloudflareDriverConfig,
@@ -28,6 +32,17 @@ const CLOUDFLARE_EXEC_STDERR_PREFIX = "[cloudflare exec stderr]";
 
 function isLostLeaseError(error: unknown): boolean {
   return error instanceof CloudflareBridgeError && (error.status === 404 || error.status === 409);
+}
+
+function withFileTransferSupport(lease: PluginEnvironmentLease): PluginEnvironmentLease {
+  if (!lease.providerLeaseId || lease.metadata?.fileTransfer === true) return lease;
+  return {
+    ...lease,
+    metadata: {
+      ...(lease.metadata ?? {}),
+      nativeFileSyncUnsupported: true,
+    },
+  };
 }
 
 function bridgeClientFor(rawConfig: Record<string, unknown>) {
@@ -126,6 +141,30 @@ function logCloudflareExecChunk(
   }
 }
 
+function fileSyncContextFor(
+  params: PluginEnvironmentSyncInParams | PluginEnvironmentSyncOutParams,
+): FileSyncContext {
+  const providerLeaseId = params.lease.providerLeaseId;
+  if (!providerLeaseId) {
+    throw new Error("Cloudflare sandbox file sync requires a provider lease ID.");
+  }
+  const { config, client } = bridgeClientFor(params.config);
+  const headers = { environmentId: params.environmentId, issueId: params.issueId };
+  const baseSessionId = config.sessionId.trim().length > 0 ? config.sessionId : "paperclip";
+  return {
+    bridge: {
+      downloadFile: (input) => client.downloadFile(input),
+      uploadFile: (input) => client.uploadFile(input),
+      execute: (body) => client.execute(body, headers),
+    },
+    providerLeaseId,
+    commandCwd: "/",
+    timeoutMs: config.timeoutMs,
+    sessionStrategy: "named",
+    sessionId: `${baseSessionId}-bridge`,
+  };
+}
+
 let pluginLogger: PluginLogger | null = null;
 
 const plugin = definePlugin({
@@ -187,7 +226,7 @@ const plugin = definePlugin({
     params: PluginEnvironmentAcquireLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const { config, client } = bridgeClientFor(params.config);
-    return await client.acquireLease(
+    const lease = await client.acquireLease(
       {
         environmentId: params.environmentId,
         runId: params.runId,
@@ -203,6 +242,7 @@ const plugin = definePlugin({
       },
       { environmentId: params.environmentId, runId: params.runId, issueId: params.issueId },
     );
+    return withFileTransferSupport(lease);
   },
 
   async onEnvironmentResumeLease(
@@ -210,7 +250,7 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentLease> {
     const { config, client } = bridgeClientFor(params.config);
     try {
-      return await client.resumeLease(
+      const lease = await client.resumeLease(
         {
           providerLeaseId: params.providerLeaseId,
           requestedCwd:
@@ -226,6 +266,7 @@ const plugin = definePlugin({
         },
         { environmentId: params.environmentId, issueId: params.issueId },
       );
+      return withFileTransferSupport(lease);
     } catch (error) {
       if (isLostLeaseError(error)) {
         return {
@@ -299,6 +340,18 @@ const plugin = definePlugin({
         remoteCwd,
       },
     };
+  },
+
+  async onEnvironmentSyncIn(
+    params: PluginEnvironmentSyncInParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    return await performSyncIn(fileSyncContextFor(params), params.operations);
+  },
+
+  async onEnvironmentSyncOut(
+    params: PluginEnvironmentSyncOutParams,
+  ): Promise<PluginEnvironmentSyncResult> {
+    return await performSyncOut(fileSyncContextFor(params), params.operations);
   },
 
   async onEnvironmentExecute(

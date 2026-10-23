@@ -99,6 +99,77 @@ export function resolveRequestTimeoutMs(
     : Math.max(config.bridgeRequestTimeoutMs, requestedTimeoutMs);
 }
 
+export function resolveTransferTimeoutMs(config: CloudflareDriverConfig): number {
+  return Math.max(config.bridgeRequestTimeoutMs, config.timeoutMs);
+}
+
+async function bridgeErrorFrom(response: Response): Promise<CloudflareBridgeError> {
+  const body = await parseJson(response).catch(() => null);
+  const errorBody = isRecord(body) ? body as BridgeErrorBody : {};
+  return new CloudflareBridgeError({
+    status: response.status,
+    code: typeof errorBody.error === "string" ? errorBody.error : null,
+    message:
+      typeof errorBody.message === "string" && errorBody.message.trim().length > 0
+        ? errorBody.message
+        : `Cloudflare sandbox bridge request failed with HTTP ${response.status}.`,
+    details: errorBody.details,
+  });
+}
+
+async function requestFileTransfer(
+  config: CloudflareDriverConfig,
+  input: { method: "GET" | "PUT"; providerLeaseId: string; path: string; body?: Uint8Array },
+  consume?: (body: ReadableStream<Uint8Array>) => Promise<void>,
+): Promise<void> {
+  const controller = new AbortController();
+  const timeoutMs = resolveTransferTimeoutMs(config);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const baseUrl = config.bridgeBaseUrl.replace(/\/+$/, "");
+  const query = new URLSearchParams({ providerLeaseId: input.providerLeaseId, path: input.path });
+  const headers = buildHeaders(config);
+  headers.set("Content-Type", "application/octet-stream");
+  try {
+    const response = await fetch(`${baseUrl}/api/paperclip-sandbox/v1/files?${query.toString()}`, {
+      method: input.method,
+      headers,
+      ...(input.body ? { body: input.body } : {}),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw await bridgeErrorFrom(response);
+    if (consume) {
+      if (!response.body) throw new Error("Cloudflare sandbox bridge file response had no body.");
+      const sizeHeader = response.headers.get("X-File-Size");
+      const expected = sizeHeader === null ? Number.NaN : Number(sizeHeader);
+      let received = 0;
+      const counted = response.body.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            received += chunk.byteLength;
+            controller.enqueue(chunk);
+          },
+        }),
+      );
+      await consume(counted);
+      if (Number.isFinite(expected) && expected >= 0 && received !== expected) {
+        throw new Error(
+          `Cloudflare sandbox bridge file download was truncated for ${input.path}: ${received}/${expected} bytes.`,
+        );
+      }
+    } else {
+      await response.arrayBuffer();
+    }
+  } catch (error) {
+    if (error instanceof CloudflareBridgeError) throw error;
+    if ((error as { name?: string } | null)?.name === "AbortError") {
+      throw new Error(`Cloudflare sandbox bridge file transfer timed out after ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function requestJson<T>(
   config: CloudflareDriverConfig,
   path: string,
@@ -330,6 +401,27 @@ export function createCloudflareBridgeClient(options: BridgeClientOptions) {
         { method: "DELETE" },
         extraHeaders,
       );
+    },
+
+    downloadFile(input: {
+      providerLeaseId: string;
+      path: string;
+      consume: (body: ReadableStream<Uint8Array>) => Promise<void>;
+    }): Promise<void> {
+      return requestFileTransfer(
+        config,
+        { method: "GET", providerLeaseId: input.providerLeaseId, path: input.path },
+        input.consume,
+      );
+    },
+
+    uploadFile(input: { providerLeaseId: string; path: string; bytes: Uint8Array }): Promise<void> {
+      return requestFileTransfer(config, {
+        method: "PUT",
+        providerLeaseId: input.providerLeaseId,
+        path: input.path,
+        body: input.bytes,
+      });
     },
 
     execute(

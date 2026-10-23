@@ -1,6 +1,7 @@
 import type { Sandbox as CloudflareSandbox } from "@cloudflare/sandbox";
 import { isAuthorizedRequest } from "./auth.js";
 import { executeInSandbox } from "./exec.js";
+import { FILES_ROUTE, handleFileTransfer } from "./files.js";
 import { shellQuote } from "./helpers.js";
 import {
   buildLeaseSandboxId,
@@ -9,6 +10,7 @@ import {
   DEFAULT_SESSION_ID,
   DEFAULT_TIMEOUT_MS,
   resolveSandbox,
+  destroySandbox,
   applySandboxKeepAlive,
   toErrorResponse,
   toJsonResponse,
@@ -213,6 +215,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         reuseLease: true,
         namedSessions: true,
         previewUrls: false,
+        fileTransfer: true,
       },
     });
   }
@@ -256,7 +259,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         },
       });
     } finally {
-      await sandbox.destroy().catch(() => undefined);
+      await destroySandbox(sandbox, { route: "probe", providerLeaseId: sandboxId });
     }
   }
 
@@ -302,7 +305,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       });
     } catch (err) {
       if (!reuseLease) {
-        await sandbox.destroy().catch(() => undefined);
+        await destroySandbox(sandbox, { route: "leases/acquire", providerLeaseId });
       }
       throw err;
     }
@@ -319,6 +322,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         sleepAfter,
         normalizeId,
         resumedLease: false,
+        fileTransfer: true,
       },
     });
   }
@@ -372,6 +376,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
         sleepAfter,
         normalizeId,
         resumedLease: true,
+        fileTransfer: true,
       },
     });
   }
@@ -384,12 +389,14 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     if (readBoolean(body.reuseLease, false)) {
       return toJsonResponse({ ok: true });
     }
-    const sandbox = await resolveSandbox(env, body.providerLeaseId, {
-      keepAlive: readBoolean(body.keepAlive, false),
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
-    await sandbox.destroy().catch(() => undefined);
+    const sandbox = await resolveSandbox(env, body.providerLeaseId, { normalizeId: true });
+    const destroyed = await destroySandbox(sandbox, { route: "leases/release", providerLeaseId: body.providerLeaseId });
+    if (!destroyed.ok) {
+      return toErrorResponse(502, "sandbox_destroy_failed", `Sandbox teardown failed after ${destroyed.attempts} attempts: ${destroyed.error}`, {
+        providerLeaseId: body.providerLeaseId,
+        attempts: destroyed.attempts,
+      });
+    }
     return toJsonResponse({ ok: true });
   }
 
@@ -398,12 +405,14 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     if (providerLeaseId.length === 0) {
       return toErrorResponse(400, "invalid_request", "providerLeaseId path parameter is required.");
     }
-    const sandbox = await resolveSandbox(env, providerLeaseId, {
-      keepAlive: false,
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
-    await sandbox.destroy().catch(() => undefined);
+    const sandbox = await resolveSandbox(env, providerLeaseId, { normalizeId: true });
+    const destroyed = await destroySandbox(sandbox, { route: "leases/destroy", providerLeaseId });
+    if (!destroyed.ok) {
+      return toErrorResponse(502, "sandbox_destroy_failed", `Sandbox teardown failed after ${destroyed.attempts} attempts: ${destroyed.error}`, {
+        providerLeaseId: providerLeaseId,
+        attempts: destroyed.attempts,
+      });
+    }
     return toJsonResponse({ ok: true });
   }
 
@@ -414,11 +423,7 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
     }
     const sessionStrategy = readSessionStrategy(body.sessionStrategy);
     const sessionId = readString(body.sessionId, DEFAULT_SESSION_ID);
-    const sandbox = await resolveSandbox(env, body.providerLeaseId, {
-      keepAlive: false,
-      sleepAfter: "10m",
-      normalizeId: true,
-    });
+    const sandbox = await resolveSandbox(env, body.providerLeaseId, { normalizeId: true });
     if (body.streamOutput === true) {
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
@@ -474,6 +479,10 @@ export async function handleBridgeRequest(request: Request, env: BridgeEnv): Pro
       sessionId,
     });
     return toJsonResponse(result);
+  }
+
+  if (pathname === FILES_ROUTE) {
+    return await handleFileTransfer(request, env, url);
   }
 
   return toErrorResponse(404, "not_found", `No bridge route matched ${request.method} ${pathname}.`);

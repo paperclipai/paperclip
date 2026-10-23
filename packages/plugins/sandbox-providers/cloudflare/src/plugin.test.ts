@@ -1,3 +1,6 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
@@ -125,6 +128,7 @@ describe("Cloudflare sandbox provider plugin", () => {
         provider: "cloudflare",
         remoteCwd: "/workspace/paperclip",
         resumedLease: false,
+        nativeFileSyncUnsupported: true,
       },
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -356,6 +360,118 @@ describe("Cloudflare sandbox provider plugin", () => {
       stdout: "",
       stderr: "Cloudflare sandbox state is no longer available.\n",
     });
+  });
+
+  it("keeps native sync on leases from bridges that advertise file transfer", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        providerLeaseId: "pc-run-2-abcd1234",
+        metadata: { provider: "cloudflare", remoteCwd: "/workspace/paperclip", resumedLease: false, fileTransfer: true },
+      }),
+    );
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "cloudflare",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-2",
+      config: { bridgeBaseUrl: "https://bridge.example.workers.dev", bridgeAuthToken: "resolved-token" },
+    });
+    expect(lease?.metadata).toEqual({
+      provider: "cloudflare",
+      remoteCwd: "/workspace/paperclip",
+      resumedLease: false,
+      fileTransfer: true,
+    });
+  });
+
+  it("streams native sync out through the bridge file route", async () => {
+    expect(plugin.definition.onEnvironmentSyncIn).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentSyncOut).toBeTypeOf("function");
+    const bytes = new Uint8Array([0, 7, 0, 255]);
+    fetchMock.mockResolvedValueOnce(
+      new Response(bytes, { status: 200, headers: { "Content-Type": "application/octet-stream" } }),
+    );
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cf-plugin-sync-"));
+    try {
+      const target = path.join(dir, "bundle.git");
+      const result = await plugin.definition.onEnvironmentSyncOut?.({
+        driverKey: "cloudflare",
+        companyId: "company-1",
+        environmentId: "env-1",
+        issueId: "issue-1",
+        lease: { providerLeaseId: "pc-run-1-abcd1234", metadata: { remoteCwd: "/workspace/paperclip" } },
+        operations: [
+          { operationId: "op-1", files: [{ sourcePath: "/workspace/.paperclip-runtime/b.git", targetPath: target, kind: "file" }] },
+        ],
+        config: {
+          bridgeBaseUrl: "https://bridge.example.workers.dev/",
+          bridgeAuthToken: "resolved-token",
+        },
+      });
+
+      expect(result).toEqual({ operations: [{ operationId: "op-1", filesTransferred: 1, bytesTransferred: 4 }] });
+      expect(new Uint8Array(await fs.readFile(target))).toEqual(bytes);
+      const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+      expect(url.origin + url.pathname).toBe("https://bridge.example.workers.dev/api/paperclip-sandbox/v1/files");
+      expect(url.searchParams.get("providerLeaseId")).toBe("pc-run-1-abcd1234");
+      expect(url.searchParams.get("path")).toBe("/workspace/.paperclip-runtime/b.git");
+      expect(requestInitAt().method).toBe("GET");
+      expect(requestHeadersAt().get("Authorization")).toBe("Bearer resolved-token");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs native sync-in post-upload commands on the bridge session from the root cwd", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cf-plugin-sync-"));
+    try {
+      const source = path.join(dir, "w.tar");
+      await fs.writeFile(source, "tar-bytes");
+      const okExec = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ ok: true, path: "/workspace/.paperclip-runtime/w.tar.staged" }))
+        .mockResolvedValueOnce(jsonResponse(okExec))
+        .mockResolvedValueOnce(jsonResponse(okExec));
+
+      await plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "cloudflare",
+        companyId: "company-1",
+        environmentId: "env-1",
+        issueId: "issue-1",
+        lease: { providerLeaseId: "pc-run-1-abcd1234", metadata: { remoteCwd: "/workspace/paperclip" } },
+        operations: [
+          {
+            operationId: "op-in",
+            files: [{ sourcePath: source, targetPath: "/workspace/.paperclip-runtime/w.tar", kind: "file" }],
+            postUploadCommands: [{ command: "tar -xf /workspace/.paperclip-runtime/w.tar -C /workspace/paperclip" }],
+          },
+        ],
+        config: {
+          bridgeBaseUrl: "https://bridge.example.workers.dev",
+          bridgeAuthToken: "resolved-token",
+          sessionId: "paperclip",
+        },
+      });
+
+      expect(requestInitAt(0).method).toBe("PUT");
+      expect(new TextDecoder().decode(requestInitAt(0).body as Uint8Array)).toBe("tar-bytes");
+      const staged = new URL(String(fetchMock.mock.calls[0]?.[0])).searchParams.get("path")!;
+      expect(staged).toMatch(/^\/workspace\/\.paperclip-runtime\/w\.tar\.paperclip-upload\./);
+      expect(requestBodyAt(1)).toMatchObject({ args: ["-c", `mv -f '${staged}' '/workspace/.paperclip-runtime/w.tar'`] });
+      expect(String(fetchMock.mock.calls[2]?.[0])).toBe("https://bridge.example.workers.dev/api/paperclip-sandbox/v1/exec");
+      expect(requestBodyAt(2)).toMatchObject({
+        providerLeaseId: "pc-run-1-abcd1234",
+        command: "sh",
+        args: ["-c", "tar -xf /workspace/.paperclip-runtime/w.tar -C /workspace/paperclip"],
+        cwd: "/",
+        sessionStrategy: "named",
+        sessionId: "paperclip-bridge",
+        streamOutput: false,
+      });
+      expect(requestHeadersAt(2).get("X-Paperclip-Issue-Id")).toBe("issue-1");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("wraps realizeWorkspace bridge failures and forwards the issue header", async () => {
