@@ -1,0 +1,8 @@
+# never commit VM images, overlays, run artifacts, oracle payloads with raw docs
+*.img
+*.qcow2
+*.iso
+.oracle/
+node_modules/
+/scratch/
+*.log

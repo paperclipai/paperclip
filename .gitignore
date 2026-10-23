@@ -99,3 +99,9 @@ test-results/
 
 # Opt-in CI timing artifacts
 .ci-profile/
+
+# kow e2e smoke test scratch
+tests/kow-e2e/scratch/
+tests/kow-e2e/**/*.qcow2
+tests/kow-e2e/**/*.img
+tests/kow-e2e/**/*.iso
