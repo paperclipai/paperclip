@@ -93,9 +93,12 @@ export async function assertManagedAiProjectAuth(
     extraArgs.some(
       (arg) =>
         typeof arg === "string" &&
-        /^(--config|-c|--settings|--setting-sources|--api-key|--auth-token)(=|$)/.test(
+        (/^(--config|-c|--settings|--setting-sources|--api-key|--auth-token)(=|\s|$)/.test(
           arg,
-        ),
+        ) ||
+          (provider === "openai" &&
+            (/^(--oss|--local-provider|--profile)(=|\s|$)/.test(arg) ||
+              /^-p(=|\s|[^-]|$)/.test(arg)))),
     )
   ) {
     throw unprocessable(

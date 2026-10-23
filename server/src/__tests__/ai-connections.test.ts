@@ -1583,6 +1583,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       execute.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "", signal: null, timedOut: false } as Awaited<ReturnType<typeof executionTarget.runAdapterExecutionTargetProcess>>);
       await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
+      for (const flag of [
+        "--oss",
+        "--oss=true",
+        "--local-provider",
+        "--local-provider=lmstudio",
+        "--profile",
+        "--profile=custom",
+        "-p",
+        "-pcustom",
+        "-p=custom",
+      ]) {
+        await expect(assertManagedAiProjectAuth({ extraArgs: [flag] }, "openai", target)).rejects.toThrow("overrides");
+      }
+      await expect(assertManagedAiProjectAuth({ extraArgs: ["-p", "--print"] }, "anthropic", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ extraArgs: ["--model", "custom"] }, "openai", target)).resolves.toBeUndefined();
     } finally { execute.mockRestore(); }
   });
   it("requires a typed project authentication capability for task-only environments", async () => {
