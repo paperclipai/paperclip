@@ -431,6 +431,27 @@ describe("discardQueuedComment", () => {
     ).resolves.toBeDefined();
   });
 
+  it("authorizes a board user discarding an agent-authored queued message", async () => {
+    const locked = lockedState({
+      queue: queueSnapshot({ entries: [
+        entry({ comment: commentFixture({ authorUserId: null, authorAgentId: "agent-1" }) }),
+      ] }),
+    });
+    const transaction = createFakeTransaction();
+    const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
+
+    await expect(
+      discardQueuedComment({
+        issue: ISSUE,
+        actor: USER_ACTOR,
+        commentId: "comment-1",
+        queueId: "wake-1",
+        revision: "rev-1",
+        now: new Date(),
+      }),
+    ).resolves.toBeDefined();
+  });
+
   it("rolls back when the queued run to cancel already left the queued status", async () => {
     const locked = lockedState({ queueRun: runRow({ id: "run-1" }) });
     const transaction = createFakeTransaction({ cancelQueueRun: vi.fn(async () => null) });

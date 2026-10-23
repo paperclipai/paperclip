@@ -263,7 +263,14 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           authorAgentId: entry.comment.authorAgentId,
           authorUserId: entry.comment.authorUserId,
         });
-        if (!owns) {
+        // A user actor can never own an agent-authored entry, and the board
+        // route already authenticates a board user for this mutation.
+        // Without this override, such an entry is undiscardable when no
+        // agent run is bound to the queue (for example a wake deadlocked
+        // behind execution recovery). See issue #15464.
+        const boardMayDiscardAgentEntry =
+          input.actor.actorType === "user" && entry.comment.authorAgentId !== null;
+        if (!owns && !boardMayDiscardAgentEntry) {
           throw new QueuedCommentMutationForbiddenError("Only the queued message author can discard it");
         }
 
