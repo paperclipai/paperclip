@@ -1034,6 +1034,50 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
 
+  it("drops failed-run attention once its issue is done or cancelled", async () => {
+    const { companyId, workerId } = await seedCompany("ATN");
+    const doneIssueId = await insertIssue({ companyId, identifier: "ATN-1", title: "Done task", status: "done" });
+    const cancelledIssueId = await insertIssue({
+      companyId,
+      identifier: "ATN-2",
+      title: "Cancelled task",
+      status: "cancelled",
+    });
+    const openIssueId = await insertIssue({ companyId, identifier: "ATN-3", title: "Open task", status: "todo" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const runs = [
+      { id: randomUUID(), contextSnapshot: { issueId: doneIssueId } },
+      { id: randomUUID(), contextSnapshot: { taskId: cancelledIssueId } },
+      { id: randomUUID(), contextSnapshot: { issueId: openIssueId } },
+    ];
+
+    await db.insert(heartbeatRuns).values(runs.map((run) => ({
+      ...run,
+      companyId,
+      agentId: workerId,
+      invocationSource: "automation" as const,
+      status: "failed" as const,
+      error: "adapter failed",
+      createdAt: failedAt,
+      updatedAt: failedAt,
+      finishedAt: failedAt,
+    })));
+    await db.insert(heartbeatRunEvents).values(runs.map((run) => ({
+      companyId,
+      runId: run.id,
+      agentId: workerId,
+      seq: 1,
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+      createdAt: new Date("2026-07-09T12:00:01.000Z"),
+    })));
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id))
+      .toEqual([runs[2]!.id]);
+  });
+
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
     const { companyId, workerId } = await seedCompany("ATE");
     const projectId = randomUUID();
