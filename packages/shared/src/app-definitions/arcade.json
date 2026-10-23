@@ -22,7 +22,7 @@
         "dcr",
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Paste your Arcade MCP gateway URL to use the tools selected for that gateway.",
       "defaults": {},
       "guidanceMd": "Paste your Arcade MCP URL. Sign in if required, or add a token or headers under Advanced authentication.",
       "riskTier": "S3",
