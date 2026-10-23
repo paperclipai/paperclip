@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { pathToFileURL } from "node:url";
 import {
+  assessSignOffs,
   ghJson,
   isTerminalIssue,
   normalizeCheck,
   normalizeRepository,
+  paperclipGet,
   parseArgs,
   readJson,
   reason,
@@ -54,7 +56,8 @@ function fetchCheckRuns(repository, headSha) {
   throw new Error(`Check-run pagination exceeded 100 pages for ${headSha}`);
 }
 
-export function readinessVerdict({ pullRequest, checks, greptile, behindBy, originatingIssue }) {
+export function readinessVerdict({ pullRequest, checks, greptile, behindBy, originatingIssue, signOffs }) {
+  const headSha = pullRequest.headRefOid ?? null;
   const reasons = [];
   if (pullRequest.state !== "OPEN") reasons.push(reason("pr_not_open", `PR is ${pullRequest.state.toLowerCase()}`));
   const mergeable = pullRequest.mergeable ?? "UNKNOWN";
@@ -77,6 +80,22 @@ export function readinessVerdict({ pullRequest, checks, greptile, behindBy, orig
   else if (!isTerminalIssue(originatingIssue.status)) {
     reasons.push(reason("originating_issue_active", `Originating issue ${originatingIssue.identifier ?? originatingIssue.issueId} is ${originatingIssue.status}`, "reporting"));
   }
+  if (signOffs) {
+    for (const kind of ["qa", "security"]) {
+      const signOff = signOffs[kind];
+      if (!signOff.present) {
+        reasons.push(reason("signoff_missing", `No ${kind} sign-off recorded on the originating issue`, "blocking", { kind }));
+      } else if (!signOff.atHead) {
+        reasons.push(
+          reason("signoff_stale_head", `${kind} sign-off does not cover the current head`, "blocking", {
+            kind,
+            pinnedSha: signOff.pinnedSha,
+            headSha,
+          }),
+        );
+      }
+    }
+  }
 
   if (pullRequest.isDraft) return { verdict: "report_only", reasons };
   return { verdict: reasons.some((entry) => entry.severity === "blocking") ? "needs_gardening" : "ready", reasons };
@@ -96,6 +115,8 @@ export function confidenceFor(entry) {
     "merge_conflict",
     "mergeability_unknown",
     "changes_requested",
+    "signoff_missing",
+    "signoff_stale_head",
   ];
   if (lowConfidenceCodes.some((code) => codes.has(code))) {
     return "low";
@@ -104,8 +125,21 @@ export function confidenceFor(entry) {
   return "medium";
 }
 
+async function fetchIssueComments(getPaperclip, issueId, credentials) {
+  const response = await getPaperclip(`/issues/${issueId}/comments`, credentials);
+  return Array.isArray(response) ? response : response?.comments ?? [];
+}
+
 export async function checkReadiness(candidatesDocument, options = {}) {
   const repository = normalizeRepository(options.repo ?? candidatesDocument.repository);
+  const getPaperclip = options.paperclip_get ?? paperclipGet;
+  const credentials = {
+    apiUrl: options.api_url ?? process.env.PAPERCLIP_API_URL,
+    apiKey: options.api_key ?? process.env.PAPERCLIP_API_KEY,
+  };
+  if (options.require_signoffs && (!credentials.apiUrl || !credentials.apiKey)) {
+    throw new Error("--require-signoffs needs PAPERCLIP_API_URL and PAPERCLIP_API_KEY (or --api-url and --api-key)");
+  }
   const results = [];
   for (const candidate of candidatesDocument.candidates) {
     const pullRequest = ghJson([
@@ -124,12 +158,21 @@ export async function checkReadiness(candidatesDocument, options = {}) {
     ]);
     const checks = assessChecks(pullRequest.statusCheckRollup ?? []);
     const greptile = assessGreptile(checkRuns);
+    const signOffs = options.require_signoffs
+      ? assessSignOffs(
+          candidate.originatingIssue
+            ? await fetchIssueComments(getPaperclip, candidate.originatingIssue.issueId, credentials)
+            : [],
+          pullRequest.headRefOid,
+        )
+      : null;
     const assessment = readinessVerdict({
       pullRequest,
       checks,
       greptile,
       behindBy: comparison.behind_by ?? 0,
       originatingIssue: candidate.originatingIssue,
+      signOffs,
     });
     const entry = {
       number: pullRequest.number,
@@ -150,6 +193,7 @@ export async function checkReadiness(candidatesDocument, options = {}) {
       greptile,
       originatingIssue: candidate.originatingIssue,
       sourceIssues: candidate.sourceIssues,
+      signOffs,
       ...assessment,
     };
     entry.confidence = confidenceFor(entry);
