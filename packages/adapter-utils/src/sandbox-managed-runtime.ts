@@ -157,6 +157,14 @@ export interface SandboxManagedRuntimeAsset {
   /** Optional inbound provisioning contribution (staged files + extract command). */
   provision?: SandboxManagedRuntimeAssetProvision;
   /**
+   * Directories that an in-place SSH target keeps outside the run-scoped
+   * asset root and links back into each run. Other transports ignore this.
+   */
+  inPlaceSshPersistence?: {
+    scope: string;
+    directories: string[];
+  };
+  /**
    * Optional teardown/outbound contribution, invoked once per asset during
    * `restoreWorkspace`. Defaults to a no-op when omitted.
    */

@@ -876,6 +876,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 key: "home",
                 localDir: stagedCodexHomeDir,
                 followSymlinks: true,
+                inPlaceSshPersistence: targetWorkspaceRealization?.mode === "in_place"
+                  ? { scope: agent.id, directories: ["sessions"] }
+                  : undefined,
                 // Inbound (host→sandbox) auth-merge contribution: stages the two
                 // merge scripts and runs the merge-extract command so a sandbox
                 // that already carries a Codex `auth.json` keeps whichever
