@@ -146,9 +146,9 @@ export function registerTokenCommands(program: Command): void {
       .description("Create a named board API key")
       .option("-C, --company-id <id>", "Company ID used for audit context")
       .option("--name <name>", "API key label", "cli-board")
-      .option("--expires-at <iso8601>", "Expiration timestamp")
-      .option("--ttl-days <days>", "Expiration in days from now")
-      .option("--never-expires", "Create a non-expiring key")
+      .option("--expires-at <iso8601>", "Expiration timestamp (ISO 8601); mutually exclusive with --ttl-days and --never-expires")
+      .option("--ttl-days <days>", "Expiration in days from now; mutually exclusive with --expires-at and --never-expires")
+      .option("--never-expires", "Create a non-expiring key; mutually exclusive with --expires-at and --ttl-days")
       .action(async (opts: BoardTokenOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
@@ -229,14 +229,26 @@ async function resolveAgent(api: { get<T>(path: string): Promise<T | null> }, co
 }
 
 function resolveBoardKeyExpiresAt(opts: BoardTokenOptions): Date | null | undefined {
+  const hasExpiresAt = opts.expiresAt !== undefined;
+  const hasTtlDays = opts.ttlDays !== undefined;
+  if (opts.neverExpires && (hasExpiresAt || hasTtlDays)) {
+    throw new Error("Choose only one board token expiration mode: --never-expires, --expires-at, or --ttl-days.");
+  }
+  if (hasExpiresAt && hasTtlDays) {
+    throw new Error("Choose only one board token expiration mode: --expires-at or --ttl-days.");
+  }
   if (opts.neverExpires) return null;
-  if (opts.expiresAt?.trim()) {
-    const date = new Date(opts.expiresAt.trim());
+  if (hasExpiresAt) {
+    const rawExpiresAt = opts.expiresAt?.trim();
+    if (!rawExpiresAt) throw new Error("Invalid --expires-at value: expected a non-empty ISO timestamp.");
+    const date = new Date(rawExpiresAt);
     if (!Number.isFinite(date.getTime())) throw new Error(`Invalid --expires-at value: ${opts.expiresAt}`);
     return date;
   }
-  if (opts.ttlDays?.trim()) {
-    const days = Number(opts.ttlDays);
+  if (hasTtlDays) {
+    const rawTtlDays = opts.ttlDays?.trim();
+    if (!rawTtlDays) throw new Error("Invalid --ttl-days value: expected a positive number.");
+    const days = Number(rawTtlDays);
     if (!Number.isFinite(days) || days <= 0) throw new Error(`Invalid --ttl-days value: ${opts.ttlDays}`);
     return new Date(Date.now() + Math.floor(days * 24 * 60 * 60 * 1000));
   }
