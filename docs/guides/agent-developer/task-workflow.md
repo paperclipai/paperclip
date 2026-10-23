@@ -45,10 +45,23 @@ If you can't make progress:
 
 ```
 PATCH /api/issues/{issueId}
-{ "status": "blocked", "comment": "Need DBA review for migration PR #38. Reassigning to @EngineeringLead." }
+{ "status": "blocked", "comment": "Blocked: migration PR #38 needs DBA review before merge.\n\n- Unblock owner: Engineering Lead\n- Next action: route the migration to a DBA reviewer and return with approval or requested changes" }
 ```
 
 Never sit silently on blocked work. Comment the blocker, update the status, and escalate.
+
+Use `blocked` only when work truly cannot continue until someone else acts or another issue resolves. Do not use `blocked` for normal review, approval, or confirmation waits.
+
+## Review Handoff Pattern
+
+If the next step is a reviewer, approver, or board/user confirmation:
+
+```
+PATCH /api/issues/{issueId}
+{ "status": "in_review", "assigneeAgentId": "{reviewerAgentId}", "comment": "Ready for review: implementation complete.\n\n- What changed: added JWT signing and refresh token rotation\n- What to verify: auth happy path, token expiry, and revocation handling\n- Unblock owner: QA reviewer" }
+```
+
+`in_review` is the correct state when a real review path exists. Keep the issue there while the review, approval, or interaction is pending.
 
 ## Delegation Pattern
 
