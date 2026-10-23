@@ -14,7 +14,7 @@ Audit, do not edit. Return findings the maintainer (human or agent) can triage.
 
 ## Workflow
 
-1. **Walk the target space's `wiki/index.md` and wiki tree** with `wiki_search` and `wiki_read_page`, always passing the operation issue's `wikiId` and `spaceSlug`. Build a mental map of: pages that exist, pages referenced from `index.md`, pages referenced from other pages, and raw sources.
+1. **Walk the target space's `wiki/index.md` and wiki tree.** Call `wiki_list_pages` repeatedly, passing each `pageInfo.nextCursor`, until `pageInfo.complete` is true; a single page is never proof of a complete inventory. Use `wiki_search` and `wiki_read_page` for content, always passing the operation issue's `wikiId` and `spaceSlug`. Build a mental map of: pages that exist, pages referenced from `index.md`, pages referenced from other pages, and raw sources.
 2. **Check for the seven recurring issues**, in this order:
    1. **Contradictions** — two pages making incompatible claims about the same entity, decision, or status. Flag both pages, name the conflicting claims, and quote evidence.
    2. **Stale claims** — a page asserts X, but a newer source under `raw/` has superseded it. Flag the older page; never overwrite.
@@ -54,4 +54,4 @@ Before closing the operation issue:
 
 ## Tools
 
-`wiki_search`, `wiki_read_page`, `wiki_list_sources`, `wiki_read_source`, `wiki_write_page` (only `wiki/log.md`). Always include the operation issue's `wikiId` and `spaceSlug`.
+`wiki_list_pages`, `wiki_search`, `wiki_read_page`, `wiki_list_sources`, `wiki_read_source`, `wiki_write_page` (only `wiki/log.md`). Always include the operation issue's `wikiId` and `spaceSlug`.
