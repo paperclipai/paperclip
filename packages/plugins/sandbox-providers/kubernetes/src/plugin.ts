@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { definePlugin } from "@paperclipai/plugin-sdk";
+import { computeBoundedLeaseDeadline } from "./lease-expiry.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -37,6 +38,8 @@ import {
   SandboxCrTimeoutError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
+import { createLoginPtyManager } from "./login-pty.js";
+import { connectKubernetesLoginPty } from "./login-pty-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
 import {
@@ -201,10 +204,26 @@ async function resolveSyncPodExec(
   return { exec, timeoutMs };
 }
 
+let pluginContext: Parameters<NonNullable<Parameters<typeof definePlugin>[0]["setup"]>>[0] | undefined;
+const loginPty = createLoginPtyManager(connectKubernetesLoginPty, {
+  output: (route, session, data) => pluginContext?.loginPty.output(route, session, data),
+  exit: (route, session, code) => pluginContext?.loginPty.exit(route, session, code),
+});
+
 const plugin = definePlugin({
   async setup(ctx) {
+    pluginContext = ctx;
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
   },
+
+  async onShutdown() {
+    loginPty.shutdown();
+    pluginContext = undefined;
+  },
+  onLoginPtyOpen: (params) => loginPty.open(params),
+  onLoginPtyInput: (params) => loginPty.input(params),
+  onLoginPtyStop: (params) => loginPty.stop(params),
+  onLoginPtyClose: (params) => loginPty.close(params),
 
   async onHealth() {
     return { status: "ok", message: "Kubernetes sandbox provider plugin healthy" };
@@ -222,6 +241,9 @@ const plugin = definePlugin({
     }
     const warnings: string[] = [];
     const cfg = parsed.data;
+    if (cfg.backend === "job") {
+      return { ok: false, errors: ["The job backend cannot support login PTY advertised by the Kubernetes driver; use sandbox-cr."] };
+    }
     const adapterDefaults = getAdapterDefaults(cfg.adapterType, cfg.adapters);
     const totalFqdns = [...adapterDefaults.allowFqdns, ...cfg.egressAllowFqdns];
     if (cfg.egressMode === "standard" && totalFqdns.length > 0) {
@@ -326,6 +348,21 @@ const plugin = definePlugin({
       }
     }
 
+    // A caller-requested deadline (e.g. a setup-token login) must be bounded by
+    // the provider. Compute it before any cluster side effect so an invalid or
+    // too-close deadline fails closed without provisioning anything. Leases
+    // without a requested deadline keep a long-lived pod and no expiresAt.
+    // See lease-expiry.ts for the bounding rules.
+    const boundedDeadline = computeBoundedLeaseDeadline(params.requestedExpiresAt);
+    if (boundedDeadline && config.backend !== "sandbox-cr") {
+      // A Job's activeDeadlineSeconds is relative to its start, and the job
+      // backend has no exec channel for the login PTY that requests deadlines.
+      // Refuse rather than attest an expiry the Job would outlive.
+      throw new Error(
+        "The Kubernetes job backend cannot honor a requested lease deadline; use the sandbox-cr backend.",
+      );
+    }
+
     const kc = createKubeConfig({
       inCluster: config.inCluster,
       kubeconfig: config.kubeconfig,
@@ -340,10 +377,15 @@ const plugin = definePlugin({
       namespace,
       companyId: params.companyId,
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
+      paperclipServerPodSelector: config.paperclipServerPodSelector,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
-      egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
-      egressAllowCidrs: config.egressAllowCidrs,
+      // The tenant-wide egress policy is shared by every environment and
+      // adapter of the company, so it only carries the base rules (DNS and the
+      // Paperclip callback). This lease's adapter and config destinations go in
+      // a per-lease policy below, owned by the workload.
+      egressAllowFqdns: [],
+      egressAllowCidrs: [],
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
     });
 
@@ -381,6 +423,9 @@ const plugin = definePlugin({
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
           imagePullSecrets: config.imagePullSecrets,
+          hardStop: boundedDeadline
+            ? { atEpochSec: boundedDeadline.hardStopAtEpochSec, activeDeadlineSeconds: boundedDeadline.activeDeadlineSec }
+            : undefined,
         })
       : buildJobManifest({
           namespace,
@@ -398,25 +443,45 @@ const plugin = definePlugin({
         });
 
     const { uid: ownerUid } = await orchestrator.claim(clients, namespace, manifest);
+    const leasePolicyBase = {
+      clients,
+      namespace,
+      mode: config.egressMode,
+      runId: params.runId,
+      workloadName: jobName,
+      ownerReference: {
+        apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+        kind: isSandboxCrBackend ? "Sandbox" : "Job",
+        name: jobName,
+        uid: ownerUid,
+        controller: false,
+        blockOwnerDeletion: false,
+      },
+    };
+    const releaseWorkload = () => orchestrator.release(clients, namespace, jobName);
+    // Adapter defaults (API + login hosts) and the environment's configured
+    // destinations, scoped to this lease's pod and garbage-collected with it,
+    // so environments and adapters sharing the tenant never affect each other
+    // and a config change applies to every new lease.
+    await createScopedNetworkEgressPolicyOrReleaseWorkload(
+      {
+        ...leasePolicyBase,
+        suffix: "-adapter-egress",
+        grant: {
+          allowFqdns: [...new Set([...adapterDefaults.allowFqdns, ...config.egressAllowFqdns])],
+          allowCidrs: config.egressAllowCidrs,
+        },
+        baseRules: {
+          paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
+          paperclipServerPodSelector: config.paperclipServerPodSelector,
+        },
+      },
+      releaseWorkload,
+    );
     const scopedNetworkEgress = parseScopedNetworkEgressGrant(params.executionWorkspaceSettings);
     const scopedNetworkPolicyName = await createScopedNetworkEgressPolicyOrReleaseWorkload(
-      {
-        clients,
-        namespace,
-        mode: config.egressMode,
-        runId: params.runId,
-        workloadName: jobName,
-        ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
-          kind: isSandboxCrBackend ? "Sandbox" : "Job",
-          name: jobName,
-          uid: ownerUid,
-          controller: false,
-          blockOwnerDeletion: false,
-        },
-        grant: scopedNetworkEgress,
-      },
-      () => orchestrator.release(clients, namespace, jobName),
+      { ...leasePolicyBase, grant: scopedNetworkEgress },
+      releaseWorkload,
     );
 
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
@@ -460,11 +525,25 @@ const plugin = definePlugin({
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
       nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+      ...(boundedDeadline ? { expiresAt: boundedDeadline.expiresAt } : {}),
     };
 
+    if (config.backend === "sandbox-cr") {
+      loginPty.remember(jobName, {
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        namespace,
+        podName,
+        expiresAt: boundedDeadline?.expiresAt ?? null,
+        config,
+      });
+    }
     return {
       providerLeaseId: jobName,
       metadata: leaseMetadata as unknown as Record<string, unknown>,
+      // Attested only for a requested deadline, which only the sandbox-cr
+      // backend accepts; its entrypoint enforces the same absolute instant.
+      ...(boundedDeadline ? { expiresAt: boundedDeadline.expiresAt } : {}),
     };
   },
 
@@ -502,6 +581,7 @@ const plugin = definePlugin({
     });
 
     if (!check.resumable) {
+      loginPty.forget(params.providerLeaseId);
       // Kubernetes pods are NOT restartable the way Daytona sandboxes are: a
       // stopped Daytona sandbox can be started again by ID, but a k8s pod that
       // is gone or terminally failed can never be revived in place. Gone = not
@@ -522,6 +602,9 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
+    // A bounded lease keeps its original attested expiry across resumes.
+    const resumedExpiresAt =
+      typeof params.leaseMetadata?.expiresAt === "string" ? params.leaseMetadata.expiresAt : null;
     const leaseMetadata: KubernetesLeaseMetadata = {
       namespace,
       jobName: params.providerLeaseId,
@@ -539,8 +622,19 @@ const plugin = definePlugin({
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+      ...(resumedExpiresAt ? { expiresAt: resumedExpiresAt } : {}),
     };
 
+    if (leaseBackend === "sandbox-cr" && check.podName) {
+      loginPty.remember(params.providerLeaseId, {
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        namespace,
+        podName: check.podName,
+        expiresAt: resumedExpiresAt,
+        config,
+      });
+    }
     return {
       providerLeaseId: params.providerLeaseId,
       metadata: {
@@ -597,6 +691,7 @@ const plugin = definePlugin({
     // so unrelated concurrent leases keep their in-flight buffers intact.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+    loginPty.forget(params.providerLeaseId);
 
     try {
       await releaseOrchestrator.release(clients, namespace, params.providerLeaseId);
@@ -635,6 +730,7 @@ const plugin = definePlugin({
     // cluster says — the lease is dead either way.
     uploadInterceptorsByLease.delete(params.providerLeaseId);
     readySandboxesByLease.delete(params.providerLeaseId);
+    loginPty.forget(params.providerLeaseId);
 
     const kc = createKubeConfig({
       inCluster: config.inCluster,

@@ -36,6 +36,12 @@ describe("buildNetworkPolicyManifests", () => {
     expect(paperclipRule).toBeDefined();
   });
 
+  it("targets a configured callback pod selector instead of the default", () => {
+    const [, egress] = buildNetworkPolicyManifests({ ...baseInput, paperclipServerPodSelector: { app: "paperclip" } });
+    expect(egress.spec.egress[1].to[0].podSelector.matchLabels).toEqual({ app: "paperclip" });
+    expect(egress.spec.egress[1].ports).toEqual([{ protocol: "TCP", port: 3100 }]);
+  });
+
   it("includes user-supplied CIDRs in egress allow", () => {
     const [, egress] = buildNetworkPolicyManifests({ ...baseInput, egressAllowCidrs: ["10.0.0.0/8"] });
     const cidrRule = egress.spec.egress.find((r: { to: { ipBlock?: { cidr: string } }[] }) =>

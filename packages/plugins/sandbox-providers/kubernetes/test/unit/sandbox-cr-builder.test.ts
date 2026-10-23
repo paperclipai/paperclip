@@ -51,6 +51,28 @@ describe("buildSandboxCrManifest", () => {
     ]);
   });
 
+  it("sets no pod deadline for an unbounded lease", () => {
+    const cr = buildSandboxCrManifest(baseInput);
+    expect(cr.spec.podTemplate.spec.activeDeadlineSeconds).toBeUndefined();
+  });
+
+  it("stops a bounded sandbox at the absolute deadline, not relative to pod start", () => {
+    const cr = buildSandboxCrManifest({ ...baseInput, hardStop: { atEpochSec: 1767225690, activeDeadlineSeconds: 90 } });
+    const spec = cr.spec.podTemplate.spec;
+    expect(spec.activeDeadlineSeconds).toBe(90);
+    const script = spec.containers[0].command[4];
+    expect(spec.containers[0].command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
+    expect(script).toContain("deadline=1767225690;");
+    // A restart after the deadline exits immediately instead of sleeping again.
+    expect(script).toContain('[ "$now" -lt "$deadline" ] || exit 0');
+    expect(script).toContain('exec sleep "$((deadline - now))"');
+    expect(script).not.toContain("infinity");
+  });
+
+  it("rejects a non-integer hard-stop deadline instead of emitting an unsafe script", () => {
+    expect(() => buildSandboxCrManifest({ ...baseInput, hardStop: { atEpochSec: Number.NaN, activeDeadlineSeconds: 90 } })).toThrow();
+  });
+
   it("applies the same security baseline as Job backend (non-root, drop ALL, RO rootFS, seccomp)", () => {
     const cr = buildSandboxCrManifest(baseInput);
     const podSec = cr.spec.podTemplate.spec.securityContext;
