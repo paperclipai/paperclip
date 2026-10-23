@@ -43,6 +43,7 @@ vi.mock("@/lib/router", () => ({
   useLocation: () => ({ hash: "" }),
 }));
 vi.mock("@/components/IssuePlanDecompositionsSection", () => ({ IssuePlanDecompositionsSection: () => null }));
+vi.mock("@/components/IssueDocumentDeleteButton", () => ({ IssueDocumentDeleteButton: () => null }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 vi.mock("@/components/IssueDocumentAnnotations", () => ({
   DocumentAnnotationsCountChip: ({ docKey }: { docKey: string }) => <span data-testid={`annotation-count-${docKey}`} />,

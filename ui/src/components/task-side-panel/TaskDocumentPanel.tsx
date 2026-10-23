@@ -4,6 +4,7 @@ import type { IssueDocument } from "@paperclipai/shared";
 import { FileQuestion, Loader2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { IssueDocumentDeleteButton } from "@/components/IssueDocumentDeleteButton";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { queryKeys } from "@/lib/queryKeys";
@@ -14,10 +15,14 @@ export function TaskDocumentPanel({
   issueId,
   documentKey,
   initialDocument,
+  canDeleteDocuments = false,
+  onDeleted,
 }: {
   issueId: string;
   documentKey: string;
   initialDocument?: IssueDocument;
+  canDeleteDocuments?: boolean;
+  onDeleted?: (documentKey: string) => void;
 }) {
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -33,7 +38,6 @@ export function TaskDocumentPanel({
     },
     initialData: initialDocument,
   });
-
   if (query.isLoading) {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
@@ -64,21 +68,31 @@ export function TaskDocumentPanel({
     );
   }
 
+  const title = documentDisplayTitle(document);
+
   return (
     <article className="space-y-4">
-      <header className="space-y-1">
-        <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
-        <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-          <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
-          <span aria-hidden>·</span>
-          <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
-          <DocumentAnnotationsCountChip
-            issueId={issueId}
-            docKey={document.key}
-            panelOpen={annotationPanelOpen}
-            onToggle={() => setAnnotationPanelOpen((open) => !open)}
-          />
+      <header className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h2 className="text-lg font-semibold">{title}</h2>
+          <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+            <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
+            <span aria-hidden>·</span>
+            <span>{`Updated ${new Date(document.updatedAt).toLocaleString()}`}</span>
+            <DocumentAnnotationsCountChip
+              issueId={issueId}
+              docKey={document.key}
+              panelOpen={annotationPanelOpen}
+              onToggle={() => setAnnotationPanelOpen((open) => !open)}
+            />
+          </div>
         </div>
+        <IssueDocumentDeleteButton
+          issueId={issueId}
+          document={document}
+          canDeleteDocuments={canDeleteDocuments}
+          onDeleted={onDeleted}
+        />
       </header>
       {document.body.trim() ? (
         <IssueDocumentAnnotations

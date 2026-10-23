@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, IssueThreadInteraction } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
+import { IssueDocumentDeleteButton } from "@/components/IssueDocumentDeleteButton";
 import { queryKeys } from "@/lib/queryKeys";
 import { IssuePlanDecompositionsSection } from "@/components/IssuePlanDecompositionsSection";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -14,6 +15,8 @@ interface IssuePropertiesPlansTabProps {
   /** Retained for host parity with the other tabs; the Plans tab no longer
    * renders its own approval control (PAP-418). */
   inline?: boolean;
+  canDeleteDocuments?: boolean;
+  onDeleted?: (documentKey: string) => void;
 }
 
 function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | undefined): boolean {
@@ -35,7 +38,11 @@ function hasPendingPlanConfirmation(interactions: IssueThreadInteraction[] | und
  * PlanEntry/todo streaming is a flagged protocol dependency (demonstrated in
  * the /dev/task-chat-lab harness).
  */
-export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps) {
+export function IssuePropertiesPlansTab({
+  issue,
+  canDeleteDocuments = false,
+  onDeleted,
+}: IssuePropertiesPlansTabProps) {
   const { data: planDocument, isLoading: planDocumentLoading } = useIssuePlanDocument(issue.id);
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -79,18 +86,26 @@ export function IssuePropertiesPlansTab({ issue }: IssuePropertiesPlansTabProps)
           approve from. */}
       {planDocument ? (
         <section data-testid="issue-plan-document" className="space-y-2">
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            {`Revision ${planDocument.latestRevisionNumber ?? 1} · updated ${new Date(planDocument.updatedAt).toLocaleString([], {
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-            })}`}
-            <DocumentAnnotationsCountChip
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              {`Revision ${planDocument.latestRevisionNumber ?? 1} · updated ${new Date(planDocument.updatedAt).toLocaleString([], {
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              })}`}
+              <DocumentAnnotationsCountChip
+                issueId={issue.id}
+                docKey="plan"
+                panelOpen={annotationPanelOpen}
+                onToggle={() => setAnnotationPanelOpen((open) => !open)}
+              />
+            </div>
+            <IssueDocumentDeleteButton
               issueId={issue.id}
-              docKey="plan"
-              panelOpen={annotationPanelOpen}
-              onToggle={() => setAnnotationPanelOpen((open) => !open)}
+              document={planDocument}
+              canDeleteDocuments={canDeleteDocuments}
+              onDeleted={onDeleted}
             />
           </div>
           <IssueDocumentAnnotations
