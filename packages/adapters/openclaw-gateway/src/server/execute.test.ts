@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveClaimedApiKeyPath, resolveSessionKey } from "./execute.js";
+import {
+  buildAgentParams,
+  extractAssistantChunk,
+  resolveClaimedApiKeyPath,
+  resolveSessionKey,
+} from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -121,5 +126,34 @@ describe("resolveClaimedApiKeyPath", () => {
   it("falls back to the shared default when value is not a string", () => {
     expect(resolveClaimedApiKeyPath(42)).toBe(DEFAULT_PATH);
     expect(resolveClaimedApiKeyPath({})).toBe(DEFAULT_PATH);
+  });
+});
+
+describe("extractAssistantChunk", () => {
+  it("preserves leading, trailing, and whitespace-only deltas without trimming", () => {
+    expect(extractAssistantChunk({ delta: " is" })).toBe(" is");
+    expect(extractAssistantChunk({ delta: " blocked" })).toBe(" blocked");
+    expect(extractAssistantChunk({ delta: " " })).toBe(" ");
+    expect(extractAssistantChunk({ delta: "\n\n" })).toBe("\n\n");
+  });
+
+  it("falls back to text when delta is absent", () => {
+    expect(extractAssistantChunk({ text: " full text response" })).toBe(" full text response");
+  });
+
+  it("falls back to text when delta is whitespace-only but text has non-whitespace content", () => {
+    expect(extractAssistantChunk({ delta: " ", text: "Done" })).toBe("Done");
+    expect(extractAssistantChunk({ delta: "   ", text: "Task completed" })).toBe("Task completed");
+  });
+
+  it("prefers non-whitespace delta even when text is also present", () => {
+    expect(extractAssistantChunk({ delta: " word", text: "full text" })).toBe(" word");
+  });
+
+  it("returns null for empty strings or non-string values", () => {
+    expect(extractAssistantChunk({ delta: "" })).toBeNull();
+    expect(extractAssistantChunk({ text: "" })).toBeNull();
+    expect(extractAssistantChunk({})).toBeNull();
+    expect(extractAssistantChunk({ delta: 123 })).toBeNull();
   });
 });
