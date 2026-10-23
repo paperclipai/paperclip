@@ -38,6 +38,13 @@ helpers in [`src/ssh.ts`](./src/ssh.ts):
   syncs the remote cwd back into `localDir` after the run, including any new
   commits the agent created. Also runs with no `git remote` configured.
 
+SSH transfers succeed only when every SSH and local tar process exits with
+code zero and no signal. A missing exit code or signal termination rejects
+the transfer. Errors retain the exit code, signal, and stderr so callers can
+distinguish process termination from a remote command or transport failure.
+A failed download does not apply its staged files or Git bundle to the
+existing local workspace and does not report successful transfer progress.
+
 `prepareRemoteManagedRuntime` in
 [`src/remote-managed-runtime.ts`](./src/remote-managed-runtime.ts) wraps both
 calls for adapters that want a per-run remote workspace and an automatic
