@@ -90,6 +90,66 @@ interface InflightGet {
 
 const inflightGets = new Map<string, InflightGet>();
 
+// The task board loads several status columns at once. Keep distinct issue-list
+// requests below the server's per-actor limit (8), leaving room for other tabs
+// and the inbox badge. Identical paths are coalesced before taking a slot.
+const MAX_INFLIGHT_ISSUE_LIST_GETS = 3;
+let inflightIssueListGets = 0;
+const queuedIssueListGets: Array<() => void> = [];
+
+function isIssueListGet(path: string): boolean {
+  return /^\/companies\/[^/]+\/issues(?:\?|$)/.test(path);
+}
+
+function drainIssueListGets(): void {
+  while (inflightIssueListGets < MAX_INFLIGHT_ISSUE_LIST_GETS) {
+    const start = queuedIssueListGets.shift();
+    if (!start) return;
+    start();
+  }
+}
+
+function scheduledIssueListGet<T>(signal: AbortSignal, run: () => Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<T>((resolve, reject) => {
+    let started = false;
+    const onAbort = () => {
+      if (started) return;
+      const index = queuedIssueListGets.indexOf(start);
+      if (index >= 0) queuedIssueListGets.splice(index, 1);
+      reject(abortError());
+    };
+    const start = () => {
+      if (signal.aborted) {
+        reject(abortError());
+        return;
+      }
+      started = true;
+      signal.removeEventListener("abort", onAbort);
+      inflightIssueListGets += 1;
+      run().then(
+        (value) => {
+          inflightIssueListGets -= 1;
+          drainIssueListGets();
+          resolve(value);
+        },
+        (error) => {
+          inflightIssueListGets -= 1;
+          drainIssueListGets();
+          reject(error);
+        },
+      );
+    };
+
+    if (inflightIssueListGets < MAX_INFLIGHT_ISSUE_LIST_GETS) start();
+    else {
+      queuedIssueListGets.push(start);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
+
+
 function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(abortError());
@@ -97,11 +157,14 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   let entry = inflightGets.get(path);
   if (!entry) {
     const controller = new AbortController();
-    const promise = request<T>(path, {
+    const run = () => request<T>(path, {
       method: "GET",
       signal: controller.signal,
       ...(options?.cache ? { cache: options.cache } : {}),
     });
+    const promise = isIssueListGet(path)
+      ? scheduledIssueListGet(controller.signal, run)
+      : run();
     const created: InflightGet = { promise, controller, refs: new Set() };
     // Clear the shared entry once settled so later calls issue a fresh request.
     promise.then(

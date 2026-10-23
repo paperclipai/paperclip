@@ -164,6 +164,106 @@ describe("in-tab GET coalescing", () => {
   });
 });
 
+describe("issue-list request scheduling", () => {
+  it("starts at most three distinct issue lists at once and drains the queue", async () => {
+    const responses = Array.from({ length: 7 }, () => deferred<Response>());
+    fetchMock.mockImplementation(() => responses[fetchMock.mock.calls.length - 1]!.promise);
+
+    const requests = Array.from({ length: 7 }, (_, index) =>
+      api.get(`/companies/company-1/issues?status=status-${index}`),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    responses[0]!.resolve(jsonResponse(["first"]));
+    await expect(requests[0]).resolves.toEqual(["first"]);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    for (const response of responses.slice(1)) response.resolve(jsonResponse([]));
+    await expect(Promise.all(requests.slice(1))).resolves.toEqual(
+      Array.from({ length: 6 }, () => []),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+  });
+
+  it("drops an aborted queued issue list before it reaches fetch", async () => {
+    const active = Array.from({ length: 3 }, () => deferred<Response>());
+    fetchMock.mockImplementation(() => active[fetchMock.mock.calls.length - 1]!.promise);
+    const requests = active.map((_, index) =>
+      api.get(`/companies/company-1/issues?status=active-${index}`),
+    );
+    const controller = new AbortController();
+    const queued = api.get("/companies/company-1/issues?status=queued", {
+      signal: controller.signal,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" });
+    active.forEach((response) => response.resolve(jsonResponse([])));
+    await Promise.all(requests);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a shared queued issue list when one caller aborts", async () => {
+    const active = Array.from({ length: 3 }, () => deferred<Response>());
+    const sharedResponse = deferred<Response>();
+    fetchMock.mockImplementation(() => {
+      const index = fetchMock.mock.calls.length - 1;
+      return index < active.length ? active[index]!.promise : sharedResponse.promise;
+    });
+    const blockers = active.map((_, index) =>
+      api.get(`/companies/company-1/issues?status=active-${index}`),
+    );
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const path = "/companies/company-1/issues?status=shared";
+    const first = api.get(path, { signal: firstController.signal });
+    const second = api.get(path, { signal: secondController.signal });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    firstController.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    active[0]!.resolve(jsonResponse([]));
+    await blockers[0];
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    sharedResponse.resolve(jsonResponse(["shared"]));
+    await expect(second).resolves.toEqual(["shared"]);
+    for (const response of active.slice(1)) response.resolve(jsonResponse([]));
+    await Promise.all(blockers.slice(1));
+  });
+
+  it("allows a fresh caller after all queued callers abort", async () => {
+    const active = Array.from({ length: 3 }, () => deferred<Response>());
+    const freshResponse = deferred<Response>();
+    fetchMock.mockImplementation(() => {
+      const index = fetchMock.mock.calls.length - 1;
+      return index < active.length ? active[index]!.promise : freshResponse.promise;
+    });
+    const blockers = active.map((_, index) =>
+      api.get(`/companies/company-1/issues?status=active-${index}`),
+    );
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const path = "/companies/company-1/issues?status=shared";
+    const first = api.get(path, { signal: firstController.signal });
+    const second = api.get(path, { signal: secondController.signal });
+    firstController.abort();
+    secondController.abort();
+    await expect(first).rejects.toMatchObject({ name: "AbortError" });
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    const fresh = api.get(path);
+    active[0]!.resolve(jsonResponse([]));
+    await blockers[0];
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    freshResponse.resolve(jsonResponse(["fresh"]));
+    await expect(fresh).resolves.toEqual(["fresh"]);
+    for (const response of active.slice(1)) response.resolve(jsonResponse([]));
+    await Promise.all(blockers.slice(1));
+  });
+});
+
 describe("per-caller abort semantics", () => {
   it("aborting one caller rejects only that caller, not the shared fetch", async () => {
     const d = deferred<Response>();
