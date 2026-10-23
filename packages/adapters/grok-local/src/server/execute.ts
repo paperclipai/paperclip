@@ -51,6 +51,8 @@ import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, s
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
+/** Grok reads a single-turn prompt from a file; stdin is a file on every POSIX host. */
+const GROK_PROMPT_STDIN_PATH = "/dev/stdin";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -524,7 +526,9 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     }
 
     const commandNotes = (() => {
-      const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
+      const notes: string[] = [
+        "Prompt is passed to Grok through --prompt-file /dev/stdin (piped on stdin) in headless mode, so its size never counts against the per-argument exec limit.",
+      ];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
@@ -551,7 +555,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const paperclipEnvNote = renderPaperclipEnvNote(env);
     const apiAccessNote = renderApiAccessNote(env);
 
-    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+    const buildArgs = (resumeSessionId: string | null) => {
       const args = ["--cwd", effectiveExecutionCwd, "--output-format", "streaming-json"];
       if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (model && model !== DEFAULT_GROK_LOCAL_MODEL) args.push("--model", model);
@@ -567,7 +571,10 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         return asStringArray(config.args);
       })();
       if (extraArgs.length > 0) args.push(...extraArgs);
-      args.push("--single", prompt);
+      // The prompt is piped on stdin. Linux caps a single argv or env string at
+      // MAX_ARG_STRLEN (128 KiB); a long issue thread passed as `--single <prompt>`
+      // made spawn fail with E2BIG before Grok even started.
+      args.push("--prompt-file", GROK_PROMPT_STDIN_PATH);
       return args;
     };
 
@@ -603,16 +610,14 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
         heartbeatPromptChars: attemptRenderedPrompt.length,
       };
-      const args = buildArgs(resumeSessionId, prompt);
+      const args = buildArgs(resumeSessionId);
       if (onMeta) {
         await onMeta({
           adapterType: "grok_local",
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
-          commandArgs: args.map((value, index) => (
-            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-          )),
+          commandArgs: [...args, `<stdin: prompt ${prompt.length} chars>`],
           env: loggedEnv,
           prompt,
           promptMetrics: { ...promptMetrics, promptChars: prompt.length },
@@ -624,6 +629,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env,
+        stdin: prompt,
         timeoutSec,
         graceSec,
         onSpawn,
