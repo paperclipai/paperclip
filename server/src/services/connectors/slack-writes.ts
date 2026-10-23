@@ -30,6 +30,7 @@ import {
   objects,
   type SlackObject,
 } from "./slack-client.js";
+import { SLACK_UNCERTAIN_DELIVERY_INSTRUCTION } from "./slack-retry.js";
 import { logActivity } from "../activity-log.js";
 
 const richText = (text: unknown) => [
@@ -152,8 +153,7 @@ export async function executeSlackWrite(
     return {
       actionId: action.id,
       state: action.status,
-      instruction:
-        "Do not retry with another key. Inspect delivery before reconciling an uncertain result.",
+      instruction: SLACK_UNCERTAIN_DELIVERY_INSTRUCTION,
     };
   const [claimed] = await db.transaction(async (tx) => {
     await notifyChatPublicationWork(tx);

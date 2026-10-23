@@ -2194,6 +2194,97 @@ rl.on("line", (line) => {
   });
 
   it.each([
+    { label: "failed", status: "failed" as const, errorCode: "stored_failure", httpStatus: 502 },
+    { label: "timed out", status: "timed_out" as const, errorCode: "stored_timeout", httpStatus: 504 },
+    { label: "rate limited", status: "rate_limited" as const, errorCode: "stored_rate_limit", httpStatus: 429 },
+    { label: "denied", status: "denied" as const, errorCode: "stored_denial", httpStatus: 403 },
+    { label: "denied by rate limit", status: "denied" as const, errorCode: "rate_limited", httpStatus: 429 },
+    { label: "cancelled", status: "cancelled" as const, errorCode: "stored_cancelled", httpStatus: 409 },
+    { label: "succeeded", status: "succeeded" as const, errorCode: null, httpStatus: null },
+  ])("replays a stored $label remote MCP invocation without fetching again", async (scenario) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createRemoteMcpTool(db, company.id, {
+      applicationKey: "failed-replay",
+      toolName: "write_record",
+      riskLevel: "write",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const remoteRequests: RequestInit[] = [];
+    const gateway = createTestToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        remoteRequests.push(init);
+        throw new Error("socket hang up");
+      },
+    });
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const tool = (await gateway.listToolsForSession(session.token))
+      .find((entry) => entry.providerType === "mcp_remote_http")!;
+    const idempotencyKey = `failed-remote-call-${randomUUID()}`;
+    const call = () => gateway.executeTool({
+      sessionToken: session.token,
+      tool: tool.name,
+      parameters: { key: "alpha", value: "one" },
+      idempotencyKey,
+    });
+
+    await call().then(
+      () => { throw new Error("Expected the first remote MCP call to fail"); },
+      (error) => expectGatewayError(error, 502, "mcp_remote_fetch_failed"),
+    );
+    // The failed transport marks this connection unhealthy and hides its tool.
+    // Restore it to model a subsequent call after the operator/provider recovers.
+    await db.update(toolConnections).set({ healthStatus: "ok" })
+      .where(eq(toolConnections.id, connection.id));
+    const [initialInvocation] = await db.select().from(toolInvocations)
+      .where(eq(toolInvocations.idempotencyKey, idempotencyKey));
+    const storedMessage = `Stored ${scenario.label} result`;
+    const storedResult = { content: [{ type: "text", text: "stored successful result" }] };
+    await db.update(toolInvocations).set({
+      status: scenario.status,
+      errorCode: scenario.errorCode,
+      errorMessage: scenario.httpStatus === null ? null : storedMessage,
+      resultSummary: scenario.httpStatus === null ? storedResult : null,
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(toolInvocations.id, initialInvocation!.id));
+
+    if (scenario.httpStatus === null) {
+      const replay = await call();
+      expect(replay).toMatchObject({
+        invocationId: initialInvocation!.id,
+        status: "replayed",
+        result: storedResult,
+      });
+      const replayAudit = (await db.select().from(activityLog))
+        .find((event) => event.action === "tool_gateway.call_completed"
+          && event.details?.invocationId === initialInvocation!.id
+          && event.details?.replayed === true);
+      expect(replayAudit).toBeTruthy();
+    } else {
+      await call().then(
+        () => { throw new Error("Expected replay to preserve the original failure"); },
+        (error) => {
+          expectGatewayError(error, scenario.httpStatus!, scenario.errorCode!);
+          expect((error as ToolGatewayHttpError).message).toBe(storedMessage);
+          expect((error as ToolGatewayHttpError).details).toMatchObject({ replayed: true });
+        },
+      );
+      const replayAudit = (await db.select().from(activityLog))
+        .find((event) => event.action === "tool_gateway.call_failed"
+          && event.details?.invocationId === initialInvocation!.id
+          && event.details?.replayed === true);
+      expect(replayAudit).toBeTruthy();
+    }
+
+    expect(remoteRequests).toHaveLength(1);
+    const [invocation] = await db.select().from(toolInvocations)
+      .where(eq(toolInvocations.idempotencyKey, idempotencyKey));
+    expect(invocation).toMatchObject({ status: scenario.status, errorCode: scenario.errorCode });
+  });
+
+  it.each([
     ["local_trusted", { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const }],
     ["authenticated/private", { deploymentMode: "authenticated" as const, deploymentExposure: "private" as const }],
     ["authenticated/public", { deploymentMode: "authenticated" as const, deploymentExposure: "public" as const }],

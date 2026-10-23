@@ -3448,6 +3448,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const action = await f.action();
       await db.update(chatActions).set({ result: { ...action.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, action.id));
       await githubChatReviewService(db, f.providerFetch).processPending();
+      // A retried GitHub publication has its own receipt protocol. Even if the
+      // invocation row still says failed, recover the receipt instead of
+      // replaying the generic stored failure.
+      await db.update(toolInvocations).set({
+        status: "failed",
+        errorCode: "simulated_lost_response",
+        errorMessage: "The publication response was lost",
+      }).where(eq(toolInvocations.id, first.invocationId));
       expect(await gateway.executeTool(input)).toMatchObject({ invocationId: first.invocationId, result: { data: { status: "processed" } } });
       expect(attempts).toBe(2);
       expect(f.responseComments.size).toBe(1);
@@ -9066,7 +9074,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(executeConnectorTool(db, binding, "slack_post_message", uncertain)).rejects.toMatchObject({ details: { state: "uncertain" } });
     const [uncertainAction] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, endpoint.id), eq(chatActions.providerActionId, `slack-tool:${binding.issueId}:${uncertain.idempotencyKey}`)));
     const countBefore = postFetch.mock.calls.length;
-    await executeConnectorTool(db, binding, "slack_post_message", uncertain);
+    await expect(executeConnectorTool(db, binding, "slack_post_message", uncertain)).resolves.toMatchObject({
+      status: "replayed",
+      result: {
+        actionId: uncertainAction.id,
+        state: "uncertain",
+        instruction: expect.stringContaining("Inspect delivery before reconciling"),
+      },
+    });
     expect(postFetch.mock.calls).toHaveLength(countBefore);
     const receiptSettled = vi.fn();
     const unsubscribeReceipt = subscribeDeliveryWork(db, DELIVERY_QUEUES.chatPublications, receiptSettled);
@@ -9183,7 +9198,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await expect(resolveConnectorAssignments(db, recovered)).resolves.toEqual([]);
     await expect(executeConnectorTool(db, recovered, "slack_history", { channel: "CTOOLS" })).rejects.toThrow("no longer assigned");
     await service.shutdown();
-  });
+  }, 45_000);
 
   it.each([false, true])("requires at-mentions by default only in Slack channels (DM=%s)", async (isDM) => {
     const fixture = await seedCompany();

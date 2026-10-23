@@ -6,10 +6,14 @@ import {
   type SlackTaskBinding,
 } from "./slack-authority.js";
 
+export const SLACK_UNCERTAIN_DELIVERY_INSTRUCTION =
+  "Do not retry with another key. Inspect delivery before reconciling an uncertain result.";
+
 /** Only a definite provider rate-limit rejection can be retried automatically.
- * A fresh policy decision and live authority check precede this atomic claim.
+ * An uncertain write may return its durable pending state without resending.
+ * A fresh policy decision and live authority check precede this classification.
  * Never reopen an uncertain call or reuse approval from another run. */
-export async function claimSlackRateLimitRetry(
+export async function resolveSlackInvocationRetry(
   db: Db,
   binding: SlackTaskBinding,
   invocationId: string,
@@ -31,7 +35,7 @@ export async function claimSlackRateLimitRetry(
         ),
       )
       .for("update");
-    if (!invocation) return false;
+    if (!invocation) return "not_retryable" as const;
     const [action] = await tx
       .select()
       .from(chatActions)
@@ -40,19 +44,37 @@ export async function claimSlackRateLimitRetry(
           eq(chatActions.companyId, binding.companyId),
           eq(chatActions.endpointId, authority.endpoint.id),
           eq(chatActions.kind, "slack_tool_write"),
-          eq(chatActions.status, "failed"),
           sql`${chatActions.payload}->>'invocationId' = ${invocation.id}`,
         ),
       )
       .for("update");
+    if (!action || action.payload.revision !== authority.revision)
+      return "not_retryable" as const;
+    // An uncertain write must pass through the Slack idempotency record again
+    // so the caller receives its unresolved state. The write path returns that
+    // state without sending another request; reconciliation remains explicit.
     if (
-      !action ||
-      action.payload.revision !== authority.revision ||
-      action.result?.code !== "slack_rate_limited" ||
-      typeof action.result.retryAt !== "string" ||
-      !(Date.parse(action.result.retryAt) <= Date.now())
+      action.status === "uncertain" &&
+      action.result?.code === "slack_transport_uncertain" &&
+      invocation.errorCode === "slack_transport_uncertain"
     )
-      return false;
+      return {
+        kind: "replay_uncertain" as const,
+        result: {
+          actionId: action.id,
+          state: "uncertain" as const,
+          instruction: SLACK_UNCERTAIN_DELIVERY_INSTRUCTION,
+        },
+      };
+    if (
+      action.status !== "failed" ||
+      action.result?.code !== "slack_rate_limited" ||
+      typeof action.result.retryAt !== "string"
+    )
+      return "not_retryable" as const;
+    const retryAt = Date.parse(action.result.retryAt);
+    if (!Number.isFinite(retryAt)) return "not_retryable" as const;
+    if (retryAt > Date.now()) return "deferred" as const;
     await notifyChatPublicationWork(tx);
     await tx
       .update(chatActions)
@@ -69,6 +91,6 @@ export async function claimSlackRateLimitRetry(
         updatedAt: new Date(),
       })
       .where(eq(toolInvocations.id, invocation.id));
-    return true;
+    return "claimed" as const;
   });
 }
