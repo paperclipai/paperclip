@@ -4,6 +4,7 @@ import path from "node:path";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import type {
   NormalizedWorkspaceFileAvailabilityQuery,
   ResolvedWorkspaceResource,
@@ -35,6 +36,7 @@ const MAX_RELATIVE_PATH_BYTES = 4096;
 const TEXT_SNIFF_BYTES = 4096;
 const MAX_LIST_DEPTH = 20;
 const GIT_STATUS_MAX_BUFFER_BYTES = 1024 * 1024;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LOCAL_PROJECT_WORKSPACE_SOURCE_TYPES = new Set(["local_path", "non_git_path", "git_repo", "git_worktree"]);
 
 export interface WorkspaceFileScanContext {
@@ -1086,7 +1088,17 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
     }
     return visible;
   }
+  // Visibility is not checked here; getIssue applies the privacy-scoped read.
+  async function resolveIssueId(rawId: string): Promise<string> {
+    const identifier = normalizeIssueIdentifier(rawId);
+    if (!identifier) return rawId;
+    const [issue] = await db.select({ id: issues.id }).from(issues).where(eq(issues.identifier, identifier)).limit(1);
+    return issue?.id ?? rawId;
+  }
+
   async function getIssue(issueId: string): Promise<IssueRow> {
+    // A non-UUID value would make Postgres reject the uuid comparison with a 500.
+    if (!UUID_RE.test(issueId)) throw notFound("Issue not found");
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), actor ? await issueReadSqlCondition(db, actor) : undefined)).limit(1);
     if (!issue) throw notFound("Issue not found");
     return issue;
@@ -1796,6 +1808,7 @@ export function workspaceFileResourceService(db: Db, actor?: AuthorizationActor)
   }
 
   return {
+    resolveIssueId,
     getIssue,
     availability,
     list,

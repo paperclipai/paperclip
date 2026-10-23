@@ -23,6 +23,7 @@ import {
 } from "../services/workspace-git-operation-scheduler.js";
 
 export type WorkspaceFileResourceService = {
+  resolveIssueId(rawId: string): Promise<string>;
   getIssue(issueId: string): Promise<{ companyId: string }>;
   availability(
     issueId: string,
@@ -359,6 +360,16 @@ export function fileResourceRoutes(db: Db, opts: {
   const limiter = opts.limiter ?? createFileResourceLimiter();
   const listLimiter = opts.listLimiter ?? createFileResourceListLimiter();
   const availabilityLimiter = opts.availabilityLimiter ?? createFileResourceAvailabilityLimiter();
+
+  // Resolve issue identifiers (e.g. "PAP-39") to UUIDs, matching the issues router.
+  router.param("issueId", async (req, _res, next, rawId) => {
+    try {
+      req.params.issueId = await serviceFor(req).resolveIssueId(String(rawId));
+      next();
+    } catch (err) {
+      next(err);
+    }
+  });
 
   async function logAvailabilityAttempt(input: {
     companyId: string;
