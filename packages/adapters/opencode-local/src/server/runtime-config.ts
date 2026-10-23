@@ -222,10 +222,20 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // for the anthropic provider); when that provider is repointed at a gateway that
   // does not serve that exact model, the title-gen call fails and aborts the run.
   // Setting small_model to a gateway-served model keeps every call on supported models.
-  const smallModel = (input.env.PAPERCLIP_OPENCODE_SMALL_MODEL ?? process.env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  // When no override is configured, default to the run model so helper calls cannot
+  // select a different model and evict the run model from a single-model provider.
+  const explicitSmallModel = (input.env.PAPERCLIP_OPENCODE_SMALL_MODEL ?? process.env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  const defaultSmallModel = configuredModel
+    ? `${configuredModel.provider}/${configuredModel.model}`
+    : undefined;
+  const smallModel = explicitSmallModel || defaultSmallModel;
   if (smallModel) {
     nextConfig.small_model = smallModel;
-    notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+    notes.push(
+      explicitSmallModel
+        ? `Pinned OpenCode small_model to ${smallModel}.`
+        : `Defaulted OpenCode small_model to the run model ${smallModel}.`,
+    );
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
