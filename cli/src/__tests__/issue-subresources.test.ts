@@ -80,6 +80,55 @@ describe("issue subresource commands", () => {
     });
   });
 
+  it("posts a comment body read from --body-file byte-for-byte, including backtick spans", async () => {
+    // Regression: comment bodies used to only enter via --body "<text>", so a
+    // shell double-quoted string ate backticks/`$( )` as command substitution
+    // before argv reached the CLI (AUT-8961). --body-file keeps the body out of
+    // argv entirely; assert the stored payload matches the file byte-for-byte.
+    const tmp = await mkdtemp(join(tmpdir(), "paperclip-cli-test-"));
+    const filePath = join(tmp, "comment.md");
+    const markdown = [
+      "This run is on `agent/devops`; `systemctl daemon-reload` is refused",
+      "because the `--user` flag is set. $(touch /tmp/should-not-exist) stays literal.",
+      "",
+      "- Literal `code span` tail",
+      "",
+    ].join("\n");
+    await writeFile(filePath, markdown, "utf8");
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await run(["issue", "comment", ISSUE_ID, "--body-file", filePath]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ body: markdown });
+  });
+
+  it("rejects issue comment when --body and --body-file are both passed or neither is", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit");
+    }) as never);
+
+    try {
+      await expect(
+        run(["issue", "comment", ISSUE_ID, "--body", "a", "--body-file", "b.md"]),
+      ).rejects.toThrow("exit");
+      await expect(run(["issue", "comment", ISSUE_ID])).rejects.toThrow("exit");
+    } finally {
+      errSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("wraps comments, approvals, markers, and recovery action endpoints", async () => {
     const fetchMock = vi
       .fn()
