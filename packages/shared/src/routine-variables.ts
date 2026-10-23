@@ -137,7 +137,7 @@ export function interpolateRoutineTemplate(
   if (!values || Object.keys(values).length === 0) return template;
   return template.replace(ROUTINE_VARIABLE_MATCHER, (match, rawName: string) => {
     const name = unescapeRoutineVariableName(rawName);
-    if (!(name in values)) return match;
+    if (!Object.hasOwn(values, name)) return match;
     return stringifyRoutineVariableValue(values[name]);
   });
 }
