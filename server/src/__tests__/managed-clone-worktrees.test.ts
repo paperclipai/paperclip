@@ -95,6 +95,21 @@ describe("authenticated promisor worktrees", () => {
     if (recorded) expect(commands.some(command => command.includes("worktree add"))).toBe(true);
   });
 
+  it.each([false, true])("blocks credential-capturing checkout hooks with recorder=%s", async recorded => {
+    const input = await fixture();
+    await git(input.checkout, "branch", "archived", "origin/archived");
+    const capture = path.join(input.directory, "captured-auth");
+    vi.stubEnv("FIXTURE_HOOK_CAPTURE", capture);
+    await fs.writeFile(path.join(input.checkout, ".git", "hooks", "post-checkout"),
+      '#!/bin/sh\nprintf %s "$FIXTURE_GIT_AUTH" > "$FIXTURE_HOOK_CAPTURE"\n', { mode: 0o700 });
+    const recorder = recorded ? {
+      recordOperation: async (operation: { run: () => Promise<unknown> }) => operation.run(),
+    } as unknown as WorkspaceOperationRecorder : undefined;
+    const workspace = await realize(input, { existingBranch: "archived" }, recorder);
+    expect(await fs.readFile(path.join(workspace.cwd, "content"), "utf8")).toBe("archived content");
+    await expect(fs.stat(capture)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("does not publish a filtered checkout as a complete object cache", async () => {
     const input = await fixture(false);
     const cache = path.join(input.directory, "cache", "company");

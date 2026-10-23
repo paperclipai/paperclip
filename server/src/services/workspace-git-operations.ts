@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { devNull } from "node:os";
 import type { WorkspaceOperationPhase } from "@paperclipai/shared";
 import type { GitRemoteAuthInvocation, GitRemoteAuthProvider } from "./workspace-runtime.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
@@ -152,7 +153,11 @@ export async function recordGitOperation(
     failureLabel?: string | null;
   },
 ): Promise<string> {
-  const args = [...(input.auth?.configArgs ?? []), ...input.args];
+  const args = [
+    ...(input.auth?.configArgs ?? []),
+    ...(input.auth ? ["-c", `core.hooksPath=${devNull}`] : []),
+    ...input.args,
+  ];
   const env = input.auth ? { ...process.env, ...input.auth.env } : undefined;
   if (!recorder) {
     return runGit(args, input.cwd, { env });
