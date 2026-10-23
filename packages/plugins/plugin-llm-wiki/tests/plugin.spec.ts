@@ -93,6 +93,7 @@ let mockSettingsManagedAgent: Record<string, unknown> | null = null;
 let mockSettingsManagedRoutines: Array<Record<string, unknown>> = [];
 let mockSettingsManagedSkills: Array<Record<string, unknown>> = [];
 let mockDistillationOverviewData: Record<string, unknown> | null = null;
+let mockGitMirrorStatus: Record<string, unknown> | null = null;
 let mockPageContentsByPath: Record<string, string> = {};
 let mockPageMetadataByPath: Record<string, {
   backlinks?: string[];
@@ -120,6 +121,7 @@ beforeEach(() => {
   mockSettingsManagedRoutines = [];
   mockSettingsManagedSkills = [];
   mockDistillationOverviewData = null;
+  mockGitMirrorStatus = null;
   mockPageContentsByPath = {};
   mockPageMetadataByPath = {};
   (globalThis as TestBridgeGlobal).__paperclipPluginBridge__ = {
@@ -340,6 +342,9 @@ beforeEach(() => {
             error: null,
             refresh: () => undefined,
           };
+        }
+        if (key === "git-mirror") {
+          return { data: mockGitMirrorStatus, loading: false, error: null, refresh: () => undefined };
         }
         return { data: null, loading: false, error: null, refresh: () => undefined };
       },
@@ -763,7 +768,8 @@ describe("LLM Wiki plugin scaffold", () => {
       "routeSidebar",
     ]);
     expect(manifest.capabilities).not.toContain("instance.settings.register");
-    expect(manifest.instanceConfigSchema).toBeUndefined();
+    // Wiki settings live in the plugin's own pages; the company config carries only the Git mirror.
+    expect(Object.keys((manifest.instanceConfigSchema?.properties ?? {}) as Record<string, unknown>)).toEqual(["gitMirror"]);
     const routeSidebarSlot = manifest.ui?.slots?.find((slot) => slot.type === "routeSidebar");
     expect(routeSidebarSlot).toMatchObject({
       id: "wiki-route-sidebar",
@@ -848,6 +854,39 @@ describe("LLM Wiki plugin scaffold", () => {
     expect(markup).toContain('data-selected-file=""');
     expect(markup).toContain('data-wrap-labels="false"');
     expect(markup).toContain('data-has-file-badges="false"');
+  });
+
+  it("shows the Git mirror banner on the mirrored space only", () => {
+    const mirror = {
+      enabled: true,
+      configError: null,
+      repository: "acme/handbook",
+      branch: "main",
+      spaceSlug: "default",
+      running: false,
+      commitSha: "abcdef1234567890abcdef1234567890abcdef12",
+      syncedAt: "2026-10-03T12:00:00.000Z",
+      lastError: null,
+      fileCount: 58,
+    };
+    mockGitMirrorStatus = mirror;
+    const render = () => renderToStaticMarkup(createElement(WikiPage, {
+      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+    } as never));
+
+    const markup = render();
+    expect(markup).toContain("Read-only mirror of");
+    expect(markup).toContain("acme/handbook@main");
+    expect(markup).toContain("commit abcdef1");
+    expect(markup).toContain("58 files");
+    expect(markup).toContain("Sync now");
+    expect(markup).not.toContain("Last sync failed");
+
+    mockGitMirrorStatus = { ...mirror, lastError: "GitHub GET /repos/acme/handbook/branches/main returned 401: Bad credentials" };
+    expect(render()).toContain("Last sync failed: GitHub GET /repos/acme/handbook/branches/main returned 401");
+
+    mockGitMirrorStatus = { ...mirror, spaceSlug: "handbook" };
+    expect(render()).not.toContain("Read-only mirror of");
   });
 
   it("routes legacy Wiki operations URLs to the History issue table", () => {

@@ -21,6 +21,7 @@ import {
   REQUIRED_WIKI_DIRECTORIES,
   REQUIRED_WIKI_FILES,
 } from "../templates.js";
+import { readGitMirrorConfig, type GitMirrorSettings } from "./git-mirror-config.js";
 
 export const DEFAULT_WIKI_ID = "default";
 export const DEFAULT_SPACE_SLUG = "default";
@@ -245,6 +246,8 @@ type CreateSpaceInput = {
   folderMode?: "managed_subfolder" | "existing_local_folder" | null;
   accessScope?: "shared" | "personal" | "team" | null;
   settings?: Record<string, unknown> | null;
+  /** False for a space whose content comes from elsewhere (the Git mirror): no starter files. */
+  bootstrapFiles?: boolean;
 };
 
 type UpdateSpaceInput = SpaceInput & {
@@ -1417,6 +1420,8 @@ export async function createSpace(ctx: PluginContext, input: CreateSpaceInput): 
     throw new Error("Only managed_subfolder spaces are supported until dynamic local folder bindings are available.");
   }
   const accessScope = input.accessScope ?? "shared";
+  // Only the Git mirror may create its own target space, and it does so without starter files.
+  if (input.bootstrapFiles !== false) await assertSpaceWritable(ctx, input.companyId, { slug });
   const id = randomUUID();
   const pathPrefix = `spaces/${slug}`;
   await ctx.db.execute(
@@ -1456,7 +1461,7 @@ export async function createSpace(ctx: PluginContext, input: CreateSpaceInput): 
     createdAt: null,
     updatedAt: null,
   };
-  await bootstrapSpaceFiles(ctx, input.companyId, space);
+  if (input.bootstrapFiles !== false) await bootstrapSpaceFiles(ctx, input.companyId, space);
   await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId });
   return { status: "created", space };
 }
@@ -1511,6 +1516,32 @@ export async function archiveSpace(ctx: PluginContext, input: SpaceInput): Promi
     [input.companyId, space.wikiId, space.slug],
   );
   return { status: "archived", space: { ...space, status: "archived" } };
+}
+
+/** The Git mirror configured for this space, or null when the space is writable. */
+export async function gitMirrorForSpace(
+  ctx: PluginContext,
+  companyId: string,
+  space: Pick<WikiSpace, "slug">,
+): Promise<GitMirrorSettings | null> {
+  const mirror = readGitMirrorConfig(await ctx.config.get(companyId));
+  if (!mirror) return null;
+  let mirroredSlug: string;
+  try {
+    mirroredSlug = normalizeSpaceSlug(mirror.spaceSlug);
+  } catch {
+    return null;
+  }
+  return mirroredSlug === space.slug ? mirror : null;
+}
+
+/** Refuses plugin writes into a Git-mirrored space: the repository is its only writer. */
+export async function assertSpaceWritable(ctx: PluginContext, companyId: string, space: Pick<WikiSpace, "slug">): Promise<void> {
+  const mirror = await gitMirrorForSpace(ctx, companyId, space);
+  if (!mirror) return;
+  throw new Error(
+    `The "${space.slug}" wiki space is a read-only mirror of github.com/${mirror.owner}/${mirror.repo}@${mirror.branch}. Change the repository instead; the next sync brings the change in.`,
+  );
 }
 
 export function spaceRelativePath(space: Pick<WikiSpace, "pathPrefix">, path: string): string {
@@ -1673,6 +1704,207 @@ function extractWikiLinks(contents: string): string[] {
     links.add(match[0]);
   }
   return [...links].sort();
+}
+
+const MIRROR_ROOT_PAGE_FILES = new Set(["index.md", "log.md", "WIKI.md", "AGENTS.md", "IDEA.md"]);
+
+/** The page body: line endings as "\n", and a leading frontmatter block (empty or not) removed. */
+function pageBody(contents: string): string {
+  return contents.replace(/\r\n?/g, "\n").replace(/^---[ \t]*\n(?:[\s\S]*?\n)??---[ \t]*(?:\n|$)/, "");
+}
+
+/**
+ * Markdown without the lines of its fenced code blocks, for finding the title: a fence starts a line (up to
+ * three spaces in) with three or more backticks or tildes and closes at a line holding only the same character,
+ * at least as many (up to three spaces in, then only spaces or tabs). As in CommonMark, a backtick fence whose info text holds a backtick
+ * is not a fence. A fence that never closes hides nothing.
+ */
+function stripFencedCode(markdown: string): string {
+  const lines = markdown.split("\n");
+  const kept: string[] = [];
+  for (let at = 0; at < lines.length; at += 1) {
+    const open = lines[at]!.match(/^ {0,3}(`{3,}|~{3,})/);
+    const info = open ? lines[at]!.slice(lines[at]!.indexOf(open[1]!) + open[1]!.length) : "";
+    if (!open || (open[1]![0] === "`" && info.includes("`"))) {
+      kept.push(lines[at]!);
+      continue;
+    }
+    const char = open[1]![0]!;
+    const close = lines.findIndex((line, index) => {
+      if (index <= at) return false;
+      const fence = line.match(/^ {0,3}(`+|~+)[ \t]*$/);
+      return fence !== null && fence[1]![0] === char && fence[1]!.length >= open[1]!.length;
+    });
+    if (close === -1) {
+      kept.push(lines[at]!);
+      continue;
+    }
+    at = close;
+  }
+  return kept.join("\n");
+}
+
+/** A link target that stays inside the wiki tree: no `.`, `..`, empty or absolute segments, no control characters or backslashes. */
+function isWikiTreePath(path: string): boolean {
+  return !/[\u0000-\u001f\u007f\\]/.test(path) && !path.startsWith("/") && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+
+/**
+ * The links a mirrored page makes, as page paths, read from its body (pageBody: frontmatter is metadata):
+ * - `[[target]]` wikilinks: a path from the wiki root (the `wiki/` folder) with or without its extension
+ *   (`[[projects/v3/index]]`, `[[projects/v3/index#anchor|label]]`, `[[index]]`), or with the `wiki/` prefix;
+ *   each resolves to `wiki/<target>.md`;
+ * - markdown link destinations that name a page from the repository root (`wiki/x.md`, or a root page file:
+ *   AGENTS.md, IDEA.md, index.md, log.md, WIKI.md), plain (`[label](wiki/x.md "title")`, one level of balanced
+ *   parentheses allowed) or in angle brackets (`[label](<wiki/x y.md>)`), whatever the label on one line
+ *   (brackets in it may nest one level); the destination and the title may each start on the next line;
+ * - bare `wiki/...md` tokens made of letters and digits of any script, `.`, `_`, `/` and `-`, except inside an http(s) URL (any
+ *   case, starting anywhere not directly after a letter or digit, so `_https://..._` counts; a URL runs to the
+ *   next whitespace, `<`, `>` or quote), so a permalink to another repository's
+ *   `wiki/...md` names no page here.
+ * Every result stays inside the wiki tree. Code is not told apart from prose: a link written in a code example
+ * is recorded too, which can add a backlink row, never drop one.
+ */
+export function extractMirroredPageLinks(contents: string): string[] {
+  const body = pageBody(contents);
+  const links = new Set<string>();
+  for (const match of body.matchAll(/\[\[([^\]\n]+)\]\]/g)) {
+    const target = match[1]!.split("|")[0]!.split("#")[0]!.trim();
+    const file = /\.md$/i.test(target) ? target : `${target}.md`;
+    links.add(file.startsWith("wiki/") ? file : `wiki/${file}`);
+  }
+  // [label]( destination "title" ): the destination and the title may each start on the next line, a plain
+  // destination may hold one level of balanced parentheses, and the title is quoted or parenthesized.
+  const markdownLink =
+    /\[(?:[^[\]\n]|\[[^[\]\n]*\])*\]\([ \t]*\n?[ \t]*(?:<([^<>\n]*)>|((?:[^\s<>()]|\([^\s<>()]*\))*))(?:(?:[ \t]*\n[ \t]*|[ \t]+)(?:"[^"]*"|'[^']*'|\([^()]*\)))?[ \t]*\n?[ \t]*\)/g;
+  for (const match of body.matchAll(markdownLink)) {
+    const destination = (match[1] ?? match[2] ?? "").split("#")[0]!.trim();
+    if (destination.startsWith("wiki/") || MIRROR_ROOT_PAGE_FILES.has(destination)) links.add(destination);
+  }
+  const urls = [...body.matchAll(/(?<![\p{L}\p{N}])https?:\/\/[^\s<>"']+/giu)].map((match) => [match.index!, match.index! + match[0].length] as const);
+  for (const match of body.matchAll(/(?<![\p{L}\p{N}_])wiki\/[\p{L}\p{N}._/-]+\.md(?![\p{L}\p{N}_])/gu)) {
+    if (!urls.some(([start, end]) => match.index! >= start && match.index! < end)) links.add(match[0]);
+  }
+  return [...links].filter(isWikiTreePath).sort();
+}
+
+/**
+ * True for a path the page tools read exactly as written: AGENTS.md, IDEA.md, index.md, log.md, WIKI.md or
+ * wiki/**.md, already in their normal form. A path they would read differently (surrounding spaces, a leading
+ * slash) is never indexed, so the index, its deletes and the files always use the same path.
+ */
+export function isWikiPagePath(path: string): boolean {
+  try {
+    return assertPagePath(path) === path;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A mirrored page's title: the first line made of `#`, one or more spaces or tabs, then text that is not
+ * blank once closing `#`s are dropped (a level-one heading), outside frontmatter and closed fenced code; the
+ * title is that text, trimmed. Else the file name.
+ */
+function mirroredPageTitle(path: string, contents: string): string {
+  for (const match of stripFencedCode(pageBody(contents)).matchAll(/^#[ \t]+([^ \t\n][^\n]*)$/gm)) {
+    const title = match[1]!.replace(/(?:^|\s+)#+\s*$/u, "").trim();
+    if (title) return title;
+  }
+  return (path.split("/").pop() ?? path).replace(/\.md$/i, "").replace(/[-_]+/g, " ");
+}
+
+/**
+ * Index a page the Git mirror wrote, so the read tools list, search and follow it: path, title
+ * (mirroredPageTitle), page type and outgoing links. No revision row: the repository holds
+ * the history. Returns false, writing nothing, for a mirrored file the page tools never read.
+ */
+export async function indexMirroredPage(
+  ctx: PluginContext,
+  space: Pick<WikiSpace, "id" | "companyId" | "wikiId">,
+  path: string,
+  contents: string,
+): Promise<boolean> {
+  if (!isWikiPagePath(path)) return false;
+  const pagePath = path;
+  await ctx.db.execute(
+    `INSERT INTO ${tableName(ctx.db.namespace, "wiki_pages")}
+       (id, company_id, wiki_id, space_id, path, title, page_type, frontmatter, source_refs, backlinks, content_hash, current_revision_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, '{}'::jsonb, '[]'::jsonb, $8::jsonb, $9, NULL)
+     ON CONFLICT (company_id, wiki_id, space_id, path)
+     DO UPDATE SET title = EXCLUDED.title,
+                   page_type = EXCLUDED.page_type,
+                   frontmatter = EXCLUDED.frontmatter,
+                   source_refs = EXCLUDED.source_refs,
+                   backlinks = EXCLUDED.backlinks,
+                   content_hash = EXCLUDED.content_hash,
+                   current_revision_id = NULL,
+                   updated_at = now()`,
+    [
+      randomUUID(),
+      space.companyId,
+      space.wikiId,
+      space.id,
+      pagePath,
+      mirroredPageTitle(pagePath, contents),
+      inferPageType(pagePath),
+      jsonParam(extractMirroredPageLinks(contents)),
+      contentHash(contents),
+    ],
+  );
+  return true;
+}
+
+/** Remove the index rows of pages the Git mirror removed (or no longer owns) from one space. */
+export async function unindexMirroredPages(
+  ctx: PluginContext,
+  space: { id: string; companyId: string; wikiId: string },
+  paths: readonly string[],
+): Promise<void> {
+  if (paths.length === 0) return;
+  // The paths travel as one JSON text parameter: the host binds each parameter through Drizzle, which
+  // renders an array as a parenthesized list of parameters, so `ANY($4::text[])` with one path becomes
+  // `ANY(($4)::text[])` over a single text value (a malformed array literal) and with two a row cast.
+  await ctx.db.execute(
+    `DELETE FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3
+        AND path IN (SELECT jsonb_array_elements_text($4::jsonb))`,
+    [space.companyId, space.wikiId, space.id, JSON.stringify(paths)],
+  );
+}
+
+/**
+ * The space a Git mirror ledger last indexed into, by slug, archived or not (archiving keeps a space's rows).
+ * Null only when no such space exists; a failed lookup throws, so cleanup waits for the next sync.
+ */
+export async function findSpaceForMirrorCleanup(
+  ctx: PluginContext,
+  companyId: string,
+  slug: string,
+): Promise<{ id: string; companyId: string; wikiId: string } | null> {
+  const wikiId = normalizeWikiId(null);
+  if (normalizeSpaceSlug(slug) === DEFAULT_SPACE_SLUG) {
+    const space = await ensureDefaultSpace(ctx, { companyId, wikiId });
+    return { id: space.id, companyId: space.companyId, wikiId: space.wikiId };
+  }
+  const rows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${spaceTable(ctx)} WHERE company_id = $1 AND wiki_id = $2 AND slug = $3 LIMIT 1`,
+    [companyId, wikiId, normalizeSpaceSlug(slug)],
+  );
+  return rows[0] ? { id: rows[0].id, companyId, wikiId } : null;
+}
+
+/** The page paths indexed in one space. */
+export async function indexedPagePaths(
+  ctx: PluginContext,
+  space: Pick<WikiSpace, "id" | "companyId" | "wikiId">,
+): Promise<Set<string>> {
+  const rows = await ctx.db.query<{ path: string }>(
+    `SELECT path FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3`,
+    [space.companyId, space.wikiId, space.id],
+  );
+  return new Set(rows.map((row) => row.path));
 }
 
 async function readCurrentWithHash(
@@ -1844,6 +2076,7 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const path = assertPagePath(input.path);
   assertPageWriteAllowed(path, input.writer);
+  await assertSpaceWritable(ctx, input.companyId, space);
   const current = await readCurrentWithHash(ctx, input.companyId, path, space);
   assertExpectedHash(input.expectedHash, current.hash, path);
   await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path), input.contents);
@@ -1864,6 +2097,7 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
 export async function captureWikiSource(ctx: PluginContext, input: CaptureSourceInput) {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  await assertSpaceWritable(ctx, input.companyId, space);
   const title = stringField(input.title) ?? "Untitled source";
   await assertSourceWithinConfiguredLimit(ctx, input.companyId, input.contents);
   const hash = contentHash(input.contents);
@@ -2195,7 +2429,9 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
 
   const writtenFiles: string[] = [];
   const preservedFiles: string[] = [];
-  for (const file of BOOTSTRAP_FILES) {
+  // A Git-mirrored default space owns the root's content: point the folder, but write no starter files.
+  const rootMirror = await gitMirrorForSpace(ctx, input.companyId, defaultSpace);
+  for (const file of rootMirror ? [] : BOOTSTRAP_FILES) {
     const path = assertWikiPath(file.path, { allowMetadata: true });
     try {
       await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, path);
@@ -2240,6 +2476,7 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
 export async function bootstrapSpace(ctx: PluginContext, input: SpaceInput) {
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  await assertSpaceWritable(ctx, input.companyId, space);
   const { writtenFiles, preservedFiles } = await bootstrapSpaceFiles(ctx, input.companyId, space);
   await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId });
   return {
@@ -4194,6 +4431,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     const wikiId = normalizeWikiId(input.wikiId);
     const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
     const entry = requireString(input.entry, "entry");
+    await assertSpaceWritable(ctx, companyId, space);
     let current = "";
     try {
       current = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"));
@@ -4460,6 +4698,7 @@ export async function writeTemplate(ctx: PluginContext, input: { companyId: stri
   if (!isTemplateFile(input.path)) {
     throw new Error(`template path must be one of ${TEMPLATE_FILES.join(", ")}`);
   }
+  await assertSpaceWritable(ctx, input.companyId, await ensureDefaultSpace(ctx, { companyId: input.companyId }));
   await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, input.path, input.contents);
   return { status: "ok", path: input.path, hash: contentHash(input.contents) };
 }
