@@ -1,0 +1,30 @@
+# ALB Ingress for the Paperclip server. Used by docs/deploy/aws-eks.md.
+# Requires the AWS Load Balancer Controller and a validated ACM certificate.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: paperclip-server
+  namespace: paperclip
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: <CERT_ARN>
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+spec:
+  ingressClassName: alb
+  rules:
+    - host: <DOMAIN>
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: paperclip-server
+                port:
+                  number: 80
