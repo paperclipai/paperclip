@@ -20,8 +20,15 @@ const AGENT_ROUTE_REF = "codexcoder"; // the agent fixture's urlKey
 // The visual spec freezes Date, so relative fixtures stay deterministic.
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
+const agentDetailAgent = storybookAgentMap.get(AGENT_ID)!;
+
 const agentDetailFixture: AgentDetailRecord = {
-  ...storybookAgentMap.get(AGENT_ID)!,
+  ...agentDetailAgent,
+  // Key names derived from the config the record already holds, so the marker
+  // cannot drift from the config it describes.
+  configurationAccess: "full",
+  adapterConfigKeys: Object.keys(agentDetailAgent.adapterConfig ?? {}),
+  runtimeConfigKeys: Object.keys(agentDetailAgent.runtimeConfig ?? {}),
   chainOfCommand: [
     { id: "agent-cto", name: "CTO", role: "cto", title: "CTO" },
     { id: AGENT_ID, name: "CodexCoder", role: "engineer", title: "Senior Product Engineer" },
