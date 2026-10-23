@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
@@ -148,13 +150,89 @@ async function readFileBytesIfPresent(candidate: string): Promise<Buffer | null>
 }
 
 /**
+ * In isolated mode the service may read a credential that the host agent UID
+ * cannot read. Walk from / using directory descriptors so an agent cannot swap
+ * a checked ancestor for a symlink before the credential is opened. The source
+ * must be a service-owned regular file; a symlink is never an auth source here.
+ */
+async function readIsolatedGrokAuth(home: string): Promise<Buffer | null> {
+  const serverUid = process.getuid?.();
+  const hostAgentUid = Number(process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID);
+  if (process.platform !== "linux" || serverUid === undefined || serverUid === 0 ||
+      !Number.isSafeInteger(hostAgentUid) || hostAgentUid <= 0 || hostAgentUid === serverUid) {
+    throw new Error("Isolated Grok auth staging requires separate service and host agent UIDs.");
+  }
+
+  const handles: FileHandle[] = [];
+  const unsafeSource = () => new Error("Isolated Grok auth source is writable by the host agent or has an unsafe path.");
+  try {
+    let directory = await fs.open("/", constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    handles.push(directory);
+    const absoluteHome = path.resolve(home);
+    let homeMissing = false;
+    for (const component of absoluteHome.split(path.sep).filter(Boolean)) {
+      let next: FileHandle;
+      try {
+        next = await fs.open(
+          `/proc/self/fd/${directory.fd}/${component}`,
+          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        homeMissing = true;
+        break;
+      }
+      handles.push(next);
+      directory = next;
+    }
+    for (const handle of handles) {
+      const entry = await handle.stat();
+      if (!entry.isDirectory() || (entry.uid !== serverUid && entry.uid !== 0) ||
+          (entry.mode & 0o022) !== 0 || entry.uid === hostAgentUid) {
+        throw unsafeSource();
+      }
+    }
+    // A missing home cannot contain auth bytes. Its existing ancestors still
+    // had to pass the agent-immutability check above before we accept absence.
+    if (homeMissing) return null;
+
+    let auth: FileHandle;
+    try {
+      auth = await fs.open(
+        `/proc/self/fd/${directory.fd}/${AUTH_FILE_NAME}`,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+    try {
+      const source = await auth.stat();
+      if (!source.isFile() || source.uid !== serverUid || (source.mode & 0o077) !== 0 ||
+          source.size > 64 * 1024) {
+        throw unsafeSource();
+      }
+      return await auth.readFile();
+    } finally {
+      await auth.close();
+    }
+  } catch (error) {
+    // Neither filesystem errors nor pathnames belong in agent-visible logs.
+    if (error instanceof Error && error.message.startsWith("Isolated Grok auth")) throw error;
+    throw unsafeSource();
+  } finally {
+    for (const handle of handles.reverse()) await handle.close();
+  }
+}
+
+/**
  * Stages exactly {@link GROK_SYNC_ALLOWLIST} from `effectiveGrokHome` into a
  * fresh private temp dir and returns its path, for registration as the sandbox
  * `home` asset. Mirrors `stageCodexHomeForSync` in the codex-local adapter.
  *
- * - **The symlink is dereferenced to bytes** — the single-use `auth.json`
- *   credential (a symlink into the shared source home) lands as a real file,
- *   never a dangling link.
+ * - Outside isolated mode, an `auth.json` symlink is dereferenced to bytes.
+ *   Isolated mode rejects symlinks and requires a service-owned, immutable
+ *   source path before reading through a pinned descriptor.
  * - **A missing `auth.json` is not an error** — a company with no completed
  *   device login yet stages an empty directory.
  * - **`mkdtemp` guarantees the staged dir is `0700`** on POSIX, and the staged
@@ -174,7 +252,9 @@ export async function stageGrokHomeForSync(
   );
   try {
     for (const entry of GROK_SYNC_ALLOWLIST) {
-      const bytes = await readFileBytesIfPresent(path.join(effectiveGrokHome, entry));
+      const bytes = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true"
+        ? await readIsolatedGrokAuth(effectiveGrokHome)
+        : await readFileBytesIfPresent(path.join(effectiveGrokHome, entry));
       if (bytes === null) continue;
       const target = path.join(stagedHome, entry);
       await fs.writeFile(target, bytes, { mode: 0o600 });

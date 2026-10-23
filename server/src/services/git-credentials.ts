@@ -138,6 +138,9 @@ export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvoca
       "-c", "credential.helper=",
       "-c", `credential.https://github.com.helper=${GIT_CREDENTIAL_HELPER}`,
       "-c", `credential.https://www.github.com.helper=${GIT_CREDENTIAL_HELPER}`,
+      // These trusted rewrites must survive host Git's GIT_CONFIG_* scrub in
+      // key isolation mode. Keep the env entries for callers using env alone.
+      ...configEntries.filter(([key]) => key.startsWith("url.")).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
     ],
     env: {
       [GIT_CREDENTIAL_TOKEN_ENV_KEY]: credential.token,

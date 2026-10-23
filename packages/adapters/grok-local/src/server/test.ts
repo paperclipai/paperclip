@@ -171,6 +171,8 @@ export async function testEnvironment(
           runId, target, adapterKey: "grok",
           workspaceLocalDir: runtimeWorkspaceLocalDir,
           workspaceRemoteDir: cwd,
+          // The probe only uploads the staged home; its host temp dir is not an agent workspace.
+          syncWorkspace: false,
           // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
           workspaceRestoreRetryDelaysMs: [],
           assets: [{ key: "home", localDir: stagedHome, followSymlinks: true,

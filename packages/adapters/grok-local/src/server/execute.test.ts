@@ -83,6 +83,12 @@ async function makeTempRoot() {
   return root;
 }
 
+async function makeIsolatedRoot() {
+  const root = await fs.mkdtemp(path.join(process.cwd(), ".paperclip-grok-execute-isolated-"));
+  tempRoots.push(root);
+  return root;
+}
+
 async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
@@ -403,6 +409,39 @@ describe("grok_local execute", () => {
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
   });
 
+  it.each([true, false])("keeps another run's Agents.md after an exclusive-write collision (custom=%s)", async (custom) => {
+    const root = await makeTempRoot();
+    const source = custom ? path.join(root, "managed", "AGENTS.md") : path.join(root, "AGENTS.md");
+    const target = path.join(root, "Agents.md");
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(source, "source instructions");
+    const realWriteFile = fs.writeFile.bind(fs);
+    let collided = false;
+    const writeSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (...args) => {
+      const [candidate, , options] = args;
+      if (!collided && String(candidate) === target && typeof options === "object" && options?.flag === "wx") {
+        collided = true;
+        await realWriteFile(target, "another run's instructions", { flag: "wx", mode: 0o600 });
+        throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+      }
+      return realWriteFile(...args);
+    });
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+    const ctx = await makeCtx("grok-instruction-collision", root);
+    if (custom) ctx.config.instructionsFilePath = source;
+
+    try {
+      expect(await execute(ctx)).toMatchObject({ exitCode: 0 });
+      expect(collided).toBe(true);
+      expect(await fs.readFile(target, "utf8")).toBe("another run's instructions");
+      const args = runProcessMock.mock.calls[0][3] as string[];
+      expect(args.includes("--rules")).toBe(custom);
+      if (custom) expect(args).toContain("@" + source);
+    } finally {
+      writeSpy.mockRestore();
+    }
+  });
+
   it("reports real per-run token usage, marks it as per_run, and only surfaces cost for API billing", async () => {
     runProcessMock.mockImplementation(async () => ({
       exitCode: 0,
@@ -695,11 +734,15 @@ describe("grok_local execute", () => {
   describe("remote lane credential staging", () => {
     let previousApiKey: string | undefined;
     let previousPaperclipHome: string | undefined;
+    let previousIsolation: string | undefined;
+    let previousAgentUid: string | undefined;
     let paperclipHomeRoot: string;
 
     beforeEach(async () => {
       previousApiKey = process.env.XAI_API_KEY;
       previousPaperclipHome = process.env.PAPERCLIP_HOME;
+      previousIsolation = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME;
+      previousAgentUid = process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID;
       // Point the managed Grok home at a private tmp root, so staging never
       // touches a real developer or CI-host `~/.paperclip` tree.
       paperclipHomeRoot = await makeTempRoot();
@@ -713,6 +756,10 @@ describe("grok_local execute", () => {
       else process.env.XAI_API_KEY = previousApiKey;
       if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousIsolation === undefined) delete process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME;
+      else process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME = previousIsolation;
+      if (previousAgentUid === undefined) delete process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID;
+      else process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID = previousAgentUid;
     });
 
     async function seedHostGrokAuth(contents: string): Promise<string> {
@@ -721,6 +768,32 @@ describe("grok_local execute", () => {
       await fs.writeFile(path.join(hostGrokHome, "auth.json"), contents, "utf8");
       return hostGrokHome;
     }
+
+    it.skipIf(process.platform !== "linux" || !process.getuid?.())(
+      "rejects an agent-writable Grok home with a linked key before sandbox sync",
+      async () => {
+        delete process.env.XAI_API_KEY;
+        process.env.PAPERCLIP_HOME = await makeIsolatedRoot();
+        process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME = "true";
+        const serviceUid = process.getuid?.();
+        process.env.PAPERCLIP_SECRETS_HOST_AGENT_UID = String(serviceUid === 1000 ? 1001 : 1000);
+        const privateDir = path.join(process.env.PAPERCLIP_HOME, "private");
+        await fs.mkdir(privateDir, { mode: 0o700 });
+        const key = path.join(privateDir, "master.key");
+        await fs.writeFile(key, "synthetic-master-key", { mode: 0o600 });
+        const home = resolveManagedGrokHomeDir(process.env, "company-1");
+        await fs.mkdir(home, { recursive: true, mode: 0o700 });
+        await fs.symlink(key, path.join(home, "auth.json"));
+        await fs.chmod(home, 0o777);
+        mocks.state.isRemote = true;
+        const ctx = await makeCtx("run-isolated-writable-home", await makeTempRoot());
+        ctx.executionTarget = { kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/remote/workspace" } as never;
+
+        await expect(execute(ctx)).rejects.toThrow(/unsafe path/);
+        expect(prepareRuntimeMock).not.toHaveBeenCalled();
+        expect(runProcessMock).not.toHaveBeenCalled();
+      },
+    );
 
     it("passes one home asset that carries the staged directory in a remote subscription run", async () => {
       delete process.env.XAI_API_KEY;

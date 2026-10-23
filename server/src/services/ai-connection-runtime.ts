@@ -22,7 +22,9 @@ import { decideCodexAuthMerge, withAccountHomeSecretMutationLock } from "@paperc
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import { ensureIsolatedHostDirectory, isolatedHostAgentRuntimeEnabled } from "@paperclipai/adapter-utils/isolated-host-file";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -202,6 +204,20 @@ function managedAiHomeEnvironment(home: string): Record<string, string> {
   };
 }
 
+export async function createManagedAiCredentialHome(companyId: string, grantId: string): Promise<string> {
+  if (![companyId, grantId].every((value) => /^[a-zA-Z0-9_-]+$/.test(value))) {
+    throw new Error("Invalid managed AI credential home identity.");
+  }
+  const isolated = isolatedHostAgentRuntimeEnabled();
+  // Isolated adapters upload this home as a host asset. A /tmp ancestor is
+  // agent-writable, so use the private instance root for these short-lived files.
+  const root = isolated
+    ? path.join(resolvePaperclipInstanceRoot(), "runtime", "managed-ai-homes")
+    : os.tmpdir();
+  if (isolated) await ensureIsolatedHostDirectory(root);
+  return mkdtemp(path.join(root, `paperclip-ai-${companyId}-${grantId}-`));
+}
+
 /** Only the server-created credential home is volatile; retain all other config. */
 export function managedAiSessionFingerprintConfig(
   config: Record<string, unknown>,
@@ -312,12 +328,7 @@ export async function prepareManagedAiRuntime(
       }
       throw unprocessable("The AI credential changed during preparation; retry this execution");
     })();
-    home = await mkdtemp(
-      path.join(
-        os.tmpdir(),
-        `paperclip-ai-${input.companyId}-${selection.grant.id}-`,
-      ),
-    );
+    home = await createManagedAiCredentialHome(input.companyId, selection.grant.id);
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
     const env: Record<string, unknown> = {

@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
+import { isReleaseOwnedBundleTree } from "./release-owned-bundle.js";
 
 const segment = z.string().regex(/^[a-z][a-z0-9.-]{0,99}$/);
 export const distributionPluginCatalogSchema = z.object({
@@ -48,6 +49,17 @@ export function distributionPluginsRoot(catalogRoot: string): string {
   }
 }
 
+export function assertReleaseOwnedDistributionBundle(packagePath: string): void {
+  const catalogFile = path.join(path.dirname(packagePath), "catalog.json");
+  try {
+    if (!isReleaseOwnedBundleTree(catalogFile) || !isReleaseOwnedBundleTree(packagePath)) {
+      throw new Error("unsafe release ownership");
+    }
+  } catch {
+    throw new Error("Isolated local secrets require an immutable distribution catalog and bundle.");
+  }
+}
+
 /** Guard all activation paths, including persisted installs after a rollback. */
 export function distributionPluginActivationGuard(
   catalogRoot: string,
@@ -73,6 +85,9 @@ export function distributionPluginActivationGuard(
     if (!inside && !installedInside && !entry) return;
     if (!entry || (selectedKeys !== null && !selectedKeys.includes(entry.key)) || packageRoot !== entry.localPath) {
       throw new Error("Distribution plugin is absent or not selected in this deployment");
+    }
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      assertReleaseOwnedDistributionBundle(entry.localPath);
     }
     if (input.manifest && (input.manifest.id !== entry.pluginKey || input.manifest.version !== entry.version)) {
       throw new Error("Distribution manifest does not match its catalog identity/version");
@@ -135,6 +150,9 @@ export function readDistributionPluginCatalog(
   const stat = fs.lstatSync(file, { throwIfNoEntry: false });
   if (!stat) return [];
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024) throw new Error("Invalid distribution catalog file");
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" && !isReleaseOwnedBundleTree(file)) {
+    throw new Error("Isolated local secrets require an immutable distribution catalog and bundle.");
+  }
   const catalog = distributionPluginCatalogSchema.parse(JSON.parse(fs.readFileSync(file, "utf8")));
   const keys = new Set(builtins.map((entry) => entry.key));
   const pluginKeys = new Set(builtins.map((entry) => entry.pluginKey));
@@ -147,6 +165,9 @@ export function readDistributionPluginCatalog(
     const localPath = path.join(root, entry.directory);
     const info = fs.lstatSync(localPath);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Invalid distribution bundle directory");
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      assertReleaseOwnedDistributionBundle(localPath);
+    }
     if (distributionBundleDigest(localPath) !== entry.digest) throw new Error(`Distribution bundle digest mismatch: ${entry.key}`);
     const pkg = JSON.parse(fs.readFileSync(path.join(localPath, "package.json"), "utf8"));
     if (pkg.version !== entry.version || !pkg.paperclipPlugin) throw new Error("Distribution package version or entrypoints missing");

@@ -213,6 +213,7 @@ test("published Claude bridge pins its qualified SDK and provider dependency clo
   assert.deepEqual(installManifest.overrides["@agentclientprotocol/claude-agent-acp@0.73.0"], {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",
     "@agentclientprotocol/sdk": "1.4.0",
+    "@anthropic-ai/sdk": "0.129.0",
     zod: "4.4.3",
   });
 });

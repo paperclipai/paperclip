@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
+import { isRemoteGitRepositoryUrl } from "@paperclipai/adapter-utils/isolated-workspace-guard";
 import { captureDirectorySnapshot, disposeDirectorySnapshot, mergeDirectoryWithBaseline } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { describeGitAuthFailure, scrubGitCredentialText, type GitRemoteAuthProvider } from "./git-credentials.js";
@@ -10,6 +11,7 @@ import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFa
 import { isWorkspaceGitScanError, WorkspaceGitScanError } from "./workspace-git-operation-scheduler.js";
 import { measureRunPhase, recordRepositoryObjectCacheDetail } from "./execution-preparation-timing.js";
 import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishRepositoryObjectCache } from "./repository-object-cache.js";
+import { assertHostGitWorkspaceAllowed, prepareHostGitInvocation } from "./host-git-security.js";
 
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -27,6 +29,10 @@ export async function materializeManagedProjectWorkspace(
     objectCacheCompanyDirectory?: string;
   },
 ): Promise<{ cwd: string; warning: string | null }> {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" &&
+      (input.localSource || (input.repoUrl && !isRemoteGitRepositoryUrl(input.repoUrl)))) {
+    throw new Error("Isolated local secrets forbid host-local Git clone sources.");
+  }
   await fs.mkdir(path.dirname(cwd), { recursive: true });
   const stats = await fs.stat(cwd).catch(() => null);
 
@@ -60,7 +66,7 @@ export async function materializeManagedProjectWorkspace(
   let auth = input.resolveGitAuth && !input.localSource
     ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
     : null;
-  const cloneTmpDir = await fs.mkdtemp(input.stagingParent
+  let cloneTmpDir = await fs.mkdtemp(input.stagingParent
     ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
     : `${cwd}.clone-`);
   const cloneSource = input.localSource ?? input.repoUrl;
@@ -78,17 +84,22 @@ export async function materializeManagedProjectWorkspace(
   try {
     await input.beforeCopy?.(cloneTmpDir);
     try {
-      const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", () => {
+      const clone = (referencePath: string | null) => measureRunPhase("workspace.checkout.git_clone", async () => {
         recordRepositoryObjectCacheDetail({ referenceSupplied: referencePath !== null });
-        return execFile(
-          "git",
+        cloneTmpDir = await assertHostGitWorkspaceAllowed(cloneTmpDir);
+        const git = prepareHostGitInvocation(
           [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
           {
-            env: {
-              ...sanitizeRuntimeServiceBaseEnv(process.env),
-              GIT_TERMINAL_PROMPT: "0",
-              ...(auth?.env ?? {}),
-            },
+            ...sanitizeRuntimeServiceBaseEnv(process.env),
+            GIT_TERMINAL_PROMPT: "0",
+            ...(auth?.env ?? {}),
+          },
+        );
+        return execFile(
+          "git",
+          git.args,
+          {
+            env: git.env,
             timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
           },
         );
@@ -120,9 +131,15 @@ export async function materializeManagedProjectWorkspace(
         if (baseline) await disposeDirectorySnapshot(baseline);
         await disposeGitWorkspaceSnapshot(snapshot);
       }
-      await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
+      cloneTmpDir = await assertHostGitWorkspaceAllowed(cloneTmpDir);
+      const git = prepareHostGitInvocation(["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl]);
+      await execFile("git", git.args, { timeout: 10_000, env: git.env });
     } else if (input.repoRef) {
-      await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef!], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+      await measureRunPhase("workspace.checkout.git_ref", async () => {
+        cloneTmpDir = await assertHostGitWorkspaceAllowed(cloneTmpDir);
+        const git = prepareHostGitInvocation(["-C", cloneTmpDir, "checkout", input.repoRef!]);
+        return execFile("git", git.args, { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, env: git.env });
+      });
     }
     await input.beforePublish?.(cloneTmpDir);
   } catch (error) {
@@ -167,11 +184,13 @@ export async function ensureManagedRepositoriesIgnored(cwd: string, options: { p
   if (!gitEntry) return;
   if (gitEntry.isSymbolicLink()) throw new Error("Workspace Git metadata must not be a symlink");
   let excludePath: string;
+  const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
   try {
-    const result = await execFile("git", ["-C", cwd, "rev-parse", "--git-path", "info/exclude"], {
-      timeout: 10_000, env: { ...process.env, LC_ALL: "C" },
+    const git = prepareHostGitInvocation(["-C", guardedCwd, "rev-parse", "--git-path", "info/exclude"], { ...process.env, LC_ALL: "C" });
+    const result = await execFile("git", git.args, {
+      timeout: 10_000, env: git.env,
     });
-    excludePath = path.resolve(cwd, result.stdout.trim());
+    excludePath = path.resolve(guardedCwd, result.stdout.trim());
   } catch (error) {
     const failure = error as { code?: unknown; signal?: unknown; stderr?: unknown };
     if (options.plainTaskDirectory && failure.code === 128 && failure.signal == null &&

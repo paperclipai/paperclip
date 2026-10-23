@@ -188,10 +188,11 @@ describe("opencode remote environment diagnostics", () => {
     expect(result.status).toBe("pass");
     expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledTimes(1);
     const runtimeCalls = prepareAdapterExecutionTargetRuntime.mock.calls as unknown as Array<
-      [{ adapterKey: string; assets?: Array<{ key: string; localDir: string }> }]
+      [{ adapterKey: string; syncWorkspace?: boolean; assets?: Array<{ key: string; localDir: string }> }]
     >;
     const runtimeInput = runtimeCalls[0]?.[0];
     expect(runtimeInput?.adapterKey).toBe("opencode");
+    expect(runtimeInput?.syncWorkspace).toBe(false);
     expect(runtimeInput?.assets).toEqual([
       expect.objectContaining({
         key: "xdgConfig",

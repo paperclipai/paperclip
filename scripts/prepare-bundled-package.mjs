@@ -77,7 +77,7 @@ export function configureBundledProviderOverrides(installManifest, bundledDepend
       throw new Error(`Bundled ${agent} runtime has a conflicting producer override`);
     }
     const overrides = { [runtimePackage]: profile.agentRuntimeVersion,
-      ...(agent === "claude" ? { "@agentclientprotocol/sdk": "1.4.0", zod: "4.4.3" } : {}),
+      ...(agent === "claude" ? { "@agentclientprotocol/sdk": "1.4.0", "@anthropic-ai/sdk": "0.129.0", zod: "4.4.3" } : {}),
     };
     result.overrides = { ...result.overrides, [npmSelector]: overrides };
     selected.push({ agent, ...profile });

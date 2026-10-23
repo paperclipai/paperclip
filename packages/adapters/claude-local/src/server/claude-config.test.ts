@@ -128,6 +128,38 @@ describe("prepareClaudeConfigSeed", () => {
     await expect(fs.readFile(path.join(seedDir, "CLAUDE.md"), "utf8"))
       .resolves.toBe("local instructions");
   });
+
+  it.skipIf(process.platform !== "linux")("rejects a synthetic key symlink in Claude config and a tampered cached seed", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".claude-seed-isolation-test-"));
+    cleanupDirs.push(root);
+    const sourceDir = path.join(root, "claude-source");
+    const privateDir = path.join(root, "private");
+    await fs.mkdir(sourceDir, { mode: 0o700 });
+    await fs.mkdir(privateDir, { mode: 0o700 });
+    const key = path.join(privateDir, "master.key");
+    await fs.writeFile(key, "synthetic-master-key", { mode: 0o600 });
+    const instructions = path.join(sourceDir, "CLAUDE.md");
+    await fs.symlink(key, instructions);
+    const env = {
+      ...createEnv(root, sourceDir),
+      PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true",
+      PAPERCLIP_SECRETS_HOST_AGENT_UID: String((process.getuid?.() ?? 0) + 10_000),
+    };
+    const onLog = vi.fn(async () => {});
+
+    await expect(prepareClaudeConfigSeed(env, onLog, "company-1")).rejects.toThrow();
+    await fs.rm(instructions);
+    await fs.writeFile(instructions, "ordinary instructions", { mode: 0o600 });
+    const seed = await prepareClaudeConfigSeed(env, onLog, "company-1");
+    await expect(fs.readFile(path.join(seed, "CLAUDE.md"), "utf8")).resolves.toBe("ordinary instructions");
+
+    await fs.rm(path.join(seed, "CLAUDE.md"));
+    await fs.symlink(key, path.join(seed, "CLAUDE.md"));
+    await expect(prepareClaudeConfigSeed(env, onLog, "company-1")).rejects.toThrow();
+    await fs.rm(path.join(seed, "CLAUDE.md"));
+    await fs.writeFile(path.join(seed, "CLAUDE.md"), "changed cache bytes", { mode: 0o600 });
+    await expect(prepareClaudeConfigSeed(env, onLog, "company-1")).rejects.toThrow(/does not match/);
+  });
 });
 
 describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
@@ -207,6 +239,9 @@ describe("prepareSandboxClaudeProbeRuntime managed-config diagnostics", () => {
 
     const failed = checks.find((check) => check.code === "claude_managed_config_dir_failed");
     expect(failed).toBeTruthy();
+    expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(
+      expect.objectContaining({ syncWorkspace: false, assets: [expect.objectContaining({ key: "config-seed" })] }),
+    );
     const checkText = JSON.stringify(checks);
     expect(checkText).not.toContain(opaqueCredMarker);
     expect(checkText).not.toContain("proxy.corp.internal");

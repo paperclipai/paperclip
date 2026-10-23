@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { workspacePaths } from "./workspace-manifest.js";
 import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep, withWorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
 
 import {
@@ -58,6 +58,7 @@ describe("git workspace sync", () => {
   afterEach(async () => {
     setExpensiveWorkspaceGitExecutor(null);
     for (const snapshot of snapshots.splice(0)) await disposeGitWorkspaceSnapshot(snapshot);
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -231,6 +232,28 @@ describe("git workspace sync", () => {
     expect(await git(selectedDir, ["rev-parse", "--is-inside-work-tree"])).toBe("true");
     expect(await readGitWorkspaceSnapshot(selectedDir)).toBeNull();
     expect((await readGitWorkspaceSnapshot(repo))?.headCommit).toBe(await git(repo, ["rev-parse", "HEAD"]));
+  });
+
+  it("does not invoke a Git hook that delegates to an agent-writable script in isolated mode", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-hook-"));
+    cleanupDirs.push(rootDir);
+    const repo = await createRepo(rootDir);
+    const marker = path.join(rootDir, "hook-ran");
+    const agentScript = path.join(repo, "agent-script.sh");
+    const hook = path.join(repo, ".git", "hooks", "reference-transaction");
+    const head = await git(repo, ["rev-parse", "HEAD"]);
+    await writeFile(agentScript, `#!/bin/sh\nprintf 'agent script ran\\n' > '${marker}'\n`, { mode: 0o777 });
+    await writeFile(hook, `#!/bin/sh\n'${agentScript}'\n`, { mode: 0o755 });
+
+    // The hook file is service-owned, but its target is editable by the agent.
+    // A normal update-ref executes it; the isolated Git invocation must not.
+    await git(repo, ["update-ref", "refs/paperclip/probe-before", head]);
+    await expect(readFile(marker, "utf8")).resolves.toContain("agent script ran");
+    await rm(marker);
+
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    await git(repo, ["update-ref", "refs/paperclip/probe-after", head]);
+    await expect(readFile(marker)).rejects.toThrow();
   });
 
   it("creates a shallow standalone clone from the local HEAD snapshot", async () => {
@@ -713,6 +736,23 @@ describe("git workspace sync", () => {
       expect(await git(repo, ["symbolic-ref", "--short", "HEAD"])).toBe("host");
       expect(await git(repo, ["write-tree"])).toBe(indexBefore);
       expect(await readFile(path.join(repo, "local.txt"), "utf8")).toBe("local work\n");
+    });
+
+    it("does not run a reference-transaction hook during isolated sandbox restore", async () => {
+      const { repo, baseline, importedHead } = await rewrittenHistory();
+      const marker = path.join(repo, "hook-ran");
+      const script = path.join(repo, "agent-script.sh");
+      await writeFile(script, `#!/bin/sh\nprintf ran > '${marker}'\n`, { mode: 0o755 });
+      await writeFile(path.join(repo, ".git", "hooks", "reference-transaction"),
+        `#!/bin/sh\n'${script}'\n`, { mode: 0o755 });
+      await git(repo, ["update-ref", "refs/paperclip/hook-probe", baseline.headCommit]);
+      await expect(readFile(marker, "utf8")).resolves.toBe("ran");
+      await rm(marker);
+
+      vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+      await integrateImportedGitHead({ localDir: repo, importedHead, baseline });
+      expect(await git(repo, ["rev-parse", "HEAD"])).toBe(importedHead);
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it("restores an intentional reset to an ancestor when the host has not changed", async () => {

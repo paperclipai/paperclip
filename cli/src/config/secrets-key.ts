@@ -18,8 +18,11 @@ export function ensureLocalSecretsKeyFile(
     return { status: "skipped_provider", path: null };
   }
 
+  const isolated = config.secrets.localEncrypted.requireIsolatedAgentRuntime === true ||
+    process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
   const envMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envMasterKey && envMasterKey.trim().length > 0) {
+    if (isolated) throw new Error("An isolated local secret store cannot use an inline master key.");
     return { status: "skipped_env", path: null };
   }
 
@@ -32,6 +35,9 @@ export function ensureLocalSecretsKeyFile(
 
   if (fs.existsSync(keyFilePath)) {
     return { status: "existing", path: keyFilePath };
+  }
+  if (isolated) {
+    throw new Error("An isolated local secret store requires an existing operator-managed key file.");
   }
 
   fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });

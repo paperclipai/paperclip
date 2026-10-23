@@ -281,6 +281,35 @@ describe("agent test-environment route", () => {
 
   afterEach(async () => {
     await unregisterTestAdapter("external_test");
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects isolated adapter tests before resolving credentials when Kubernetes is unavailable", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const response = await request(await createApp())
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ runner: "legacy", adapterConfig: { command: "/host/agent-script" } });
+    expect(response.status).toBe(422);
+    expect(response.body.details.code).toBe("isolated_environment_unavailable");
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
+  it("forces isolated adapter tests onto the Kubernetes target", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const kubernetesId = "11111111-1111-4111-8111-111111111111";
+    mockEnvironmentService.findKubernetesEnvironment.mockResolvedValue({ id: kubernetesId });
+    mockEnvironmentService.getById.mockResolvedValue({
+      id: kubernetesId, companyId: "company-1", name: "Kubernetes", driver: "sandbox", config: { provider: "kubernetes" },
+    });
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "kubernetes", runner: { execute: vi.fn() } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const response = await request(await createApp())
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ runner: "legacy", adapterConfig: { command: "/host/agent-script" } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ environment: expect.objectContaining({ id: kubernetesId }) }));
+    expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
   });
 
   it("accepts a managed Dot environment without allocating an idle sandbox", async () => {

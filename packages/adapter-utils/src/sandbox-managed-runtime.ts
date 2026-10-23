@@ -51,6 +51,7 @@ import {
   type RuntimeStatusSink,
 } from "./runtime-progress.js";
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
+import { assertIsolatedWorkspaceSyncAllowed } from "./isolated-workspace-guard.js";
 import {
   scheduleSyncOperations,
   SYNC_OPERATION_CONCURRENCY_LIMIT,
@@ -985,34 +986,108 @@ export async function restoreVerifiedSnapshotArchive(input: {
   await confineFullWorkspaceExport(input.localDir, true);
 }
 
-async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {
-  const sourcePath = path.join(sourceRoot, relative);
+async function copyWorkspaceEntry(
+  sourceRoot: string,
+  targetRoot: string,
+  relative: string,
+  options: { allowMissing?: boolean; rejectSymlinks?: boolean } = {},
+): Promise<void> {
+  // The isolated runtime itself requires Linux. Keep ordinary restore mirroring
+  // available on other hosts, but fail closed for a Git overlay that needs the
+  // descriptor-relative guarantee.
+  if (process.platform !== "linux") {
+    if (options.rejectSymlinks) {
+      throw new Error("Git workspace overlay copy requires Linux descriptor-relative paths.");
+    }
+    const sourcePath = path.join(sourceRoot, relative);
+    const targetPath = path.join(targetRoot, relative);
+    const stats = await fs.lstat(sourcePath);
+    if (stats.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      return;
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.rm(targetPath, { recursive: true, force: true });
+    if (stats.isSymbolicLink()) {
+      await fs.symlink(await fs.readlink(sourcePath), targetPath);
+      return;
+    }
+    const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
+    try {
+      await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, stagedTargetPath);
+      });
+      await fs.chmod(stagedTargetPath, stats.mode);
+      await fs.rename(stagedTargetPath, targetPath);
+    } finally {
+      await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
+  // The Git snapshot only supplies names. Agent-writable directories can change
+  // after that snapshot, so resolve every component relative to an already-open
+  // directory, refusing symlinks along the way. Opening the final file before
+  // copying also prevents a replacement between lstat and copyFile.
+  const parts = relative.split("/");
+  if (parts.length === 0 || parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) {
+    throw new Error(`Unsafe workspace entry path: ${relative}`);
+  }
   const targetPath = path.join(targetRoot, relative);
-  const stats = await fs.lstat(sourcePath);
-
-  if (stats.isDirectory()) {
-    await fs.mkdir(targetPath, { recursive: true });
-    return;
-  }
-
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
-  if (stats.isSymbolicLink()) {
-    const linkTarget = await fs.readlink(sourcePath);
-    await fs.symlink(linkTarget, targetPath);
-    return;
-  }
-
-  const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
-  await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  const directoryFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  const entryFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
+  const handles: Awaited<ReturnType<typeof fs.open>>[] = [];
+  let sourceResolved = false;
   try {
-    await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-      await fs.copyFile(sourcePath, stagedTargetPath);
-    });
-    await fs.chmod(stagedTargetPath, stats.mode);
-    await fs.rename(stagedTargetPath, targetPath);
+    let directory = await fs.open(sourceRoot, directoryFlags);
+    handles.push(directory);
+    for (const part of parts.slice(0, -1)) {
+      directory = await fs.open(`/proc/self/fd/${directory.fd}/${part}`, directoryFlags);
+      handles.push(directory);
+    }
+    const sourcePath = `/proc/self/fd/${directory.fd}/${parts.at(-1)!}`;
+    let source: Awaited<ReturnType<typeof fs.open>>;
+    try {
+      source = await fs.open(sourcePath, entryFlags);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && options.allowMissing) return;
+      if ((error as NodeJS.ErrnoException).code !== "ELOOP" || options.rejectSymlinks) throw error;
+      // readlink never follows the link. A replacement can only change the link
+      // text copied to the destination; it cannot expose source file bytes.
+      const linkTarget = await fs.readlink(sourcePath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.rm(targetPath, { recursive: true, force: true });
+      await fs.symlink(linkTarget, targetPath);
+      return;
+    }
+    handles.push(source);
+    sourceResolved = true;
+    const stats = await source.stat();
+    if (stats.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      return;
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Unsafe workspace entry type: ${relative}`);
+    }
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.rm(targetPath, { recursive: true, force: true });
+    const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
+    try {
+      const anchoredSourcePath = `/proc/self/fd/${source.fd}`;
+      await fs.copyFile(anchoredSourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(anchoredSourcePath, stagedTargetPath);
+      });
+      await fs.chmod(stagedTargetPath, stats.mode);
+      await fs.rename(stagedTargetPath, targetPath);
+    } finally {
+      await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+  } catch (error) {
+    if (!sourceResolved && (error as NodeJS.ErrnoException).code === "ENOENT" && options.allowMissing) return;
+    throw error;
   } finally {
-    await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    await Promise.all(handles.map((handle) => handle.close()));
   }
 }
 
@@ -1101,7 +1176,10 @@ async function copySelectedWorkspaceEntries(input: {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    await copyWorkspaceEntry(sourceDir, input.targetDir, relative);
+    await copyWorkspaceEntry(sourceDir, input.targetDir, relative, {
+      allowMissing: true,
+      rejectSymlinks: process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true",
+    });
     // Do not upload the staged tree if an ancestor changed during the copy.
     await assertSourceRoot();
     await assertParentDirectory();
@@ -1281,6 +1359,9 @@ export async function prepareSandboxManagedRuntime(input: {
         throw error;
       },
     ));
+  const approvedWorkspaceLocalDir = syncWorkspace
+    ? await assertIsolatedWorkspaceSyncAllowed(input.workspaceLocalDir)
+    : input.workspaceLocalDir;
   const workspaceInboundMode = input.workspaceInboundMode ?? "host_current";
   const stageWorkspace =
     syncWorkspace && workspaceInboundMode !== "adopt_remote";
@@ -1318,8 +1399,9 @@ export async function prepareSandboxManagedRuntime(input: {
   // Resolve an existing workspace alias once, before reading its snapshot.
   // All subsequent work uses that root, so retargeting the alias cannot select
   // another repository. Staging also verifies the captured directory identity.
-  const workspaceRoot = syncWorkspace ? await runStepSpan("workspace.source_root", () => captureWorkspaceSourceRoot(input.workspaceLocalDir)) : null;
+  const workspaceRoot = syncWorkspace ? await runStepSpan("workspace.source_root", () => captureWorkspaceSourceRoot(approvedWorkspaceLocalDir)) : null;
   if (workspaceRoot) input = { ...input, workspaceLocalDir: workspaceRoot.sourceDir };
+  const workspaceLocalDir = input.workspaceLocalDir;
 
   // The git enumeration (`git status --ignored`, the HEAD diffs, `ls-files`).
   // It reads git's own bookkeeping to decide what to include/exclude, so it is
@@ -1573,6 +1655,9 @@ export async function prepareSandboxManagedRuntime(input: {
             //    which sits under `.paperclip-runtime`, survives to run its own extract.
             if (gitSnapshot || repositories.length) {
               await reportWorkspaceStatus("git_sync", "Syncing git history to environment");
+              if (!replaySeed && await assertIsolatedWorkspaceSyncAllowed(workspaceLocalDir) !== workspaceLocalDir) {
+                throw new Error("Isolated workspace source changed before archive staging.");
+              }
               const gitTarPath = path.join(tempDir, "git-workspace.tar");
               const remoteGitTar = path.posix.join(
                 runtimeRootDir,
@@ -1624,6 +1709,9 @@ export async function prepareSandboxManagedRuntime(input: {
             //    extracted git tree (no wipe); a plain workspace wipes every child except
             //    the preserved names first. The extract runs AFTER the git extract.
             await reportWorkspaceStatus("config_sync", "Syncing workspace to environment");
+            if (!replaySeed && await assertIsolatedWorkspaceSyncAllowed(workspaceLocalDir) !== workspaceLocalDir) {
+              throw new Error("Isolated workspace source changed before archive staging.");
+            }
             const workspaceTarPath = path.join(tempDir, "workspace.tar");
             if (replaySeed) {
               await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
@@ -1825,6 +1913,7 @@ export async function prepareSandboxManagedRuntime(input: {
           const { localPath, projectId, ignoreResolution } = source;
           const label = `project-${projectId}`;
           try {
+            const approvedLocalPath = await assertIsolatedWorkspaceSyncAllowed(localPath);
             if (!path.posix.isAbsolute(localPath)) {
               throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
             }
@@ -1848,15 +1937,18 @@ export async function prepareSandboxManagedRuntime(input: {
               referencedSourceIgnoreExcludeEntries(ignoreResolution),
             );
             await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing referenced project to environment");
+            if (await assertIsolatedWorkspaceSyncAllowed(approvedLocalPath) !== approvedLocalPath) {
+              throw new Error("Isolated referenced project source changed before upload.");
+            }
             await stageConfinedSyncIn({
               files: [{
-                sourcePath: localPath,
+                sourcePath: approvedLocalPath,
                 targetPath: remoteProjectDir,
                 kind: "directory",
                 exclude,
                 access: "ro",
               }],
-              sourceRoots: [localPath],
+              sourceRoots: [approvedLocalPath],
               targetRoots: [remoteProjectDir],
               progressLabel: label,
               statusPhase: "config_sync",
@@ -1909,7 +2001,7 @@ export async function prepareSandboxManagedRuntime(input: {
 
   return {
     spec: input.spec,
-    workspaceLocalDir: input.workspaceLocalDir,
+    workspaceLocalDir,
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,

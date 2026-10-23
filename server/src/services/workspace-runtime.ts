@@ -83,6 +83,7 @@ import {
   readManagedGitInspectionDiagnostic,
   type ManagedGitInspectionDiagnostic,
 } from "./workspace-validation-diagnostics.js";
+import { assertHostGitWorkspaceAllowed, prepareHostGitInvocation } from "./host-git-security.js";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -914,11 +915,13 @@ async function runGit(args: string[], cwd: string, opts?: {
   env?: NodeJS.ProcessEnv;
   observe?: (result: Awaited<ReturnType<typeof executeProcess>>) => void;
 }): Promise<string> {
+  const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
+  const git = prepareHostGitInvocation(args, opts?.env);
   const proc = await executeProcess({
     command: "git",
-    args,
-    cwd,
-    env: opts?.env,
+    args: git.args,
+    cwd: guardedCwd,
+    env: git.env,
   });
   opts?.observe?.(proc);
   if (proc.code !== 0) {
@@ -1370,10 +1373,13 @@ async function getGitWorktreeBranchAncestryVerdict(input: {
 }): Promise<GitWorktreeBranchAncestryVerdict> {
   if (!input.expectedHeadSha || !input.actualHeadSha) return "unknown";
 
+  const guardedCwd = await assertHostGitWorkspaceAllowed(input.repoRoot);
+  const git = prepareHostGitInvocation(["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha]);
   const proc = await executeProcess({
     command: "git",
-    args: ["merge-base", "--is-ancestor", input.expectedHeadSha, input.actualHeadSha],
-    cwd: input.repoRoot,
+    args: git.args,
+    cwd: guardedCwd,
+    env: git.env,
   }).catch(() => null);
   if (!proc) return "unknown";
   if (proc.code === 0) return "ancestor";
@@ -2754,10 +2760,15 @@ async function readAdvertisedDefaultBranch(repoRoot: string, resolveGitAuth?: Gi
   try {
     const remoteUrl = await runGit(["remote", "get-url", "origin"], repoRoot);
     const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl) : null;
+    const guardedCwd = await assertHostGitWorkspaceAllowed(repoRoot);
+    const git = prepareHostGitInvocation(
+      [...(auth?.configArgs ?? []), "ls-remote", "--symref", "origin", "HEAD"],
+      { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
+    );
     const output = await new Promise<string>((resolve, reject) => {
-      execFile("git", [...(auth?.configArgs ?? []), "ls-remote", "--symref", "origin", "HEAD"], {
-        cwd: repoRoot, timeout: 10_000, maxBuffer: 64 * 1024,
-        env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
+      execFile("git", git.args, {
+        cwd: guardedCwd, timeout: 10_000, maxBuffer: 64 * 1024,
+        env: git.env,
       }, (error, stdout) => error ? reject(error) : resolve(stdout));
     });
     return /^ref: refs\/heads\/(.+)\tHEAD$/m.exec(output)?.[1] ?? null;
@@ -2816,9 +2827,11 @@ async function resolvePathForWorktreeComparison(value: string): Promise<string> 
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<
   { paths: Set<string>; diagnostic?: never } | { paths?: never; diagnostic: ManagedGitInspectionDiagnostic }
 > {
+  const guardedCwd = await assertHostGitWorkspaceAllowed(repoRoot);
+  const git = prepareHostGitInvocation(["worktree", "list", "--porcelain"]);
   let proc: Awaited<ReturnType<typeof executeProcess>>;
   try {
-    proc = await executeProcess({ command: "git", args: ["worktree", "list", "--porcelain"], cwd: repoRoot });
+    proc = await executeProcess({ command: "git", args: git.args, cwd: guardedCwd, env: git.env });
   } catch (error) {
     return { diagnostic: readManagedGitInspectionDiagnostic({
       command: "worktree_list", failure: "spawn_failed", errorCode: (error as NodeJS.ErrnoException)?.code,
@@ -3115,10 +3128,13 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
+      const guardedCwd = await assertHostGitWorkspaceAllowed(input.cwd);
+      const git = prepareHostGitInvocation(input.args);
       const result = await executeProcess({
         command: "git",
-        args: input.args,
-        cwd: input.cwd,
+        args: git.args,
+        cwd: guardedCwd,
+        env: git.env,
       });
       stdout = result.stdout;
       stderr = result.stderr;
@@ -3167,6 +3183,11 @@ async function recordWorkspaceCommandOperation(
     onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },
 ) {
+  // These commands run on the Paperclip host as the service UID, before the
+  // sandbox agent starts. That UID owns the local master key in isolated mode.
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    throw new Error("Isolated local secrets forbid host workspace commands.");
+  }
   if (!recorder) {
     await runWorkspaceCommand(input);
     return null;
@@ -6179,6 +6200,9 @@ function createProvisioningRuntimeServiceRecord(
 }
 
 async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): Promise<LocalRuntimeServiceStart> {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    throw new Error("Isolated local secrets forbid host runtime services.");
+  }
   const leaseRunId = input.leaseRunId === undefined ? input.runId : input.leaseRunId;
   const startedByRunId = input.startedByRunId === undefined ? input.runId : input.startedByRunId;
   const identity = resolveRuntimeServiceReuseIdentity({

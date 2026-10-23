@@ -975,6 +975,10 @@ export function externalObjectService(
     objectId: string,
     input: RefreshObjectInput,
   ) {
+    const refreshKey = `${input.companyId}:${objectId}`;
+    const inFlightAtCall = objectRefreshesInFlight.get(refreshKey);
+    if (inFlightAtCall) return inFlightAtCall;
+
     const now = input.now ?? new Date();
     const object = await db
       .select()
@@ -986,7 +990,6 @@ export function externalObjectService(
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }
 
-    const refreshKey = `${object.companyId}:${object.id}`;
     const existingRefresh = objectRefreshesInFlight.get(refreshKey);
     if (existingRefresh) return existingRefresh;
 

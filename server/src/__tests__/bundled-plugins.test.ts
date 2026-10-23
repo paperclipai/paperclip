@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -9,15 +9,23 @@ import {
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
+  trustedBundledPluginPath,
   type BundledPluginProvisionerDeps,
   type ResolvedBundledPlugin,
 } from "../services/bundled-plugins.js";
+import { isReleaseOwnedBundleTree, isReleaseOwnedBundleTreeAsync } from "../services/release-owned-bundle.js";
 
 const CATALOG_ROOT = "/app/packages/plugins";
 
 const tempDirs: string[] = [];
 function makeTempDir(prefix: string): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+function makeServiceOwnedTempDir(): string {
+  const dir = mkdtempSync(path.join(process.cwd(), ".paperclip-bundle-trust-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -146,6 +154,118 @@ describe("resolveBundledPluginInstalls", () => {
       },
     ]);
   });
+
+  it("refuses an external Kubernetes override in isolation mode before provisioning", () => {
+    const external = makeTempDir("external-kubernetes-");
+    expect(() => resolveBundledPluginInstalls(["kubernetes"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {
+        PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true",
+        PAPERCLIP_KUBERNETES_PLUGIN_PATH: external,
+      },
+      enforceCatalogRoot: false,
+    })).toThrow(/bundled Kubernetes sandbox provider; refusing to start/);
+  });
+
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "pins a trusted alias to the canonical bundle before the alias can change", () => {
+      const root = makeServiceOwnedTempDir();
+      const bundle = path.join(root, "sandbox-providers/kubernetes");
+      const alias = path.join(root, "alias");
+      const replacement = makeTempDir("kubernetes-replacement-");
+      mkdirSync(bundle, { recursive: true });
+      symlinkSync(bundle, alias);
+      const [install] = resolveBundledPluginInstalls(["kubernetes"], {
+        catalogRoot: root,
+        env: {
+          PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true",
+          PAPERCLIP_KUBERNETES_PLUGIN_PATH: alias,
+        },
+        enforceCatalogRoot: false,
+      });
+      unlinkSync(alias);
+      symlinkSync(replacement, alias);
+      expect(install?.localPath).toBe(realpathSync(bundle));
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "refuses an agent-writable catalog before provisioning and checks bundle contents",
+    () => {
+      const root = makeServiceOwnedTempDir();
+      const bundle = path.join(root, "sandbox-providers/kubernetes");
+      const dist = path.join(bundle, "dist");
+      mkdirSync(dist, { recursive: true });
+      writeFileSync(path.join(bundle, "package.json"), "{}");
+      writeFileSync(path.join(dist, "manifest.js"), "export default {};");
+      writeFileSync(path.join(dist, "worker.js"), "export default {};");
+      const env = { PAPERCLIP_BUNDLED_PLUGIN_ROOT: root };
+
+      expect(trustedBundledPluginPath(bundle, env)?.packagePath).toBe(realpathSync(bundle));
+      chmodSync(root, 0o777); // Simulates a catalog writable by the host agent UID.
+      expect(trustedBundledPluginPath(bundle, env)).toBeNull();
+      expect(() => resolveBundledPluginInstalls(["kubernetes"], {
+        catalogRoot: root,
+        env: { ...env, PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME: "true" },
+        enforceCatalogRoot: false,
+      })).toThrow(/bundled Kubernetes sandbox provider; refusing to start/);
+
+      chmodSync(root, 0o700);
+      chmodSync(path.join(dist, "worker.js"), 0o666);
+      expect(trustedBundledPluginPath(bundle, env)).toBeNull();
+      chmodSync(path.join(dist, "worker.js"), 0o644);
+      expect(trustedBundledPluginPath(bundle, env)?.packagePath).toBe(realpathSync(bundle));
+
+      const dependency = path.join(root, "dependency");
+      mkdirSync(dependency);
+      symlinkSync(dependency, path.join(bundle, "node_modules"));
+      chmodSync(dependency, 0o777);
+      expect(trustedBundledPluginPath(bundle, env)).toBeNull();
+      chmodSync(dependency, 0o700);
+      expect(trustedBundledPluginPath(bundle, env)?.packagePath).toBe(realpathSync(bundle));
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "rejects a trusted dependency reached through an agent-writable intermediate link",
+    async () => {
+      const root = makeServiceOwnedTempDir();
+      const bundle = path.join(root, "bundle");
+      const dependency = path.join(root, "trusted-dependency");
+      const intermediate = path.join(root, "agent-writable");
+      mkdirSync(bundle);
+      mkdirSync(dependency);
+      mkdirSync(intermediate);
+      writeFileSync(path.join(dependency, "index.js"), "export {};");
+      symlinkSync(dependency, path.join(intermediate, "bridge"));
+      symlinkSync(path.join(intermediate, "bridge"), path.join(bundle, "node_modules"));
+      chmodSync(intermediate, 0o777);
+
+      expect(isReleaseOwnedBundleTree(bundle)).toBe(false);
+      await expect(isReleaseOwnedBundleTreeAsync(bundle)).resolves.toBe(false);
+      chmodSync(intermediate, 0o700);
+      expect(isReleaseOwnedBundleTree(bundle)).toBe(true);
+      await expect(isReleaseOwnedBundleTreeAsync(bundle)).resolves.toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "shares concurrent large bundle checks without blocking the event loop",
+    async () => {
+      const root = makeServiceOwnedTempDir();
+      const bundle = path.join(root, "bundle");
+      mkdirSync(bundle);
+      for (let index = 0; index < 300; index += 1) {
+        writeFileSync(path.join(bundle, `file-${index}.js`), "export {};");
+      }
+      const first = isReleaseOwnedBundleTreeAsync(bundle);
+      expect(isReleaseOwnedBundleTreeAsync(bundle)).toBe(first);
+      let ticked = false;
+      await new Promise<void>((resolve) => setImmediate(() => { ticked = true; resolve(); }));
+      expect(ticked).toBe(true);
+      await expect(first).resolves.toBe(true);
+    },
+  );
 
   it("honors an env override that stays inside the catalog root under enforcement", () => {
     const inside = path.join(CATALOG_ROOT, "sandbox-providers", "kubernetes");

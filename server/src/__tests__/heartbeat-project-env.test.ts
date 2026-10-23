@@ -9,6 +9,7 @@ import {
   buildReferencedProjectRunObservability,
   buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
+  ensureManagedProjectWorkspace,
   resolveAdditionalProjectWorkspace,
   resolveAdditionalRunWorkspaces,
   resolveExecutionRunAdapterConfig,
@@ -19,6 +20,21 @@ import {
 } from "../services/heartbeat.ts";
 import type { AuthorizationActor, AuthorizationDecision } from "../services/authorization.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
+
+describe("isolated managed project clone source", () => {
+  it("rejects a persisted host-local repo URL before materialization", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    try {
+      await expect(ensureManagedProjectWorkspace({
+        companyId: "company-1",
+        projectId: "project-1",
+        repoUrl: "file:///private/secrets/repo",
+      })).rejects.toThrow(/host-local Git clone/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe("resolveExecutionRunAdapterConfig", () => {
   it.each(["many variables", "large value"])("keeps legacy adapter configuration compatible with %s", async kind => {

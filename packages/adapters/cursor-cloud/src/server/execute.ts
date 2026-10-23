@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+import { isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import path from "node:path";
 import {
   Agent,
@@ -190,7 +190,7 @@ async function buildInstructionsPrefix(
   }
 
   try {
-    const contents = await fs.readFile(instructionsFilePath, "utf8");
+    const contents = await readHostFileForAgent(instructionsFilePath, "utf8");
     const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
     const prefix = `${contents.trim()}\n\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.\n`;
     return {
@@ -202,6 +202,7 @@ async function buildInstructionsPrefix(
       ],
     };
   } catch (err) {
+    if (isolatedHostAgentRuntimeEnabled()) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     await onLog(
       "stderr",

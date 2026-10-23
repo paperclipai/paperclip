@@ -2,6 +2,7 @@ import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provid
 import { withWorkspaceRestore } from "@paperclipai/adapter-utils/workspace-restore-result";
 import { cancellableSandboxStartup } from "@paperclipai/adapter-utils/acpx-engine/startup-cancellation";
 import fs from "node:fs/promises";
+import { readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -107,6 +108,16 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+async function writeInstructionFileIfAbsent(candidate: string, contents: Buffer): Promise<boolean> {
+  try {
+    await fs.writeFile(candidate, contents, { flag: "wx", mode: 0o600 });
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+}
+
 async function stageGrokProjectAssets(input: {
   cwd: string;
   instructionsFilePath: string;
@@ -128,11 +139,17 @@ async function stageGrokProjectAssets(input: {
 
   const instructionsTarget = path.join(input.cwd, "Agents.md");
   if (input.instructionsFilePath) {
-    if (!await pathExists(instructionsTarget)) {
-      await fs.copyFile(input.instructionsFilePath, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
-    } else if (path.resolve(instructionsTarget) !== path.resolve(input.instructionsFilePath)) {
+    let targetExists = await pathExists(instructionsTarget);
+    if (!targetExists) {
+      const instructions = await readHostFileForAgent(input.instructionsFilePath);
+      if (await writeInstructionFileIfAbsent(instructionsTarget, instructions)) {
+        ensureCleanupFile(instructionsTarget);
+        stagedInstructionsPath = instructionsTarget;
+      } else {
+        targetExists = true;
+      }
+    }
+    if (targetExists && path.resolve(instructionsTarget) !== path.resolve(input.instructionsFilePath)) {
       rulesFilePath = input.instructionsFilePath;
       await input.onLog(
         "stdout",
@@ -142,9 +159,11 @@ async function stageGrokProjectAssets(input: {
   } else {
     const canonicalAgents = path.join(input.cwd, "AGENTS.md");
     if (!await pathExists(instructionsTarget) && await pathExists(canonicalAgents)) {
-      await fs.copyFile(canonicalAgents, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
+      const instructions = await readHostFileForAgent(canonicalAgents);
+      if (await writeInstructionFileIfAbsent(instructionsTarget, instructions)) {
+        ensureCleanupFile(instructionsTarget);
+        stagedInstructionsPath = instructionsTarget;
+      }
     }
   }
 

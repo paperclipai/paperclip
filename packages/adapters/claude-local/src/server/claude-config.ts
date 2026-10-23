@@ -16,6 +16,12 @@ import {
   type AdapterExecutionTargetShellOptions,
 } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import {
+  assertIsolatedHostAssetDirectory,
+  ensureIsolatedHostDirectory,
+  isolatedHostAgentRuntimeEnabled,
+  readHostFileForAgent,
+} from "@paperclipai/adapter-utils/isolated-host-file";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
@@ -62,12 +68,12 @@ function sanitizeRemoteClaudeSettings(raw: string): string {
   return JSON.stringify(settings);
 }
 
-async function collectSeedFiles(sourceDir: string): Promise<SeedFile[]> {
+async function collectSeedFiles(sourceDir: string, env: NodeJS.ProcessEnv): Promise<SeedFile[]> {
   const files: SeedFile[] = [];
   for (const name of SEEDED_SHARED_FILES) {
     const sourcePath = path.join(sourceDir, name);
     if (!(await pathExists(sourcePath))) continue;
-    const rawContents = await fs.readFile(sourcePath);
+    const rawContents = await readHostFileForAgent(sourcePath, env);
     const contents = name === "settings.json"
       ? Buffer.from(sanitizeRemoteClaudeSettings(rawContents.toString("utf8")), "utf8")
       : rawContents;
@@ -92,13 +98,30 @@ async function materializeSeedSnapshot(input: {
   rootDir: string;
   snapshotKey: string;
   files: SeedFile[];
+  env: NodeJS.ProcessEnv;
 }): Promise<string> {
   const targetDir = path.join(input.rootDir, input.snapshotKey);
+  await ensureIsolatedHostDirectory(input.rootDir, input.env);
+
+  async function verifySnapshot(): Promise<void> {
+    if (!isolatedHostAgentRuntimeEnabled(input.env)) return;
+    await assertIsolatedHostAssetDirectory(targetDir, input.env);
+    const entries = await fs.readdir(targetDir);
+    if (entries.length !== input.files.length || entries.some((entry) => !input.files.some((file) => file.name === entry))) {
+      throw new Error("Claude config seed cache contains unexpected entries.");
+    }
+    for (const file of input.files) {
+      if (!(await readHostFileForAgent(path.join(targetDir, file.name), input.env)).equals(file.contents)) {
+        throw new Error("Claude config seed cache does not match the source snapshot.");
+      }
+    }
+  }
+
   if (await pathExists(targetDir)) {
+    await verifySnapshot();
     return targetDir;
   }
 
-  await fs.mkdir(input.rootDir, { recursive: true });
   const stagingDir = await fs.mkdtemp(path.join(input.rootDir, ".tmp-"));
   try {
     for (const file of input.files) {
@@ -117,6 +140,7 @@ async function materializeSeedSnapshot(input: {
     throw error;
   }
 
+  await verifySnapshot();
   return targetDir;
 }
 
@@ -192,15 +216,17 @@ export async function prepareClaudeConfigSeed(
   const targetRootDir = resolveManagedClaudeConfigSeedDir(env, companyId);
 
   if (path.resolve(sourceDir) === path.resolve(targetRootDir)) {
+    await assertIsolatedHostAssetDirectory(targetRootDir, env);
     return targetRootDir;
   }
 
-  const copiedFiles = await collectSeedFiles(sourceDir);
+  const copiedFiles = await collectSeedFiles(sourceDir, env);
   const snapshotKey = await buildSeedSnapshotKey(copiedFiles);
   const targetDir = await materializeSeedSnapshot({
     rootDir: targetRootDir,
     snapshotKey,
     files: copiedFiles,
+    env,
   });
 
   if (copiedFiles.length > 0) {
@@ -302,6 +328,7 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
     let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
       const seedDir = input.managedAiConnection ? input.env.CLAUDE_CONFIG_DIR : await prepareClaudeConfigSeed(process.env, async () => {}, input.companyId);
+      await assertIsolatedHostAssetDirectory(seedDir);
       const managedRemoteCwd =
         input.target?.kind === "remote" ? input.target.remoteCwd : input.cwd;
       tempWorkspaceDir = await fs.mkdtemp(
@@ -313,6 +340,8 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
         adapterKey: "claude",
         workspaceLocalDir: tempWorkspaceDir,
         workspaceRemoteDir: managedRemoteCwd,
+        // The probe only uploads config; its host temp dir is not an agent workspace.
+        syncWorkspace: false,
         timeoutSec: Math.max(1, input.helloProbeTimeoutSec),
         // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
         workspaceRestoreRetryDelaysMs: [],
@@ -320,7 +349,7 @@ export async function prepareSandboxClaudeProbeRuntime(input: {
           {
             key: "config-seed",
             localDir: seedDir,
-            followSymlinks: true,
+            followSymlinks: false,
           },
         ],
       });

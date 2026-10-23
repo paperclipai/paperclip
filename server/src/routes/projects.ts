@@ -46,6 +46,7 @@ import {
 } from "../services/workspace-runtime.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
+  assertNoAgentHostWorkspacePathMutation,
   collectProjectExecutionWorkspaceCommandPaths,
   collectProjectWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
@@ -367,6 +368,7 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    assertNoAgentHostWorkspacePathMutation(req, workspace);
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
@@ -646,6 +648,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectWorkspaceCommandPaths(req.body),
     );
+    assertNoAgentHostWorkspacePathMutation(req, req.body);
     await assertNoManagedSandboxWorkspacePath(req.body);
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
@@ -682,11 +685,12 @@ export function projectRoutes(db: Db) {
       const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
       if (!existing) return;
       if (!(await assertProjectReadAllowed(req, res, existing))) return;
-    if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
+      if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
       );
+      assertNoAgentHostWorkspacePathMutation(req, req.body);
       await assertNoManagedSandboxWorkspacePath(req.body);
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {

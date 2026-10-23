@@ -568,6 +568,58 @@ describe("gemini_local ACP lane", () => {
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
   });
 
+  it.skipIf(process.platform !== "linux")("does not upload a third-party Gemini skill link to a synthetic master key", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-skill-escape-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const hostHome = path.join(root, "home");
+    const hostSkills = path.join(hostHome, ".gemini", "skills");
+    const skillSource = path.join(root, "sources", "review");
+    const key = path.join(root, "synthetic-master.key");
+    const sentinel = "synthetic-master-key-must-not-cross-sandbox";
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(hostSkills, { recursive: true });
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "# safe review skill\n");
+    await fs.writeFile(key, sentinel, { mode: 0o600 });
+    await fs.symlink(key, path.join(hostSkills, "exfil"));
+
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(localCwd, {
+      config: {
+        engine: "acp",
+        cwd: localCwd,
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        env: { HOME: hostHome },
+        paperclipRuntimeSkills: [{ key: "company/review", runtimeName: "review", source: skillSource }],
+        paperclipSkillSync: { desiredSkills: ["company/review"] },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd,
+        runner: createLocalSandboxRunner(),
+      } as never,
+      authToken: "real-run-jwt",
+      onMeta: async (payload) => { meta.push(payload); },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    const sandboxSkills = path.join(String(meta[0]?.env?.HOME), ".gemini", "skills");
+    await expect(fs.readFile(path.join(sandboxSkills, "review", "SKILL.md"), "utf8"))
+      .resolves.toContain("safe review skill");
+    await expect(fs.lstat(path.join(sandboxSkills, "exfil"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.readFile(path.join(remoteCwd, ".paperclip-runtime", "gemini", "skills", "exfil"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(key, "utf8")).toBe(sentinel);
+  });
+
   it("test_gemini_acp_seam_registers_workspace_sync_back", async () => {
     const root = await makeTempRoot("paperclip-gemini-acp-syncback-");
     const localCwd = path.join(root, "worktree");

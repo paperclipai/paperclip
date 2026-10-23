@@ -10,6 +10,7 @@ import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspa
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { deriveRepoNameFromRepoUrl } from "./managed-project-checkout-name.js";
 import { scrubGitCredentialText, type GitRemoteAuthProvider } from "./git-credentials.js";
+import { assertHostGitWorkspaceAllowed, prepareHostGitInvocation } from "./host-git-security.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 
 const execFile = promisify(execFileCallback);
@@ -21,9 +22,14 @@ export type LinkedNestedCheckout = { checkout: string; base: string; gitDir: str
 type GitInvocation = { configArgs?: string[]; env?: Record<string, string>; timeout?: number };
 
 async function git(cwd: string, args: string[], options: GitInvocation = {}) {
-  const result = await execFile("git", [...options.configArgs ?? [], "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
+  const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
+  const invocation = prepareHostGitInvocation(
+    [...options.configArgs ?? [], "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`, "-C", guardedCwd, ...args],
+    { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...options.env },
+  );
+  const result = await execFile("git", invocation.args, {
     timeout: options.timeout ?? 60_000, maxBuffer: 16 * 1024 * 1024,
-    env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...options.env },
+    env: invocation.env,
   });
   return result.stdout;
 }

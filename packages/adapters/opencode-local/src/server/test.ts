@@ -159,6 +159,8 @@ export async function testEnvironment(
         adapterKey: "opencode",
         workspaceLocalDir: preparedRuntimeWorkspaceLocalDir,
         workspaceRemoteDir: cwd,
+        // The probe only uploads runtime config; its host temp dir is not an agent workspace.
+        syncWorkspace: false,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
         // The probe workspace is a throwaway temp dir; never wait on copy-back retries.

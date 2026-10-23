@@ -2244,6 +2244,12 @@ export function agentRoutes(
   ): Record<string, unknown> {
     if (agentHarnessType(adapterType ?? "", adapterConfig) !== "codex_local") return adapterConfig;
     const existingEnv = asRecord(adapterConfig.env);
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      return {
+        ...adapterConfig,
+        env: { ...existingEnv, CODEX_HOME: codexLocalAgentHome(companyId, agentId) },
+      };
+    }
     if (!existingEnv) return adapterConfig;
     if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
     if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) return adapterConfig;
@@ -2611,6 +2617,13 @@ export function agentRoutes(
     if (req.actor.type === "agent" && ["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "externalBindingId", "museBindingId", "museGeneration", "museConnection"].some(key => hasOwn(adapterConfig, key)))
       throw forbidden("Only an operator can configure external-agent pairing, attachment access, or workspace access.");
     assertNoAgentInstructionsConfigMutation(req, adapterConfig, path);
+    if (
+      req.actor.type === "agent" &&
+      process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" &&
+      Object.prototype.hasOwnProperty.call(asRecord(adapterConfig.env) ?? {}, "CODEX_HOME")
+    ) {
+      throw forbidden(`Agent-authenticated callers cannot select ${path}.env.CODEX_HOME in isolated mode.`);
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectAgentAdapterWorkspaceCommandPaths(adapterConfig, path),

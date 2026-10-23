@@ -7,6 +7,7 @@ import type {
   AdapterSkillSnapshot,
 } from "@paperclipai/adapter-utils";
 import {
+  buildPaperclipRuntimeSkillsAssetDir,
   buildPersistentSkillSnapshot,
   ensurePaperclipSkillSymlink,
   readPaperclipRuntimeSkillEntries,
@@ -28,6 +29,15 @@ export function resolveGeminiSkillsHome(config: Record<string, unknown>) {
   const configuredHome = asString(env.HOME);
   const home = configuredHome ? path.resolve(configuredHome) : os.homedir();
   return path.join(home, ".gemini", "skills");
+}
+
+export async function buildGeminiSkillsDir(config: Record<string, unknown>): Promise<string> {
+  const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
+  const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
+  return buildPaperclipRuntimeSkillsAssetDir(
+    availableEntries.filter((entry) => desiredNames.has(entry.key)),
+    "paperclip-gemini-skills-",
+  );
 }
 
 async function buildGeminiSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {

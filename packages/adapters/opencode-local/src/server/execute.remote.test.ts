@@ -94,10 +94,12 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   );
   return {
     ...actual,
+    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
     startAdapterExecutionTargetPaperclipBridge,
   };
 });
 
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
 import { execute } from "./execute.js";
 
 describe("opencode remote execution", () => {
@@ -124,6 +126,32 @@ describe("opencode remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it.skipIf(process.platform !== "linux")("rejects unsafe instructions before remote staging and bridge startup", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String((process.getuid?.() ?? 1000) + 1));
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-instructions-"));
+    cleanupDirs.push(workspaceDir);
+
+    await expect(execute({
+      runId: "run-unsafe-instructions",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode Builder", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", model: "opencode/gpt-5-nano", instructionsFilePath: "missing-AGENTS.md" },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA", strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    })).rejects.toThrow();
+
+    expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(runChildProcess).not.toHaveBeenCalled();
   });
 
   it.each([[false, false], [false, true], [true, false], [true, true]])(
@@ -246,7 +274,7 @@ describe("opencode remote execution", () => {
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/opencode/skills`,
-      followSymlinks: true,
+      followSymlinks: false,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),

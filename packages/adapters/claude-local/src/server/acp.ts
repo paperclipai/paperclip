@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { assertIsolatedHostAssetDirectory } from "@paperclipai/adapter-utils/isolated-host-file";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -273,6 +274,7 @@ async function prepareClaudeRemoteManagedHome(
   const claudeConfigSeedDir = input.config.managedAiConnection
     ? explicitClaudeConfigDir
     : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  await assertIsolatedHostAssetDirectory(claudeConfigSeedDir);
   // Ship the per-run skill bundle, staged only when the run selected at
   // least one skill. The bundle directory holds a plain copy of each
   // selected skill's files (`materializePaperclipSkillCopy` never copies a
@@ -284,7 +286,7 @@ async function prepareClaudeRemoteManagedHome(
   // The engine rewrites the prompt onto the in-sandbox copy once this asset
   // is staged.
   const stagedRuntime = await input.stage([
-    { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+    { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: false },
     ...(input.skillsBundleDir
       ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
       : []),

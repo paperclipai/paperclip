@@ -1,5 +1,6 @@
 import type { Request } from "express";
 import { forbidden } from "../errors.js";
+import { isRemoteGitRepositoryUrl } from "@paperclipai/adapter-utils/isolated-workspace-guard";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -72,6 +73,19 @@ export function assertNoAgentHostWorkspaceCommandMutation(req: Request, paths: s
   throw forbidden(
     `Agent keys cannot modify host-executed workspace commands (${paths.join(", ")}).`,
   );
+}
+
+/** Host paths are selected by an operator when key isolation is enabled. */
+export function assertNoAgentHostWorkspacePathMutation(req: Request, workspacePatch: unknown) {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME !== "true" ||
+      req.actor.type !== "agent" || !isRecord(workspacePatch)) return;
+  if (hasOwn(workspacePatch, "cwd")) {
+    throw forbidden("Agent keys cannot set project workspace host paths in isolated secrets mode.");
+  }
+  const repoUrl = workspacePatch.repoUrl;
+  if (typeof repoUrl === "string" && repoUrl.trim() && !isRemoteGitRepositoryUrl(repoUrl)) {
+    throw forbidden("Agent keys cannot select host-local Git sources in isolated secrets mode.");
+  }
 }
 
 export function collectAgentAdapterWorkspaceCommandPaths(

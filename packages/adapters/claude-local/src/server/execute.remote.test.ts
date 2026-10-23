@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -95,6 +95,36 @@ describe("claude remote execution", () => {
     }
   });
 
+  it.skipIf(process.platform !== "linux")("rejects workspace instruction symlink before remote dispatch in isolation", async () => {
+    const root = await mkdtemp(path.join(process.cwd(), ".claude-instructions-isolation-test-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    const privateDir = path.join(root, "private");
+    await mkdir(workspace, { mode: 0o700 });
+    await mkdir(privateDir, { mode: 0o700 });
+    const key = path.join(privateDir, "master.key");
+    await writeFile(key, "synthetic-master-key", { mode: 0o600 });
+    const instruction = path.join(workspace, "AGENTS.md");
+    await symlink(key, instruction);
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String((process.getuid?.() ?? 0) + 10_000));
+
+    await expect(execute({
+      runId: "run-isolation",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude", cwd: workspace, instructionsFilePath: instruction },
+      context: { ...createPromptContextFixture(), paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace",
+        remoteCwd: "/remote/workspace", privateKey: "PRIVATE KEY",
+        knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA", strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    })).rejects.toThrow(/ELOOP/);
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+  });
+
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {
     vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "1");
     vi.stubEnv("ANTHROPIC_MODEL", "host-only-model");
@@ -183,11 +213,11 @@ describe("claude remote execution", () => {
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
-      followSymlinks: true,
+      followSymlinks: false,
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,
-      followSymlinks: true,
+      followSymlinks: false,
     }));
     expect(runChildProcess.mock.calls.filter(call => !call[2].includes("--version"))).toHaveLength(1);
     const call = runChildProcess.mock.calls.find(call => !call[2].includes("--version")) as unknown as

@@ -3,9 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { ensureIsolatedHostDirectory, isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
-import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import {
+  assertStrictSkillDirectory,
+  copyStrictSkillDirectory,
+  readStrictSkillFile,
+  resolvePaperclipInstanceRootForAdapter,
+} from "@paperclipai/adapter-utils/server-utils";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
@@ -180,6 +186,20 @@ export function resolveManagedCodexHomeDir(
     : path.resolve(instanceRoot, "codex-home");
 }
 
+/** Service-selected home for an agent when the local secrets key is isolated. */
+export function resolveIsolatedCodexAgentHomeDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+}
+
 /**
  * True when `homePath` lives under the Paperclip-managed company tree
  * (`<instanceRoot>/companies/<companyId>/...`). This covers both the shared
@@ -288,11 +308,20 @@ export async function ensureSymlink(target: string, source: string): Promise<voi
   await createExpectedSymlink(target, source);
 }
 
-async function ensureCopiedFile(target: string, source: string): Promise<void> {
+async function ensureCopiedFile(target: string, source: string, env: NodeJS.ProcessEnv): Promise<void> {
+  // copyFile follows a shared-home symlink. In isolation mode pin and validate
+  // the source even when a prior seed left a target file in place.
+  const isolatedBytes = isolatedHostAgentRuntimeEnabled(env)
+    ? await readHostFileForAgent(source, env)
+    : null;
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
   await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  if (isolatedBytes) {
+    await fs.writeFile(target, isolatedBytes, { mode: 0o600 });
+  } else {
+    await fs.copyFile(source, target);
+  }
 }
 
 function tomlString(value: string): string {
@@ -405,6 +434,8 @@ export interface StageCodexHomeForSyncOptions {
   additionalFiles?: readonly string[];
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
+  /** Server-selected skill roots whose top-level links may be followed. */
+  trustedSkillSources?: string[];
 }
 
 /**
@@ -418,6 +449,37 @@ function isResolvedPathInside(candidate: string, root: string): boolean {
   if (candidate === root) return true;
   const rel = path.relative(root, candidate);
   return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/** Reject home links before provider/MCP preparation can read any home file. */
+export async function assertIsolatedCodexHomeEntries(home: string): Promise<void> {
+  // The home and every ancestor must be immutable to the host agent before
+  // provider preparation can read or rewrite any entry in this directory.
+  await ensureIsolatedHostDirectory(home);
+  for (const entry of CODEX_SYNC_ALLOWLIST) {
+    const source = path.join(home, entry);
+    const sourceStat = await fs.lstat(source).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!sourceStat) continue;
+    if (sourceStat.isSymbolicLink()) {
+      const expectedAuthSource = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+      const linkedPath = path.resolve(path.dirname(source), await fs.readlink(source));
+      if (entry !== "auth.json" || linkedPath !== expectedAuthSource) {
+        throw new Error("Isolated Codex home contains an untrusted symlink.");
+      }
+      // Read the server-selected source directly. The link is only a marker:
+      // following its pathname would reopen a possible key alias.
+      await readHostFileForAgent(expectedAuthSource);
+    } else if (entry === "skills" && sourceStat.isDirectory()) {
+      await ensureIsolatedHostDirectory(source);
+    } else if (entry !== "skills" && sourceStat.isFile()) {
+      await readHostFileForAgent(source);
+    } else {
+      throw new Error("Isolated Codex home contains an invalid entry type.");
+    }
+  }
 }
 
 /**
@@ -502,9 +564,11 @@ async function stageContainedSubtree(
  * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
  * so each child is allowed to resolve anywhere — and when it resolves to a
  * directory it becomes the containment root for its own subtree. Everything
- * *below* that root is copied via {@link stageContainedSubtree}, which refuses to
- * follow a nested symlink out of the skill (finding 2) and detects directory
- * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
+ * *below* that root is copied via {@link stageContainedSubtree} in ordinary
+ * mode, which refuses to follow a nested symlink out of the skill (finding 2)
+ * and detects directory cycles (finding 1). Isolated mode instead rejects
+ * nested links and opens every source component without following links.
+ * A direct child that resolves to `sourceDir` itself or to
  * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
  * skipped rather than used as a root, so it can never drag the wider home into
  * the staged skills asset. The `0700` staged directory and per-file owner-only mode
@@ -513,9 +577,17 @@ async function stageContainedSubtree(
 async function stageDirectorySecure(
   sourceDir: string,
   targetDir: string,
+  trustedSkillRoots: ReadonlySet<string>,
 ): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true, mode: 0o700 });
+  const isolated = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
   const realSourceDir = await fs.realpath(sourceDir);
+  if (isolated) {
+    if (realSourceDir !== path.resolve(sourceDir)) {
+      throw new Error("Isolated Codex skills directory has a symbolic-link ancestor.");
+    }
+    await assertStrictSkillDirectory(sourceDir);
+  }
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
     const entrySource = path.join(sourceDir, entry.name);
@@ -527,6 +599,12 @@ async function stageDirectorySecure(
       throw error;
     });
     if (!resolved) continue;
+    // In isolation mode, even a direct child must remain inside skills/ or be
+    // one of the server-selected roots. An agent can replace a direct child
+    // between readdir and realpath, so its earlier Dirent type is not trusted.
+    if (isolated && !isResolvedPathInside(resolved, realSourceDir) && !trustedSkillRoots.has(resolved)) {
+      throw new Error("Isolated Codex home contains an untrusted skill source.");
+    }
     // A top-level child that resolves to the skills dir itself or an ancestor
     // of it (`back -> .` / `back -> ..`) is degenerate: using it as a root would
     // re-stage the whole home under `skills/`. Skip it.
@@ -536,12 +614,21 @@ async function stageDirectorySecure(
       throw error;
     });
     if (!entryStat) continue;
+    if (isolated && entry.isSymbolicLink()) {
+      if (!entryStat.isDirectory() || !trustedSkillRoots.has(resolved)) {
+        throw new Error("Isolated Codex home contains an untrusted skill source.");
+      }
+    }
     if (entryStat.isDirectory()) {
       // This child skill establishes its own containment root: nested links may
       // not escape it, and the root seeds the cycle-detection active path.
-      await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
+      if (isolated) {
+        await copyStrictSkillDirectory(resolved, entryTarget);
+      } else {
+        await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
+      }
     } else if (entryStat.isFile()) {
-      const bytes = await fs.readFile(resolved);
+      const bytes = isolated ? await readStrictSkillFile(resolved) : await fs.readFile(resolved);
       const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
       await fs.writeFile(entryTarget, bytes, { mode });
       await fs.chmod(entryTarget, mode);
@@ -560,6 +647,7 @@ async function stageCodexHomeEntry(
   sourceHome: string,
   stagedHome: string,
   entry: string,
+  trustedSkillRoots: ReadonlySet<string>,
 ): Promise<void> {
   const source = path.join(sourceHome, entry);
   // `fs.stat` follows symlinks, so a dangling link (e.g. a removed auth source)
@@ -570,18 +658,30 @@ async function stageCodexHomeEntry(
   });
   if (!stat) return;
 
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+    if (entry === "skills" ? !stat.isDirectory() : !stat.isFile()) {
+      throw new Error("Isolated Codex home contains an invalid entry type.");
+    }
+  }
+
   const target = path.join(stagedHome, entry);
   if (stat.isDirectory()) {
     // Recursively copy with mode normalization — nested regular files land
     // `0600` and dangling/circular symlinks are skipped.
-    await stageDirectorySecure(source, target);
+    await stageDirectorySecure(source, target, trustedSkillRoots);
     return;
   }
 
   // `fs.readFile` follows the symlink into the shared source and returns the
   // resolved bytes (the live single-use auth token), which we write as a plain
   // regular file so copy-back and in-sandbox auth read real bytes.
-  const bytes = await fs.readFile(source);
+  const bytes = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true"
+    ? await readHostFileForAgent(
+        entry === "auth.json" && (await fs.lstat(source)).isSymbolicLink()
+          ? path.join(resolveSharedCodexHomeDir(process.env), "auth.json")
+          : source,
+      )
+    : await fs.readFile(source);
   // Stage every regular file `0600`, not just `auth.json`. The staged dir is a
   // 0700 mkdtemp and each file is read back only by the owner (Codex in-sandbox +
   // copy-back), so nothing needs group/other read. This is least privilege and,
@@ -619,6 +719,32 @@ export async function stageCodexHomeForSync(
   effectiveCodexHome: string,
   options: StageCodexHomeForSyncOptions = {},
 ): Promise<string> {
+  const isolated = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
+  if (isolated) {
+    await assertIsolatedCodexHomeEntries(effectiveCodexHome);
+  }
+  const trustedSkillRoots = new Set(
+    (await Promise.all((options.trustedSkillSources ?? []).map(async (source) => {
+      const resolved = await fs.realpath(source).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (resolved && isolated) {
+        if (resolved !== path.resolve(source)) {
+          throw new Error("Isolated Codex skill source has a symbolic-link ancestor.");
+        }
+        await assertStrictSkillDirectory(source);
+      }
+      return resolved;
+    }))).filter((source): source is string => source !== null),
+  );
+  if (isolated) {
+    const keyPath = nonEmpty(process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE);
+    const realKeyPath = keyPath ? await fs.realpath(keyPath).catch(() => null) : null;
+    if (realKeyPath && [...trustedSkillRoots].some((root) => isResolvedPathInside(realKeyPath, root))) {
+      throw new Error("Isolated Codex skill source overlaps the local secrets key.");
+    }
+  }
   const runIdPart = nonEmpty(options.runId ?? undefined);
   const stagedHome = await fs.mkdtemp(
     path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
@@ -629,10 +755,14 @@ export async function stageCodexHomeForSync(
       const source = path.join(effectiveCodexHome, filename);
       const stat = await fs.lstat(source);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
-      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+      await fs.writeFile(
+        path.join(stagedHome, filename),
+        isolated ? await readHostFileForAgent(source) : await fs.readFile(source),
+        { mode: 0o600, flag: "wx" },
+      );
     }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
-      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
+      await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry, trustedSkillRoots);
     }
     return stagedHome;
   } catch (error) {
@@ -662,6 +792,9 @@ export async function seedManagedCodexHome(
   options: { apiKey?: string | null } = {},
 ): Promise<void> {
   const apiKey = nonEmpty(options.apiKey ?? undefined);
+  // The caller may pass a narrowed environment for credential selection, but
+  // that must not disable the service's isolation policy or replace its UID.
+  const isolationEnv = isolatedHostAgentRuntimeEnabled(process.env) ? process.env : env;
 
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
@@ -677,7 +810,8 @@ export async function seedManagedCodexHome(
   // in below, so a bound run gets the same config a per-agent home gets.
   const credentialStoreEntry = isCodexAuthCachePath(env, targetHome);
 
-  await fs.mkdir(targetHome, { recursive: true });
+  if (isolatedHostAgentRuntimeEnabled(isolationEnv)) await ensureIsolatedHostDirectory(targetHome, isolationEnv);
+  else await fs.mkdir(targetHome, { recursive: true });
 
   // A regular-file auth.json in the target home is one of two very different
   // things. The device-login promotion writes the company credential as a
@@ -712,7 +846,9 @@ export async function seedManagedCodexHome(
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetBytes = isolatedHostAgentRuntimeEnabled(isolationEnv)
+        ? await readHostFileForAgent(authPath, isolationEnv)
+        : await fs.readFile(authPath).catch(() => null);
       const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
       if (targetIdentity) {
         // Any source read failure — absent or unreadable — keeps the usable
@@ -729,9 +865,13 @@ export async function seedManagedCodexHome(
         // credential is irreversible. The #5028 heal therefore applies
         // exactly when the source is readable and the identities match.
         let sourceReadErrorCode: string | null = null;
-        const sourceBytes = await fs
-          .readFile(path.join(sourceHome, "auth.json"))
+        const sourceBytes = await (isolatedHostAgentRuntimeEnabled(isolationEnv)
+          ? readHostFileForAgent(path.join(sourceHome, "auth.json"), isolationEnv)
+          : fs.readFile(path.join(sourceHome, "auth.json")))
           .catch((error: NodeJS.ErrnoException) => {
+            if (isolatedHostAgentRuntimeEnabled(isolationEnv) && error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              throw error;
+            }
             if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
               sourceReadErrorCode = error.code ?? "unknown";
             }
@@ -781,13 +921,14 @@ export async function seedManagedCodexHome(
       if (name === "auth.json" && (keepPromotedAuth || credentialStoreEntry)) continue;
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
+      if (isolatedHostAgentRuntimeEnabled(isolationEnv)) await readHostFileForAgent(source, isolationEnv);
       await ensureSymlink(path.join(targetHome, name), source);
     }
 
     for (const name of COPIED_SHARED_FILES) {
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
-      await ensureCopiedFile(path.join(targetHome, name), source);
+      await ensureCopiedFile(path.join(targetHome, name), source, isolationEnv);
     }
 
     await onLog(

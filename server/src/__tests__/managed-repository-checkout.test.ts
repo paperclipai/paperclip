@@ -21,6 +21,21 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+  it("rejects host-local clone sources before Git runs in isolated mode", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-isolated-clone-"));
+    directories.push(root);
+    const target = path.join(root, "target");
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    await expect(materializeManagedProjectWorkspace(target, {
+      repoUrl: "https://github.com/test/source",
+      localSource: path.join(root, "source"),
+    })).rejects.toThrow(/forbid host-local Git clone sources/);
+    await expect(materializeManagedProjectWorkspace(target, {
+      repoUrl: path.join(root, "source"),
+    })).rejects.toThrow(/forbid host-local Git clone sources/);
+    expect(await stat(target).catch(() => null)).toBeNull();
+  });
+
   it("keeps managed repositories separate without requiring Git or touching an ancestor", async () => {
     const { source, target } = await fixture();
     await mkdir(target);

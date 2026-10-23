@@ -282,13 +282,31 @@ describe("grok_local testEnvironment", () => {
 
     expect(prepareRuntimeMock).toHaveBeenCalledOnce();
     expect(prepareRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceRemoteDir: "/sandbox/workspace" }),
+      expect.objectContaining({ workspaceRemoteDir: "/sandbox/workspace", syncWorkspace: false }),
     );
     expect(workspaceLocalDirAtCall).not.toBe("/sandbox/workspace");
     expect(workspaceExistedAtCall).toBe(true);
     // The staged home dir the runtime uploaded is what the probe must use.
     expect(runProcessMock.mock.calls[0]?.[4]).toMatchObject({ env: expect.objectContaining({ GROK_HOME: "/sandbox/assets/home" }) });
     expect(result.status).toBe("pass");
+  });
+
+  it("reports unsafe Grok auth staging before preparing a sandbox runtime", async () => {
+    stageGrokHomeMock.mockRejectedValueOnce(new Error("Isolated Grok auth source has an unsafe path."));
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/sandbox/workspace", managedAiConnection: { provider: "xai" },
+        env: { GROK_HOME: "/host/grok-home" } },
+      executionTarget: { kind: "remote", transport: "sandbox" } as never,
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "grok_environment_unprepared", level: "error" }),
+    ]));
+    expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(runProcessMock).not.toHaveBeenCalled();
   });
 
   it("reports a failed runtime preparation as a check instead of crashing", async () => {

@@ -18,7 +18,7 @@
  *   --source           session source tag for filtering
  */
 
-import fs from "node:fs/promises";
+import { isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import path from "node:path";
 
 import type {
@@ -419,7 +419,7 @@ export async function execute(
   let agentInstructions = "";
   if (instructionsFilePath) {
     try {
-      agentInstructions = await fs.readFile(instructionsFilePath, "utf-8");
+      agentInstructions = await readHostFileForAgent(instructionsFilePath, "utf-8");
       const loadedInstructionsLength = agentInstructions.length;
       const instructionsFileDir = path.dirname(instructionsFilePath);
       agentInstructions += `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}/.`;
@@ -428,6 +428,7 @@ export async function execute(
         `[hermes] Loaded agent instructions from ${instructionsFilePath} (${loadedInstructionsLength} chars)\n`,
       );
     } catch (err) {
+      if (isolatedHostAgentRuntimeEnabled()) throw err;
       const reason = err instanceof Error ? err.message : String(err);
       // Non-fatal: log to stdout with an explicit "Warning:" prefix so the
       // Paperclip UI doesn't render this as a red error (stderr output is

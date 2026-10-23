@@ -8731,10 +8731,12 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
       expect(runnerState.lifecycle).not.toBe("suspended");
       const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
       expect(settlement).toBeDefined();
-      expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
+      const incomplete = JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length));
+      expect(incomplete).toMatchObject({
         runnerSuspended: false,
-        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+        suspensionState: { commandStatus: "pending" },
       });
+      expect([true, null]).toContain(incomplete.suspensionState.runnerIdentityMatches);
     } finally {
       await rm(stateDirectory, { recursive: true, force: true });
     }

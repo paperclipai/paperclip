@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -87,12 +87,43 @@ describe("cursor remote execution", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it.skipIf(process.platform !== "linux")("rejects linked instructions before allocating remote resources", async () => {
+    const root = await mkdtemp(path.join(process.cwd(), ".cursor-instructions-guard-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace");
+    const key = path.join(root, "master.key");
+    const instruction = path.join(root, "instructions.md");
+    await mkdir(workspace);
+    await writeFile(key, "SYNTHETIC_MASTER_KEY");
+    await symlink(key, instruction);
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String((process.getuid?.() ?? 0) + 100000));
+
+    await expect(execute({
+      runId: "cursor-instructions-guard",
+      agent: { id: "agent-1", companyId: "company-1", adapterType: "cursor" },
+      config: { cwd: workspace, instructionsFilePath: instruction },
+      context: {},
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    } as never)).rejects.toThrow();
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
+    expect(runChildProcess).not.toHaveBeenCalled();
   });
 
   it("prepares the workspace, syncs Cursor skills, and restores workspace changes for remote SSH execution", async () => {
@@ -172,7 +203,7 @@ describe("cursor remote execution", () => {
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/cursor/skills`,
-      followSymlinks: true,
+      followSymlinks: false,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),

@@ -359,6 +359,7 @@ describe("agent routes adapter validation", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
   });
@@ -607,6 +608,34 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status).toBe(422);
     expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent-selected CODEX_HOME in isolated mode and assigns the managed home", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      source: "agent_jwt",
+    });
+    const denied = await requestApp(app, (baseUrl) =>
+      request(baseUrl).patch(`/api/agents/${agentId}`).send({
+        adapterConfig: { env: { CODEX_HOME: "/agent/workspace" } },
+      }),
+    );
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+
+    const accepted = await requestApp(app, (baseUrl) =>
+      request(baseUrl).patch(`/api/agents/${agentId}`).send({
+        adapterConfig: { model: "gpt-5.4" },
+      }),
+    );
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const env = (patch.adapterConfig as { env: Record<string, unknown> }).env;
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {

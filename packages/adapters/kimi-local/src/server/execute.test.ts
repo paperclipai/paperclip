@@ -1,21 +1,33 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import {
+  prepareSandboxManagedRuntime,
+  type SandboxManagedRuntimeClient,
+} from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
+
+const execFile = promisify(execFileCallback);
 
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
-const prepareRuntimeMock = vi.hoisted(() => vi.fn(async () => ({
-  workspaceRemoteDir: null,
+const prepareRuntimeMock = vi.hoisted(() => vi.fn(async (_input: {
+  assets?: Array<{ key: string; localDir: string; followSymlinks?: boolean }>;
+}) => ({
+  workspaceRemoteDir: null as string | null,
+  runtimeRootDir: null as string | null,
+  assetDirs: {} as Record<string, string>,
   restoreWorkspace: async () => {},
 })));
 const resolveCommandForLogsMock = vi.hoisted(() => vi.fn(async () => "kimi"));
 const runProcessMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
-  adapterExecutionTargetIsRemote: () => false,
+  adapterExecutionTargetIsRemote: (target: { kind?: string } | null) => target?.kind === "remote",
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
   adapterExecutionTargetSessionIdentity: () => ({ kind: "local" }),
@@ -94,6 +106,7 @@ describe("kimi_local execute", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
@@ -451,5 +464,148 @@ describe("kimi_local execute", () => {
 
     expect(seenArgs).toContain("--skills-dir");
     expect(seenArgs[seenArgs.indexOf("--skills-dir") + 1]).toContain("paperclip-kimi-skills-");
+  });
+
+  it.skipIf(process.platform !== "linux")("rejects unsafe instructions before remote staging", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String((process.getuid?.() ?? 1000) + 1));
+    const workspace = await makeTempRoot();
+
+    await expect(execute(makeContext(workspace, {
+      config: { cwd: workspace, instructionsFilePath: path.join(workspace, "missing-AGENTS.md") },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox/workspace" },
+    }))).rejects.toThrow();
+
+    expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(runProcessMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== "linux")("rejects a selected skill symlink to a synthetic key before sandbox syncIn", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const root = await makeTempRoot();
+    const workspace = path.join(root, "workspace");
+    const skill = path.join(root, "leaky-skill");
+    const key = path.join(root, "synthetic-master.key");
+    await fs.mkdir(workspace);
+    await fs.mkdir(skill);
+    await fs.writeFile(path.join(skill, "SKILL.md"), "# skill\n");
+    await fs.writeFile(key, "synthetic-kimi-master-key-bytes\n");
+    await fs.symlink(key, path.join(skill, "leak"));
+
+    await expect(execute(makeContext(workspace, {
+      config: {
+        cwd: workspace,
+        paperclipRuntimeSkills: [{ key: "company/leaky", runtimeName: "leaky", source: skill }],
+        paperclipSkillSync: { desiredSkills: ["company/leaky"] },
+      },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox/workspace" },
+    }))).rejects.toThrow(/symbolic link/);
+
+    expect(prepareRuntimeMock).not.toHaveBeenCalled();
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(await fs.readFile(key, "utf8")).toBe("synthetic-kimi-master-key-bytes\n");
+  });
+
+  it.skipIf(process.platform !== "linux")("archives a selected Kimi skill as real files without external key bytes", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    const root = await makeTempRoot();
+    const workspace = path.join(root, "workspace");
+    const safeSkill = path.join(root, "safe-skill");
+    const leakySkill = path.join(root, "leaky-skill");
+    const keyBytes = "synthetic-kimi-master-key-bytes\n";
+    const key = path.join(root, "synthetic-master.key");
+    await fs.mkdir(workspace);
+    await fs.mkdir(safeSkill);
+    await fs.mkdir(leakySkill);
+    await fs.writeFile(path.join(safeSkill, "SKILL.md"), "# ordinary Kimi skill\n");
+    await fs.writeFile(path.join(leakySkill, "SKILL.md"), "# leaky skill\n");
+    await fs.writeFile(key, keyBytes);
+    await fs.symlink(key, path.join(leakySkill, "leak"));
+    const archive = path.join(root, "skills.tar");
+    const sandboxRoot = path.join(root, "sandbox");
+    let syncedSkillsDir = "";
+    let syncInArchiveCount = 0;
+    prepareRuntimeMock.mockImplementationOnce(async (input) => {
+      const asset = input.assets?.find((entry: { key: string }) => entry.key === "skills");
+      if (!asset) throw new Error("Kimi skills asset was not staged");
+      expect(asset.followSymlinks).toBe(false);
+      expect((await fs.lstat(path.join(asset.localDir, "safe"))).isDirectory()).toBe(true);
+      const client: SandboxManagedRuntimeClient = {
+        makeDir: async (dir) => { await fs.mkdir(dir, { recursive: true }); },
+        writeFile: async (file, bytes) => {
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          await fs.writeFile(file, Buffer.from(bytes));
+        },
+        readFile: async (file) => fs.readFile(file),
+        listFiles: async (dir) => (await fs.readdir(dir)).sort(),
+        remove: async (file) => { await fs.rm(file, { recursive: true, force: true }); },
+        run: async (command) => { await execFile("sh", ["-c", command]); },
+        syncIn: async (operations) => {
+          for (const operation of operations) {
+            for (const mapping of operation.files) {
+              if (mapping.kind !== "file") throw new Error("Unexpected directory sync in Kimi asset test");
+              const bytes = await fs.readFile(mapping.sourcePath);
+              if (mapping.targetPath.endsWith("skills-upload.tar")) {
+                syncInArchiveCount += 1;
+                await fs.writeFile(archive, bytes);
+              }
+              await fs.mkdir(path.dirname(mapping.targetPath), { recursive: true });
+              await fs.writeFile(mapping.targetPath, bytes);
+            }
+            for (const command of operation.postUploadCommands ?? []) {
+              await execFile("sh", ["-c", command.command]);
+            }
+          }
+          return { operations: operations.map((operation) => ({
+            operationId: operation.operationId,
+            filesTransferred: operation.files.length,
+            bytesTransferred: 0,
+          })) };
+        },
+      };
+      const staged = await prepareSandboxManagedRuntime({
+        spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: sandboxRoot, timeoutMs: 30_000, apiKey: null },
+        adapterKey: "kimi",
+        client,
+        workspaceLocalDir: workspace,
+        syncWorkspace: false,
+        assets: [asset],
+      });
+      syncedSkillsDir = staged.assetDirs.skills;
+      return {
+        workspaceRemoteDir: staged.workspaceRemoteDir,
+        runtimeRootDir: staged.runtimeRootDir,
+        assetDirs: staged.assetDirs,
+        restoreWorkspace: async () => {},
+      };
+    });
+    let seenArgs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      return { exitCode: 0, signal: null, timedOut: false, stdout: KIMI_STDOUT, stderr: "" };
+    });
+
+    const result = await execute(makeContext(workspace, {
+      config: {
+        cwd: workspace,
+        paperclipRuntimeSkills: [
+          { key: "company/safe", runtimeName: "safe", source: safeSkill },
+          { key: "company/leaky", runtimeName: "leaky", source: leakySkill },
+        ],
+        paperclipSkillSync: { desiredSkills: ["company/safe"] },
+      },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox/workspace" },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(syncInArchiveCount).toBe(1);
+    expect(seenArgs[seenArgs.indexOf("--skills-dir") + 1]).toBe(syncedSkillsDir);
+    expect(await fs.readFile(path.join(syncedSkillsDir, "safe", "SKILL.md"), "utf8")).toBe("# ordinary Kimi skill\n");
+    const { stdout: files } = await execFile("tar", ["-tf", archive]);
+    expect(files).toContain("safe/SKILL.md");
+    expect(files).not.toContain("leaky/");
+    const { stdout: skillBody } = await execFile("tar", ["-xOf", archive, "safe/SKILL.md"]);
+    expect(skillBody).toBe("# ordinary Kimi skill\n");
+    expect((await fs.readFile(archive)).includes(Buffer.from(keyBytes))).toBe(false);
   });
 });

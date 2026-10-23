@@ -20,6 +20,7 @@ import { toolAccessService } from "./tool-access.js";
 import { normalizeProjectRepositoryUrl } from "./project-repositories.js";
 import { buildGitAuthInvocation, createGitRemoteAuthProvider } from "./git-credentials.js";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
+import { assertHostGitWorkspaceAllowed, prepareHostGitInvocation } from "./host-git-security.js";
 import { requiresAnonymousRepositoryAcquisition, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
 
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
@@ -423,14 +424,24 @@ export function executionWorkspaceRepositoryService(db: Db) {
                   const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
                   if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
                 }
-                const pinnedCommit = await measureRunPhase("workspace.repository.git_commit", async () =>
-                  (await execFile("git", ["-C", cloneCwd, "rev-parse", "HEAD"], { timeout: 30_000 })).stdout.trim());
+                const pinnedCommit = await measureRunPhase("workspace.repository.git_commit", async () => {
+                  const guardedCwd = await assertHostGitWorkspaceAllowed(cloneCwd);
+                  const git = prepareHostGitInvocation(["-C", guardedCwd, "rev-parse", "HEAD"]);
+                  return (await execFile("git", git.args, { timeout: 30_000, env: git.env })).stdout.trim();
+                });
                 await measureRunPhase("workspace.repository.ownership_write", () => fs.writeFile(path.join(cloneCwd, ".git", "paperclip-workspace-owner.json"), JSON.stringify({ version: 1, repositoryId: row.id, pinnedCommit }), { flag: "wx", mode: 0o600 }));
               },
             }));
             if (result.warning) throw conflict(result.warning);
           }
-          const git = async (...args: string[]) => (await execFile("git", ["-C", cwd, ...args], { timeout: 30_000, env: { ...process.env, GIT_NO_LAZY_FETCH: "1" } })).stdout.trim();
+          const git = async (...args: string[]) => {
+            const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
+            const invocation = prepareHostGitInvocation(["-C", guardedCwd, ...args], { ...process.env, GIT_NO_LAZY_FETCH: "1" });
+            return (await execFile("git", invocation.args, {
+              timeout: 30_000,
+              env: { ...invocation.env, GIT_NO_LAZY_FETCH: "1" },
+            })).stdout.trim();
+          };
           const origin = normalizeProjectRepositoryUrl(await measureRunPhase("workspace.repository.git_origin", () => git("remote", "get-url", "origin")));
           if (origin.url.toLowerCase() !== row.repositoryIdentity) throw conflict("Repository checkout belongs to a different origin");
           const ownership = await readOwnership();

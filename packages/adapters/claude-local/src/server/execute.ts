@@ -3,6 +3,7 @@ import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
+import { assertIsolatedHostAssetDirectory, isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -515,7 +516,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let instructionsPathDirective = "";
   if (instructionsFilePath) {
     try {
-      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const instructionsContent = await readHostFileForAgent(instructionsFilePath, "utf-8");
       instructionsPathDirective =
         `Agent instructions for this run were loaded from ${instructionsFilePath}. ` +
         `Resolve any relative file references from ${instructionsFileDir}. ` +
@@ -525,6 +526,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       combinedInstructionsContents = instructionsContent +
         "\nUse the agent instruction file location supplied in the current run prompt to resolve relative file references.";
     } catch (err) {
+      if (isolatedHostAgentRuntimeEnabled()) throw err;
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",
@@ -622,6 +624,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? config.managedAiConnection ? sharedClaudeConfigDir : await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
+  if (claudeConfigSeedDir) await assertIsolatedHostAssetDirectory(claudeConfigSeedDir);
   const preparedExecutionTargetRuntime = executionTargetIsRemote
     ? await (async () => {
         await onLog(
@@ -642,18 +645,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             {
               key: "skills",
               localDir: promptBundle.addDir,
-              followSymlinks: true,
+              followSymlinks: false,
             },
             {
               key: "mcp-config",
               localDir: localMcpConfigDir,
-              followSymlinks: true,
+              followSymlinks: false,
             },
             ...(claudeConfigSeedDir
               ? [{
                 key: "config-seed",
                 localDir: claudeConfigSeedDir,
-                followSymlinks: true,
+                followSymlinks: false,
               }]
               : []),
           ],

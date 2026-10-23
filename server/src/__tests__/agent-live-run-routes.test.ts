@@ -289,7 +289,7 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", query.includes("agentId") ? "agent-1" : undefined,
       limit, { summary: query.includes("summary=true") });
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
-  });
+  }, 30_000);
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");

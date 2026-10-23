@@ -6,6 +6,7 @@ import { cancellableSandboxStartup } from "./startup-cancellation.js";
 import { emitStartupReuse, environmentStartupReuse, summarizeStartupReuse, type StartupReuseReason } from "../startup-reuse.js";
 import { withAdapterExecutionPhase, type AdapterExecutionPhase } from "../execution-phase.js";
 import fs from "node:fs/promises";
+import { isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "../isolated-host-file.js";
 import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -3121,7 +3122,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const commandNotes: string[] = [];
   if (instructionsFilePath) {
     try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+      const instructionsContents = await readHostFileForAgent(instructionsFilePath, "utf8");
       instructionsPrefix =
         `${instructionsContents}\n\n` +
         `The above agent instructions were loaded from ${instructionsFilePath}. ` +
@@ -3131,6 +3132,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
         `Prepended instructions + path directive to the ACPX prompt (relative references from ${instructionsDir}).`,
       );
     } catch (err) {
+      if (isolatedHostAgentRuntimeEnabled()) throw err;
       const reason = err instanceof Error ? err.message : String(err);
       await onLog(
         "stderr",

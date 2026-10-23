@@ -20,6 +20,8 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { localRepositoryPath } from "../local-repository-path.js";
+import { isRemoteGitRepositoryUrl } from "@paperclipai/adapter-utils/isolated-workspace-guard";
+import { assertHostGitWorkspaceAllowed, prepareHostGitInvocation } from "../host-git-security.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -450,6 +452,10 @@ export async function ensureManagedProjectWorkspace(input: {
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
+  if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" &&
+      input.repoUrl && !isRemoteGitRepositoryUrl(input.repoUrl)) {
+    throw new Error("Isolated local secrets forbid host-local Git clone sources.");
+  }
   const defaultCwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
@@ -457,7 +463,9 @@ export async function ensureManagedProjectWorkspace(input: {
   });
   let cwd = defaultCwd;
   if (input.repoUrl && await fs.stat(path.join(cwd, ".git")).catch(() => null)) {
-    const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
+    const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
+    const git = prepareHostGitInvocation(["-C", guardedCwd, "remote", "get-url", "origin"]);
+    const origin = await execFile("git", git.args, { timeout: 10_000, env: git.env })
       .then((result) => result.stdout.trim()).catch(() => null);
     if (origin && origin !== input.repoUrl) {
       cwd = `${cwd}-${createHash("sha256").update(input.repoUrl).digest("hex").slice(0, 12)}`;
@@ -485,7 +493,9 @@ export async function ensureManagedProjectWorkspace(input: {
   if (input.repoUrl) {
     // A different server process can publish a same-name checkout between the
     // initial origin check and the atomic rename. Never adopt its other repo.
-    const origin = await execFile("git", ["-C", cwd, "remote", "get-url", "origin"], { timeout: 10_000 })
+    const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
+    const git = prepareHostGitInvocation(["-C", guardedCwd, "remote", "get-url", "origin"]);
+    const origin = await execFile("git", git.args, { timeout: 10_000, env: git.env })
       .then((value) => value.stdout.trim()).catch(() => null);
     if (origin && origin !== input.repoUrl) {
       if (cwd !== defaultCwd) throw new Error("Managed checkout origin does not match the requested repository");
@@ -834,16 +844,20 @@ async function hasGitMetadata(cwd: string | null | undefined) {
 async function isGitCheckout(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
-  return execFile("git", ["rev-parse", "--show-toplevel"], { cwd: normalized })
+  const guardedCwd = await assertHostGitWorkspaceAllowed(normalized);
+  const git = prepareHostGitInvocation(["rev-parse", "--show-toplevel"]);
+  return execFile("git", git.args, { cwd: guardedCwd, env: git.env })
     .then((result) => Boolean(readNonEmptyString(result.stdout)))
     .catch(() => false);
 }
 
 async function probeGitWorktreeBase(cwd: string) {
+  const guardedCwd = await assertHostGitWorkspaceAllowed(cwd);
   try {
-    const result = await execFile("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      env: { ...process.env, LC_ALL: "C" },
+    const git = prepareHostGitInvocation(["rev-parse", "--show-toplevel"], { ...process.env, LC_ALL: "C" });
+    const result = await execFile("git", git.args, {
+      cwd: guardedCwd,
+      env: git.env,
     });
     return { isCheckout: Boolean(readNonEmptyString(result.stdout)), notRepository: false };
   } catch (error) {
@@ -898,7 +912,9 @@ function sameResolvedPath(
 async function hasGitPushRemote(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
-  const remoteNames = await execFile("git", ["remote"], { cwd: normalized })
+  const guardedCwd = await assertHostGitWorkspaceAllowed(normalized);
+  const remoteGit = prepareHostGitInvocation(["remote"]);
+  const remoteNames = await execFile("git", remoteGit.args, { cwd: guardedCwd, env: remoteGit.env })
     .then((result) =>
       result.stdout
         .split(/\r?\n/)
@@ -908,10 +924,11 @@ async function hasGitPushRemote(cwd: string | null | undefined) {
     .catch(() => []);
 
   for (const remoteName of remoteNames) {
+    const git = prepareHostGitInvocation(["remote", "get-url", "--push", remoteName]);
     const pushUrl = await execFile(
       "git",
-      ["remote", "get-url", "--push", remoteName],
-      { cwd: normalized },
+      git.args,
+      { cwd: guardedCwd, env: git.env },
     )
       .then((result) => readNonEmptyString(result.stdout))
       .catch(() => null);

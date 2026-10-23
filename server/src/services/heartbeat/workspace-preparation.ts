@@ -1238,6 +1238,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
   const workspaceRealization = realizationResult.workspaceRealization;
   const executionTarget = realizationResult.executionTarget;
+  if (executionPolicy?.requireIsolatedAgentRuntime &&
+      (executionTarget?.kind !== "remote" || executionTarget.transport !== "sandbox")) {
+    throw new Error("Isolated local secrets require a remote sandbox execution target.");
+  }
   if (!pluginPrepared && !pluginTaskWorkspace && !isDotRun && issueId && (persistedNativeExecutionInput || nativeRecoveryExecutionWorkspaceId)
       && !(executionTarget?.kind === "remote" && (executionTarget.transport === "ssh"
         || (executionTarget.transport === "sandbox" && executionTarget.runnerTask)))) {

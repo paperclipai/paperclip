@@ -95,6 +95,24 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function localGitInvocation(localDir: string, args: readonly string[], env: NodeJS.ProcessEnv = process.env) {
+  // All host Git invocations, including streaming ref transactions, need the
+  // same hook and fsmonitor policy while the service owns the master key.
+  const isolated = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
+  const gitEnv = isolated
+    ? Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("GIT_")))
+    : env;
+  if (isolated) {
+    gitEnv.GIT_CONFIG_NOSYSTEM = "1";
+    gitEnv.GIT_CONFIG_GLOBAL = "/dev/null";
+    gitEnv.GIT_TERMINAL_PROMPT = "0";
+  }
+  return {
+    args: ["-C", localDir, ...(isolated ? ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false"] : []), ...args],
+    env: gitEnv,
+  };
+}
+
 export async function runLocalGit(
   localDir: string,
   args: string[],
@@ -104,14 +122,15 @@ export async function runLocalGit(
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<GitCommandResult> {
+  const invocation = localGitInvocation(localDir, args, options.env);
   return await new Promise<GitCommandResult>((resolve, reject) => {
     execFile(
       "git",
-      ["-C", localDir, ...args],
+      invocation.args,
       {
         timeout: options.timeout ?? 15_000,
         maxBuffer: options.maxBuffer ?? 1024 * 128,
-        env: options.env ?? process.env,
+        env: invocation.env,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -890,9 +909,11 @@ async function updateLocalGitHead(input: {
     let identityError: unknown;
     let prepared = false;
     let output = "";
-    const child = execFile("git", ["-C", input.localDir, "update-ref", "--stdin"], {
+    const invocation = localGitInvocation(input.localDir, ["update-ref", "--stdin"]);
+    const child = execFile("git", invocation.args, {
       timeout: 15_000,
       maxBuffer: 64 * 1024,
+      env: invocation.env,
     }, (error, stdout, stderr) => {
       if (identityError) reject(identityError);
       else if (error) reject(Object.assign(error, { stdout, stderr }));

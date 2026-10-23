@@ -12,6 +12,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -225,6 +226,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     secretsProvider: "local_encrypted",
     secretsStrictMode: false,
     secretsMasterKeyFilePath: "/tmp/paperclip-master.key",
+    secretsAllowedWorkspaceRoots: [],
     storageProvider: "local_disk",
     storageLocalDiskBaseDir: "/tmp/paperclip-storage",
     storageS3Bucket: "paperclip-test",
@@ -501,6 +503,48 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+  it("refuses local_trusted before database startup when master-key isolation is enabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentMode: "local_trusted",
+      secretsRequireIsolatedAgentRuntime: true,
+    }));
+
+    await expect(startServer()).rejects.toThrow(/require authenticated deployment mode/);
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(createAppMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform !== "linux" || process.getuid?.() === 0 || process.getuid?.() === undefined)(
+    "starts authenticated isolation with a synthetic service key and keeps run-scoped JWT issuance",
+    async () => {
+      const root = mkdtempSync(path.join(process.cwd(), ".paperclip-isolated-startup-"));
+      const keyDir = path.join(root, "secrets");
+      const keyPath = path.join(keyDir, "master.key");
+      const serverUid = process.getuid!();
+      const agentUid = serverUid === 1000 ? 1001 : 1000;
+      mkdirSync(keyDir, { mode: 0o700 });
+      writeFileSync(keyPath, Buffer.alloc(32, 7).toString("base64"), { mode: 0o600 });
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", undefined);
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", keyPath);
+      vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+      vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String(agentUid));
+      loadConfigMock.mockReturnValue(buildTestConfig({
+        secretsRequireIsolatedAgentRuntime: true,
+        secretsHostAgentUid: agentUid,
+        secretsMasterKeyFilePath: keyPath,
+      }));
+
+      try {
+        expect((await startServer()).server).toBe(fakeServer);
+        const token = createLocalAgentJwt("agent-1", "company-1", "codex_local", "run-1");
+        expect(token).not.toBeNull();
+        expect(verifyLocalAgentJwt(token!)?.run_id).toBe("run-1");
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it("registers durable case handoffs independently of the heartbeat scheduler", async () => {
     await startServer();
     expect(caseHandoffDeliveryServiceFactoryMock).toHaveBeenCalledWith(createDbMock.mock.results[0]!.value, { heartbeat: heartbeatServiceMock });

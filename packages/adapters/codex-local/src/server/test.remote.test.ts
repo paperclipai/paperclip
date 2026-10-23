@@ -174,6 +174,7 @@ describe("codex remote environment diagnostics", () => {
     const runtimeCalls = prepareAdapterExecutionTargetRuntime.mock.calls as unknown as Array<[
       {
         workspaceLocalDir: string;
+        syncWorkspace?: boolean;
         target?: { remoteCwd?: string };
         workspaceRemoteDir?: string;
         assets?: Array<{ key: string; localDir: string }>;
@@ -186,6 +187,7 @@ describe("codex remote environment diagnostics", () => {
     expect(homeAsset?.localDir).toContain(`${os.tmpdir()}/paperclip-codex-probe-home-`);
     expect(capturedHomeAssetFiles.value).toEqual(["auth.json", "config.toml"]);
     expect(runtimeInput?.workspaceLocalDir).toContain(`${os.tmpdir()}/paperclip-codex-envtest-`);
+    expect(runtimeInput?.syncWorkspace).toBe(false);
     expect(runtimeInput?.workspaceLocalDir).not.toBe("/remote/workspace");
     expect(await fs.stat(runtimeInput!.workspaceLocalDir).catch(() => null)).toBeNull();
     expect(runtimeInput?.target?.remoteCwd).toBe("/remote/workspace");

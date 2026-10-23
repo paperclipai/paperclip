@@ -6,7 +6,7 @@ import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecut
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
-import { isExecutionForcedToKubernetes } from "../execution-allowlist.js";
+import { evaluateExecutionAllowlist, isExecutionForcedToKubernetes } from "../execution-allowlist.js";
 import { parseExecutionPolicyBootstrapEnv } from "../execution-policy-bootstrap.js";
 import {
   parseIssueExecutionWorkspaceSettings,
@@ -205,6 +205,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     // tenant-set env var can land untrusted execution on the tenant
     // container.
     managedSandboxOnly,
+    requireIsolatedAgentRuntime:
+      process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true",
   };
   const executionForcedToKubernetes =
     isExecutionForcedToKubernetes(executionPolicy);
@@ -282,6 +284,15 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
+  if (executionPolicy.requireIsolatedAgentRuntime) {
+    const decision = evaluateExecutionAllowlist(executionPolicy, {
+      driver: selectedEnvironmentForConfig?.driver ?? "local",
+      provider: typeof selectedEnvironmentForConfig?.config?.provider === "string"
+        ? selectedEnvironmentForConfig.config.provider
+        : null,
+    });
+    if (!decision.allowed) throw new Error(decision.reason);
+  }
   const nativeChatWorkspaceScope = isDotRun ? null : await findNativeChatWorkspaceScope(db, {
     adapterType: agent.adapterType,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,

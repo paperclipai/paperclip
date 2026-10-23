@@ -2,6 +2,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -810,6 +811,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
               agentIdentity,
+              managedAiCredentialHome: managedAiRuntime?.home
+                ? path.join(managedAiRuntime.home, "provider")
+                : undefined,
               observability,
               runId: run.id,
               agent,

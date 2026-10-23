@@ -28,6 +28,11 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   // Resolve this before secrets or probes so a default remote environment can
   // never accidentally validate the account on the control-plane host.
   async function resolveAdapterTestEnvironmentId(companyId: string, environmentId: string | null | undefined, copilot = false) {
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      const kubernetes = await environmentsSvc.findKubernetesEnvironment(companyId);
+      if (!kubernetes) throw unprocessable("The isolated Kubernetes execution environment is unavailable.", { code: "isolated_environment_unavailable" });
+      return kubernetes.id;
+    }
     if (copilot && (await instanceSettings.getGeneral()).executionMode === "kubernetes") {
       const kubernetes = await environmentsSvc.findKubernetesEnvironment(companyId);
       if (!kubernetes) throw unprocessable("The Kubernetes execution environment is unavailable.", { code: "copilot_environment_unavailable" });
@@ -77,6 +82,15 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     release: (status?: "released" | "failed") => Promise<void>;
   }> {
     const noopRelease = async () => {};
+
+    // This service is also called outside the route. Never allow a local or
+    // alternative remote adapter probe to run under the key-owning UID.
+    if (process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true") {
+      const kubernetes = await environmentsSvc.findKubernetesEnvironment(input.companyId);
+      if (!kubernetes || input.environmentId !== kubernetes.id) {
+        throw unprocessable("Adapter tests require the isolated Kubernetes environment.", { code: "isolated_environment_required" });
+      }
+    }
 
     if (!input.environmentId) {
       return {

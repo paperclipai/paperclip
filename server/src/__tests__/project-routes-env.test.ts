@@ -86,7 +86,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actorType: "board" | "agent" = "board") {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -94,13 +94,9 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "board-user",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actorType === "agent"
+      ? { type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_jwt" }
+      : { type: "board", userId: "board-user", companyIds: ["company-1"], source: "local_implicit", isInstanceAdmin: false };
     next();
   });
   app.use("/api", projectRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any));
@@ -244,5 +240,28 @@ describe("project env routes", () => {
         },
       }),
     );
+  });
+
+  it("rejects agent-selected host cwd before creating or updating a project workspace in isolation mode", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    mockProjectService.list.mockResolvedValue([]);
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    const app = await createApp("agent");
+    try {
+      const project = await request(app).post("/api/companies/company-1/projects")
+        .send({ name: "Project", workspace: { cwd: "/private/secrets" } });
+      const created = await request(app).post("/api/projects/project-1/workspaces")
+        .send({ cwd: "/private/secrets" });
+      const updated = await request(app).patch("/api/projects/project-1/workspaces/workspace-1")
+        .send({ cwd: "/private/secrets" });
+      const localRepo = await request(app).post("/api/projects/project-1/workspaces")
+        .send({ repoUrl: "file:///private/secrets/repo" });
+      expect([project.status, created.status, updated.status, localRepo.status], JSON.stringify([project.body, created.body, updated.body, localRepo.body])).toEqual([403, 403, 403, 403]);
+      expect(mockProjectService.create).not.toHaveBeenCalled();
+      expect(mockProjectService.createWorkspace).not.toHaveBeenCalled();
+      expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

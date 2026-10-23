@@ -404,6 +404,40 @@ const ALLOWED_TURN_SPAN_ATTRIBUTE_KEYS = new Set<string>([
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
+  it.skipIf(process.platform !== "linux")("rejects a symlinked workspace instruction before the ACP turn", async () => {
+    const root = await fs.mkdtemp(path.join(process.cwd(), ".acpx-instructions-isolation-test-"));
+    tempRoots.push(root);
+    const privateDir = path.join(root, "private");
+    await fs.mkdir(privateDir, { mode: 0o700 });
+    const key = path.join(privateDir, "master.key");
+    await fs.writeFile(key, "synthetic-master-key", { mode: 0o600 });
+    const instruction = path.join(root, "AGENTS.md");
+    await fs.symlink(key, instruction);
+    vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+    vi.stubEnv("PAPERCLIP_SECRETS_HOST_AGENT_UID", String((process.getuid?.() ?? 0) + 10_000));
+    const startTurn = vi.fn();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({ ...buildRuntime(), startTurn }) as never,
+    });
+    try {
+      const result = await execute({
+        runId: "run-symlink-instructions",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: root,
+          stateDir: path.join(root, "state"), instructionsFilePath: instruction },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.errorMessage).toMatch(/ELOOP/);
+      expect(JSON.stringify(result)).not.toContain("synthetic-master-key");
+      expect(startTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it("passes the current prompt, session, cancellation and diagnostic inputs to the runtime turn", async () => {
     const root = await makeTempRoot();
     const { result, turnInputs, meta } = await runExecutor({

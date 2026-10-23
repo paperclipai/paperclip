@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -33,6 +32,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
+import { buildGeminiSkillsDir } from "./skills.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -125,22 +125,6 @@ export function buildGeminiAcpConfig(config: Record<string, unknown>): Record<st
 }
 
 /**
- * Host skills dir the shared engine materializes this run's Gemini skills into.
- * Derived here — inside the adapter boundary — from the same generic `config`
- * the engine reads (`config.env.HOME` else the process home), so the remote seam
- * ships exactly the dir the engine's `prepareGeminiSkillRuntime` prepared without
- * the engine having to hand a Gemini-specific path across the seam.
- */
-function resolveGeminiSkillsHome(config: Record<string, unknown>): string {
-  const envConfig = parseObject(config.env);
-  const configuredHome =
-    typeof envConfig.HOME === "string" && envConfig.HOME.trim().length > 0
-      ? path.resolve(envConfig.HOME.trim())
-      : os.homedir();
-  return path.join(configuredHome, ".gemini", "skills");
-}
-
-/**
  * Gemini remote managed-home seed for the runner-backed remote sandbox ACP lane.
  * Mirrors the Gemini CLI lane (`gemini-local/execute.ts`): set `HOME` to the
  * managed runtime root, ship the prepared skills dir as the `skills` asset,
@@ -170,12 +154,13 @@ async function prepareGeminiRemoteManagedHome(
       startMessage: "[paperclip] Restoring workspace changes from the sandbox.\n",
       failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
     });
-  const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
-  const stagedRuntime = await input.stage(
-    geminiSkillsHome
-      ? [{ key: "skills", localDir: geminiSkillsHome, followSymlinks: true }]
-      : [],
-  );
+  const localSkillsDir = await buildGeminiSkillsDir(input.config);
+  let stagedRuntime: AcpxRemoteManagedHomeResult["stagedRuntime"];
+  try {
+    stagedRuntime = await input.stage([{ key: "skills", localDir: localSkillsDir, followSymlinks: false }]);
+  } finally {
+    await fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true });
+  }
 
   // Managed HOME = the per-run runtime root. `useRemoteProcessSession` already
   // guarantees a sandbox (managed-home) target, so the runtime root replaces the

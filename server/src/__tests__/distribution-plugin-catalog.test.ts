@@ -1,15 +1,18 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, realpathSync, unlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { distributionBundleDigest, distributionPluginActivationGuard, readDistributionPluginCatalog } from "../services/distribution-plugin-catalog.js";
 import { BUNDLED_PLUGIN_CATALOG, resolveBundledPluginInstalls } from "../services/bundled-plugins.js";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function fixture() {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "distribution-plugin-"))); roots.push(root);
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+function fixture(parent = os.tmpdir()) {
+  const root = realpathSync(mkdtempSync(path.join(parent, ".distribution-plugin-"))); roots.push(root);
   const localPath = path.join(root, "distribution", "acme.widget");
   mkdirSync(path.join(localPath, "dist", "ui"), { recursive: true });
   writeFileSync(path.join(localPath, "package.json"), JSON.stringify({ name: "@acme/plugin-widget", version: "1.0.0", paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js", ui: "./dist/ui/" } }));
@@ -20,6 +23,46 @@ function fixture() {
   save(); return { root, localPath, entry, save };
 }
 describe("image-owned plugin catalogs", () => {
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "rejects an agent-writable catalog, worker, or bundled dependency in isolated mode",
+    () => {
+      vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+      const { root, localPath, entry, save } = fixture(process.cwd());
+      expect(readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toHaveLength(1);
+
+      chmodSync(root, 0o777);
+      expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/immutable distribution/);
+      chmodSync(root, 0o700);
+
+      const worker = path.join(localPath, "dist", "worker.js");
+      chmodSync(worker, 0o666);
+      expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/immutable distribution/);
+      chmodSync(worker, 0o644);
+
+      const dependency = path.join(localPath, "node_modules", "dep");
+      mkdirSync(dependency, { recursive: true });
+      writeFileSync(path.join(dependency, "index.js"), "export default 1;");
+      save([{ ...entry, digest: distributionBundleDigest(localPath) }]);
+      chmodSync(dependency, 0o777);
+      expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/immutable distribution/);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux" || !process.getuid || process.getuid() === 0)(
+    "rechecks a worker changed after catalog read before activation",
+    () => {
+      vi.stubEnv("PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME", "true");
+      const { root, localPath } = fixture(process.cwd());
+      const entries = readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG);
+      const guard = distributionPluginActivationGuard(root, entries, ["acme.widget"]);
+      const input = { pluginKey: "acme.widget", packageRoot: localPath };
+      expect(() => guard(input)).not.toThrow();
+      const worker = path.join(localPath, "dist", "worker.js");
+      chmodSync(worker, 0o666);
+      writeFileSync(worker, "throw new Error('agent-controlled worker');");
+      expect(() => guard(input)).toThrow(/immutable distribution/);
+    },
+  );
   it("preserves images without a distribution catalog", () => {
     expect(readDistributionPluginCatalog("/nonexistent/catalog", BUNDLED_PLUGIN_CATALOG)).toEqual([]);
   });
@@ -47,7 +90,7 @@ describe("image-owned plugin catalogs", () => {
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow();
     save(); symlinkSync(os.tmpdir(), path.join(localPath, "outside"));
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow(/symlinks/);
-    rmSync(path.join(localPath, "outside")); rmSync(path.join(localPath, "dist", "worker.js"));
+    unlinkSync(path.join(localPath, "outside")); rmSync(path.join(localPath, "dist", "worker.js"));
     save([{ ...entry, digest: distributionBundleDigest(localPath) }]);
     expect(() => readDistributionPluginCatalog(root, BUNDLED_PLUGIN_CATALOG)).toThrow();
   });

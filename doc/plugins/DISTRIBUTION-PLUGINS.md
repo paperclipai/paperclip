@@ -41,6 +41,13 @@ in operation. This detects packaging errors but does not authenticate an
 untrusted image builder. Image provenance and signatures remain deployment
 responsibilities.
 
+With isolated local secrets enabled, the catalog file, each selected bundle,
+its bundled dependencies, and all of their ancestors must be owned by root or
+the Paperclip service UID and must not be writable by group or other users.
+Paperclip checks this before reading the catalog or importing a manifest, then
+checks the bundle again when activating a worker. A writable image mount fails
+closed instead of letting the host agent replace code run by the service UID.
+
 ## Selection, upgrades and rollback
 
 Managed instances select a distribution key through the existing

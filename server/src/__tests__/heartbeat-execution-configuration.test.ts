@@ -305,6 +305,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     inspect.set(f.agentId, async input => {
       const env = input.config.env as Record<string, string>;
       providerHome = env.CODEX_HOME;
+      expect(input.managedAiCredentialHome).toBe(providerHome);
       expect(env.OPENAI_API_KEY).toBe(f.credential);
       expect(env.CODEX_API_KEY).toBe(f.credential);
       expect(JSON.parse(await readFile(path.join(providerHome, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: f.credential });

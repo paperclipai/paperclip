@@ -194,6 +194,8 @@ async function prepareCodexHelloProbe(input: {
       // `.paperclip-runtime/runs/<runId>/workspace` to whatever it gets, so
       // pre-building a per-run path here would double-nest the run ID.
       workspaceRemoteDir: input.cwd,
+      // The probe only uploads credentials; its host temp dir is not an agent workspace.
+      syncWorkspace: false,
       installCommand: SANDBOX_INSTALL_COMMAND,
       detectCommand: input.command,
       // The probe workspace is a throwaway temp dir; never wait on copy-back retries.

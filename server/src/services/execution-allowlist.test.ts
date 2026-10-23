@@ -115,6 +115,16 @@ describe("evaluateExecutionAllowlist", () => {
     });
   });
 
+  describe("isolated local secrets", () => {
+    it("rejects local, SSH and arbitrary sandbox execution while allowing Kubernetes", () => {
+      const policy = { requireIsolatedAgentRuntime: true };
+      expect(evaluateExecutionAllowlist(policy, localEnv).allowed).toBe(false);
+      expect(evaluateExecutionAllowlist(policy, sshEnv).allowed).toBe(false);
+      expect(evaluateExecutionAllowlist(policy, fakeSandboxEnv).allowed).toBe(false);
+      expect(evaluateExecutionAllowlist(policy, kubernetesEnv).allowed).toBe(true);
+    });
+  });
+
   describe("isExecutionForcedToKubernetes helper", () => {
     it("reflects the policy", async () => {
       const { isExecutionForcedToKubernetes } = await import("./execution-allowlist.js");

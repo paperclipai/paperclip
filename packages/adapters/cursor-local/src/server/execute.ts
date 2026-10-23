@@ -1,6 +1,7 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import fs from "node:fs/promises";
+import { isolatedHostAgentRuntimeEnabled, readHostFileForAgent } from "@paperclipai/adapter-utils/isolated-host-file";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,7 @@ import {
   parseObject,
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
+  buildPaperclipRuntimeSkillsAssetDir,
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
@@ -115,17 +117,12 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 }
 
 async function buildCursorSkillsDir(config: Record<string, unknown>): Promise<string> {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cursor-skills-"));
-  const target = path.join(tmp, "skills");
-  await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
-  for (const entry of availableEntries) {
-    if (!desiredNames.has(entry.key)) continue;
-    if (isPaperclipSkillSourceMissing(entry)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
-  }
-  return target;
+  return buildPaperclipRuntimeSkillsAssetDir(
+    availableEntries.filter((entry) => desiredNames.has(entry.key)),
+    "paperclip-cursor-skills-",
+  );
 }
 
 type EnsureCursorSkillsInjectedOptions = {
@@ -226,6 +223,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+  let instructionsPrefix = "";
+  let instructionsChars = 0;
+  if (instructionsFilePath) {
+    try {
+      const instructionsContents = await readHostFileForAgent(instructionsFilePath, "utf8");
+      instructionsPrefix =
+        `${instructionsContents}\n\n` +
+        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.\n\n`;
+      instructionsChars = instructionsPrefix.length;
+    } catch (err) {
+      if (isolatedHostAgentRuntimeEnabled()) throw err;
+      const reason = err instanceof Error ? err.message : String(err);
+      await onLog(
+        "stdout",
+        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+      );
+    }
+  }
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const cursorSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
@@ -370,7 +388,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
-          followSymlinks: true,
+          followSymlinks: false,
         }],
       });
       restoreRemoteWorkspace = () =>
@@ -415,7 +433,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
-        localSkillsDir ? fs.rm(localSkillsDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
       ]);
       throw error;
     }
@@ -497,26 +515,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
   }
 
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  let instructionsPrefix = "";
-  let instructionsChars = 0;
-  if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      instructionsChars = instructionsPrefix.length;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      await onLog(
-        "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
-      );
-    }
-  }
   const commandNotes = (() => {
     const notes: string[] = [];
     if (autoTrustEnabled) {
@@ -818,7 +816,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await restoreRemoteWorkspace();
       }
       if (localSkillsDir) {
-        await fs.rm(localSkillsDir, { recursive: true, force: true }).catch(() => undefined);
+        await fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined);
       }
     }
   }
