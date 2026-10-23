@@ -134,4 +134,66 @@ describe("buildSandboxCrManifest", () => {
     const cr = buildSandboxCrManifest(baseInput);
     expect(cr.spec.podTemplate.spec.imagePullSecrets).toBeUndefined();
   });
+
+  it("does not set affinity when podAntiAffinity is undefined or disabled", () => {
+    const crDefault = buildSandboxCrManifest(baseInput);
+    expect(crDefault.spec.podTemplate.spec.affinity).toBeUndefined();
+
+    const crDisabled = buildSandboxCrManifest({
+      ...baseInput,
+      podAntiAffinity: { enabled: false },
+    });
+    expect(crDisabled.spec.podTemplate.spec.affinity).toBeUndefined();
+  });
+
+  it("sets podAntiAffinity with default hostname topologyKey when enabled", () => {
+    const cr = buildSandboxCrManifest({
+      ...baseInput,
+      podAntiAffinity: { enabled: true },
+    });
+    expect(cr.spec.podTemplate.spec.affinity).toEqual({
+      podAntiAffinity: {
+        preferredDuringSchedulingIgnoredDuringExecution: [
+          {
+            weight: 100,
+            podAffinityTerm: {
+              labelSelector: {
+                matchLabels: {
+                  "paperclip.io/role": "agent",
+                },
+              },
+              topologyKey: "kubernetes.io/hostname",
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it("sets podAntiAffinity with custom topologyKey when provided", () => {
+    const cr = buildSandboxCrManifest({
+      ...baseInput,
+      podAntiAffinity: {
+        enabled: true,
+        topologyKey: "topology.kubernetes.io/zone",
+      },
+    });
+    expect(cr.spec.podTemplate.spec.affinity).toEqual({
+      podAntiAffinity: {
+        preferredDuringSchedulingIgnoredDuringExecution: [
+          {
+            weight: 100,
+            podAffinityTerm: {
+              labelSelector: {
+                matchLabels: {
+                  "paperclip.io/role": "agent",
+                },
+              },
+              topologyKey: "topology.kubernetes.io/zone",
+            },
+          },
+        ],
+      },
+    });
+  });
 });
