@@ -2535,10 +2535,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
       await opts.beforeTerminalWorkspaceCleanup?.(workspace);
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
-      if (workspace.mode === "shared_workspace") {
-        // The cwd of a shared session is the project workspace directory, and services
-        // started under this session can be project-owned or leased by a later run.
-        // Stop only the idle services this session owns.
+      if (workspace.mode === "shared_workspace" && workspace.providerType !== "git_worktree") {
+        // The cwd of a shared session without its own worktree is the project workspace
+        // directory, and services started under this session can be project-owned or
+        // leased by a later run. Stop only the idle services this session owns.
         await stopIdleSessionRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: workspace.id });
       } else {
         await stopRuntimeServicesForExecutionWorkspace({
@@ -3856,15 +3856,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const readinessKey = workspace.providerType === "plugin" ? `plugin:${workspace.id}:${readExecutionWorkspaceLifecycleGeneration(workspace.metadata)}` : workspacePath
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
-        // A shared session points at the project workspace directory. Archiving it
-        // changes no file on disk, so it needs no git inspection and no merge proof.
         const sharedSession = workspace.mode === "shared_workspace";
-        let inspection = sharedSession ? undefined : readinessByWorkingTree.get(readinessKey);
-        if (!sharedSession && !inspection) {
+        // A shared session without its own worktree points at the project workspace
+        // directory. Archiving it changes no file on disk, so it needs no git inspection
+        // and no merge proof. A shared session can still own a git worktree (agent-level
+        // git_worktree strategy); its cleanup removes that worktree and keeps both checks.
+        const skipGitChecks = sharedSession && workspace.providerType !== "git_worktree";
+        let inspection = skipGitChecks ? undefined : readinessByWorkingTree.get(readinessKey);
+        if (!skipGitChecks && !inspection) {
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
         }
-        const { git, statusInspectionSucceeded } = sharedSession
+        const { git, statusInspectionSucceeded } = skipGitChecks
           ? { git: null, statusInspectionSucceeded: true }
           : await inspection!;
         if (!statusInspectionSucceeded) {
@@ -3894,12 +3897,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        if (!sharedSession && assessment.workspaceDirty) {
+        if (!skipGitChecks && assessment.workspaceDirty) {
           result.skippedUndelivered += 1;
           continue;
         }
         if (
-          !sharedSession
+          !skipGitChecks
           && assessment.deliveryState !== "merged_via_pr"
           && assessment.deliveryState !== "merged_by_ancestry"
         ) {

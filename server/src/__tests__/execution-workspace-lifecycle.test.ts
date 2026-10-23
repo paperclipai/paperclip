@@ -234,6 +234,34 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
     expect(await pathExists(path.join(fixture.worktreePath, "untracked.txt"))).toBe(true);
   }, 20_000);
 
+  it("keeps git checks for a shared session that owns a git worktree", async () => {
+    const fixture = await createFixture(["done"]);
+    // Agent-level git_worktree strategy: the recorded mode defaults to shared_workspace.
+    await db.update(executionWorkspaces).set({ mode: "shared_workspace", sourceIssueId: fixture.issueIds[0] })
+      .where(eq(executionWorkspaces.id, fixture.executionWorkspaceId));
+    await fs.writeFile(path.join(fixture.worktreePath, "untracked.txt"), "keep me\n", "utf8");
+    const reaper = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+
+    const result = await reaper.sweepTerminalWorkspaces();
+
+    expect(result.cleanupFailed).toBe(0);
+    expect(result.skippedUndelivered).toBe(1);
+    expect(await statusOf(fixture.executionWorkspaceId)).toBe("active");
+    expect(await pathExists(path.join(fixture.worktreePath, "untracked.txt"))).toBe(true);
+  }, 20_000);
+
+  it("cleans up a delivered git worktree of a shared session", async () => {
+    const fixture = await createFixture(["done"]);
+    await db.update(executionWorkspaces).set({ mode: "shared_workspace", sourceIssueId: fixture.issueIds[0] })
+      .where(eq(executionWorkspaces.id, fixture.executionWorkspaceId));
+    const reaper = executionWorkspaceService(db, { workspaceReaperCooldownDays: 0 });
+
+    const result = await reaper.sweepTerminalWorkspaces();
+
+    expect(result.cleanupFailed).toBe(0);
+    expect(await statusOf(fixture.executionWorkspaceId)).toBe("archived");
+  }, 20_000);
+
   it("lets the reaper keep a shared session that another open issue still uses", async () => {
     const fixture = await createFixture(["done", "todo"], "shared_workspace");
     const prior = await insertPriorSharedSession(fixture, fixture.issueIds[0]);
