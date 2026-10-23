@@ -9,6 +9,14 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+// Subscription plans (for example ChatGPT Plus) get a different wording with
+// no model name and no "switch to another model" clause: "You've hit your
+// usage limit. Upgrade to Pro (...), visit ... to purchase more credits or
+// try again at 8:13 PM." The reset clock in this wording is also printed in
+// the host's local time, so it goes through the same parseLocalClockTime
+// path as the model wording.
+const CODEX_USAGE_LIMIT_SUBSCRIPTION_RE =
+  /you(?:'|’)ve hit your usage limit\.[^\n]*?\btry again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
@@ -314,7 +322,9 @@ export function extractCodexRetryNotBefore(input: {
   errorMessage?: string | null;
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
-  const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
+  const usageLimitMatch =
+    haystack.match(CODEX_USAGE_LIMIT_RE) ??
+    haystack.match(CODEX_USAGE_LIMIT_SUBSCRIPTION_RE);
   if (!usageLimitMatch) return null;
   return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
 }
