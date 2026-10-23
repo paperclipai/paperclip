@@ -119,6 +119,45 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/agent-workspace");
   });
 
+  it("projects the workspace context onto the child env (AGENT_HOME and friends)", async () => {
+    const { ctx } = makeCtx();
+    await execute({
+      ...ctx,
+      context: {
+        ...ctx.context,
+        paperclipWorkspace: {
+          cwd: "/private/qa/agent-workspace",
+          source: "project_primary",
+          strategy: "project_workspace",
+          workspaceId: "workspace-1",
+          agentHome: "/private/qa/instance/workspaces/agent-1",
+        },
+      },
+    } as any);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[3].env).toMatchObject({
+      AGENT_HOME: "/private/qa/instance/workspaces/agent-1",
+      PAPERCLIP_WORKSPACE_CWD: "/private/qa/agent-workspace",
+      PAPERCLIP_WORKSPACE_ID: "workspace-1",
+      PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
+      PAPERCLIP_WORKSPACE_STRATEGY: "project_workspace",
+    });
+  });
+
+  it("leaves AGENT_HOME unset when the run carries no workspace context", async () => {
+    const savedAgentHome = process.env.AGENT_HOME;
+    delete process.env.AGENT_HOME;
+    try {
+      const { ctx } = makeCtx();
+      await execute(ctx as any);
+      const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+      expect(call[3].env).not.toHaveProperty("AGENT_HOME");
+    } finally {
+      if (savedAgentHome === undefined) delete process.env.AGENT_HOME;
+      else process.env.AGENT_HOME = savedAgentHome;
+    }
+  });
+
   it("preserves an explicitly configured cwd", async () => {
     const { ctx } = makeCtx({ cwd: "/private/qa/configured-workspace" });
     await execute({ ...ctx, context: { ...ctx.context, paperclipWorkspace: { cwd: "/private/qa/agent-workspace" } } } as any);
