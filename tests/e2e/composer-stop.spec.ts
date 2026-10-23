@@ -278,6 +278,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         await request.get(`/api/issues/${parent.id}/comments`),
       );
       expect(JSON.stringify(comments)).toContain("Please check mobile too.");
+      // Comment persistence precedes the asynchronous wake that populates the queue.
       await expect.poll(async () => {
         const queue = await json(
           await request.get(`/api/issues/${parent.id}/queued-comments`),

@@ -3004,12 +3004,14 @@ type IssueListDiagnostics = {
 };
 
 type IssueListCacheEntry = {
+  companyId: string;
   response: IssueListPreparedResponse;
   expiresAt: number;
   staleUntil: number;
 };
 
 type IssueListInflightEntry = {
+  companyId: string;
   promise: Promise<IssueListPreparedResponse>;
   startedAt: number;
   waiterCount: number;
@@ -3019,6 +3021,17 @@ type IssueListInflightEntry = {
 const issueListResponseCache = new Map<string, IssueListCacheEntry>();
 const issueListInflight = new Map<string, IssueListInflightEntry>();
 const issueListActorClientInflight = new Map<string, number>();
+
+function invalidateCompanyIssueListCache(companyId: string) {
+  for (const [key, entry] of issueListResponseCache) {
+    if (entry.companyId === companyId) issueListResponseCache.delete(key);
+  }
+  // New reads must not join a computation started before the mutation.
+  // The identity check in coordinateIssueListGet also stops it from caching.
+  for (const [key, entry] of issueListInflight) {
+    if (entry.companyId === companyId) issueListInflight.delete(key);
+  }
+}
 
 export function __getIssueListResponseCacheSizeForTests() {
   return issueListResponseCache.size;
@@ -3278,6 +3291,7 @@ async function coordinateIssueListGet(input: {
     return input.compute();
   })();
   const inflightEntry: IssueListInflightEntry = {
+    companyId: input.companyId,
     promise,
     startedAt: now,
     waiterCount: 0,
@@ -3287,8 +3301,9 @@ async function coordinateIssueListGet(input: {
 
   try {
     const response = await promise;
-    if (input.allowTtlCache) {
+    if (input.allowTtlCache && issueListInflight.get(input.requestKey.key) === inflightEntry) {
       setIssueListResponseCacheEntry(input.requestKey.key, {
+        companyId: input.companyId,
         response,
         expiresAt: Date.now() + ISSUE_LIST_SERVER_CACHE_TTL_MS,
         staleUntil: Date.now() + ISSUE_LIST_SERVER_CACHE_STALE_MS,
@@ -14726,6 +14741,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      invalidateCompanyIssueListCache(issue.companyId);
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
@@ -14987,6 +15003,8 @@ export function issueRoutes(
             ),
           },
         });
+      // A read during post-commit logging may have cached the previous lastActivityAt.
+      invalidateCompanyIssueListCache(issue.companyId);
 
       if (
         existing.status === "in_progress" &&
@@ -15939,6 +15957,7 @@ export function issueRoutes(
       return;
     }
 
+    invalidateCompanyIssueListCache(issue.companyId);
     for (const attachment of attachments) {
       try {
         await storage.deleteObject(attachment.companyId, attachment.objectKey);

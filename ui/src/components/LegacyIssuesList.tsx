@@ -1,3 +1,4 @@
+import { IssueContextMenu } from "./IssueContextMenu";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
@@ -2103,8 +2104,8 @@ export function IssuesList({
                   ) : null;
 
                   return (
+                    <IssueContextMenu key={issue.id} issue={issue}>
                     <div
-                      key={issue.id}
                       data-issue-row-id={issue.id}
                       // Desktop indentation comes from IssueRow's treeGuides
                       // (vertical connector slots); mobile keeps a plain
@@ -2338,6 +2339,7 @@ export function IssuesList({
                         )}
                       />
                     </div>
+                    </IssueContextMenu>
                   );
                 };
 

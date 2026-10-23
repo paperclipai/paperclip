@@ -1,3 +1,4 @@
+import { IssueContextMenu } from "./IssueContextMenu";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
@@ -308,7 +309,7 @@ function KanbanCard({
     return agents.find((a) => a.id === id)?.name ?? null;
   };
 
-  return (
+  const card = (
     <Card
       ref={setNodeRef}
       style={style}
@@ -382,6 +383,8 @@ function KanbanCard({
       </Link>
     </Card>
   );
+
+  return isOverlay ? card : <IssueContextMenu issue={issue}>{card}</IssueContextMenu>;
 }
 
 /* ── Main Board ── */
