@@ -1,6 +1,6 @@
 ---
 title: Database
-summary: Embedded PGlite vs Docker Postgres vs hosted
+summary: Embedded PostgreSQL vs Docker Postgres vs hosted
 ---
 
 Paperclip uses PostgreSQL via Drizzle ORM. There are three ways to run the database.
