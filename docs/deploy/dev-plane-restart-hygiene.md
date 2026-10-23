@@ -22,11 +22,16 @@ Every control-plane restart hard-kills any heartbeat run in flight at that momen
 
 Two signals, cross-referenced:
 
-**1. Server start markers in the instance log.** Each boot logs `Server listening on <host>:<port>`. Logs live at `~/.paperclip/instances/<instance>/server.log`, rotated daily to `server.log-YYYYMMDD.gz`.
+**1. Server start markers in the instance log.** Each boot logs `Server listening on <host>:<port>`. With `logging.mode: "file"`, the active log is `<logging.logDir>/server.log` (default `~/.paperclip/instances/<instance>/logs/server.log`). Legacy instance-root `server.log` paths are stale and are not written by current builds.
 
 ```bash
-grep -h "Server listening" ~/.paperclip/instances/default/server.log
-zgrep -h "Server listening" ~/.paperclip/instances/default/server.log-20260706.gz
+grep -h "Server listening" ~/.paperclip/instances/default/logs/server.log
+```
+
+On Windows (PowerShell):
+
+```powershell
+Select-String -LiteralPath "$env:USERPROFILE\.paperclip\instances\default\logs\server.log" -Pattern "Server listening"
 ```
 
 Many markers minutes apart = restart burst.
