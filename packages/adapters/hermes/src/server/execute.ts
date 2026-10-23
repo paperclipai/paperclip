@@ -325,14 +325,29 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   }
 
   // Check for error patterns in stderr
+  const errorLines: string[] = [];
   if (stderr.trim()) {
-    const errorLines = stderr
-      .split("\n")
-      .filter((line) => /error|exception|traceback|failed/i.test(line))
-      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
-    if (errorLines.length > 0) {
-      result.errorMessage = errorLines.slice(0, 5).join("\n");
-    }
+    errorLines.push(
+      ...stderr
+        .split("\n")
+        .filter((line) => /error|exception|traceback|failed/i.test(line))
+        .filter((line) => !/INFO|DEBUG|warn/i.test(line)), // skip log-level noise
+    );
+  }
+
+  // Hermes reports provider failures on stdout, not stderr: WARNING-tagged
+  // lines such as "WARNING: API request failed: HTTP 404 model 'auto' not
+  // found" (often behind a timestamp prefix). Scan stdout for that shape
+  // too, or a run whose provider calls all failed parses as a clean,
+  // empty success. See #15801.
+  const stdoutFailureLines = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /api request failed/i.test(line) || /warning:.*(?:failed|error)/i.test(line));
+  errorLines.push(...stdoutFailureLines);
+
+  if (errorLines.length > 0) {
+    result.errorMessage = errorLines.slice(0, 5).join("\n");
   }
 
   return result;
@@ -615,6 +630,24 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  }
+
+  // A clean exit with no response text, no token usage, and no cost means
+  // the agent completed zero turns — typically every provider call failed
+  // silently. Record the run as failed instead of succeeded so retries,
+  // budgets, and run history see the failure. See #15801.
+  const completedZeroTurns =
+    !result.timedOut &&
+    result.exitCode === 0 &&
+    !parsed.response &&
+    !parsed.usage &&
+    !parsed.costUsd;
+  if (completedZeroTurns) {
+    executionResult.errorCode = "zero_agent_turns";
+    if (!executionResult.errorMessage) {
+      executionResult.errorMessage =
+        "Hermes exited with code 0 but completed zero agent turns: no response text, token usage, or cost was produced.";
+    }
   }
 
   if (parsed.usage) {
