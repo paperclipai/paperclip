@@ -849,7 +849,7 @@ function addPluginLocalFolderGet(parent: Command, name: string, description: str
       .command(name)
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (pluginId: string, opts: PluginCompanyOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -869,7 +869,7 @@ function addPluginLocalFolderKeyGet(parent: Command, name: string, description: 
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
       .argument("<folderKey>", "Local folder key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .action(async (pluginId: string, folderKey: string, opts: PluginCompanyOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -892,7 +892,7 @@ function addPluginLocalFolderKeyPost(parent: Command, name: string, description:
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
       .argument("<folderKey>", "Local folder key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .option("--payload-json <json>", "JSON payload", "{}")
       .action(async (pluginId: string, folderKey: string, opts: PluginCompanyOptions) => {
         try {
@@ -919,7 +919,7 @@ function addPluginLocalFolderKeyPut(parent: Command, name: string, description: 
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
       .argument("<folderKey>", "Local folder key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID (overrides context default)")
       .requiredOption("--payload-json <json>", "JSON payload")
       .action(async (pluginId: string, folderKey: string, opts: PluginCompanyOptions) => {
         try {
