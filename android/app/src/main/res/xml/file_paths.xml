@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Downloaded task attachments, opened in other apps through FileProvider. -->
+<paths>
+    <cache-path name="attachments" path="attachments/" />
+</paths>

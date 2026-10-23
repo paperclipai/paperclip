@@ -133,6 +133,7 @@ API: `present` — representative operation IDs:
 
 - `POST /api/cli-auth/challenges`.
 - `POST /api/cli-auth/revoke-current`.
+- `POST /api/board-api-keys` (mobile app pairing).
 
 Agent access: `restricted` — Board CLI authorization; agents use issued agent
 credentials.

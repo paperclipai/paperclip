@@ -1,0 +1,9 @@
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# The repo-root "data/" rule (local Paperclip data) must not hide the Kotlin data package.
+!app/src/main/java/ai/paperclip/dashboard/data/

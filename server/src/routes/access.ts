@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
 import fs from "node:fs";
+import os from "node:os";
 import type { IncomingMessage, RequestOptions as HttpRequestOptions } from "node:http";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -160,6 +161,30 @@ function resolveBaseUrl(req: Request, authPublicBaseUrl?: string): string {
   if (runtimeOrigin) return runtimeOrigin;
   if (authPublicBaseUrl) return authPublicBaseUrl.replace(/\/+$/, "");
   return requestBaseUrl(req);
+}
+
+// Tailscale assigns node addresses from the CGNAT range 100.64.0.0/10.
+export function isTailscaleIPv4(address: string) {
+  const [a, b] = address.split(".").map(Number);
+  return isIP(address) === 4 && a === 100 && b >= 64 && b <= 127;
+}
+
+/**
+ * Base URL of this server on its Tailscale address, so a paired phone on the
+ * same tailnet can reach it without exposing the server publicly.
+ */
+function tailscaleBaseUrl(req: Request): string | null {
+  const address = Object.values(os.networkInterfaces())
+    .flat()
+    .find((info) => info && info.family === "IPv4" && !info.internal && isTailscaleIPv4(info.address))?.address;
+  if (!address) return null;
+  let port = "";
+  try {
+    port = new URL(requestBaseUrl(req)).port;
+  } catch {
+    // Host header missing or malformed; fall back to the default port.
+  }
+  return `http://${address}${port ? `:${port}` : ""}`;
 }
 
 function buildCliAuthApprovalPath(challengeId: string, token: string) {
@@ -2946,7 +2971,13 @@ export function accessRoutes(
         });
       }
 
-      res.status(201).json(key);
+      // publicBaseUrl/tailscaleBaseUrl let the board hand the key to another
+      // device (e.g. the mobile-app pairing QR) with an address it can reach.
+      res.status(201).json({
+        ...key,
+        publicBaseUrl: resolveBaseUrl(req, opts.authPublicBaseUrl),
+        tailscaleBaseUrl: tailscaleBaseUrl(req),
+      });
     },
   );
 

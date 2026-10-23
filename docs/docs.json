@@ -83,6 +83,7 @@
               "deploy/overview",
               "deploy/local-development",
               "deploy/tailscale-private-access",
+              "deploy/android-app",
               "deploy/docker",
               "deploy/deployment-modes",
               "deploy/database",

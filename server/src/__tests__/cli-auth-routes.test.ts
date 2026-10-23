@@ -481,6 +481,8 @@ describe("cli auth routes", () => {
       token: "pcp_board_plaintext",
       expiresAt: "2026-06-23T12:00:00.000Z",
     });
+    expect(typeof res.body.publicBaseUrl).toBe("string");
+    expect(res.body).toHaveProperty("tailscaleBaseUrl");
     expect(mockBoardAuthService.createNamedBoardApiKey).toHaveBeenCalledWith({
       userId: "user-1",
       name: "external-admin",
@@ -494,6 +496,16 @@ describe("cli auth routes", () => {
         details: expect.objectContaining({ name: "external-admin" }),
       }),
     );
+  });
+
+  it("recognizes Tailscale CGNAT addresses for mobile pairing", async () => {
+    const { isTailscaleIPv4 } = await import("../routes/access.js");
+    expect(isTailscaleIPv4("100.101.102.103")).toBe(true);
+    expect(isTailscaleIPv4("100.64.0.1")).toBe(true);
+    expect(isTailscaleIPv4("100.127.255.254")).toBe(true);
+    expect(isTailscaleIPv4("100.63.0.1")).toBe(false);
+    expect(isTailscaleIPv4("100.128.0.1")).toBe(false);
+    expect(isTailscaleIPv4("192.168.1.10")).toBe(false);
   });
 
   it("lists and revokes named board API keys for the current board user", async () => {

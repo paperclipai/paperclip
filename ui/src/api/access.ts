@@ -1,4 +1,10 @@
-import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
+import type {
+  AgentAdapterType,
+  BoardApiKey,
+  BoardApiKeyCreated,
+  JoinRequest,
+  PermissionKey,
+} from "@paperclipai/shared";
 import { api } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
@@ -259,7 +265,16 @@ function buildInviteListQuery(options: {
   return query ? `?${query}` : "";
 }
 
+export type { BoardApiKey, BoardApiKeyCreated };
+
 export const accessApi = {
+  listBoardApiKeys: () => api.get<BoardApiKey[]>("/board-api-keys"),
+
+  createBoardApiKey: (input: { name: string; expiresAt?: string | null }) =>
+    api.post<BoardApiKeyCreated>("/board-api-keys", input),
+
+  revokeBoardApiKey: (keyId: string) => api.delete<{ ok: true; keyId: string }>(`/board-api-keys/${keyId}`),
+
   createCompanyInvite: (
     companyId: string,
     input: {

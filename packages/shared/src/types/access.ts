@@ -168,3 +168,23 @@ export interface UserCompanyAccessResponse {
   }) | null;
   companyAccess: UserCompanyAccessEntry[];
 }
+
+/** Board API key metadata, as listed by `GET /api/board-api-keys`. */
+export interface BoardApiKey {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  expiresAt: string | null;
+}
+
+/**
+ * `POST /api/board-api-keys` response. `token` is shown once. The base URLs
+ * let the board hand the key to another device, such as the mobile app.
+ */
+export interface BoardApiKeyCreated extends BoardApiKey {
+  token: string;
+  publicBaseUrl: string;
+  tailscaleBaseUrl: string | null;
+}

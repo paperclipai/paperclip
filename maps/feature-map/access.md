@@ -18,7 +18,7 @@ Agent access: [companion](../agent-access-map/access.md).
 - `invitations`: `access/invitations` — join through a valid invite and handle expired or already-used links.
 - `membership`: `access/membership` — review join requests and manage company/instance membership and permissions.
 - `resources`: `access/resources` — respect company and resource boundaries on deep links and mutations.
-- `cli-auth`: `access/cli-auth` — authorize a CLI session and revoke or replace credentials.
+- `cli-auth`: `access/cli-auth` — authorize a CLI session or pair the mobile app, and revoke or replace credentials.
 
 ## How to get to it (user POV)
 
@@ -36,6 +36,8 @@ role after sign-in; agent invitations still use join-request approval.
 ### `cli-authorization`
 
 Start the CLI auth/connect flow and approve its `/cli-auth/:id` browser page; instance access is under Settings when visible.
+
+Pair the [Android app](../../android/README.md) from Profile settings → Mobile app → Pair a phone. The panel issues a board API key as a QR code and lists paired phones with Revoke.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -62,6 +64,10 @@ Manual: Authorize the intended CLI context, make a read-only company request, th
 Use `auth login`, `auth whoami`, and `auth revoke-current` with explicit context.
 Retry with the same bearer to prove revocation; deleting local credentials with
 logout alone does not establish that server revocation succeeded.
+
+For mobile pairing, scan the code, confirm the panel hides it and lists the phone,
+then revoke the phone and confirm its next request fails with 401. Hide an unscanned
+code and confirm its key is revoked.
 
 ## Gotchas
 
@@ -96,5 +102,5 @@ Capability ID: `access/cli-auth`.
 
 Scope: ui
 Storybook: CLI authorization approval, pending, expired/denied and already-authorized states.
-Production: Authorize intended CLI identity/context, make scoped request, revoke current server token and retry same bearer; logout alone is insufficient.
-Sources: Source: [CliAuth.tsx](../../ui/src/pages/CliAuth.tsx). Tests: [cli-auth-routes.test.ts](../../server/src/__tests__/cli-auth-routes.test.ts), [board-auth.test.ts](../../cli/src/__tests__/board-auth.test.ts), [token.test.ts](../../cli/src/__tests__/token.test.ts)
+Production: Authorize intended CLI identity/context, make scoped request, revoke current server token and retry same bearer; logout alone is insufficient. Pair a phone, revoke it, and confirm its key fails.
+Sources: Source: [CliAuth.tsx](../../ui/src/pages/CliAuth.tsx), [MobileAppPairing.tsx](../../ui/src/components/MobileAppPairing.tsx). Tests: [cli-auth-routes.test.ts](../../server/src/__tests__/cli-auth-routes.test.ts), [board-auth.test.ts](../../cli/src/__tests__/board-auth.test.ts), [token.test.ts](../../cli/src/__tests__/token.test.ts)
