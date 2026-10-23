@@ -387,4 +387,79 @@ describe("task watchdog subtree classifier", () => {
 
     expect(result.state).toBe("not_applicable");
   });
+
+  // HAU-423: an armed monitor counts as a live path
+  it("classifies a subtree as live when a leaf has a future monitorNextCheckAt (HAU-423)", () => {
+    const evaluatedAt = new Date("2026-09-01T13:00:00.000Z");
+    const monitorNextCheckAt = new Date("2026-09-06T21:00:00.000Z");
+    const result = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, parentId: sourceId, status: "in_progress", monitorNextCheckAt }),
+      ],
+      evaluatedAt,
+    });
+
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [childId],
+    });
+  });
+
+  it("does not count a past monitorNextCheckAt as a live path", () => {
+    const evaluatedAt = new Date("2026-09-01T13:00:00.000Z");
+    const monitorNextCheckAt = new Date("2026-08-30T09:00:00.000Z");
+    const result = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, parentId: sourceId, status: "in_progress", monitorNextCheckAt }),
+      ],
+      evaluatedAt,
+    });
+
+    expect(result.state).toBe("stopped");
+  });
+
+  it("treats a recovery child with an armed monitor as live, preventing spurious re-fire (HAU-423)", () => {
+    // Simulate: watched subtree was stopped, watchdog created a child and armed
+    // its monitor. The next evaluation should see the subtree as live (the armed
+    // monitor is a wake path), not stopped — which would cause a spurious re-fire.
+    const evaluatedAt = new Date("2026-09-01T13:00:00.000Z");
+    const monitorArmedAt = new Date("2026-09-01T12:58:35.000Z"); // before evaluatedAt
+    const monitorNextCheckAt = new Date("2026-09-06T21:00:00.000Z"); // future
+    const result = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({
+          id: childId,
+          parentId: sourceId,
+          status: "in_progress",
+          monitorNextCheckAt,
+          // createdAt is before evaluatedAt — not in the grace window
+          createdAt: monitorArmedAt,
+        }),
+      ],
+      // No active runs or queued wakes — only the monitor wake path
+      activeRuns: [],
+      queuedWakeRequests: [],
+      evaluatedAt,
+      firstRunGraceMs: 15_000,
+    });
+
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [childId],
+    });
+  });
+
+  it("still classifies as stopped when monitorNextCheckAt is absent and evaluatedAt is not provided", () => {
+    const result = classify({
+      issues: [
+        issue({ status: "in_progress" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
+      ],
+    });
+
+    expect(result.state).toBe("stopped");
+  });
 });
