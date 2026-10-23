@@ -96,7 +96,7 @@ function monitorMetadataFromPolicy(monitor: IssueExecutionMonitorPolicy) {
   return {
     kind: monitor.kind ?? null,
     serviceName: normalizeMonitorText(monitor.serviceName),
-    externalRef: redactIssueMonitorExternalRef(monitor.externalRef),
+    externalRef: normalizeMonitorText(monitor.externalRef),
     timeoutAt: monitor.timeoutAt ?? null,
     maxAttempts: monitor.maxAttempts ?? null,
     recoveryPolicy: monitor.recoveryPolicy ?? null,
@@ -107,7 +107,7 @@ function monitorMetadataFromState(state: IssueExecutionMonitorState | null | und
   return {
     kind: state?.kind ?? null,
     serviceName: normalizeMonitorText(state?.serviceName),
-    externalRef: redactIssueMonitorExternalRef(state?.externalRef),
+    externalRef: normalizeMonitorText(state?.externalRef),
     timeoutAt: state?.timeoutAt ?? null,
     maxAttempts: state?.maxAttempts ?? null,
     recoveryPolicy: state?.recoveryPolicy ?? null,
@@ -387,7 +387,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       scheduledBy: parsed.data.monitor.scheduledBy,
       kind: parsed.data.monitor.kind ?? null,
       serviceName: normalizeMonitorText(parsed.data.monitor.serviceName),
-      externalRef: redactIssueMonitorExternalRef(parsed.data.monitor.externalRef),
+      externalRef: normalizeMonitorText(parsed.data.monitor.externalRef),
       timeoutAt: parsed.data.monitor.timeoutAt ?? null,
       maxAttempts: parsed.data.monitor.maxAttempts ?? null,
       recoveryPolicy: parsed.data.monitor.recoveryPolicy ?? null,
