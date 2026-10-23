@@ -5,8 +5,14 @@ import { promisify } from "node:util";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { inspectManagedGitWorktreeBranch, WorkspaceRuntimeValidationFailure } from "./workspace-runtime.js";
 import type { ManagedGitInspectionDiagnostic, PersistedWorkspaceSourceReasonCode } from "./workspace-validation-diagnostics.js";
+import { projectRepositoryIdentity } from "./managed-project-checkout-name.js";
 
 const exec = promisify(execFile);
+
+function originMatchesRepoUrl(origin: string | null, repoUrl: string | null): boolean {
+  if (!origin || !repoUrl) return false;
+  return projectRepositoryIdentity(origin) === projectRepositoryIdentity(repoUrl);
+}
 type SourceWorkspace = Pick<ExecutionWorkspace,
   "id" | "companyId" | "projectId" | "projectWorkspaceId" | "repoUrl" | "baseRef" | "cwd" | "providerRef"
 >;
@@ -163,7 +169,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !originMatchesRepoUrl(await readOrigin(owner), workspace.repoUrl)) {
         repositoryMismatch = true;
         continue;
       }
@@ -181,7 +187,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   // primary is never a fallback for a missing historical worktree.
   let failedInspection: ManagedGitInspectionDiagnostic | null = null;
   for (const candidate of knownRoots) {
-    if (workspace.repoUrl && await readOrigin(candidate) !== workspace.repoUrl.trim()) continue;
+    if (workspace.repoUrl && !originMatchesRepoUrl(await readOrigin(candidate), workspace.repoUrl)) continue;
     const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: candidate, repoRoot: candidate, expectedBranchName: null });
     if (inspection.valid) return candidate;
     if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
@@ -194,7 +200,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     const materialized = await input.materializeOriginalRepository();
     const owner = await canonicalDirectory(materialized);
     const expectedRoots = await roots();
-    if (owner && expectedRoots.has(owner) && await readOrigin(owner) === workspace.repoUrl.trim()) return owner;
+    if (owner && expectedRoots.has(owner) && originMatchesRepoUrl(await readOrigin(owner), workspace.repoUrl)) return owner;
   }
   fail(workspace, "source_repository_unavailable");
 }
