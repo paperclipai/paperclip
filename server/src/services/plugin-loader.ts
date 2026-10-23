@@ -146,6 +146,7 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
   "@paperclipai/plugin-exe-dev": { driverKey: "exe-dev", envVars: ["EXE_API_KEY"] },
   "@paperclipai/plugin-novita-sandbox": { driverKey: "novita", envVars: ["NOVITA_API_KEY"] },
+  "@paperclipai/plugin-smolmachines": { driverKey: "smolmachines", envVars: ["SMOL_CLOUD_TOKEN"] },
 };
 
 export function buildPluginWorkerEnv(input: {
