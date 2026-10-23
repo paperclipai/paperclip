@@ -7,6 +7,7 @@ export const TASK_WATCHDOG_ORIGIN_KIND = "task_watchdog";
 
 type AgentRunActor = {
   type: string;
+  source?: string;
   agentId?: string | null;
   companyId?: string | null;
   runId?: string | null;
@@ -76,6 +77,13 @@ export async function resolveTaskWatchdogMutationScope(
     return {
       kind: "invalid",
       detail: "Task-watchdog run context does not belong to this agent.",
+    };
+  }
+
+  if (actor.source !== "agent_jwt") {
+    return {
+      kind: "invalid",
+      detail: "Task-watchdog mutation scope requires a signed run credential.",
     };
   }
 

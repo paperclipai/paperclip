@@ -2991,7 +2991,7 @@ describe("agent issue mutation checkout ownership", () => {
         type: "agent",
         agentId: peerAgentId,
         companyId,
-        source: "agent_key",
+        source: "agent_jwt",
         runId,
       };
     }
@@ -3069,6 +3069,16 @@ describe("agent issue mutation checkout ownership", () => {
         explanation: "Watchdog test boundary default.",
       }));
     }
+
+    it("rejects an API key selecting a same-agent watchdog run", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId, status: "in_progress" }));
+      const app = await createApp({ ...watchdogActor(), source: "agent_key" }, createWatchdogDb());
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({ status: "blocked" });
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Task-watchdog mutation scope requires a signed run credential.");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
 
     it("lets a watchdog run comment on a watched issue assigned to a different agent", async () => {
       denyBaseBoundary();

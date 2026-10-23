@@ -687,5 +687,24 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         });
       },
     ),
-  ];
+  ].map((tool) => {
+    const required = [
+      "paperclipCreateIssue", "paperclipUpdateIssue",
+      "paperclipAddComment", "paperclipCheckoutIssue",
+    ].includes(tool.name);
+    const runId = z.string().uuid();
+    const schema = tool.schema.extend({ paperclipRunId: required ? runId : runId.optional() });
+    return {
+      ...tool,
+      schema,
+      execute: async (input: Record<string, unknown>) => {
+        try {
+          const { paperclipRunId, ...body } = schema.parse(input);
+          return await client.withRunId(runId.optional().parse(paperclipRunId), () => tool.execute(body));
+        } catch (error) {
+          return formatErrorResponse(error);
+        }
+      },
+    };
+  });
 }
