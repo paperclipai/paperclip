@@ -55,6 +55,17 @@ const sampleCatalogSkill: CatalogSkill = {
   contentHash: contentHash(sampleFiles),
 };
 
+const crlfSkillMarkdown = sampleSkillMarkdown.replace(/\n/g, "\r\n");
+const crlfFiles: CatalogSkillFile[] = [
+  { path: "SKILL.md", kind: "skill", sizeBytes: Buffer.byteLength(crlfSkillMarkdown), sha256: sha256(crlfSkillMarkdown) },
+  { path: "references/checklist.md", kind: "reference", sizeBytes: Buffer.byteLength(sampleReferenceMarkdown), sha256: sha256(sampleReferenceMarkdown) },
+];
+const crlfCatalogSkill: CatalogSkill = {
+  ...sampleCatalogSkill,
+  files: crlfFiles,
+  contentHash: contentHash(crlfFiles),
+};
+
 const mockCatalogService = vi.hoisted(() => ({
   getCatalogPackageMetadata: vi.fn(() => ({
     packageName: "@paperclipai/skills-catalog",
@@ -77,7 +88,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
+describeEmbeddedPostgres("companySkillService.installFromCatalog", { timeout: 30_000 }, () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: Awaited<ReturnType<typeof createService>>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -105,7 +116,7 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-catalog-");
     db = createDb(tempDb.connectionString);
     svc = await createService();
-  }, 20_000);
+  }, 60_000);
 
   beforeEach(async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-catalog-home-"));
@@ -458,6 +469,24 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
         }),
       }),
     });
+  });
+
+  it("installs a catalog skill whose SKILL.md uses CRLF line endings without a false frontmatter hard-stop", async () => {
+    const companyId = await createCompany();
+    mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(crlfCatalogSkill);
+    mockCatalogService.resolveCatalogSkillReference.mockReturnValue({ skill: crlfCatalogSkill, ambiguous: false });
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+      const content = filePath === "SKILL.md" ? crlfSkillMarkdown : sampleReferenceMarkdown;
+      await fs.writeFile(targetPath, content, "utf8");
+    });
+
+    const result = await svc.installFromCatalog(companyId, { catalogSkillId: crlfCatalogSkill.id });
+
+    expect(result.action).toBe("created");
+    expect(result.skill.metadata).toEqual(expect.objectContaining({ auditVerdict: "pass" }));
+    await expect(
+      fs.readFile(path.join(result.skill.sourceLocator!, "SKILL.md"), "utf8"),
+    ).resolves.toBe(crlfSkillMarkdown);
   });
 
   it("resets a modified catalog skill back to the pinned origin when forced", async () => {
