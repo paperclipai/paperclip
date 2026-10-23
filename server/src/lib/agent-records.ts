@@ -230,6 +230,21 @@ export function diffConfigSnapshot(
   return CONFIG_REVISION_FIELDS.filter((field) => !jsonEqual(before[field], after[field]));
 }
 
+/**
+ * `adapterConfig.maxConcurrentRuns` is a retired, write-only alias. The admission cap is read only
+ * from `runtimeConfig.heartbeat.maxConcurrentRuns` (parseHeartbeatPolicy,
+ * server/src/services/heartbeat/queue.ts), so a stored adapter copy is a dead value that can
+ * disagree with the applied cap. Every persistence path drops it.
+ */
+export const AGENT_MAX_CONCURRENT_RUNS_KEY = "maxConcurrentRuns";
+
+export function stripAdapterMaxConcurrentRunsAlias<T extends Record<string, unknown>>(adapterConfig: T): T {
+  if (!Object.hasOwn(adapterConfig, AGENT_MAX_CONCURRENT_RUNS_KEY)) return adapterConfig;
+  const next = { ...adapterConfig };
+  delete next[AGENT_MAX_CONCURRENT_RUNS_KEY];
+  return next;
+}
+
 export function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$inferInsert> {
   if (!isPlainRecord(snapshot)) throw unprocessable("Invalid revision snapshot");
 
@@ -263,7 +278,12 @@ export function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agent
         ? snapshot.capabilities
         : null,
     adapterType: snapshot.adapterType,
-    adapterConfig: isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
+    // A revision can predate the alias retirement and still hold the dead adapter copy. Dropping it
+    // on restore keeps a config rollback from re-introducing the divergence migration 0375 removed;
+    // the applied cap always comes from the snapshot's runtimeConfig.
+    adapterConfig: stripAdapterMaxConcurrentRunsAlias(
+      isPlainRecord(snapshot.adapterConfig) ? snapshot.adapterConfig : {},
+    ),
     runtimeConfig: runtimeConfig.data,
     defaultEnvironmentId:
       typeof snapshot.defaultEnvironmentId === "string" || snapshot.defaultEnvironmentId === null

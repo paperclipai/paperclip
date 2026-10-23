@@ -271,6 +271,10 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
+import {
+  AGENT_MAX_CONCURRENT_RUNS_KEY,
+  stripAdapterMaxConcurrentRunsAlias,
+} from "../lib/agent-records.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import { logger } from "../middleware/logger.js";
 import {
@@ -2113,6 +2117,97 @@ export function agentRoutes(
     if (typeof value !== "string") return null;
     const parsed = Number(value.trim());
     return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  // `adapterConfig.maxConcurrentRuns` is a deprecated, write-only alias. Nothing in the
+  // platform ever read the adapter copy: the admission cap comes from
+  // parseHeartbeatPolicy(agent) -> runtimeConfig.heartbeat.maxConcurrentRuns
+  // (server/src/services/heartbeat/queue.ts). Two stored values can disagree silently, so the
+  // alias is accepted for compatibility, written into runtimeConfig.heartbeat.maxConcurrentRuns,
+  // and never persisted under adapterConfig — exactly one value is stored.
+  const MAX_CONCURRENT_RUNS_ALIAS_KEY = AGENT_MAX_CONCURRENT_RUNS_KEY;
+  const MAX_CONCURRENT_RUNS_ALIAS_MIN = 1;
+  const MAX_CONCURRENT_RUNS_ALIAS_MAX = 50;
+
+  function hasMaxConcurrentRunsAlias(value: unknown): boolean {
+    const config = asRecord(value);
+    return config !== null && Object.hasOwn(config, MAX_CONCURRENT_RUNS_ALIAS_KEY);
+  }
+
+  function normalizeMaxConcurrentRunsAlias(raw: unknown): number | null {
+    const parsed = parseNumberLike(raw);
+    if (parsed == null || !Number.isInteger(parsed)) return null;
+    if (parsed < MAX_CONCURRENT_RUNS_ALIAS_MIN) return null;
+    return Math.min(MAX_CONCURRENT_RUNS_ALIAS_MAX, parsed);
+  }
+
+  function stripMaxConcurrentRunsAlias(
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return stripAdapterMaxConcurrentRunsAlias(adapterConfig);
+  }
+
+  function readRuntimeMaxConcurrentRuns(runtimeConfig: Record<string, unknown> | null): number | null {
+    const heartbeat = asRecord(runtimeConfig?.heartbeat);
+    if (!heartbeat || !hasOwn(heartbeat, MAX_CONCURRENT_RUNS_ALIAS_KEY)) return null;
+    return normalizeMaxConcurrentRunsAlias(heartbeat[MAX_CONCURRENT_RUNS_ALIAS_KEY]);
+  }
+
+  function withRuntimeMaxConcurrentRuns(
+    runtimeConfig: Record<string, unknown>,
+    value: number,
+  ): Record<string, unknown> {
+    return {
+      ...runtimeConfig,
+      heartbeat: { ...(asRecord(runtimeConfig.heartbeat) ?? {}), [MAX_CONCURRENT_RUNS_ALIAS_KEY]: value },
+    };
+  }
+
+  /**
+   * Resolves the deprecated adapter alias against the runtime heartbeat value supplied in the
+   * same request. Returns the adapterConfig to persist (alias key always removed) and, when the
+   * request actually set a cap, the runtimeConfig to persist in its place.
+   */
+  function resolveMaxConcurrentRunsAlias(input: {
+    adapterConfig: Record<string, unknown>;
+    runtimeConfig?: Record<string, unknown> | null;
+    storedRuntimeConfig?: unknown;
+  }): { adapterConfig: Record<string, unknown>; runtimeConfig: Record<string, unknown> | null } {
+    const adapterConfig = stripMaxConcurrentRunsAlias(input.adapterConfig);
+    const aliasSupplied = hasMaxConcurrentRunsAlias(input.adapterConfig);
+    const aliasValue = aliasSupplied
+      ? normalizeMaxConcurrentRunsAlias(input.adapterConfig[MAX_CONCURRENT_RUNS_ALIAS_KEY])
+      : null;
+    // A supplied alias is either a usable cap or an error: a blank (`null`/`""`) or malformed value
+    // must not be dropped silently, which is the no-op this alias exists to remove.
+    if (aliasSupplied && aliasValue == null) {
+      throw unprocessable(
+        `adapterConfig.maxConcurrentRuns is a deprecated alias for runtimeConfig.heartbeat.maxConcurrentRuns and must be a whole number >= ${MAX_CONCURRENT_RUNS_ALIAS_MIN}`,
+      );
+    }
+    const requestedRuntimeConfig = input.runtimeConfig ?? null;
+    const requestedHeartbeat = asRecord(requestedRuntimeConfig?.heartbeat);
+    const runtimeKeySupplied =
+      requestedHeartbeat !== null && Object.hasOwn(requestedHeartbeat, MAX_CONCURRENT_RUNS_ALIAS_KEY);
+    if (aliasValue != null && runtimeKeySupplied) {
+      const requestedRuntimeValue = readRuntimeMaxConcurrentRuns(requestedRuntimeConfig);
+      if (requestedRuntimeValue == null) {
+        throw unprocessable(
+          `runtimeConfig.heartbeat.maxConcurrentRuns must be a whole number >= ${MAX_CONCURRENT_RUNS_ALIAS_MIN}; it was supplied alongside the deprecated adapterConfig.maxConcurrentRuns alias, so the request was rejected rather than silently resolved.`,
+        );
+      }
+      if (requestedRuntimeValue !== aliasValue) {
+        throw unprocessable(
+          `Conflicting maxConcurrentRuns: adapterConfig.maxConcurrentRuns=${aliasValue} but runtimeConfig.heartbeat.maxConcurrentRuns=${requestedRuntimeValue}. adapterConfig.maxConcurrentRuns is a deprecated alias for runtimeConfig.heartbeat.maxConcurrentRuns; send the value once, under runtimeConfig.`,
+        );
+      }
+    }
+    if (aliasValue == null) return { adapterConfig, runtimeConfig: null };
+    const baseRuntimeConfig = requestedRuntimeConfig ?? asRecord(input.storedRuntimeConfig) ?? {};
+    return {
+      adapterConfig,
+      runtimeConfig: withRuntimeMaxConcurrentRuns(baseRuntimeConfig, aliasValue),
+    };
   }
 
   function parseSchedulerHeartbeatPolicy(runtimeConfig: unknown) {
@@ -4400,7 +4495,15 @@ export function agentRoutes(
     if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
     Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig);
-    const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawHireAdapterConfigWithAlias = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    // MAX_CONCURRENT_RUNS alias: a cap sent on the adapter is stored once, under runtimeConfig.
+    const hireMaxConcurrentRuns = resolveMaxConcurrentRunsAlias({
+      adapterConfig: rawHireAdapterConfigWithAlias,
+      runtimeConfig: asRecord(hireInput.runtimeConfig),
+    });
+    const rawHireAdapterConfig = hireMaxConcurrentRuns.adapterConfig;
+    hireInput.adapterConfig = rawHireAdapterConfig;
+    if (hireMaxConcurrentRuns.runtimeConfig) hireInput.runtimeConfig = hireMaxConcurrentRuns.runtimeConfig;
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -4735,7 +4838,15 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
     Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner, setupOnly: Boolean(setupId) }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig);
-    const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    const rawCreateAdapterConfigWithAlias = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    // MAX_CONCURRENT_RUNS alias: a cap sent on the adapter is stored once, under runtimeConfig.
+    const createMaxConcurrentRuns = resolveMaxConcurrentRunsAlias({
+      adapterConfig: rawCreateAdapterConfigWithAlias,
+      runtimeConfig: asRecord(createInput.runtimeConfig),
+    });
+    const rawCreateAdapterConfig = createMaxConcurrentRuns.adapterConfig;
+    createInput.adapterConfig = rawCreateAdapterConfig;
+    if (createMaxConcurrentRuns.runtimeConfig) createInput.runtimeConfig = createMaxConcurrentRuns.runtimeConfig;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     if (!setupId) await assertFreshPaperclipRunnerProvider(
       companyId,
@@ -5427,6 +5538,18 @@ export function agentRoutes(
       );
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
     }
+    // `adapterConfig.maxConcurrentRuns` is a deprecated alias for the runtime heartbeat policy:
+    // it is never persisted under adapterConfig, and a value sent there is written into
+    // runtimeConfig.heartbeat.maxConcurrentRuns instead.
+    if (hasOwn(patchData, "adapterConfig")) {
+      const maxConcurrentRuns = resolveMaxConcurrentRunsAlias({
+        adapterConfig: asRecord(patchData.adapterConfig) ?? {},
+        runtimeConfig: requestedRuntimeConfig,
+        storedRuntimeConfig: existing.runtimeConfig,
+      });
+      patchData.adapterConfig = maxConcurrentRuns.adapterConfig;
+      if (maxConcurrentRuns.runtimeConfig) requestedRuntimeConfig = maxConcurrentRuns.runtimeConfig;
+    }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
       hasOwn(patchData, "adapterConfig");
@@ -5481,6 +5604,9 @@ export function agentRoutes(
       if (requestedAdapterType === "paperclip_runner") {
         rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
       }
+      // A stored adapter copy of the deprecated alias is dropped on every adapter-writing PATCH,
+      // including writes that never mention the key, so stale rows self-heal.
+      rawEffectiveAdapterConfig = stripMaxConcurrentRunsAlias(rawEffectiveAdapterConfig);
       if (req.actor.type === "agent" && rawEffectiveAdapterConfig.homeMode !== existingAdapterConfig.homeMode)
         throw forbidden("Only an operator can configure Runner homeMode.");
       if (changingAdapterType || requestedAdapterConfig) {

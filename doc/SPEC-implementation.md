@@ -1678,11 +1678,13 @@ Failed source-work retries, process-loss retries, transient or scheduled retries
 
 ## 11.6 Scheduler Rules
 
-Per-agent schedule fields in `adapter_config`:
+Per-agent schedule fields live in `runtime_config.heartbeat`:
 
 - `enabled` boolean
 - `intervalSec` integer (minimum 30)
 - `maxConcurrentRuns` integer; new agents default to `20`; scheduler clamps configured values to `1..50`
+
+`adapter_config.maxConcurrentRuns` is a deprecated, write-only alias. The write paths accept it, store the value under `runtime_config.heartbeat.maxConcurrentRuns`, and never persist it on the adapter. A stored adapter copy has no reader.
 
 Scheduler must skip invocation when:
 
