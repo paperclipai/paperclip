@@ -100,6 +100,12 @@ export type AdapterExecutionErrorFamily =
   | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
+  /** Actual session continuity outcome reported by the adapter engine, when available. */
+  sessionReused?: boolean;
+  /** Actual session identifier used before execution, or null when a fresh session started. */
+  sessionIdBefore?: string | null;
+  /** Actual provider context usage at the end of the run, when reported. */
+  contextTokens?: number;
   /** Positive evidence for retrying bootstrap; absent evidence never authorizes replay. */
   executionRecovery?: { kind: "bootstrap"; providerWorkStarted: false } | {
     kind: "interrupted";

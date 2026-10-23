@@ -578,7 +578,11 @@ describe("composed ACPX run fault matrix", () => {
     expect(ensureInputs[0]?.resumeSessionId).toBe(first.sessionId);
     expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
     expect(started).toBe(1);
-    expect(second.clearSession).toBe(true);
+    // The retry established a usable replacement handle, so keep its identity
+    // in the result for the next heartbeat to resume.
+    expect(second.clearSession).toBe(false);
+    expect(second.sessionId).toBe(okHandle.backendSessionId);
+    expect((second.sessionParams as Record<string, unknown>).acpSessionId).toBe(okHandle.backendSessionId);
     expect(logs.some((text) => text.includes("is unavailable; retrying with a fresh session"))).toBe(true);
     // The host lane acquires only the runtime, and it appears once.
     assertDispositionReport(capture.last(), { acquired: ["acp_runtime"] });

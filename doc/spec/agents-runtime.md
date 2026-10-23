@@ -78,6 +78,27 @@ Paperclip stores resumable session state per `(agent, taskKey, adapterType)`.
 - If restore fails, adapters should retry once with a fresh session and continue.
 - You can reset all sessions for an agent or reset one task session by task key.
 
+Claude ACP sessions also rotate after the configured idle cache TTL when their last
+reported context is large. Set `runtimeConfig.heartbeat.sessionCompaction`:
+
+```json
+{ "idleTtlMinutes": 60, "idleMinContextTokens": 100000 }
+```
+
+These are the Claude defaults. Other adapters keep idle rotation disabled. Either
+value of `0`, or `enabled: false`, disables this condition. Idle time starts at the
+last completed run and must exceed the TTL; context must meet the token threshold.
+The context measurement is ACP `usage_update.used`, not accumulated billing usage.
+After the TTL, missing recent measurements fall back to at most 100 terminal runs
+for the agent through the existing start-time index, filtered to the same session.
+A session with no retained context measurement keeps its existing resume policy. Set the TTL
+to the cache lifetime of your provider/account; the 60-minute default is for Claude
+subscription sessions. Rotation uses the existing bounded task handoff.
+
+Fresh ACPX conversations use a new persistent record key. Compatible resumes retain
+that key, and legacy saved sessions still resume. Run history uses the adapter's
+actual session receipt, including when a requested resume starts a fresh session.
+
 Use session reset when:
 
 - you significantly changed prompt strategy

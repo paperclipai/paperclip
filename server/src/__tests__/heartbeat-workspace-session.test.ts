@@ -3210,18 +3210,22 @@ describe("prioritizeProjectWorkspaceCandidatesForRun", () => {
 });
 
 describe("parseSessionCompactionPolicy", () => {
-  it("disables Paperclip-managed rotation by default for codex and claude local", () => {
+  it("keeps run, token and age thresholds disabled for Claude and Codex by default", () => {
     expect(parseSessionCompactionPolicy(buildAgent("codex_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
       maxSessionAgeHours: 0,
+      idleTtlMinutes: 0,
+      idleMinContextTokens: 0,
     });
     expect(parseSessionCompactionPolicy(buildAgent("claude_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 0,
       maxRawInputTokens: 0,
       maxSessionAgeHours: 0,
+      idleTtlMinutes: 60,
+      idleMinContextTokens: 100_000,
     });
   });
 
@@ -3231,12 +3235,16 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 200,
       maxRawInputTokens: 2_000_000,
       maxSessionAgeHours: 72,
+      idleTtlMinutes: 0,
+      idleMinContextTokens: 0,
     });
     expect(parseSessionCompactionPolicy(buildAgent("opencode_local"))).toEqual({
       enabled: true,
       maxSessionRuns: 200,
       maxRawInputTokens: 2_000_000,
       maxSessionAgeHours: 72,
+      idleTtlMinutes: 0,
+      idleMinContextTokens: 0,
     });
   });
 
@@ -3257,6 +3265,8 @@ describe("parseSessionCompactionPolicy", () => {
       maxSessionRuns: 25,
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
+      idleTtlMinutes: 0,
+      idleMinContextTokens: 0,
     });
   });
 });

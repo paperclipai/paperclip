@@ -1611,6 +1611,7 @@ function buildSessionParams(input: {
   const { prepared, handle } = input;
   return {
     sessionKey: prepared.sessionKey,
+    acpxSessionKey: handle.sessionKey,
     runtimeSessionName: handle.runtimeSessionName,
     acpxRecordId: handle.acpxRecordId,
     acpSessionId: handle.backendSessionId,
@@ -4258,6 +4259,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       let prepared!: AcpxPreparedRuntime;
       let runtime!: AcpRuntime;
       let sessionHandle!: AcpRuntimeHandle;
+      let contextTokens: number | undefined;
       let childStderrState!: ChildStderrState;
       let processIdentitySink!: AcpxProcessIdentitySink;
       let resumedSession = false;
@@ -4438,6 +4440,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const previousParams = parseObject(ctx.runtime.sessionParams);
         const canResume = isCompatibleSession(previousParams, prepared);
         const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
+        // ACPX loads persistent records by key even when resumeSessionId is absent.
+        // Keep the workspace lock key stable, but isolate each fresh conversation.
+        let acpxSessionKey = resumeSessionId
+          ? asString(previousParams.acpxSessionKey, "") || prepared.sessionKey
+          : `${prepared.sessionKey}:${ctx.runId}`;
         // Borrow the warm entry without removing it, so an overlapping run of the
         // same session still sees it. The borrow clears the entry's idle timer, so
         // the reused runtime cannot expire under its own timer while this run uses
@@ -4622,7 +4629,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 const established = await guardEnsureSession({
                   call: () =>
                     runtime.ensureSession({
-                      sessionKey: prepared.sessionKey,
+                      sessionKey: acpxSessionKey,
                       agent: prepared.acpxAgent,
                       mode: prepared.mode,
                       cwd: prepared.cwd,
@@ -4648,6 +4655,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               if (!resumeSessionId || !isResumeFailure(err)) throw err;
               clearSession = true;
               resumedSession = false;
+              acpxSessionKey = `${prepared.sessionKey}:${ctx.runId}:retry`;
               await ctx.onLog(
                 "stdout",
                 `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
@@ -4661,7 +4669,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 const established = await guardEnsureSession({
                   call: () =>
                     runtime.ensureSession({
-                      sessionKey: prepared.sessionKey,
+                      sessionKey: acpxSessionKey,
                       agent: prepared.acpxAgent,
                       mode: prepared.mode,
                       cwd: prepared.cwd,
@@ -4680,6 +4688,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 // only its own ensure-session sub-time on the span.
                 spanWallTimes: () => ({ ensureSession: retryEnsureSessionMs }),
               });
+              // The failed resume made the old ID unusable, but the successful
+              // fresh handshake established a replacement that must be persisted.
+              clearSession = false;
             }
           } else {
             // Warm-handle hit: a compatible cached handle reuses the running ACP
@@ -4694,7 +4705,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           }
           if (resumeSessionId && handle?.backendSessionId !== resumeSessionId) {
             resumedSession = false;
-            clearSession = true;
           }
           if (handle) await emitStartupReuse(onReuseEvent, "provider_session", {
             state: resumedSession ? "reused" : "fresh",
@@ -5219,6 +5229,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }
             if (event.type === "status" && event.tag === "usage_update") {
               eventBreakdown = event.breakdown ?? eventBreakdown;
+              if (typeof event.used === "number" && Number.isFinite(event.used) && event.used >= 0) {
+                contextTokens = Math.floor(event.used);
+              }
               eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
               const checkpoint = summarizeAcpxTurnUsage({ preStatus: preTurnStatus, postStatus: null, eventBreakdown, eventCostUsd });
               observedUsage = { usage: checkpoint.usage ?? undefined, costUsd: checkpoint.costUsd, usageBasis: "per_run", usageComplete: false };
@@ -5853,6 +5866,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           // cannot reconstruct sandbox defaults from the stored agent config.
           capturedResult = {
             ...capturedResult,
+            // The actual handshake is authoritative even when turn/receipt handling fails.
+            ...(sessionHandle
+              ? {
+                  sessionReused: resumedSession,
+                  sessionIdBefore: resumedSession
+                    ? sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName
+                    : null,
+                }
+              : {}),
+            ...(contextTokens !== undefined ? { contextTokens } : {}),
             resultJson: {
               ...capturedResult.resultJson,
               adapterExecutionTimeout: { ...prepared.timeoutResolution },
