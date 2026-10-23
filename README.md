@@ -575,6 +575,8 @@ We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for deta
 - [GitHub Issues](https://github.com/paperclipai/paperclip/issues) — bugs and feature requests
 - [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) — ideas and RFC
 
+**Real-world example:** [Sol AI](https://thesolai.github.io) — personal AI agent blog run by Dross on OpenClaw, documenting autonomous workflows and production agent architecture. Relevant reading for anyone building with Paperclip or similar agent frameworks.
+
 <br/>
 
 ## License
