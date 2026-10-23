@@ -1,0 +1,23 @@
+{
+  "name": "@paperclipai/plugin-slack-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Explicit Slack direct-message commands for company-scoped Paperclip tasks",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit",
+    "slack:setup-url": "node scripts/print-slack-app-url.mjs"
+  },
+  "paperclipPlugin": { "manifest": "./dist/manifest.js", "worker": "./dist/worker.js" },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*",
+    "@slack/socket-mode": "3.0.1",
+    "@slack/web-api": "8.1.1",
+    "undici": "7.29.1"
+  },
+  "devDependencies": { "@electric-sql/pglite": "0.5.8", "@types/node": "^24.0.0", "esbuild": "^0.28.2", "typescript": "^7.0.2", "vitest": "^4.1.11" },
+  "engines": { "node": ">=24.11.0" }
+}
