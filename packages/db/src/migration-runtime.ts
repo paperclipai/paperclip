@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
@@ -88,6 +88,39 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
   }
 }
 
+/**
+ * Normalizes locale values in postgresql.conf when an existing cluster was
+ * created on a different platform (e.g. Linux Docker → macOS embedded-postgres).
+ *
+ * Linux uses the POSIX shorthand "*.utf8" for UTF-8 locales (e.g. "en_US.utf8"),
+ * while macOS setlocale() only recognises the RFC-standard form "*.UTF-8"
+ * (e.g. "en_US.UTF-8"). PostgreSQL stores the locale at initdb time and
+ * validates it at every startup, so a cluster initialised on Linux will fail
+ * to start on macOS with "invalid value for parameter lc_messages".
+ *
+ * This function rewrites all lc_* parameters in postgresql.conf from the
+ * "*.utf8" form to "*.UTF-8" — silently, and only when a change is needed.
+ * The replacement is locale-agnostic: it handles en_US, de_DE, fr_FR, ja_JP,
+ * and any other locale that PostgreSQL may have stored with the ".utf8" suffix.
+ */
+function normalizePostgresConfigLocales(dataDir: string): void {
+  const confPath = path.resolve(dataDir, "postgresql.conf");
+  if (!existsSync(confPath)) return;
+
+  const original = readFileSync(confPath, "utf8");
+
+  // Convert any "*.utf8" locale value to the RFC-standard "*.UTF-8" form that
+  // macOS setlocale() recognises, so a cluster created on Linux can start on macOS.
+  const normalized = original.replace(
+    /\b(lc_messages|lc_monetary|lc_numeric|lc_time)(\s*=\s*'[^']+?)\.utf8'/g,
+    "$1$2.UTF-8'",
+  );
+
+  if (normalized !== original) {
+    writeFileSync(confPath, normalized, "utf8");
+  }
+}
+
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
@@ -161,6 +194,9 @@ async function ensureEmbeddedPostgresConnection(
   if (existsSync(postmasterPidFile)) {
     rmSync(postmasterPidFile, { force: true });
   }
+  // Normalize locale settings in postgresql.conf so that a cluster created on
+  // Linux (Docker) can be started on macOS (embedded-postgres) and vice-versa.
+  normalizePostgresConfigLocales(dataDir);
   try {
     await instance.start();
   } catch (error) {
