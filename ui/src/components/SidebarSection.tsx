@@ -98,7 +98,9 @@ function SidebarSectionHeader({
           type="button"
           data-slot="icon-button"
           className={cn(
-            "inline-flex min-w-0 max-w-full items-center rounded-md px-1 py-0.5 text-left outline-none transition-colors",
+            // No horizontal padding — the row's icon slot + gap-2.5 already
+            // match SidebarNavItem's label column (EMO-7609).
+            "inline-flex min-w-0 max-w-full items-center rounded-md py-0.5 text-left outline-none transition-colors",
             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
             menuOpen && "bg-accent/50",
           )}
@@ -148,24 +150,32 @@ function SidebarSectionHeader({
       </DropdownMenuContent>
     </DropdownMenu>
   ) : (
-    <div className="inline-flex min-w-0 max-w-full items-center px-1 py-0.5">{headerContent}</div>
+    <div className="inline-flex min-w-0 max-w-full items-center py-0.5">{headerContent}</div>
+  );
+
+  // Leading slot mirrors SidebarNavItem's h-4 w-4 icon column + gap-2.5 so
+  // section labels (Work / Agents / Company) share the same text column as
+  // Dashboard / Inbox / Tasks. Absolute gutter carets previously left the
+  // label on the icon column and read as a misaligned "Work" row (EMO-7609).
+  const leadingSlot = collapsible ? (
+    <CollapsibleTrigger asChild>
+      <button
+        type="button"
+        data-slot="icon-button"
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
+      >
+        <ChevronRight className={caretClassName} aria-hidden="true" />
+      </button>
+    </CollapsibleTrigger>
+  ) : (
+    <span className="h-4 w-4 shrink-0" aria-hidden="true" />
   );
 
   return (
-    <div className="group/sidebar-section px-3 py-1.5 pointer-coarse:py-1">
-      <div className="relative flex min-h-6 min-w-0 items-center gap-1">
-        {collapsible ? (
-          <CollapsibleTrigger asChild>
-            <button
-              type="button"
-              data-slot="icon-button"
-              className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-              aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
-            >
-              <ChevronRight className={caretClassName} aria-hidden="true" />
-            </button>
-          </CollapsibleTrigger>
-        ) : null}
+    <div className="group/sidebar-section mx-2 px-2 py-1.5 pointer-coarse:py-1">
+      <div className="flex min-h-6 min-w-0 items-center gap-2.5">
+        {leadingSlot}
         {headingControl}
         {headerAction && HeaderActionIcon ? (
           <Button
@@ -201,13 +211,14 @@ export function SidebarSection({
   // rail), and the items always render so their icons stay reachable.
   //
   // The header wrapper mirrors the expanded header's vertical footprint exactly
-  // (outer `px-3 py-1.5 pointer-coarse:py-1` + inner `min-h-6`) so item icons land
-  // at the identical y-position in both states — no movement on collapse/expand
-  // (PAP-10676). The divider is vertically centered within that same row.
+  // (outer `mx-2 px-2 py-1.5 pointer-coarse:py-1` + inner `min-h-6`) so item
+  // icons land at the identical y-position in both states — no movement on
+  // collapse/expand (PAP-10676). The divider is vertically centered within that
+  // same row.
   if (rail) {
     return (
       <div>
-        <div className="px-3 py-1.5 pointer-coarse:py-1">
+        <div className="mx-2 px-2 py-1.5 pointer-coarse:py-1">
           <div className="flex min-h-6 items-center">
             <span className="sr-only">{label}</span>
             <div className="h-px w-full bg-border/60" aria-hidden="true" />
