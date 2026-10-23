@@ -48,6 +48,11 @@ describe("adapter display registry", () => {
     });
   });
 
+  it("offers local Hermes as an onboarding source while keeping the gateway configuration-only", () => {
+    expect(getAdapterDisplay("hermes_local").recommended).toBe(true);
+    expect(getAdapterDisplay("hermes_gateway").hideFromVisualSelection).toBe(true);
+  });
+
   it("drops local suffixes for unknown plugin adapter labels", () => {
     expect(getAdapterLabel("droid_local")).toBe("Droid");
     expect(getAdapterDisplay("droid_local")).toMatchObject({

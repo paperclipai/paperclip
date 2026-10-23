@@ -119,6 +119,15 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/agent-workspace");
   });
 
+  it("passes a named custom provider without forcing Hermes's configured model", async () => {
+    const { ctx } = makeCtx({ provider: "custom:omniroute", model: "auto" });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2];
+    expect(args).toContain("--provider");
+    expect(args).toContain("custom:omniroute");
+    expect(args).not.toContain("-m");
+  });
+
   it("preserves an explicitly configured cwd", async () => {
     const { ctx } = makeCtx({ cwd: "/private/qa/configured-workspace" });
     await execute({ ...ctx, context: { ...ctx.context, paperclipWorkspace: { cwd: "/private/qa/agent-workspace" } } } as any);

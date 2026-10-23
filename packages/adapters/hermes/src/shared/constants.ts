@@ -48,6 +48,17 @@ export const VALID_PROVIDERS = [
 ] as const;
 
 /**
+ * A provider identifier accepted by Hermes as a CLI argument.
+ *
+ * Hermes supports user-defined providers (for example `custom:omniroute`),
+ * so this must not be limited to the built-in suggestion list above. Keep the
+ * value argument-safe: provider values are passed to the child process as an
+ * argument array, but rejecting whitespace and leading dashes prevents an
+ * accidental option from ever being treated as a provider.
+ */
+export const HERMES_PROVIDER_ID_REGEX = /^(?!-)[A-Za-z0-9][A-Za-z0-9._-]*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
+/**
  * Model-name prefix → provider hint mapping.
  * Used when no explicit provider is configured and we need to infer
  * the correct provider from the model string alone.

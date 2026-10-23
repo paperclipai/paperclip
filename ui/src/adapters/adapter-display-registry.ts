@@ -113,6 +113,10 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Hermes",
     description: "Hermes harness",
     icon: Bot,
+    // Hermes is a local, self-configuring harness just like the default CEO
+    // choices. Keep the gateway out of this flow: its endpoint setup belongs
+    // in the normal agent configuration form.
+    recommended: true,
   },
   opencode_local: {
     label: "OpenCode",
