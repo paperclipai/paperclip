@@ -154,6 +154,63 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
+  it("classifies a blocked issue with no blockers as covered", async () => {
+    const { companyId } = await createCompany("PBN");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "PBN-1",
+      title: "Blocked without blocker edges",
+      status: "blocked",
+    });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "blockers_resolved",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      blockingTreeLive: false,
+      directBlockerIssueId: null,
+      terminalBlockerIssueId: null,
+      terminalBlocker: null,
+    });
+  });
+
+  it("classifies a blocked issue with only done blockers as covered", async () => {
+    const { companyId } = await createCompany("PBD");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "PBD-1",
+      title: "Blocked by completed issue",
+      status: "blocked",
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBD-2",
+      title: "Completed blocker",
+      status: "done",
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: rootId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "blockers_resolved",
+      unresolvedBlockerCount: 0,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      blockingTreeLive: false,
+      directBlockerIssueId: null,
+      terminalBlockerIssueId: null,
+      terminalBlocker: null,
+    });
+  });
+
   it("classifies a blocked parent as covered when its child has a running execution path", async () => {
     const { companyId, agentId } = await createCompany("PBC");
     const parentId = await insertIssue({ companyId, identifier: "PBC-1", title: "Parent", status: "blocked" });
