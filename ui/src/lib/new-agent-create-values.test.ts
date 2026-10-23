@@ -4,7 +4,9 @@ import { defaultCreateValues } from "../components/agent-config-defaults";
 import {
   buildNewAgentDefaultCreateValues,
   createValuesForAdapterType,
+  NEW_AGENT_RUNNER_PROVIDERS,
   resolveNewAgentDefaultAdapterType,
+  resolveNewAgentDefaultRunnerProvider,
 } from "./new-agent-create-values";
 
 describe("new agent create values", () => {
@@ -44,5 +46,64 @@ describe("new agent create values", () => {
       companyAgents: [{ role: "ceo", adapterType: "pi_local" }],
     });
     expect(values.adapterType).toBe("pi_local");
+  });
+});
+
+describe("new agent default runner provider", () => {
+  const allowedProviders = NEW_AGENT_RUNNER_PROVIDERS.map(option => option.value);
+
+  it("inherits a Grok harness from a paperclip_runner CEO", () => {
+    expect(
+      resolveNewAgentDefaultRunnerProvider({
+        companyAgents: [
+          { role: "ceo", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok" } },
+        ],
+        allowedProviders,
+      }),
+    ).toBe("grok");
+  });
+
+  it("inherits an OpenCode harness from a paperclip_runner CEO", () => {
+    expect(
+      resolveNewAgentDefaultRunnerProvider({
+        companyAgents: [
+          { role: "ceo", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } },
+        ],
+        allowedProviders,
+      }),
+    ).toBe("opencode");
+  });
+
+  it("falls back to the first offered harness when the CEO provider is not offered", () => {
+    expect(
+      resolveNewAgentDefaultRunnerProvider({
+        companyAgents: [
+          { role: "ceo", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } },
+        ],
+        allowedProviders,
+      }),
+    ).toBe(allowedProviders[0]);
+  });
+
+  it("falls back to the first offered harness when the CEO has no adapter config", () => {
+    expect(
+      resolveNewAgentDefaultRunnerProvider({
+        companyAgents: [{ role: "ceo", adapterType: "paperclip_runner" }],
+        allowedProviders,
+      }),
+    ).toBe(allowedProviders[0]);
+    expect(resolveNewAgentDefaultRunnerProvider()).toBe(allowedProviders[0]);
+  });
+
+  it("prefers an explicit preset harness over the CEO harness", () => {
+    expect(
+      resolveNewAgentDefaultRunnerProvider({
+        companyAgents: [
+          { role: "ceo", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } },
+        ],
+        presetRunnerProvider: "grok",
+        allowedProviders,
+      }),
+    ).toBe("grok");
   });
 });
