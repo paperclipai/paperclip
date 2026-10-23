@@ -1252,13 +1252,32 @@ await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
 // List active sessions
 const sessions = await ctx.agents.sessions.list(agentId, companyId);
 
+// Halt the session: stop the running turn and any queued turns (the session stays open)
+const status = await ctx.agents.sessions.cancelRun(session.sessionId, companyId, {
+  reason: "User pressed stop",
+});
+// status is the primary run's final status ("cancelled"), or null if nothing was in flight
+
 // Close when done
 await ctx.agents.sessions.close(session.sessionId, companyId);
 ```
 
-Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, `agent.sessions.close`.
+Requires capabilities: `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send` (also covers `cancelRun`), `agent.sessions.close`.
 
-Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `PluginAgentSessionsClient`.
+`cancelRun` halts a session this plugin owns, like an operator pressing Stop:
+it cancels the session's running run and any queued or retry-scheduled turns.
+The host records each cancel with the plugin as the actor (a
+`heartbeat.cancelled` activity entry per run), and recovery stands down as it
+does after an operator's Stop. It resolves to the final status of the primary
+run (the running run, or the newest queued turn when none is running), normally
+`"cancelled"`, or `null` when nothing was in flight. A run that finished or was
+stopped by someone else before the cancel landed counts as nothing in flight
+and gets no plugin activity entry. It rejects for sessions owned by another
+plugin or that belong to another company. Hosts that predate `cancelRun` reject
+the call as an unknown method, so plugins that must run on older hosts should
+catch that error and fall back.
+
+Exported types: `AgentSession`, `AgentSessionEvent`, `AgentSessionSendResult`, `AgentSessionRunStatus`, `PluginAgentSessionsClient`.
 
 ## Testing utilities
 

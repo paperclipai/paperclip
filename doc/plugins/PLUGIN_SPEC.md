@@ -670,6 +670,8 @@ Required SDK clients:
 
 `ctx.data` and `ctx.actions` register handlers that the plugin's own UI calls through the host bridge. `ctx.data.register(key, handler)` backs `usePluginData(key)` on the frontend. `ctx.actions.register(key, handler)` backs `usePluginAction(key)`.
 
+`ctx.agents.sessions` holds plugin-owned conversations with agents. A session is owned by the plugin whose `plugin:<pluginKey>:session:` task key created it, in one company. `ctx.agents.sessions.cancelRun(sessionId, companyId, { reason? })` halts that session: it cancels the session's running run and any queued or retry-scheduled turns. It resolves to the final status of the primary run (the running run, or the newest queued turn when none is running), normally `"cancelled"`, or `null` when nothing was in flight. A run that finished or was stopped by someone else (including an overlapping `cancelRun` call) before the cancel landed counts as nothing in flight, so each cancelled run gets one activity entry. It is gated by `agent.sessions.send`, refuses sessions owned by another plugin or another company, records each cancellation with the plugin as the actor (`cancelledByActorType: "plugin"` on the run and a `heartbeat.cancelled` activity entry), and recovery stands down as it does after an operator's Stop. The session stays open.
+
 Plugins that need filesystem, git, terminal, or process operations handle those directly using standard Node APIs or libraries. The host provides project workspace metadata through `ctx.projects` so plugins can resolve workspace paths, but the host does not proxy low-level OS operations.
 
 ## 14.1 Issue Orchestration APIs
@@ -842,7 +844,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `agents.invoke`
 - `agent.sessions.create`
 - `agent.sessions.list`
-- `agent.sessions.send`
+- `agent.sessions.send` (also gates `ctx.agents.sessions.cancelRun`)
 - `agent.sessions.close`
 
 ### Plugin State
