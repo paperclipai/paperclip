@@ -63,9 +63,12 @@ export interface ExecutionContinuationEnvelope {
   recoveredFiles?: Array<{ operationId: string; sourceRunId: string; path: string }>;
   unresolvedInteractionIds: string[];
   coverage: {
-    kind: "full_task_history" | "task_history_delta";
+    kind: "full_task_history" | "task_history_delta" | "truncated_task_history";
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;
+    omittedCount?: number;
+    oldestRetainedCommentId?: string | null;
+    omittedDeletedIds?: string[];
   };
 }

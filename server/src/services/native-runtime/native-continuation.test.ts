@@ -43,6 +43,28 @@ describe("native continuation event projection", () => {
   it.each([{ fallbackFetchNeeded: true }, { recovery: { cause: "interrupted" } }, { externalChatExecutionBound: true }, { reason: "issue_assigned" }])("retains bootstrap framing for special wakes: %j", (extra) => {
     expect(build({ ...wake, ...extra })).toBeNull();
   });
+  it("preserves deleted-comment ids on the compact resume path", () => {
+    const text = build({
+      ...wake,
+      executionContinuation: {
+        ...wake.executionContinuation,
+        coverage: { kind: "task_history_delta", omittedDeletedIds: ["later"] },
+      },
+    })!;
+    expect(JSON.parse(text).omittedDeletedIds).toEqual(["later"]);
+    expect(JSON.parse(text).messages[0].body).toBe(message.body);
+  });
+  it("still sends a deletion notice when the delta has no new messages", () => {
+    const text = build({
+      ...wake,
+      executionContinuation: {
+        ...wake.executionContinuation,
+        resumeDelta: { baseRunId: "prior", messages: [] },
+        coverage: { kind: "task_history_delta", omittedDeletedIds: ["later"] },
+      },
+    })!;
+    expect(JSON.parse(text)).toEqual({ messages: [], omittedDeletedIds: ["later"] });
+  });
 });
 
 
