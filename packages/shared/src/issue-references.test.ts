@@ -66,4 +66,30 @@ describe("issue references", () => {
 
     expect(extractIssueReferenceIdentifiers(markdown)).toEqual(["PAP-1", "PAP-5"]);
   });
+  it("keeps extracting identifiers glued to digits and hashes exactly as before", () => {
+    // These shapes come from the #15998 analysis: the old pattern found
+    // tokens inside alphanumeric runs, and the linear pattern must keep
+    // finding the same ones.
+    expect(extractIssueReferenceIdentifiers("run 7c9e6679-7425-40de-944b-e07fc1f90ae7 ok")).toEqual([
+      "C9E6679-7425",
+      "DE-944",
+    ]);
+    expect(extractIssueReferenceIdentifiers("commit 3f2c1d9-2")).toEqual(["F2C1D9-2"]);
+    expect(extractIssueReferenceIdentifiers("12PAP-5")).toEqual(["PAP-5"]);
+    expect(extractIssueReferenceIdentifiers("PAP-1PAP-2")).toEqual(["PAP-1", "PAP-2"]);
+    expect(extractIssueReferenceIdentifiers("AB-CD-12")).toEqual(["CD-12"]);
+  });
+
+  it("stays fast on one long alphanumeric run", () => {
+    // A 200k hex-style run took ~30s with the old quadratic pattern; the
+    // test simply completing inside the normal timeout is the regression
+    // signal, and the real reference after the run must still be found.
+    const body = "Manifest:\n" + "a1b2c3d4".repeat(25_000) + "\nSee PAP-1.";
+    expect(extractIssueReferenceIdentifiers(body)).toEqual(["PAP-1"]);
+  });
+
+  it("stays fast on a token that ends in a long bracket run", () => {
+    expect(extractIssueReferenceIdentifiers("/" + "]".repeat(20_000))).toEqual([]);
+    expect(extractIssueReferenceIdentifiers("see (PAP-9)")).toEqual(["PAP-9"]);
+  });
 });
