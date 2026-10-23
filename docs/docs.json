@@ -106,7 +106,8 @@
               "adapters/http",
               "adapters/external-adapters",
               "adapters/adapter-ui-parser",
-              "adapters/creating-an-adapter"
+              "adapters/creating-an-adapter",
+              "adapters/custom-model-gateway"
             ]
           }
         ]
