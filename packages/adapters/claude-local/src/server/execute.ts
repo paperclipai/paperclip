@@ -96,6 +96,7 @@ import {
 import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
+import { readInstructionSiblingFiles } from "./instruction-siblings.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -131,6 +132,16 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+}
+
+function buildInstructionsPathDirective(instructionsFilePath: string, instructionsFileDir: string): string {
+  return (
+    `Agent instructions for this run were loaded from ${instructionsFilePath}. ` +
+    `Resolve any relative file references from ${instructionsFileDir}. ` +
+    `This base directory is authoritative for sibling instruction files such as ` +
+    `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory. ` +
+    `This location replaces any instruction file location from earlier turns.`
+  );
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -516,12 +527,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (instructionsFilePath) {
     try {
       const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-      instructionsPathDirective =
-        `Agent instructions for this run were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsFileDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory. ` +
-        `This location replaces any instruction file location from earlier turns.`;
+      instructionsPathDirective = buildInstructionsPathDirective(instructionsFilePath, instructionsFileDir);
       combinedInstructionsContents = instructionsContent +
         "\nUse the agent instruction file location supplied in the current run prompt to resolve relative file references.";
     } catch (err) {
@@ -532,6 +538,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
   }
+  // A remote target cannot read the server's instructions directory, so send the sibling files along.
+  const instructionSiblingFiles = executionTargetIsRemote && instructionsFilePath && combinedInstructionsContents
+    ? await readInstructionSiblingFiles({
+        entryFilePath: instructionsFilePath,
+        maxDepth: asString(config.instructionsBundleMode, "") === "managed" ? 4 : 0,
+        onLog,
+      })
+    : [];
   // Tell the model what the company library actually holds. Without this, an
   // installed-but-not-enabled skill is indistinguishable from a nonexistent
   // one from inside the sandbox, and agents tell users freshly installed
@@ -563,6 +577,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     skills: mountableSkillEntries,
     instructionsContents: combinedInstructionsContents,
+    siblingFiles: instructionSiblingFiles,
     onLog,
   });
   const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
@@ -692,6 +707,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? path.posix.join(effectivePromptBundleAddDir, path.basename(promptBundle.instructionsFilePath))
       : promptBundle.instructionsFilePath
     : undefined;
+  if (executionTargetIsRemote && effectiveInstructionsFilePath && instructionsPathDirective) {
+    instructionsPathDirective = buildInstructionsPathDirective(
+      effectiveInstructionsFilePath,
+      `${effectivePromptBundleAddDir}/`,
+    );
+  }
   const effectiveMcpConfigPath = executionTargetIsRemote
     ? path.posix.join(
         preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
