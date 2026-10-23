@@ -77,6 +77,11 @@ export function choosePrimaryRuntimeApiUrl(input: {
     return formatOrigin("http:", bindHost, input.port);
   }
 
+  const bindHost = normalizeHost(input.bindHost);
+  if (bindHost && isLoopbackHost(bindHost)) {
+    return formatOrigin("http:", bindHost, input.port);
+  }
+
   const allowedHostname = input.allowedHostnames
     .map((value) => value.trim())
     .find(Boolean);
@@ -135,13 +140,16 @@ export function buildRuntimeApiCandidateUrls(input: {
   pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
 
-  for (const rawHost of input.allowedHostnames) {
-    const host = normalizeHost(rawHost);
-    if (!host) continue;
-    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+  const bindHost = normalizeHost(input.bindHost);
+  const includeAllowedHostnames = !bindHost || !isLoopbackHost(bindHost);
+  if (includeAllowedHostnames) {
+    for (const rawHost of input.allowedHostnames) {
+      const host = normalizeHost(rawHost);
+      if (!host) continue;
+      pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+    }
   }
 
-  const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
     pushCandidate(candidates, seen, formatOrigin(protocol, bindHost, input.port));
   }
