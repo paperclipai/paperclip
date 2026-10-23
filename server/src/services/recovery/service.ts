@@ -127,7 +127,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb, isAgentNotInvokableConflict } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -4567,9 +4567,13 @@ export function recoveryService(
           }
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
-        {
-          await deliverConversationComments(db, issue, deps.enqueueWakeup);
-        }
+        await deliverConversationComments(db, issue, deps.enqueueWakeup).catch((err) => {
+          if (!isAgentNotInvokableConflict(err)) throw err;
+          logger.warn(
+            { err, issueId: issue.id, agentId: issue.conversationAgentId },
+            "conversation comment delivery deferred: agent is not invokable",
+          );
+        });
       }
       if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
       const executionState = issue.status === "in_review"

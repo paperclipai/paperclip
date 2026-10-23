@@ -2,6 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
 import { getAgentWorkEligibility, type AgentEligibilityAgent, type AgentOrgChainHealth } from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
+import { HttpError } from "../errors.js";
 
 type AgentStatus = (typeof agents.$inferSelect)["status"];
 
@@ -161,4 +162,10 @@ export function listInvalidOrgChainDescendantIds(
 
 export function shouldCancelRunsForNonInvokableAgent(result: AgentInvokability) {
   return !result.invokable && (result.reason === "terminated" || result.invalidOrgChain);
+}
+
+export function isAgentNotInvokableConflict(error: unknown): boolean {
+  if (!(error instanceof HttpError) || error.status !== 409) return false;
+  const details = error.details as { invalidOrgChain?: unknown } | null | undefined;
+  return typeof details?.invalidOrgChain === "boolean";
 }

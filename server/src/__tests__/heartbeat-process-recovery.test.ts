@@ -12160,6 +12160,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("keeps a chat comment for a paused conversation agent instead of failing recovery", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: { finalizationReasonCode: "conversation_turn_finished" },
+    });
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await db.update(issues).set({
+        conversationAgentId: agentId,
+        conversationUserId: "responsible-user",
+        conversationState: "active",
+      }).where(eq(issues.id, issueId));
+      const [comment] = await db.insert(issueComments).values({
+        companyId, issueId, authorType: "user", authorUserId: "responsible-user",
+        body: "Are you there?", clientRequestId: randomUUID(),
+      }).returning();
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      const conversationWakes = async () => (await selectRecoveryWakesByAgent(agentId))
+        .filter((wake) => wake.idempotencyKey === `conversation-comment:${comment!.id}`);
+
+      await expect(heartbeatService(db).reconcileStrandedAssignedIssues()).resolves.toBeDefined();
+      expect(await conversationWakes()).toHaveLength(0);
+
+      await db.update(agents).set({ status: "idle" }).where(eq(agents.id, agentId));
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(await conversationWakes()).toHaveLength(1);
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
+    }
+  });
+
   it("does not turn a pre-adapter setup failure into a duplicate continuation run", async () => {
     const { companyId, agentId, issueId, runId } =
       await seedStrandedIssueFixture({
