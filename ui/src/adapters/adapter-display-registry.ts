@@ -168,6 +168,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     icon: Cpu,
     comingSoon: true,
   },
+  agentbridge: {
+    label: "AgentBridge",
+    description: "OpenAI-compatible agent server (Graphene-Lab)",
+    icon: Bot,
+  },
 };
 
 // ---------------------------------------------------------------------------
