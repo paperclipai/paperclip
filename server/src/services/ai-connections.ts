@@ -60,6 +60,17 @@ function canUseCredential(
   );
 }
 
+export function aiConnectionStatus(
+  connection: typeof toolConnections.$inferSelect,
+  grant: typeof connectionGrants.$inferSelect,
+): AiManagedConnectionSummary["status"] {
+  if (grant.status === "revoked") return "revoked";
+  if (grant.status === "expired") return "expired";
+  const healthy = grant.status === "active" && connection.enabled && connection.status === "active"
+    && connection.healthStatus === "ok" && !aiSubscriptionNeedsIsolatedLogin(connection.config);
+  return healthy ? "connected" : "needs_attention";
+}
+
 export function aiConnectionService(db: Db) {
   const secrets = secretService(db);
   async function membership(companyId: string, userId: string | null) {
@@ -157,17 +168,7 @@ export function aiConnectionService(db: Db) {
             owners.find((owner) => owner.id === grant.subjectUserId)?.name ??
             (grant.subjectUserId === userId ? "You" : "Account owner"),
           isDefault: defaults.some((d) => d.grantId === grant.id),
-          status:
-            grant.status === "revoked"
-              ? ("revoked" as const)
-              : grant.status === "expired"
-                ? ("expired" as const)
-                : grant.status !== "active" ||
-                    !connection.enabled ||
-                    connection.status !== "active" ||
-                    connection.healthStatus !== "ok" || needsReconnect
-                  ? ("needs_attention" as const)
-                  : ("connected" as const),
+          status: aiConnectionStatus(connection, grant),
         },
       ];
     });

@@ -31,6 +31,10 @@ vi.mock("../context/PanelContext", () => ({
   usePanel: () => ({ panelVisible: true, togglePanelVisible: vi.fn() }),
 }));
 
+vi.mock("./AiAccountHealth", () => ({
+  AiAccountHealthPill: () => null,
+}));
+
 vi.mock("@/plugins/slots", () => ({
   usePluginSlots: () => ({ slots: [] }),
   PluginSlotOutlet: () => null,

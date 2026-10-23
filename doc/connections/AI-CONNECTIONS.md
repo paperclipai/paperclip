@@ -102,6 +102,17 @@ operations. Agent-originated configuration and environment tests resolve the
 authenticated request’s responsible user; an agent ID is never a personal-account
 owner. A missing responsible identity blocks personal-default resolution.
 
+Board-only `GET /api/companies/:companyId/ai-health` lists the shared and
+delegated AI connections that non-terminated agents select and whose status is
+`needs_attention`, `expired` or `revoked`, using the same status rule as the
+list. Each entry holds `id`, `name`, `provider`, `status` and
+`affectedAgentIds`; no grant IDs, credentials or environment. Connections that
+resolve per run through the responsible user are not listed. The board shows a
+red bar on every page naming the account, the number of agents using it, a link
+to the account's sign-in page and a link to the agents list. Hiding the bar is
+stored in the browser per company and broken-account set; it returns when that
+set changes or after 24 hours, and a pill in the top bar reopens it meanwhile.
+
 Subscription login attempts retain their company, owner, method, access intent,
 and reconnect target in the existing durable authentication session. Duplicate
 completion returns the same connection/grant. Abandoned or expired attempts cannot

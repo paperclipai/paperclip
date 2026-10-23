@@ -182,6 +182,17 @@ export interface AiManagedConnectionSummary {
   unavailableReason?: string;
   usageProbeSupported?: boolean;
 }
+/** A shared or delegated AI connection that agents use and that needs sign-in. */
+export interface CompanyAiConnectionHealth {
+  id: string;
+  name: string;
+  provider: AiProvider;
+  status: Exclude<AiManagedConnectionSummary["status"], "connected">;
+  affectedAgentIds: string[];
+}
+export interface CompanyAiHealth {
+  connections: CompanyAiConnectionHealth[];
+}
 export interface AiConnectionList {
   currentUserId: string;
   pools?: import("./ai-connection-router.js").AiConnectionPool[];

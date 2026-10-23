@@ -24,6 +24,7 @@ import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import { MobileBottomNav } from "./MobileBottomNav";
 import { WorktreeBanner } from "./WorktreeBanner";
 import { DevRestartBanner } from "./DevRestartBanner";
+import { AiAccountHealthBar } from "./AiAccountHealth";
 import { StandaloneBrowserControls } from "./StandaloneBrowserControls";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
@@ -591,6 +592,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
+      <AiAccountHealthBar />
       <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button

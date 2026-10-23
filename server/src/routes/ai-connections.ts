@@ -32,6 +32,7 @@ import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { aiHealthService } from "../services/ai-health.js";
 import { validate } from "../middleware/validate.js";
 import { probeCopilotConnection } from "../services/copilot-connection-probe.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -233,6 +234,13 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         agentId as string | undefined,
       ),
     } satisfies AiConnectionList);
+  });
+  router.get("/companies/:companyId/ai-health", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await aiHealthService(db).summarize(companyId));
   });
   router.get(
     "/companies/:companyId/ai-connections/:connectionId/usage",
