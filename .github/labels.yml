@@ -1,0 +1,16 @@
+# GitHub label catalogue fragment for risk-tier governance.
+# Maintainers / Release Engineer: create these labels in GitHub if missing.
+# Colours are suggestions; descriptions must stay aligned with doc/reviews/risk-tiers.md.
+
+- name: risk:low
+  color: "0E8A16"
+  description: Low-risk change — 1 reviewer approval + CI green
+
+- name: risk:medium
+  color: "FBCA04"
+  description: Medium-risk — reviewer + Lead Engineer approval + CI/tests
+
+- name: risk:high
+  color: "D93F0B"
+  description: High-risk — 2 approvals + rollback plan + security checklist
+

@@ -18,6 +18,7 @@ import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
 import { checkReleaseBootstrap } from './check-pr-release-bootstrap.mjs';
 import { checkCoauthors, fetchAllPullRequestCommits } from './check-pr-coauthors.mjs';
+import { checkRiskTier } from './check-pr-risk-tier.mjs';
 
 const COMMENT_SIGNATURE = '— commitperclip';
 
@@ -124,7 +125,8 @@ async function main() {
 
   // Run all quality gates (pure functions run sync, deps check is async)
   const prTitle = pr.title ?? '';
-  const [templateResult, issueResult, dedupResult, testResult, lockfileResult, depsResult, bootstrapResult] =
+  const labelNames = (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name)).filter(Boolean);
+  const [templateResult, issueResult, dedupResult, testResult, lockfileResult, depsResult, bootstrapResult, riskResult] =
     await Promise.all([
       Promise.resolve(checkTemplate(prBody)),
       Promise.resolve(checkLinkedIssue(prBody, prTitle)),
@@ -133,6 +135,7 @@ async function main() {
       Promise.resolve(checkLockfile(files, author, branch)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
       checkReleaseBootstrap(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
+      Promise.resolve(checkRiskTier({ body: prBody, labels: labelNames, files, title: prTitle })),
     ]);
   const coauthorResult = checkCoauthors(commits, author);
 
@@ -142,11 +145,13 @@ async function main() {
     ...dedupResult.failures,
     ...testResult.failures,
     ...lockfileResult.failures,
+    ...riskResult.failures,
   ];
   const informational = [
     ...(depsResult.informational ?? []),
     ...(bootstrapResult.informational ?? []),
     ...coauthorResult.informational,
+    ...(riskResult.informational ?? []),
   ];
   const allPassed = allFailures.length === 0;
 
