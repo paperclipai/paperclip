@@ -501,6 +501,19 @@ describe("issue validators", () => {
     expect(document.body).toBe("# Plan\n\nShip it");
   });
 
+  it("accepts one answer per question up to the 64-question payload limit", () => {
+    const answers = Array.from({ length: 64 }, (_, i) => ({
+      questionId: `q${i}`,
+      optionIds: [],
+      otherText: null,
+    }));
+
+    expect(respondIssueThreadInteractionSchema.safeParse({ answers }).success).toBe(true);
+    expect(
+      respondIssueThreadInteractionSchema.safeParse({ answers: [...answers, answers[0]] }).success,
+    ).toBe(false);
+  });
+
   it("clamps oversized requestDepth values on create", () => {
     const parsed = createIssueSchema.parse({
       title: "Clamp request depth",
