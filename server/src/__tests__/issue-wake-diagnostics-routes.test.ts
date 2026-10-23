@@ -542,6 +542,71 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
+  it("echoes platform wake reasons instead of projecting them to other", async () => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const project = await seedProject(db, company.id, "Core");
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      projectId: project.id,
+      title: "Wake reason projection",
+      status: "todo",
+      assigneeAgentId: agent.id,
+    });
+
+    // Every entry is a reason the server itself writes onto an issue wake request.
+    const platformReasons = [
+      "issue_status_changed",
+      "issue_reopened_via_comment",
+      "issue_checked_out",
+      "issue_children_completed",
+      "issue_tree_restored",
+      "execution_approval_requested",
+      "execution_review_requested",
+      "execution_changes_requested",
+      "approval_approved",
+      "issue_recovery_action_restored",
+      "issue_monitor_recovery_issue",
+      "issue_assignment_recovery",
+      "provider_quota_recovery",
+      "queued_comment_interrupt",
+      "goal_control",
+      "heartbeat_timer",
+      "issue_monitor_due",
+      "transient_failure_retry",
+      "workspace_busy_retry",
+      "max_turns_continuation_retry",
+      "ai_connection_busy_retry",
+      "interaction_continuation_infra_retry",
+      "execution_review_participant_recovery",
+      "native_safe_replacement",
+      "issue_review_path_lost",
+      "interaction_pending",
+    ];
+    await db.insert(agentWakeupRequests).values(
+      platformReasons.map((reason, index) => ({
+        companyId: company.id,
+        agentId: agent.id,
+        source: "automation",
+        reason,
+        status: "completed",
+        payload: { issueId: issue.id },
+        requestedAt: new Date(Date.now() - index * 1_000),
+      })),
+    );
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${issue.id}/diagnostics/wakes`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const echoedReasons = res.body.events
+      .filter((event: { kind: string }) => event.kind === "wake_request")
+      .map((event: { reason: string | null }) => event.reason);
+    expect(echoedReasons).toHaveLength(platformReasons.length);
+    expect([...echoedReasons].sort()).toEqual([...platformReasons].sort());
+    expect(echoedReasons).not.toContain("other");
+  });
+
   it("caps wake output and reports truncation", async () => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);
