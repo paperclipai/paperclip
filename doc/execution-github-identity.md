@@ -51,8 +51,23 @@ repository identity or `git -c user.name=... -c user.email=...`. The launcher
 leaves author/committer environment variables unset and requires configured
 identity instead of guessing the host user's details. Managed shell profiles
 remove empty identity overrides after environment merging, so agents do not
-need to unset them per command. A captured managed identity still takes
-precedence over repository configuration.
+need to unset them per command.
+
+The `git` launcher passes a captured managed identity to Git as global
+configuration: `user.name` and `user.email` in a per-operation file that
+`GIT_CONFIG_GLOBAL` names. Repository, worktree and included configuration
+therefore take precedence, as in an ordinary Git setup. A repository without its
+own identity, and every Git process that the command starts in such a
+repository, uses the managed identity. A repository that sets only one of the
+two values combines it with the other managed value. Credentials and all other
+managed configuration stay command-scoped. `gh` and the Git processes it starts
+receive the managed identity as author and committer environment variables,
+which take precedence over repository configuration. Set a repository identity
+when you prepare the checkout, for example in the workspace provision command:
+`git config user.name "…" && git config user.email "…"`. The per-operation file
+is removed when the command ends, so `git config --global` settings do not
+persist. This precedence needs Git 2.32 or later, which reads
+`GIT_CONFIG_GLOBAL`.
 
 Remote launchers prepend their directory to the execution target's effective
 `PATH`. An explicit remote `PATH` override is preserved; otherwise Paperclip
