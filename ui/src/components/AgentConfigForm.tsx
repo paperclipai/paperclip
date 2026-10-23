@@ -85,6 +85,11 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import {
+  AgentEnvironmentVariablesEditor,
+  replaceAgentCompanySecretEnv,
+  replaceAgentUserSecretEnv,
+} from "./AgentEnvironmentVariablesEditor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
 import { useProposalReview } from "../pages/secrets/proposal-review";
@@ -153,6 +158,12 @@ type AgentConfigFormProps = {
       mode: "create";
       values: CreateConfigValues;
       onChange: (patch: Partial<CreateConfigValues>) => void;
+      /**
+       * Keep organization and user secret sources in the environment editor.
+       * Company import uses this: imported agents carry secret references and
+       * have no Secrets tab yet.
+       */
+      showSecretSources?: boolean;
     }
   | {
       mode: "edit";
@@ -362,14 +373,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
-  // User-secret definitions power the "User secret" env binding source. Requires
-  // secret-admin; non-admins simply get the free-text key fallback in the editor.
+  const showSecretSources = isCreate && props.showSecretSources === true;
+  // An imported agent has no Secrets tab yet, so its form keeps the full editor
+  // with organization and user secret sources.
   const { data: userSecretDefinitions = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.secrets.userDefinitions(selectedCompanyId)
       : ["user-secret-definitions", "none"],
     queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
+    enabled: Boolean(selectedCompanyId) && showSecretSources,
     retry: false,
   });
   // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
@@ -505,7 +517,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
   const backgroundSaveInFlightRef = useRef(false);
 
-  // Clear overlay when agent data refreshes (after save)
+  // Clear the overlay only when the persisted agent version changes. Query
+  // refreshes routinely replace the object without changing updatedAt; treating
+  // those as saves discards a promoted environment-variable draft.
   useEffect(() => {
     if (!isCreate) {
       if (
@@ -566,6 +580,38 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         if (!(alias in next)) nextAdapterConfig[key] = undefined;
       }
       return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Replace env-delivered company secrets while retaining plain and user-secret bindings. */
+  const applyEnvironmentSecretBindings = useCallback((next: Record<string, EnvSecretRefBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const currentEnv = (effective.env ?? {}) as Record<string, EnvBinding>;
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: replaceAgentCompanySecretEnv(currentEnv, next),
+        },
+      };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Replace env-delivered user secrets while retaining plain and company-secret bindings. */
+  const applyUserSecretEnvBindings = useCallback((next: Record<string, EnvBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const currentEnv = (effective.env ?? {}) as Record<string, EnvBinding>;
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: replaceAgentUserSecretEnv(currentEnv, next),
+        },
+      };
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1448,8 +1494,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
-  const environmentVariablesEditor = (
+  const environmentVariablesEditor = showSecretSources ? (
     <EnvironmentVariablesEditor
+      ref={environmentVariablesEditorRef}
+      key={environmentEditorKey}
+      onDirtyChange={setEnvironmentDraftDirty}
+      value={(val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>}
+      secrets={availableSecrets}
+      userSecretDefinitions={userSecretDefinitions}
+      onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+      onChange={(env) => set!({ envBindings: env ?? {}, envVars: "" })}
+    />
+  ) : (
+    <AgentEnvironmentVariablesEditor
       ref={environmentVariablesEditorRef}
       key={environmentEditorKey}
       onDirtyChange={setEnvironmentDraftDirty}
@@ -1459,12 +1516,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
           : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
       }
-      secrets={availableSecrets}
-      userSecretDefinitions={userSecretDefinitions}
-      onCreateSecret={async (name, value) => {
-        const created = await createSecret.mutateAsync({ name, value });
-        return created;
-      }}
       onChange={(env) =>
         isCreate
           ? set!({ envBindings: env ?? {}, envVars: "" })
@@ -1510,8 +1561,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AgentSecretAccessEditor
               config={{ ...config, ...overlay.adapterConfig }}
               secrets={availableSecrets}
+              onEnvChange={applyEnvironmentSecretBindings}
+              onUserSecretEnvChange={applyUserSecretEnvBindings}
               onChange={applyAccessGrants}
-              onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
               proposals={agentBindingProposals}
               onApproveProposal={proposalReview.requestApprove}
               onRejectProposal={proposalReview.requestReject}

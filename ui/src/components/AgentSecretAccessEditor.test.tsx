@@ -32,9 +32,11 @@ vi.mock("./environment-variables-editor/SecretPicker", () => ({
 
 import {
   AgentSecretAccessEditor,
+  nextAvailableEnvKey,
   parseAccessGrants,
   parseEnvSecretRefs,
   rowsToAccessMap,
+  rowsToEnvMap,
   summarizeAgentBindings,
 } from "./AgentSecretAccessEditor";
 
@@ -99,6 +101,25 @@ describe("AgentSecretAccessEditor model", () => {
       ]),
     ).toEqual({ OK: { type: "secret_ref", secretId: "s1", version: "latest" } });
   });
+
+  it("emits complete environment-secret rows without changing their env keys", () => {
+    expect(
+      rowsToEnvMap([
+        { id: "1", name: "GH_TOKEN", secretId: "s1", version: 2 },
+        { id: "2", name: "", secretId: "s1", version: "latest" },
+        { id: "3", name: "NO_SECRET", secretId: "", version: "latest" },
+        { id: "4", name: "1INVALID", secretId: "s2", version: "latest" },
+        { id: "5", name: "GH_TOKEN", secretId: "s2", version: "latest" },
+      ]),
+    ).toEqual({ GH_TOKEN: { type: "secret_ref", secretId: "s1", version: 2 } });
+  });
+
+  it("derives valid unique env keys for selected secrets", () => {
+    expect(nextAvailableEnvKey("123 token", [])).toBe("_123_TOKEN");
+    expect(nextAvailableEnvKey("!!!", [])).toBe("SECRET");
+    expect(nextAvailableEnvKey("github token", ["GITHUB_TOKEN", "GITHUB_TOKEN_2"]))
+      .toBe("GITHUB_TOKEN_3");
+  });
 });
 
 describe("AgentSecretAccessEditor component", () => {
@@ -124,7 +145,7 @@ describe("AgentSecretAccessEditor component", () => {
 
   const secrets = [makeSecret("s1", "STRIPE_KEY")];
 
-  it("shows the delivery-mode overview for existing bindings", () => {
+  it("renders existing environment and API bindings on the Secrets tab", () => {
     render(
       <AgentSecretAccessEditor
         config={{
@@ -135,11 +156,11 @@ describe("AgentSecretAccessEditor component", () => {
         onChange={() => {}}
       />,
     );
-    expect(container.textContent).toContain("STRIPE_KEY");
     expect(container.textContent).toContain("Env var");
     expect(container.textContent).toContain("API access");
     expect(container.textContent).toContain("env.GH_TOKEN");
-    expect(container.textContent).toContain("access.STRIPE");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Access alias"]')?.value).toBe("STRIPE");
+    expect(container.querySelector('[aria-label="Remove environment secret"]')).toBeTruthy();
   });
 
   it("adds an API-access grant, emitting an access.<ALIAS> secret_ref", () => {
@@ -175,32 +196,202 @@ describe("AgentSecretAccessEditor component", () => {
     expect(last).toEqual({ STRIPE: { type: "secret_ref", secretId: "s1", version: "latest" } });
   });
 
-  it("keeps the create form open when focus returns to the shared picker anchor", async () => {
-    vi.useFakeTimers();
-    try {
-      render(
-        <AgentSecretAccessEditor
-          config={{ "access.STRIPE": { type: "secret_ref", secretId: "s1" } }}
-          secrets={secrets}
-          onChange={() => {}}
-          onCreateSecret={async () => secrets[0]!}
-        />,
-      );
+  it("adds and removes an environment-secret binding from the Secrets tab", () => {
+    const emitted: Array<Record<string, EnvSecretRefBinding>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{}}
+        secrets={secrets}
+        onEnvChange={(next) => emitted.push(next)}
+        onChange={() => {}}
+      />,
+    );
 
-      const createButton = container.querySelector<HTMLButtonElement>('[data-testid="create-secret"]')!;
-      flushSync(() => createButton.click());
-      flushSync(() => vi.runAllTimers());
-      expect(document.body.textContent).toContain("Create secret");
+    const addButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Add environment secret"),
+    )!;
+    flushSync(() => addButton.click());
 
-      const pickerButton = container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!;
-      pickerButton.focus();
-      flushSync(() => {});
+    const pickers = container.querySelectorAll<HTMLButtonElement>('[data-testid="pick-secret"]');
+    flushSync(() => pickers[0]!.click());
+    expect(emitted.at(-1)).toEqual({
+      STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+    });
 
-      expect(document.body.textContent).toContain("Create secret");
-      expect(document.querySelector('input[aria-label="Secret name"]')).toBeTruthy();
-    } finally {
-      vi.useRealTimers();
+    const removeButton = container.querySelector<HTMLButtonElement>('[aria-label="Remove environment secret"]')!;
+    flushSync(() => removeButton.click());
+    expect(emitted.at(-1)).toEqual({});
+  });
+
+  it("keeps the environment key when the secret behind it changes", () => {
+    const emitted: Array<Record<string, EnvSecretRefBinding>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{ env: { GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 } } }}
+        secrets={secrets}
+        onEnvChange={(next) => emitted.push(next)}
+        onChange={() => {}}
+      />,
+    );
+    flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="pick-secret"]')!.click());
+    expect(emitted.at(-1)).toEqual({ GH_TOKEN: { type: "secret_ref", secretId: "s1", version: "latest" } });
+
+    const nameInput = container.querySelector<HTMLInputElement>('input[aria-label="Environment variable name"]')!;
+    expect(nameInput.value).toBe("GH_TOKEN");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, "GITHUB_TOKEN");
+    flushSync(() => nameInput.dispatchEvent(new Event("input", { bubbles: true })));
+    expect(emitted.at(-1)).toEqual({ GITHUB_TOKEN: { type: "secret_ref", secretId: "s1", version: "latest" } });
+  });
+
+  it("keeps the saved assignment while a renamed key is invalid, duplicated or taken", () => {
+    const emitted: Array<Record<string, EnvSecretRefBinding>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{
+          env: {
+            GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+            STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+            PLAIN: { type: "plain", value: "x" },
+            USER_TOKEN: { type: "user_secret_ref", key: "personal-token" },
+          },
+        }}
+        secrets={secrets}
+        onEnvChange={(next) => emitted.push(next)}
+        onChange={() => {}}
+      />,
+    );
+    const nameInput = container.querySelector<HTMLInputElement>('input[aria-label="Environment variable name"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    for (const [name, message] of [
+      ["GH-TOKEN", "Use letters, digits and _"],
+      ["STRIPE_KEY", "Another environment secret uses this name"],
+      ["PLAIN", "Already used by another environment variable"],
+      ["USER_TOKEN", "Already used by another environment variable"],
+    ] as const) {
+      setter.call(nameInput, name);
+      flushSync(() => nameInput.dispatchEvent(new Event("input", { bubbles: true })));
+      expect(container.querySelector("[role=alert]")?.textContent).toContain(message);
     }
+    // Every emit while the name is bad keeps the saved assignment.
+    for (const map of emitted) {
+      expect(map).toEqual({
+        GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+        STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+      });
+    }
+
+    setter.call(nameInput, "GITHUB_TOKEN");
+    flushSync(() => nameInput.dispatchEvent(new Event("input", { bubbles: true })));
+    expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(emitted.at(-1)).toEqual({
+      GITHUB_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+      STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+    });
+  });
+
+  it("saves edits to other rows while one renamed key is invalid", () => {
+    const emitted: Array<Record<string, EnvSecretRefBinding>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{
+          env: {
+            GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+            STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+          },
+        }}
+        secrets={secrets}
+        onEnvChange={(next) => emitted.push(next)}
+        onChange={() => {}}
+      />,
+    );
+    const nameInput = container.querySelector<HTMLInputElement>('input[aria-label="Environment variable name"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, "GH-TOKEN");
+    flushSync(() => nameInput.dispatchEvent(new Event("input", { bubbles: true })));
+    // The invalid row keeps its saved assignment.
+    expect(emitted.at(-1)).toEqual({
+      GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+      STRIPE_KEY: { type: "secret_ref", secretId: "s1", version: "latest" },
+    });
+
+    const removeButtons = container.querySelectorAll<HTMLButtonElement>('[aria-label="Remove environment secret"]');
+    flushSync(() => removeButtons[1]!.click());
+    expect(emitted.at(-1)).toEqual({ GH_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 } });
+  });
+
+  it("keeps both assignments when a row takes the name an invalid row still holds", () => {
+    const emitted: Array<Record<string, EnvSecretRefBinding>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{
+          env: {
+            A_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+            B_TOKEN: { type: "secret_ref", secretId: "s1", version: "latest" },
+          },
+        }}
+        secrets={secrets}
+        onEnvChange={(next) => emitted.push(next)}
+        onChange={() => {}}
+      />,
+    );
+    const [first, second] = [...container.querySelectorAll<HTMLInputElement>('input[aria-label="Environment variable name"]')];
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(first!, "A-TOKEN");
+    flushSync(() => first!.dispatchEvent(new Event("input", { bubbles: true })));
+    setter.call(second!, "A_TOKEN");
+    flushSync(() => second!.dispatchEvent(new Event("input", { bubbles: true })));
+
+    expect(emitted.at(-1)).toEqual({
+      A_TOKEN: { type: "secret_ref", secretId: "s0", version: 1 },
+      B_TOKEN: { type: "secret_ref", secretId: "s1", version: "latest" },
+    });
+    const alerts = [...container.querySelectorAll("[role=alert]")].map((node) => node.textContent);
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1]).toContain("Another environment secret uses this name");
+  });
+
+  it("shows user-secret environment bindings and edits their requirement", () => {
+    const emitted: Array<Record<string, unknown>> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{ env: {
+          OPENAI_API_KEY: { type: "user_secret_ref", key: "OPENAI_API_KEY", version: "latest", required: true },
+          GH_TOKEN: { type: "secret_ref", secretId: "s1" },
+          PLAIN: { type: "plain", value: "hi" },
+        } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onUserSecretEnvChange={(next) => emitted.push(next)}
+      />,
+    );
+    expect(container.textContent).toContain("User secrets");
+    expect(container.textContent).toContain("env.OPENAI_API_KEY");
+    const requirement = container.querySelector<HTMLSelectElement>('select[aria-label="Requirement for OPENAI_API_KEY"]')!;
+    expect(requirement.value).toBe("required");
+    const selectSetter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    selectSetter.call(requirement, "optional");
+    flushSync(() => requirement.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(emitted.at(-1)).toEqual({
+      OPENAI_API_KEY: { type: "user_secret_ref", key: "OPENAI_API_KEY", version: "latest", required: false },
+    });
+    flushSync(() => container.querySelector<HTMLButtonElement>('[aria-label="Remove user secret OPENAI_API_KEY"]')!.click());
+    expect(emitted.at(-1)).toEqual({});
+  });
+
+  it("only assigns existing secrets and never asks for a value again", () => {
+    render(
+      <AgentSecretAccessEditor
+        config={{ "access.STRIPE": { type: "secret_ref", secretId: "s1" } }}
+        secrets={secrets}
+        onChange={() => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="create-secret"]')).toBeNull();
+    expect(mockSecretPickerRender).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ onCreateNew: expect.any(Function) }),
+    );
   });
 
   it("renders pending binding proposals as Proposed rows with approve/reject", () => {

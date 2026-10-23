@@ -50,6 +50,8 @@ export interface EnvironmentVariableRowProps {
   userSecretDefinitions?: readonly UserSecretDefinition[];
   recentlyUsedSecrets?: readonly CompanySecret[];
   disabled?: boolean;
+  /** Render only inline text values; secret assignment belongs to another surface. */
+  plainOnly?: boolean;
   nameIssue: NameIssue | null;
   showNameIssue: boolean;
   dirtyFields: EnvironmentVariableDirtyFields;
@@ -74,6 +76,7 @@ export function EnvironmentVariableRow({
   userSecretDefinitions,
   recentlyUsedSecrets,
   disabled,
+  plainOnly = false,
   nameIssue,
   showNameIssue,
   dirtyFields,
@@ -255,46 +258,65 @@ export function EnvironmentVariableRow({
                 disabled && "opacity-60",
               )}
             >
-              {/* Source switch (inside the field) */}
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild disabled={disabled}>
-                      <button
-                        type="button"
-                        aria-label="Value source"
-                        className="flex shrink-0 items-center gap-0.5 border-r border-border px-2 text-muted-foreground hover:bg-accent/50 disabled:pointer-events-none"
-                      >
-                        {row.source === "text" ? (
-                          <TypeIcon className="size-3.5" />
-                        ) : row.source === "secret" ? (
-                          <KeyRound className="size-3.5" />
-                        ) : (
-                          <UserRound className="size-3.5" />
-                        )}
-                        <ChevronDown className="size-3 opacity-60" />
-                      </button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">{sourceLabel}</TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("text")}>
-                    <span className="text-sm">Text value</span>
-                    <span className="text-(length:--text-micro) text-muted-foreground">Store the value inline as plain text.</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("secret")}>
-                    <span className="text-sm">Organization secret</span>
-                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored organization secret at run start.</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
-                    <span className="text-sm">User secret</span>
-                    <span className="text-(length:--text-micro) text-muted-foreground">
-                      Resolve the responsible user&apos;s own value at run start.
-                    </span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* Source switch (inside the field). Agent Configuration is plain-only. */}
+              {plainOnly ? (
+                <span className="flex shrink-0 items-center border-r border-border px-2 text-muted-foreground">
+                  <TypeIcon className="size-3.5" />
+                </span>
+              ) : (
+                <DropdownMenu>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <DropdownMenuTrigger asChild disabled={disabled}>
+                        <button
+                          type="button"
+                          aria-label="Value source"
+                          className="flex shrink-0 items-center gap-0.5 border-r border-border px-2 text-muted-foreground hover:bg-accent/50 disabled:pointer-events-none"
+                        >
+                          {row.source === "text" ? (
+                            <TypeIcon className="size-3.5" />
+                          ) : row.source === "secret" ? (
+                            <KeyRound className="size-3.5" />
+                          ) : (
+                            <UserRound className="size-3.5" />
+                          )}
+                          <ChevronDown className="size-3 opacity-60" />
+                        </button>
+                      </DropdownMenuTrigger>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">{sourceLabel}</TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuContent align="start" className="w-56">
+                    <DropdownMenuItem
+                      className="flex-col items-start gap-0.5"
+                      onSelect={() => switchSource("text")}
+                    >
+                      <span className="text-sm">Text value</span>
+                      <span className="text-(length:--text-micro) text-muted-foreground">
+                        Store the value inline as plain text.
+                      </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="flex-col items-start gap-0.5"
+                      onSelect={() => switchSource("secret")}
+                    >
+                      <span className="text-sm">Organization secret</span>
+                      <span className="text-(length:--text-micro) text-muted-foreground">
+                        Resolve a stored organization secret at run start.
+                      </span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="flex-col items-start gap-0.5"
+                      onSelect={() => switchSource("user_secret")}
+                    >
+                      <span className="text-sm">User secret</span>
+                      <span className="text-(length:--text-micro) text-muted-foreground">
+                        Resolve the responsible user&apos;s own value at run start.
+                      </span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
 
               {row.source === "text" ? (
                 <>
@@ -315,7 +337,12 @@ export function EnvironmentVariableRow({
                       }
                     }}
                   />
-                  {sensitive ? (
+                  {sensitive && plainOnly ? (
+                    <div className="flex shrink-0 items-center gap-1 border-l border-border px-2 text-(length:--text-micro) text-(--status-task-icon-todo)">
+                      <ShieldAlert className="size-3.5" />
+                      <span className="hidden @[30rem]/env:inline">Assign on Secrets tab</span>
+                    </div>
+                  ) : sensitive ? (
                     <div className="flex shrink-0 items-stretch border-l border-border">
                       <button
                         type="button"
@@ -562,7 +589,7 @@ export function EnvironmentVariableRow({
 
       {/* Actions cell — mobile col 2 line 1 / desktop col 3 */}
       <div className="col-start-2 row-start-1 flex items-center justify-end gap-0.5 self-start @[40rem]/env:col-start-3 @[40rem]/env:self-center">
-        {row.source === "text" && !sensitive && (row.name.trim() || row.textValue) ? (
+        {!plainOnly && row.source === "text" && !sensitive && (row.name.trim() || row.textValue) ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild disabled={disabled}>
               <button
