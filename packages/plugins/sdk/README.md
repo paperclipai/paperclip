@@ -339,6 +339,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
+| | `activity.log.write_human_attributed` |
 | | `metrics.write` |
 | | `telemetry.track` |
 | | `database.namespace.migrate` |
@@ -605,6 +606,37 @@ Required capabilities:
 | `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
 
 Plugin-originated mutations are logged with `actorType: "plugin"` and details fields `sourcePluginId`, `sourcePluginKey`, `initiatingActorType`, `initiatingActorId`, and `initiatingRunId` when a user or agent run initiated the plugin work.
+
+### Activity entries initiated by a person
+
+`ctx.activity.log` always writes a plugin-attributed entry (`actorType:
+"plugin"`, `actorId: <pluginId>`). When the entry records something a person
+did through the plugin — a message relayed from chat, for example — pass
+`actorUserId` to record that person as the initiating actor:
+
+```ts
+await ctx.activity.log({
+  companyId,
+  message: "chat.message_relayed",
+  entityType: "issue",
+  entityId: issueId,
+  actorUserId: verifiedSlackUser.paperclipUserId,
+});
+```
+
+This requires the `activity.log.write_human_attributed` capability in addition
+to `activity.log.write`. The host uses the same check as human-attributed
+comments: `actorUserId` must be an active, non-viewer human member of
+`companyId`, otherwise the call is refused and nothing is written. The entry
+stays plugin-attributed and carries the verified user as the initiating actor
+(`details.initiatingActorType: "user"`, `initiatingActorId` and
+`initiatingUserId` set to `actorUserId`), like other plugin mutations a user
+initiated.
+
+| API | Capability |
+|-----|------------|
+| `ctx.activity.log` | `activity.log.write` |
+| `ctx.activity.log` with `actorUserId` | `activity.log.write` + `activity.log.write_human_attributed` |
 
 ## UI quick start
 
