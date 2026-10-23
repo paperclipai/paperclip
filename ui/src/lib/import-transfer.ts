@@ -16,8 +16,23 @@ export const IMPORT_TRANSFER_PART_SIZE_BYTES = 32 * 1024 * 1024;
 /** Upload attempts per part before the transfer surfaces a failure. */
 export const IMPORT_TRANSFER_PART_ATTEMPTS = 3;
 
-async function sha256Hex(bytes: BufferSource): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+// `crypto.subtle` is only defined in a secure context (HTTPS or http://localhost).
+// A Paperclip instance served over plain HTTP on a LAN or tailnet address has
+// `crypto.subtle === undefined`, and reading `.digest` on it throws the opaque
+// "Cannot read properties of undefined (reading 'digest')" TypeError. Replace
+// that with a clear message that names the real cause and the two paths out.
+const INSECURE_CONTEXT_HINT =
+  "Large zip imports need the browser SubtleCrypto API, which is only available on HTTPS or http://localhost. "
+  + "Serve Paperclip over HTTPS, or re-export the company without large attachments so the package fits the inline path.";
+
+function requireSubtleCrypto(): SubtleCrypto {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error(INSECURE_CONTEXT_HINT);
+  return subtle;
+}
+
+async function sha256Hex(bytes: BufferSource, subtle: SubtleCrypto): Promise<string> {
+  const digest = await subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
@@ -27,14 +42,15 @@ async function sha256Hex(bytes: BufferSource): Promise<string> {
  * and each part digest hashes a view into it, so no second copy is ever held.
  */
 export async function buildImportTransferManifest(buffer: ArrayBuffer): Promise<CompanyImportTransferDeclaration> {
-  const zipSha256 = await sha256Hex(buffer);
+  const subtle = requireSubtleCrypto();
+  const zipSha256 = await sha256Hex(buffer, subtle);
   const parts: CompanyImportTransferDeclaredPart[] = [];
   for (let offset = 0; offset < buffer.byteLength; offset += IMPORT_TRANSFER_PART_SIZE_BYTES) {
     const byteSize = Math.min(IMPORT_TRANSFER_PART_SIZE_BYTES, buffer.byteLength - offset);
     parts.push({
       index: parts.length,
       byteSize,
-      sha256: await sha256Hex(new Uint8Array(buffer, offset, byteSize)),
+      sha256: await sha256Hex(new Uint8Array(buffer, offset, byteSize), subtle),
     });
   }
   return {
