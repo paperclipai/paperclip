@@ -737,6 +737,12 @@ function withCreateIssueStatusDefault<T extends z.ZodRawShape>(
   }, schema);
 }
 
+// `.strict()` rejects an unknown key. A plain Zod object removes an unknown key
+// and keeps the parse successful, so a request that misspells a field gets 2xx
+// for a write that did not happen. The caller cannot see the difference. Each
+// issue-mutation body schema below is strict for that reason. `.extend()`,
+// `.omit()`, `.pick()`, `.partial()` and `.merge()` keep the strict setting, so
+// a derived schema stays strict.
 const createIssueBaseSchema = z.object({
   projectId: z.string().guid().optional().nullable(),
   projectWorkspaceId: z.string().guid().optional().nullable(),
@@ -800,7 +806,7 @@ const createIssueBaseSchema = z.object({
     .strict()
     .optional()
     .nullable(),
-});
+}).strict();
 
 function requireBlockedStatusForUnblockDescriptor(
   value: { status?: string; unblockDescriptor?: unknown },
@@ -900,10 +906,12 @@ export const createChildIssueSchema = withCreateIssueStatusDefault(
 
 export type CreateChildIssue = z.infer<typeof createChildIssueSchema>;
 
-export const createAcceptedPlanDecompositionSchema = z.object({
-  acceptedPlanRevisionId: z.string().guid(),
-  children: z.array(createChildIssueSchema).min(1).max(25),
-});
+export const createAcceptedPlanDecompositionSchema = z
+  .object({
+    acceptedPlanRevisionId: z.string().guid(),
+    children: z.array(createChildIssueSchema).min(1).max(25),
+  })
+  .strict();
 
 export type CreateAcceptedPlanDecomposition = z.infer<
   typeof createAcceptedPlanDecompositionSchema
@@ -925,6 +933,8 @@ const issueCommentAttachmentIdsSchema = z
     message: "Attachment ids must be unique",
   });
 
+// `objectWithoutDefaults()` rebuilds the object with `z.object()`. That drops
+// the strict setting of `createIssueBaseSchema`, so this schema states it again.
 export const updateIssueSchema = objectWithoutDefaults(
   createIssueBaseSchema.omit({
     workspaceSelection: true,
@@ -953,7 +963,8 @@ export const updateIssueSchema = objectWithoutDefaults(
     /** Assignment-only handoff; the following structured goal action owns the wake. */
     deferWakeForGoal: z.boolean().optional(),
     hiddenAt: z.string().datetime().nullable().optional(),
-  });
+  })
+  .strict();
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
 export type IssueExecutionWorkspaceSettings = z.infer<
@@ -2033,6 +2044,8 @@ const createAskUserQuestionsPayloadSchema = z.union([
   })).pipe(createLegacyAskUserQuestionsPayloadSchema),
 ]);
 
+// Each member is strict. A discriminated union selects one member by `kind`,
+// then parses with that member, so the unknown-key check runs per member.
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     ...createIssueThreadInteractionCommon,
@@ -2046,7 +2059,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
       .optional()
       .default("wake_assignee"),
     payload: suggestTasksPayloadSchema,
-  }),
+  }).strict(),
   z.object({
     ...createIssueThreadInteractionCommon,
     kind: z.literal("ask_user_questions"),
@@ -2059,7 +2072,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
       .optional()
       .default("wake_assignee"),
     payload: createAskUserQuestionsPayloadSchema,
-  }),
+  }).strict(),
   z.object({
     ...createIssueThreadInteractionCommon,
     kind: z.literal("request_confirmation"),
@@ -2072,7 +2085,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
       .optional()
       .default("none"),
     payload: requestConfirmationPayloadSchema,
-  }),
+  }).strict(),
   z.object({
     ...createIssueThreadInteractionCommon,
     kind: z.literal("request_checkbox_confirmation"),
@@ -2085,7 +2098,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
       .optional()
       .default("wake_assignee"),
     payload: requestCheckboxConfirmationPayloadSchema,
-  }),
+  }).strict(),
   z.object({
     ...createIssueThreadInteractionCommon,
     kind: z.literal("request_item_verdicts"),
@@ -2098,7 +2111,7 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
       .optional()
       .default("wake_assignee"),
     payload: requestItemVerdictsPayloadSchema,
-  }),
+  }).strict(),
 ]);
 
 export type CreateIssueThreadInteraction = z.infer<
