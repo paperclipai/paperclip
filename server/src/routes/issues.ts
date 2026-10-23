@@ -12976,6 +12976,7 @@ export function issueRoutes(
       "Issue not found",
     );
     if (!sourceIssue) return;
+    if (!(await assertIssueReadAllowed(req, res, sourceIssue))) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(
       sourceIssue.id,
     );
