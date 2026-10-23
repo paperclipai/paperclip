@@ -283,20 +283,28 @@ async function sourceIssueId(
   }
 }
 
-export async function canReadDecisionSource(
+/**
+ * Resolve a source reference to the issue it belongs to and decide whether the
+ * actor may read it. The resolution is returned rather than discarded because it is
+ * the same identity a decision-request event has to publish: `sourceIssueId` is the
+ * one mapping from a source kind to its issue, so a caller reuses this answer
+ * instead of rebuilding the mapping and drifting from it. `null` means not readable.
+ */
+async function resolveReadableDecisionSource(
   db: Db,
   actor: AuthorizationActor,
   companyId: string,
   sourceKind: AttentionSourceKind,
   sourceId: string,
-) {
+): Promise<{ issueId: string | null } | null> {
   const source = await sourceIssueId(db, companyId, sourceKind, sourceId);
-  if (!source.exists) return false;
+  if (!source.exists) return null;
+  const readable = { issueId: source.issueId };
   const authz = authorizationService(db);
   if (source.issueId) {
     const resource = await loadIssueResource(db, companyId, source.issueId);
-    if (!resource) return false;
-    return (await authz.decide({ actor, action: "issue:read", resource })).allowed;
+    if (!resource) return null;
+    return (await authz.decide({ actor, action: "issue:read", resource })).allowed ? readable : null;
   }
 
   if (sourceKind === "agent_error_alert" && source.agentId) {
@@ -304,20 +312,30 @@ export async function canReadDecisionSource(
       actor,
       action: "agent:read",
       resource: { type: "agent", companyId, agentId: source.agentId },
-    })).allowed;
+    })).allowed ? readable : null;
   }
   if (sourceKind === "failed_run" && actor.type === "agent") {
-    return source.ownerAgentId === actor.agentId;
+    return source.ownerAgentId === actor.agentId ? readable : null;
   }
 
   // Join requests, unlinked approvals, and budget incidents are board-only
   // governance data. Same-company existence is deliberately not authority.
-  if (actor.type !== "board") return false;
+  if (actor.type !== "board") return null;
   return (await authz.decide({
     actor,
     action: "company_scope:read",
     resource: { type: "company", companyId },
-  })).allowed;
+  })).allowed ? readable : null;
+}
+
+export async function canReadDecisionSource(
+  db: Db,
+  actor: AuthorizationActor,
+  companyId: string,
+  sourceKind: AttentionSourceKind,
+  sourceId: string,
+): Promise<boolean> {
+  return (await resolveReadableDecisionSource(db, actor, companyId, sourceKind, sourceId)) !== null;
 }
 
 async function requireSourceRead(
@@ -326,10 +344,10 @@ async function requireSourceRead(
   companyId: string,
   sourceKind: AttentionSourceKind,
   sourceId: string,
-) {
-  if (!(await canReadDecisionSource(db, actor, companyId, sourceKind, sourceId))) {
-    throw notFound("Attention source not found");
-  }
+): Promise<{ issueId: string | null }> {
+  const source = await resolveReadableDecisionSource(db, actor, companyId, sourceKind, sourceId);
+  if (!source) throw notFound("Attention source not found");
+  return source;
 }
 
 async function recordActivity(
@@ -358,6 +376,44 @@ function itemIssueId(item: AttentionItem) {
   if (related) return related;
   const metadataIssueId = item.subject.metadata?.issueId ?? item.subject.metadata?.originIssueId;
   return typeof metadataIssueId === "string" ? metadataIssueId : null;
+}
+
+/**
+ * The issue fields a decision-request event carries so a subscriber can name the
+ * work instead of only reporting that something arrived. The queue item records a
+ * source rather than an issue, so the caller passes what it has already resolved
+ * and this decides which of those fields are worth publishing.
+ */
+function queueItemIssueDetails(
+  issueId: string | null,
+  identity: { identifier: string | null; title: string } | null,
+): Record<string, unknown> {
+  if (!issueId) return {};
+  return {
+    issueId,
+    ...(identity?.identifier ? { identifier: identity.identifier } : {}),
+    ...(identity?.title ? { title: identity.title } : {}),
+  };
+}
+
+/**
+ * The identifier and title of every issue a published decision request points at,
+ * keyed by issue id. One query covers the whole set so a seed that spans many
+ * issues does not issue one lookup per item, and so both the seeded and the
+ * manually added path publish the same fields from the same source.
+ */
+async function issueIdentities(db: Db, companyId: string, issueIds: string[]) {
+  const identityById = new Map<string, { identifier: string | null; title: string }>();
+  const wanted = [...new Set(issueIds.filter((issueId) => issueId.length > 0))];
+  if (wanted.length === 0) return identityById;
+  const rows = await db
+    .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, wanted)));
+  for (const row of rows) {
+    identityById.set(row.id, { identifier: row.identifier, title: row.title });
+  }
+  return identityById;
 }
 
 export function decisionQueueService(db: Db) {
@@ -488,7 +544,7 @@ export function decisionQueueService(db: Db) {
     }) => {
       const queue = await getQueue(input.companyId, input.key);
       if (!queue) throw notFound("Decision queue not found");
-      await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
+      const source = await requireSourceRead(db, input.authActor, input.companyId, input.sourceKind, input.sourceId);
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const inserted = await txDb.insert(decisionQueueItems).values({
@@ -518,12 +574,25 @@ export function decisionQueueService(db: Db) {
             action: "queue_item.added",
             ...eventActorColumns(input.actor),
           });
+          // An added item publishes the issue identity the read check above already
+          // resolved, so a subscriber can name the work instead of only reporting
+          // that a request arrived. Nothing is guessed here: `sourceIssueId` is the
+          // mapping the attention layer itself reads through, and a source that
+          // proves no issue (a join request, a budget incident, an approval with no
+          // issue) publishes the source and no issue fields.
+          const sourceIdentity = source.issueId
+            ? (await issueIdentities(txDb, input.companyId, [source.issueId])).get(source.issueId) ?? null
+            : null;
           await recordActivity(txDb, input.actor, {
             companyId: input.companyId,
             action: "decision_queue_item.added",
             entityType: "decision_queue",
             entityId: queue.id,
-            details: { sourceKind: input.sourceKind, sourceId: input.sourceId },
+            details: {
+              sourceKind: input.sourceKind,
+              sourceId: input.sourceId,
+              ...queueItemIssueDetails(source.issueId, sourceIdentity),
+            },
           });
         }
         return { item: toQueueItem(row), created: Boolean(inserted[0]) };
@@ -694,6 +763,10 @@ export function decisionQueueService(db: Db) {
           inArray(issueWorkProducts.issueId, issueIds),
         )).then((rows) => rows.map((row) => row.issueId)));
 
+      // One lookup for every issue these items point at, so each seeded request
+      // can be published with the identifier and title it belongs to.
+      const issueIdentityById = await issueIdentities(db, companyId, issueIds);
+
       const matches = new Map<string, AttentionItem[]>();
       for (const item of items) {
         if (prIssueIds.has(itemIssueId(item) ?? "")) {
@@ -763,12 +836,21 @@ export function decisionQueueService(db: Db) {
               ...eventActorColumns(SYSTEM_ACTOR),
               details: { seedKey: seed.key },
             });
+            const seededIssueId = itemIssueId(item);
             await recordActivity(txDb, SYSTEM_ACTOR, {
               companyId,
               action: "decision_queue_item.seeded",
               entityType: "decision_queue",
               entityId: queue.id,
-              details: { sourceKind: item.sourceKind, sourceId: item.subject.id, seedKey: seed.key },
+              details: {
+                sourceKind: item.sourceKind,
+                sourceId: item.subject.id,
+                seedKey: seed.key,
+                ...queueItemIssueDetails(
+                  seededIssueId,
+                  seededIssueId ? issueIdentityById.get(seededIssueId) ?? null : null,
+                ),
+              },
             });
           }
           if (insertedAnyItem) {
