@@ -115,6 +115,11 @@
     "publishFromCi": false
   },
   {
+    "dir": "packages/gmail-mcp-server",
+    "name": "@paperclipai/gmail-mcp-server",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/kv-demo-mcp-server",
     "name": "@paperclipai/kv-demo-mcp-server",
     "publishFromCi": false
