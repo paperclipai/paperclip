@@ -1229,3 +1229,87 @@ describe("Durable lifecycle inbox RPC", () => {
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });
+
+describe("worker invocation settlement for notifications", () => {
+  it("reports paperclip.invocationSettled after an onEvent notification's handlers settle", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const reader = createInterface({ input: workerToHost });
+    const notifications: JsonRpcNotification[] = [];
+    const pending = new Map<string, () => void>();
+    let handledEventType: string | null = null;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.events.on("agent.run.started", async (event) => {
+          handledEventType = event.eventType;
+        });
+      },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    reader.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.();
+        pending.delete(String(message.id));
+        return;
+      }
+      if (isJsonRpcRequest(message)) {
+        // Answer worker-to-host requests (events.subscribe) with an empty result.
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, null)));
+        return;
+      }
+      if (isJsonRpcNotification(message)) notifications.push(message);
+    });
+
+    try {
+      // setup() runs on initialize; only then is the event handler registered.
+      await new Promise<void>((resolve) => {
+        pending.set("host-init", resolve);
+        hostToWorker.write(serializeMessage({
+          ...createRequest("initialize", {
+            manifest: {
+              id: "paperclip.settle-test",
+              apiVersion: 1,
+              version: "1.0.0",
+              displayName: "Settle test",
+              description: "Settle test",
+              author: "Paperclip",
+              categories: ["automation"],
+              capabilities: [],
+              entrypoints: { worker: "dist/worker.js" },
+            },
+            config: {},
+            instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+            apiVersion: 1,
+          }, "host-init"),
+        }));
+      });
+
+      const invocation: PluginInvocationContext = {
+        id: "invocation-event-1",
+        scope: { companyId: "company-a" },
+      };
+      hostToWorker.write(serializeMessage({
+        jsonrpc: "2.0",
+        method: "onEvent",
+        params: { event: { eventType: "agent.run.started", companyId: "company-a" } },
+        paperclipInvocation: invocation,
+      } as never));
+
+      await expect.poll(() => handledEventType, { timeout: 5_000 }).toBe("agent.run.started");
+      await expect.poll(
+        () => notifications.find((n) => n.method === "paperclip.invocationSettled"),
+        { timeout: 5_000 },
+      ).toBeDefined();
+      const settled = notifications.find((n) => n.method === "paperclip.invocationSettled");
+      expect(settled?.params).toEqual({ invocationId: "invocation-event-1" });
+    } finally {
+      worker.stop();
+      reader.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});

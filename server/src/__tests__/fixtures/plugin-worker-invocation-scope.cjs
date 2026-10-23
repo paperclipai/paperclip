@@ -104,6 +104,19 @@ rl.on("line", (line) => {
     return;
   }
 
+  if (method === "onEvent" && !message.id) {
+    // Simulate the SDK worker runtime: the event handler settles right away,
+    // so report settlement for the delivery's invocation scope.
+    if (message.paperclipInvocation?.id) {
+      send({
+        jsonrpc: "2.0",
+        method: "paperclip.invocationSettled",
+        params: { invocationId: message.paperclipInvocation.id },
+      });
+    }
+    return;
+  }
+
   if (method === "getData" || method === "performAction") {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
