@@ -11,4 +11,8 @@ RUN apt-get update \
     tar \
   && rm -rf /var/lib/apt/lists/*
 
+RUN git config --system --add safe.directory '*'
+ENV TAR_OPTIONS=--no-same-owner
+RUN printf 'export TAR_OPTIONS=--no-same-owner\n' > /etc/profile.d/paperclip-tar.sh
+
 WORKDIR /workspace
