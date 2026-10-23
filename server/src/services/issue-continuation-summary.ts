@@ -20,6 +20,7 @@ type IssueSummaryInput = {
   description: string | null;
   status: string;
   priority: string;
+  workMode?: string | null;
 };
 
 type RunSummaryInput = {
@@ -95,10 +96,16 @@ function extractPathCandidates(...texts: Array<string | null | undefined>) {
 
 function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   if (issue.status === "done" || issue.status === "in_review") return "review";
+  if (issue.workMode && issue.workMode !== "standard") return issue.workMode;
   if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled" || run.status === "interrupted") return "implementation";
   if (issue.status === "backlog" || issue.status === "todo") return "plan";
   return "implementation";
 }
+
+const DEFAULT_IMPLEMENTATION_NEXT_ACTION =
+  "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+const DEFAULT_PLANNING_NEXT_ACTION =
+  "Resume planning from the acceptance criteria, latest comments, and this summary.";
 
 function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previousNextAction: string | null) {
   if (issue.status === "done") return "Review the completed issue output and close any remaining follow-up comments.";
@@ -107,7 +114,16 @@ function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previou
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
-  return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
+  if (issue.workMode === "planning") {
+    if (!previousNextAction || previousNextAction === DEFAULT_IMPLEMENTATION_NEXT_ACTION) {
+      return DEFAULT_PLANNING_NEXT_ACTION;
+    }
+    return previousNextAction;
+  }
+  if (previousNextAction === DEFAULT_PLANNING_NEXT_ACTION) {
+    return DEFAULT_IMPLEMENTATION_NEXT_ACTION;
+  }
+  return previousNextAction ?? DEFAULT_IMPLEMENTATION_NEXT_ACTION;
 }
 
 function bulletList(items: string[], empty: string) {
@@ -262,6 +278,7 @@ export async function refreshIssueContinuationSummary(input: {
         description: issues.description,
         status: issues.status,
         priority: issues.priority,
+        workMode: issues.workMode,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
