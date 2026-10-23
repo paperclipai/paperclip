@@ -195,9 +195,46 @@ describe("CompanySettings monthly budget", () => {
     flushSync(() => root.unmount());
   });
 
+  it("blocks the save on a partial number rather than clearing the limit", () => {
+    const root = render();
+    typeBudget("1e");
+    expect(saveButton()?.hasAttribute("disabled")).toBe(true);
+    flushSync(() => root.unmount());
+  });
+
+  it("blocks the save on an amount the budget column cannot hold", () => {
+    const root = render();
+    typeBudget("25000000");
+    expect(saveButton()?.hasAttribute("disabled")).toBe(true);
+    flushSync(() => root.unmount());
+  });
+
   it("keeps the save hidden until the budget changes", () => {
     const root = render();
     expect(saveButton()).toBeUndefined();
+    flushSync(() => root.unmount());
+  });
+
+  it("omits the budget when only the name changes", async () => {
+    const root = render();
+    const nameInput = container.querySelector<HTMLInputElement>("input[type=text]");
+    expect(nameInput).toBeTruthy();
+    flushSync(() => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(nameInput, "Acme Robotics Ltd");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    clickSave();
+
+    await waitForAssertion(() => {
+      expect(mockCompaniesApi.update).toHaveBeenCalledWith(SELECTED_COMPANY.id, {
+        name: "Acme Robotics Ltd",
+        description: null,
+      });
+    });
     flushSync(() => root.unmount());
   });
 });

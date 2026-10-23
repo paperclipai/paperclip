@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetDollarsFromCents, parseBudgetDollarsToCents } from "./utils";
+import { budgetDollarsFromCents, MAX_BUDGET_CENTS, parseBudgetDollarsToCents } from "./utils";
 
 describe("parseBudgetDollarsToCents", () => {
   it("converts whole dollars to cents", () => {
@@ -28,6 +28,18 @@ describe("parseBudgetDollarsToCents", () => {
 
   it("accepts zero as an explicit no-limit budget", () => {
     expect(parseBudgetDollarsToCents("0")).toBe(0);
+  });
+
+  it("rejects partial scientific notation instead of reading it as blank", () => {
+    expect(parseBudgetDollarsToCents("1e")).toBeUndefined();
+  });
+
+  it("accepts the largest amount the budget column holds", () => {
+    expect(parseBudgetDollarsToCents(String(MAX_BUDGET_CENTS / 100))).toBe(MAX_BUDGET_CENTS);
+  });
+
+  it("rejects an amount the budget column cannot hold", () => {
+    expect(parseBudgetDollarsToCents("25000000")).toBeUndefined();
   });
 });
 

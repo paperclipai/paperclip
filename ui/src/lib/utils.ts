@@ -46,13 +46,15 @@ export function formatNumber(n: number, options?: Intl.NumberFormatOptions): str
   return n.toLocaleString("en-US", options);
 }
 
+export const MAX_BUDGET_CENTS = 2_147_483_647;
+
 export function parseBudgetDollarsToCents(value: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed) {
     return undefined;
   }
   const cents = Math.round(Number(trimmed) * 100);
-  return Number.isFinite(cents) && cents >= 0 ? cents : undefined;
+  return Number.isFinite(cents) && cents >= 0 && cents <= MAX_BUDGET_CENTS ? cents : undefined;
 }
 
 export function budgetDollarsFromCents(cents: number): string {

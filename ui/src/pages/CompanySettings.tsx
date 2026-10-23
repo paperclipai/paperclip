@@ -16,7 +16,12 @@ import { navigateTopLevel } from "@/lib/browserNavigation";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
-import { budgetDollarsFromCents, parseBudgetDollarsToCents } from "../lib/utils";
+import {
+  budgetDollarsFromCents,
+  formatNumber,
+  MAX_BUDGET_CENTS,
+  parseBudgetDollarsToCents,
+} from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { SlidersHorizontal } from "lucide-react";
 import {
@@ -68,18 +73,21 @@ export function CompanySettings() {
   const parsedBudgetMonthlyCents = parseBudgetDollarsToCents(budgetDollars);
   const budgetMonthlyCents = parsedBudgetMonthlyCents ?? 0;
   const budgetValid = !budgetDollars.trim() || parsedBudgetMonthlyCents !== undefined;
+  const savedBudgetMonthlyCents = selectedCompany?.budgetMonthlyCents ?? 0;
+  const budgetEdited = budgetDollars.trim() !== budgetDollarsFromCents(savedBudgetMonthlyCents);
+  const budgetDirty = budgetValid && budgetMonthlyCents !== savedBudgetMonthlyCents;
 
   const generalDirty =
     !!selectedCompany &&
     (companyName !== selectedCompany.name ||
       description !== (selectedCompany.description ?? "") ||
-      budgetMonthlyCents !== (selectedCompany.budgetMonthlyCents ?? 0));
+      budgetEdited);
 
   const generalMutation = useMutation({
     mutationFn: (data: {
       name: string;
       description: string | null;
-      budgetMonthlyCents: number;
+      budgetMonthlyCents?: number;
     }) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -219,7 +227,7 @@ export function CompanySettings() {
     generalMutation.mutate({
       name: companyName.trim(),
       description: description.trim() || null,
-      budgetMonthlyCents
+      ...(budgetDirty ? { budgetMonthlyCents } : {})
     });
   }
 
@@ -271,10 +279,9 @@ export function CompanySettings() {
               <input
                 className="w-32 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 data-testid="company-settings-budget-input"
-                type="number"
-                min="0"
-                step="1"
+                type="text"
                 inputMode="decimal"
+                aria-label="Monthly budget in dollars"
                 placeholder="0"
                 value={budgetDollars}
                 onChange={(e) => setBudgetDollars(e.target.value)}
@@ -283,7 +290,7 @@ export function CompanySettings() {
             </div>
             {!budgetValid && (
               <p className="mt-1 text-xs text-destructive">
-                Enter a budget of zero or more dollars.
+                Enter a dollar amount from 0 to {formatNumber(MAX_BUDGET_CENTS / 100)}.
               </p>
             )}
           </Field>
