@@ -426,6 +426,11 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
       model: "claude-haiku-4-5",
     },
     defaultBudgetMonthlyCents: 0,
+    defaultRuntimeConfig: {
+      heartbeat: {
+        maxConcurrentRuns: 1,
+      },
+    },
     bundle: {
       stockVersion: "2026-08-02",
       instructions: {
