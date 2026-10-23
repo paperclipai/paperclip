@@ -11,6 +11,7 @@ import {
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
   PROJECT_REPOSITORIES_DIR,
   readSanitizedOriginRemoteUrl,
+  resetLocalGitIndexToHead,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
@@ -1793,6 +1794,13 @@ async function restoreWorkspaceRootFromSsh(input: {
               localDir: input.localDir,
               importedHead,
             });
+          }
+          : undefined,
+        // integrateImportedGitHead moves the branch with update-ref, which leaves the index
+        // on the old tip. Reset it to HEAD as the sandbox restore does (#8595).
+        afterApply: importedHead
+          ? async () => {
+            await resetLocalGitIndexToHead({ localDir: input.localDir });
           }
           : undefined,
       });
