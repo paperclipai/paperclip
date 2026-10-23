@@ -2365,6 +2365,36 @@ describe("agent permission routes", () => {
     expect(res.body.error).toBe("Heartbeat run not found");
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("stamps a board cancel as operator-initiated and suppresses immediate recovery", async () => {
+    const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    // A company-scoped run needs no issue lookup for the board read check.
+    const run = { id: runId, companyId, agentId, status: "queued", scopeKind: "company", issueId: null };
+    mockHeartbeatService.getRun.mockResolvedValue(run);
+    mockHeartbeatService.cancelRun.mockResolvedValue({ ...run, status: "cancelled" });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).post(`/api/heartbeat-runs/${runId}/cancel`).send({}));
+
+    expect(res.status).toBe(200);
+    // Without the suppression the release path queues a replacement
+    // continuation that retakes the issue lock.
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+      runId,
+      "Cancelled by a board operator",
+      {
+        suppressImmediateRecovery: true,
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      },
+    );
+  });
 });
 
 vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
