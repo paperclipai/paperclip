@@ -381,6 +381,16 @@ describe("attentionDetailLine (§7)", () => {
     expect(line).toContain("Which auth provider?");
   });
 
+  it("formats budget amounts from cents", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "budget_alert",
+        detail: { kind: "budget", observedPercent: 650, amountObserved: 650, amountLimit: 100, images: [] },
+      }),
+    );
+    expect(line).toBe("650% of budget used ($6.50 / $1.00)");
+  });
+
   it("singularizes a single suggested task", () => {
     const line = attentionDetailLine(
       buildItem({
