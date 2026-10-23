@@ -35,7 +35,7 @@ function createPluginPackage(source = "export default {};\n") {
 }
 
 function readyPlugin(packageRoot: string) {
-  mockRegistry.getById.mockResolvedValue({
+  const plugin = {
     id: pluginId,
     pluginKey: "paperclip.example",
     packageName: "paperclip-plugin-example",
@@ -48,8 +48,10 @@ function readyPlugin(packageRoot: string) {
         ui: "./dist/ui",
       },
     },
-  });
+  };
+  mockRegistry.getById.mockResolvedValue(plugin);
   mockRegistry.getByKey.mockResolvedValue(null);
+  return plugin;
 }
 
 function boardActor(companyIds: string[]) {
@@ -107,6 +109,34 @@ describe("plugin UI static route", () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain("static-bundle");
     expect(mockRegistry.getConfig).not.toHaveBeenCalled();
+  });
+
+  it("serves built UI assets requested by plugin key without probing the UUID column", async () => {
+    const plugin = readyPlugin(createPluginPackage("export const marker = 'by-key';\n"));
+    mockRegistry.getById.mockRejectedValue(
+      Object.assign(new Error("Failed query"), {
+        cause: Object.assign(new Error('invalid input syntax for type uuid: "paperclip.example"'), { code: "22P02" }),
+      }),
+    );
+    mockRegistry.getByKey.mockResolvedValue(plugin);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get("/_plugins/paperclip.example/ui/index.js");
+
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("by-key");
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+    expect(mockRegistry.getByKey).toHaveBeenCalledWith("paperclip.example");
+  });
+
+  it("returns 404 for an unknown plugin key", async () => {
+    mockRegistry.getByKey.mockResolvedValue(null);
+    const app = await createApp({ type: "none", source: "none" });
+
+    const res = await request(app).get("/_plugins/missing.plugin/ui/index.js");
+
+    expect(res.status).toBe(404);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
   });
 
   it("requires authentication before reading company-scoped devUiUrl config", async () => {
