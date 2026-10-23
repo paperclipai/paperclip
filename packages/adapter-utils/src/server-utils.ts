@@ -4358,17 +4358,53 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
-export async function ensurePaperclipSkillSymlink(
+function paperclipPackageSkillPath(candidate: string): string | null {
+  const segments = path.resolve(candidate).split(/[\\/]+/);
+  const nodeModules = segments.lastIndexOf("node_modules");
+  if (nodeModules < 0 || segments[nodeModules + 1] !== "@paperclipai") {
+    return null;
+  }
+  const packagePath = segments.slice(nodeModules + 1);
+  return packagePath.length > 2 ? packagePath.join("/") : null;
+}
+
+function isSamePaperclipPackageSkill(source: string, linkedPath: string): boolean {
+  const sourceSkill = paperclipPackageSkillPath(source);
+  return sourceSkill !== null && sourceSkill === paperclipPackageSkillPath(linkedPath);
+}
+
+type SkillSymlinkOutcome = "created" | "repaired" | "skipped";
+type LinkSkill = (source: string, target: string) => Promise<void>;
+
+const skillSymlinkRepairs = new Map<string, Promise<SkillSymlinkOutcome>>();
+
+async function linkOrAcceptSkillSymlink(
   source: string,
   target: string,
-  linkSkill: (source: string, target: string) => Promise<void> = (
-    linkSource,
-    linkTarget,
-  ) => fs.symlink(linkSource, linkTarget),
-): Promise<"created" | "repaired" | "skipped"> {
+  linkSkill: LinkSkill,
+): Promise<void> {
+  try {
+    await linkSkill(source, target);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (
+      !linkedPath ||
+      path.resolve(path.dirname(target), linkedPath) !== source
+    ) {
+      throw error;
+    }
+  }
+}
+
+async function repairPaperclipSkillSymlink(
+  source: string,
+  target: string,
+  linkSkill: LinkSkill,
+): Promise<SkillSymlinkOutcome> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
-    await linkSkill(source, target);
+    await linkOrAcceptSkillSymlink(source, target, linkSkill);
     return "created";
   }
 
@@ -4388,13 +4424,38 @@ export async function ensurePaperclipSkillSymlink(
     .stat(resolvedLinkedPath)
     .then(() => true)
     .catch(() => false);
-  if (linkedPathExists) {
+  if (
+    linkedPathExists &&
+    !isSamePaperclipPackageSkill(source, resolvedLinkedPath)
+  ) {
     return "skipped";
   }
 
-  await fs.unlink(target);
-  await linkSkill(source, target);
+  await fs.unlink(target).catch((error: { code?: string }) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  await linkOrAcceptSkillSymlink(source, target, linkSkill);
   return "repaired";
+}
+
+export async function ensurePaperclipSkillSymlink(
+  source: string,
+  target: string,
+  linkSkill: LinkSkill = (linkSource, linkTarget) =>
+    fs.symlink(linkSource, linkTarget),
+): Promise<SkillSymlinkOutcome> {
+  const key = path.resolve(target);
+  const previous = skillSymlinkRepairs.get(key) ?? Promise.resolve();
+  const repair = () => repairPaperclipSkillSymlink(source, target, linkSkill);
+  const current = previous.then(repair, repair);
+  skillSymlinkRepairs.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (skillSymlinkRepairs.get(key) === current) {
+      skillSymlinkRepairs.delete(key);
+    }
+  }
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {
