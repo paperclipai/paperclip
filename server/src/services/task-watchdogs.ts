@@ -1657,15 +1657,25 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
 
     const input = await collectClassifierInput(watchdog.companyId, watchdog);
     const classification = classifyTaskWatchdogSubtree(input);
-    if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
+    // "already_reviewed" is the same terminal stop classification as
+    // "stopped", one step later: the classifier only returns it when the
+    // current fingerprint equals the fingerprint the watchdog already
+    // reviewed. When that fingerprint is also the one this run was armed
+    // with, the review is current, so mutations the wake advertised stay
+    // allowed. A changed fingerprint still falls through to refusal in
+    // both states.
+    if (
+      (classification.state === "stopped" || classification.state === "already_reviewed") &&
+      classification.stopFingerprint === scope.stopFingerprint
+    ) {
       return { allowed: true as const, classification };
     }
 
     return {
       allowed: false as const,
-      reason: classification.state === "stopped"
+      reason: classification.state === "stopped" || classification.state === "already_reviewed"
         ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
+        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, or not-applicable path; refresh the source state before mutating it.",
       classification,
     };
   }
