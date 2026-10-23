@@ -8,6 +8,7 @@ import {
   LaunchdServiceManager,
   renderLaunchdPlist,
   renderSystemdUnit,
+  resolveServicePath,
   SystemdServiceManager,
   type CommandRunner,
   type ServiceManager,
@@ -62,6 +63,46 @@ describe("service definition generation", () => {
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
     expect(plist).toContain("service.err.log");
+  });
+
+  it("puts the Node.js bin directory on the service PATH so `env node` shebangs resolve", () => {
+    // A supervised service inherits `/usr/bin:/bin:/usr/sbin:/sbin`, which holds no
+    // Node.js on a typical machine. The server survives that, because the managed
+    // shim calls Node by absolute path. The agents it spawns do not: their shebang
+    // is `#!/usr/bin/env node`, so each run dies with `env: node: No such file or
+    // directory` while the server keeps reporting healthy.
+    const servicePath = resolveServicePath({
+      shimPath: "/Users/alice/.local/bin/paperclipai",
+      execPath: "/Users/alice/.nvm/versions/node/v22.22.3/bin/node",
+    });
+
+    expect(servicePath.split(":")).toContain("/Users/alice/.nvm/versions/node/v22.22.3/bin");
+    expect(servicePath.split(":")).toContain("/Users/alice/.local/bin");
+    expect(servicePath.startsWith("/Users/alice/.nvm/versions/node/v22.22.3/bin:")).toBe(true);
+  });
+
+  it("keeps the service PATH free of duplicates so the definition stays byte-stable", () => {
+    // `doctor` compares the rendered definition against the on-disk copy to detect
+    // drift, so the same inputs must always render the same bytes.
+    const servicePath = resolveServicePath({ shimPath: "/usr/bin/paperclipai", execPath: "/usr/bin/node" });
+    const entries = servicePath.split(":");
+
+    expect(new Set(entries).size).toBe(entries.length);
+    expect(entries).toContain("/usr/bin");
+  });
+
+  it("exports the PATH in both service definitions", () => {
+    const shared = {
+      instanceId: "team-a",
+      shimPath: "/home/alice/.local/bin/paperclipai",
+      homeDir: "/home/alice/.paperclip",
+      servicePath: "/opt/node/bin:/usr/bin:/bin",
+    };
+
+    expect(renderSystemdUnit(shared)).toContain('Environment="PATH=/opt/node/bin:/usr/bin:/bin"');
+    expect(
+      renderLaunchdPlist({ ...shared, stdoutPath: "/tmp/out.log", stderrPath: "/tmp/err.log" }),
+    ).toContain("<key>PATH</key><string>/opt/node/bin:/usr/bin:/bin</string>");
   });
 });
 
