@@ -542,6 +542,38 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
+  it.each([
+    ["heartbeat.daily_run_limit", "run"],
+    ["heartbeat.daily_cost_limit", "cost"],
+  ])("names the agent's daily limit when a wake was skipped for %s", async (reason, limit) => {
+    const company = await seedCompany(db);
+    const agent = await seedAgent(db, company.id);
+    const issue = await seedIssue(db, {
+      companyId: company.id,
+      title: "Wake skipped by daily limit",
+      status: "todo",
+      assigneeAgentId: agent.id,
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId: company.id,
+      agentId: agent.id,
+      source: "automation",
+      reason,
+      status: "skipped",
+      payload: { issueId: issue.id, heartbeatSkip: { observed: 5, limit: 5 } },
+      requestedAt: new Date(Date.now() - 1_000),
+      finishedAt: new Date(),
+    });
+
+    const res = await request(createApp(db, boardActor(company)))
+      .get(`/api/issues/${issue.id}/diagnostics/wakes`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.diagnosis).toContain(`daily ${limit} limit`);
+    expect(res.body.events[0]).toMatchObject({ kind: "wake_request", reason, status: "skipped", failureClass: "skipped" });
+    expect(JSON.stringify(res.body)).not.toContain("heartbeatSkip");
+  });
+
   it("caps wake output and reports truncation", async () => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);
