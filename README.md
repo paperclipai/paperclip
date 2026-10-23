@@ -1,3 +1,4 @@
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
@@ -597,4 +598,8 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 
 <p align="center">
   <sub>Open source under MIT. Built for people who want to get work done, not babysit agents.</sub>
+</p>
+
+<p align="center">
+  Love from <b>UIU</b>
 </p>
