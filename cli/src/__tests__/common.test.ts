@@ -18,6 +18,7 @@ describe("resolveCommandContext", () => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
+    delete process.env.PAPERCLIP_API_KEY_FILE;
     delete process.env.PAPERCLIP_COMPANY_ID;
     delete process.env.PAPERCLIP_AUTH_STORE;
     delete process.env.PAPERCLIP_SERVER_PORT;
@@ -81,6 +82,33 @@ describe("resolveCommandContext", () => {
     expect(resolved.api.apiBase).toBe("http://override:3200");
     expect(resolved.companyId).toBe("company-override");
     expect(resolved.api.apiKey).toBe("direct-token");
+  });
+
+  it.skipIf(process.platform === "win32")("selects a protected credential file before fallback identities without exporting it", () => {
+    const credential = createTempPath("token");
+    fs.writeFileSync(credential, "file-token\n", { mode: 0o600 });
+    process.env.PAPERCLIP_API_KEY_FILE = credential;
+    process.env.PAPERCLIP_API_KEY = "environment-token";
+    const options = { context: createTempPath("context.json"), apiBase: "http://localhost:3100" };
+    const resolved = resolveCommandContext(options);
+    expect(resolved.api.apiKey).toBe("file-token");
+    expect(resolved.authSource).toBe("file");
+    expect(process.env.PAPERCLIP_API_KEY).toBe("environment-token");
+    expect(resolveCommandContext({ ...options, apiKey: "explicit-token" }).api.apiKey).toBe("explicit-token");
+  });
+
+  it.each(["", "relative-token", "/missing/credential"])("refuses invalid file selection %j instead of stored board authentication", (file) => {
+    const options = { context: createTempPath("context.json"), apiBase: "http://localhost:3100" };
+    process.env.PAPERCLIP_AUTH_STORE = createTempPath("auth.json");
+    setStoredBoardCredential({
+      apiBase: options.apiBase, token: "stored-board-token", userId: "user-1",
+      storePath: process.env.PAPERCLIP_AUTH_STORE,
+    });
+    process.env.PAPERCLIP_API_KEY_FILE = file;
+    expect(() => resolveCommandContext(options)).toThrow("CLI credential file");
+    process.env.PAPERCLIP_API_KEY = "environment-token";
+    expect(() => resolveCommandContext(options)).toThrow("CLI credential file");
+    expect(resolveCommandContext({ ...options, apiKey: "explicit-token" }).authSource).toBe("explicit");
   });
 
   it("throws when company is required but unresolved", () => {
