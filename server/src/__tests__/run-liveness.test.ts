@@ -259,3 +259,115 @@ describe("run liveness classifier", () => {
     expect(classification.nextAction).toBeNull();
   });
 });
+
+describe("truncated final turn (model output limit) liveness", () => {
+  // The adapter maps a length-stopped terminal turn with no completion text
+  // to a failed run (exit 1, typed error code) and records the
+  // machine-readable marker in resultJson. These shapes are what the
+  // classifier actually sees for the truncation edge.
+  const marker = { finalStopReason: "length", finalMessageEmpty: true } as Record<string, unknown>;
+
+  it("treats a failed run cut off at the output limit as an actionable empty response", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Pi stopped at the model output limit before completing its final turn",
+      errorCode: "pi_completion_truncated",
+      resultJson: {
+        ...marker,
+        // The raw transcript is present, so transcript heuristics see a
+        // "useful" run; only the machine-readable marker reveals the
+        // truncation edge.
+        stdoutExcerpt: "line1\nline2",
+        summary: "",
+      },
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.livenessReason).toMatch(/output limit/i);
+    // The truncation marker drives an explicit actionable next action; the
+    // bounded continuation gate acts on the liveness state, not on the
+    // (noise-derived) actionability of the raw transcript.
+    expect(classification.nextAction).toMatch(/fresh run/i);
+    expect(classification.lastUsefulActionAt).toBeNull();
+  });
+
+  it("continues a failed truncated run that left no durable progress even when the transcript looks busy", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "Pi stopped at the model output limit before completing its final turn",
+      errorCode: "pi_completion_truncated",
+      resultJson: {
+        ...marker,
+        stdoutExcerpt: "tool result lines and a partial summary that was cut off mid-sentence",
+        summary: "Partial summary that was cut off",
+      },
+      evidence: null,
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.livenessReason).toMatch(/output limit/i);
+  });
+
+  it("keeps unrelated failed runs terminal (no truncation marker)", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "process lost",
+      errorCode: "process_lost",
+      resultJson: null,
+    });
+
+    expect(classification.livenessState).toBe("failed");
+  });
+
+  it("keeps a failed run terminal when the length marker was written for a turn that delivered text", () => {
+    // The adapter records the marker for any length-stopped terminal turn and
+    // keeps it when the run fails for an unrelated reason. Only the
+    // empty-completion edge may trigger the continuation.
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      error: "provider returned an error mid-run",
+      errorCode: "provider_error",
+      resultJson: {
+        finalStopReason: "length",
+        finalMessageEmpty: false,
+        summary: "Partial answer that was cut mid-sentence",
+      },
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).not.toMatch(/output limit/i);
+  });
+
+  it("keeps a succeeded run that delivered completion text plus durable progress advanced", () => {
+    const latestEvidenceAt = new Date("2026-10-09T12:00:00Z");
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        finalStopReason: "length",
+        finalMessageEmpty: false,
+        summary: "I committed the change and pushed the branch.",
+      },
+      evidence: {
+        issueCommentsCreated: 1,
+        latestEvidenceAt,
+      },
+    });
+
+    expect(classification.livenessState).toBe("advanced");
+    expect(classification.lastUsefulActionAt).toBe(latestEvidenceAt);
+  });
+
+  it("wakes a succeeded run cut off at the output limit with no completion text", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { ...marker },
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.livenessReason).toMatch(/output limit/i);
+  });
+});
