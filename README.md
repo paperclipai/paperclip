@@ -593,6 +593,12 @@ MIT &copy; 2026 [Paperclip Labs, Inc](https://paperclip.ing)
 
 <br/>
 
+## Strata
+
+[![strata](https://strata.umuttopalak-de4.workers.dev/paperclipai/paperclip.svg)](https://strata.umuttopalak-de4.workers.dev/#paperclipai/paperclip)
+
+<br/>
+
 ---
 
 <p align="center">
