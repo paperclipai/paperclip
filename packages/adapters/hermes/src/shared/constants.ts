@@ -56,6 +56,9 @@ export const VALID_PROVIDERS = [
  * Longer prefixes are matched first (order matters).
  */
 export const MODEL_PREFIX_PROVIDER_HINTS: [string, string][] = [
+  // OpenRouter routes
+  ["openrouter/", "openrouter"],
+  ["z-ai/", "openrouter"],
   // OpenAI-native models
   ["gpt-4", "openai-codex"],
   ["gpt-5", "copilot"],

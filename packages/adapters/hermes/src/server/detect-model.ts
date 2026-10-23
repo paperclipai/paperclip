@@ -108,6 +108,12 @@ export function parseModelFromConfig(content: string): DetectedModel | null {
 export function inferProviderFromModel(model: string): string | undefined {
   const lower = model.toLowerCase();
 
+  for (const [prefix, hint] of MODEL_PREFIX_PROVIDER_HINTS) {
+    if (prefix.includes("/") && lower.startsWith(prefix)) {
+      return hint;
+    }
+  }
+
   // Strip provider/ prefix if present (e.g. "anthropic/claude-sonnet-4")
   const bareName = lower.includes("/") ? lower.split("/").pop()! : lower;
 
