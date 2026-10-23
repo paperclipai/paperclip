@@ -1,0 +1,140 @@
+name: ingest-lambda-ci
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "infrastructure/paperclip-ingest-lambda/**"
+      - ".github/workflows/ingest-lambda-ci.yml"
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "infrastructure/paperclip-ingest-lambda/**"
+      - ".github/workflows/ingest-lambda-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TEMPLATE_FILE: infrastructure/paperclip-ingest-lambda/template.yaml
+  TEST_FILE: infrastructure/paperclip-ingest-lambda/tests/handler.test.mjs
+  AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
+
+jobs:
+  verify:
+    name: Verify Ingest Lambda
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Run handler tests
+        run: node --test "${{ env.TEST_FILE }}"
+
+      - name: Validate SAM template
+        run: sam validate --template-file "${{ env.TEMPLATE_FILE }}"
+
+      - name: Build SAM template
+        run: sam build --template-file "${{ env.TEMPLATE_FILE }}"
+
+  deploy-dev:
+    name: Deploy Dev
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    environment: dev
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build SAM template
+        run: sam build --template-file "${{ env.TEMPLATE_FILE }}"
+
+      - name: Package SAM template
+        run: |
+          sam package \
+            --template-file .aws-sam/build/template.yaml \
+            --s3-bucket "${{ secrets.SAM_ARTIFACT_BUCKET_DEV }}" \
+            --output-template-file packaged-dev.yaml
+
+      - name: Deploy dev stack
+        run: |
+          sam deploy \
+            --template-file packaged-dev.yaml \
+            --stack-name "${{ secrets.PAPERCLIP_INGEST_STACK_DEV }}" \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              DeploymentStage=dev \
+              EntitlementsTableName=kinetica-entitlements \
+              EventBusName=default
+
+  deploy-staging:
+    name: Deploy Staging
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    environment: staging
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup AWS SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Build SAM template
+        run: sam build --template-file "${{ env.TEMPLATE_FILE }}"
+
+      - name: Package SAM template
+        run: |
+          sam package \
+            --template-file .aws-sam/build/template.yaml \
+            --s3-bucket "${{ secrets.SAM_ARTIFACT_BUCKET_STAGING }}" \
+            --output-template-file packaged-staging.yaml
+
+      - name: Deploy staging stack
+        run: |
+          sam deploy \
+            --template-file packaged-staging.yaml \
+            --stack-name "${{ secrets.PAPERCLIP_INGEST_STACK_STAGING }}" \
+            --capabilities CAPABILITY_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              DeploymentStage=staging \
+              EntitlementsTableName=kinetica-entitlements \
+              EventBusName=default
