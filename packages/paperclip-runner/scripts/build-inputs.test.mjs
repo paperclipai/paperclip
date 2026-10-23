@@ -491,7 +491,12 @@ test("two chains run by separate shells at the same time both record", { skip: p
   await withRepo(async ({ repoRoot, packageRoot }) => {
     const pendingDirectory = buildInputsPendingDirectory(packageRoot);
     const marker = path.join(repoRoot, "release-the-chains");
-    const records = () => (existsSync(pendingDirectory) ? readdirSync(pendingDirectory).sort() : []);
+    const records = () =>
+      existsSync(pendingDirectory)
+        ? readdirSync(pendingDirectory)
+            .filter((name) => name.endsWith(".json"))
+            .sort()
+        : [];
 
     const first = runChainInShell("sh", packageRoot, marker);
     await waitFor(() => records().length === 1, "the first chain's record");
