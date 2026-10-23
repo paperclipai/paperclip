@@ -97,6 +97,102 @@ function readText(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function findJsonValueEnd(value: string, start: number) {
+  const closing: string[] = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < value.length; index += 1) {
+    const character = value[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === "{" || character === "[") {
+      closing.push(character === "{" ? "}" : "]");
+      continue;
+    }
+    if (character === "}" || character === "]") {
+      if (closing.pop() !== character) return null;
+      if (closing.length === 0) return index + 1;
+    }
+  }
+  return null;
+}
+
+function isSerializedUserMessage(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const record = parsed as Record<string, unknown>;
+    const message = record.message;
+    return record.type === "message_start" &&
+      Boolean(message && typeof message === "object" && !Array.isArray(message) &&
+        (message as Record<string, unknown>).role === "user");
+  } catch {
+    return false;
+  }
+}
+
+function stripSerializedUserMessages(value: string) {
+  let text = value;
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const start = text.indexOf("{", searchFrom);
+    if (start < 0) break;
+    const end = findJsonValueEnd(text, start);
+    if (end === null) {
+      searchFrom = start + 1;
+      continue;
+    }
+    const candidate = text.slice(start, end);
+    if (!isSerializedUserMessage(candidate)) {
+      searchFrom = end;
+      continue;
+    }
+
+    const lineStart = text.lastIndexOf("\n", start - 1) + 1;
+    const prefix = text.slice(lineStart, start);
+    const removeStart = /^\s*(?:next action noted|next action|user message|echoed message)\s*:\s*$/i.test(prefix)
+      ? lineStart
+      : start;
+    text = `${text.slice(0, removeStart)}${text.slice(end)}`;
+    searchFrom = removeStart;
+  }
+  return text;
+}
+
+function stripPlainTextWakePayload(value: string) {
+  const lines = value.split(/\r?\n/);
+  const kept: string[] = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/^\s*## Paperclip Wake Payload\s*$/i.test(lines[index] ?? "")) {
+      kept.push(lines[index] ?? "");
+      continue;
+    }
+
+    let nextLine = index + 1;
+    while (nextLine < lines.length && !lines[nextLine]?.trim()) nextLine += 1;
+    if (/^\s*next action(?: noted)?\s*:/i.test(lines[nextLine] ?? "")) {
+      index = nextLine;
+    }
+  }
+
+  return kept.join("\n");
+}
+
+function readLivenessText(value: unknown): string | null {
+  const text = readText(value);
+  return text ? readText(stripPlainTextWakePayload(stripSerializedUserMessages(text))) : null;
+}
+
 function hasUnmanagedBackgroundTaskEvidence(resultJson: Record<string, unknown> | null | undefined) {
   if (!resultJson) return false;
   if (resultJson.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON) return true;
@@ -111,11 +207,11 @@ function hasUnmanagedBackgroundTaskEvidence(resultJson: Record<string, unknown> 
 function resultFinalText(resultJson: Record<string, unknown> | null | undefined) {
   if (!resultJson) return "";
   return [
-    readText(resultJson.nextAction),
-    readText(resultJson.summary),
-    readText(resultJson.result),
-    readText(resultJson.message),
-    readText(resultJson.error),
+    readLivenessText(resultJson.nextAction),
+    readLivenessText(resultJson.summary),
+    readLivenessText(resultJson.result),
+    readLivenessText(resultJson.message),
+    readLivenessText(resultJson.error),
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n");
@@ -124,8 +220,8 @@ function resultFinalText(resultJson: Record<string, unknown> | null | undefined)
 function resultRawText(resultJson: Record<string, unknown> | null | undefined) {
   if (!resultJson) return "";
   return [
-    readText(resultJson.stdout),
-    readText(resultJson.stderr),
+    readLivenessText(resultJson.stdout),
+    readLivenessText(resultJson.stderr),
   ]
     .filter((value): value is string => Boolean(value))
     .join("\n");
@@ -133,18 +229,18 @@ function resultRawText(resultJson: Record<string, unknown> | null | undefined) {
 
 function highSignalSources(input: RunLivenessClassificationInput) {
   return [
-    ...(input.issueCommentBodies ?? []).map(readText),
+    ...(input.issueCommentBodies ?? []).map(readLivenessText),
     readText(resultFinalText(input.resultJson)),
-    readText(input.continuationSummaryBody),
+    readLivenessText(input.continuationSummaryBody),
   ].filter((value): value is string => Boolean(value));
 }
 
 function rawSources(input: RunLivenessClassificationInput) {
   return [
     readText(resultRawText(input.resultJson)),
-    readText(input.stdoutExcerpt),
-    readText(input.stderrExcerpt),
-    readText(input.error),
+    readLivenessText(input.stdoutExcerpt),
+    readLivenessText(input.stderrExcerpt),
+    readLivenessText(input.error),
   ]
     .filter((value): value is string => Boolean(value))
     .map(stripNoisyTranscriptLines)
@@ -249,7 +345,8 @@ function nextNonNoiseLine(lines: string[], startIndex: number) {
 }
 
 function extractNextActionFromText(text: string) {
-  const lines = text.split(/\r?\n/).map((entry) => entry.trim());
+  const sanitized = stripPlainTextWakePayload(stripSerializedUserMessages(text));
+  const lines = sanitized.split(/\r?\n/).map((entry) => entry.trim());
   for (let i = 0; i < lines.length; i += 1) {
     const rawLine = lines[i] ?? "";
     if (!rawLine || isNoisyTranscriptLine(rawLine)) continue;

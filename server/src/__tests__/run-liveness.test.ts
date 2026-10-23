@@ -38,6 +38,88 @@ describe("run liveness classifier", () => {
     expect(classification.actionability).toBe("unknown");
   });
 
+  it("ignores an echoed user wake message without treating it as progress or a next action", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        stdout: JSON.stringify({
+          type: "message_start",
+          message: {
+            role: "user",
+            content: [{
+              type: "text",
+              text: "## Paperclip Wake Payload\nRecord the issue disposition.\nNext action: deploy to production.",
+            }],
+          },
+        }),
+      },
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.actionability).toBe("unknown");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("ignores a plain-text wake payload without treating it as a next action", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stdoutExcerpt: "## Paperclip Wake Payload\nNext action: deploy to production.",
+    });
+
+    expect(classification.livenessState).toBe("empty_response");
+    expect(classification.actionability).toBe("unknown");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("preserves a real reply after a plain-text wake payload", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stdoutExcerpt: "## Paperclip Wake Payload\nNext action: deploy to production.\n\nI cannot proceed because I need access credentials.",
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("blocked_external");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("preserves a real blocker after an echoed user wake message", () => {
+    const echoedWake = JSON.stringify({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{
+          type: "text",
+          text: "## Paperclip Wake Payload\nNext action: deploy to production.",
+        }],
+      },
+    });
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stdoutExcerpt: `Next action noted: ${echoedWake}\nI cannot proceed because I need access credentials.`,
+    });
+
+    expect(classification.livenessState).toBe("blocked");
+    expect(classification.actionability).toBe("blocked_external");
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("preserves a real next action after an echoed user wake message", () => {
+    const echoedWake = JSON.stringify({
+      type: "message_start",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "## Paperclip Wake Payload\nNext action: deploy to production." }],
+      },
+    });
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      stdoutExcerpt: `${echoedWake}\nNext action: run pnpm test and report the result.`,
+    });
+
+    expect(classification.actionability).toBe("runnable");
+    expect(classification.nextAction).toBe("run pnpm test and report the result.");
+  });
+
   it("treats issue comments, documents, products, and actions as progress", () => {
     const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
     const classification = classifyRunLiveness({
