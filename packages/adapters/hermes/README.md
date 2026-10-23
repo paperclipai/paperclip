@@ -300,12 +300,14 @@ Paperclip                          Hermes Agent
 The adapter spawns Hermes Agent's CLI in single-query mode (`-q`). Hermes
 processes the task using its full tool suite, then exits. The adapter:
 
-1. **Captures** stdout/stderr and parses token usage, session IDs, and cost
+1. **Captures** stdout/stderr and parses session IDs and the response. It does not read cost or token usage from this text, because Hermes does not print them and the agent's own text shares the same stream
 2. **Parses** raw output into structured `TranscriptEntry` objects (tool cards with status icons)
 3. **Post-processes** Hermes ASCII formatting (banners, setext headings, table borders) into clean GFM markdown
 4. **Reclassifies** benign stderr (MCP init, structured logs) so they don't show as errors
 5. **Tags** sessions as `tool` source to keep them separate from interactive usage
-6. **Reports** results back to Paperclip with cost, usage, and session state
+6. **Reports** results back to Paperclip with the response and session state
+
+Hermes does not print cost or token counts on these paths, so the adapter reports none, and Paperclip records each run as usage with no reliable price. An active hard-stop budget policy with **Block new work when usage has no reliable price** turned on (the default) pauses its scope at the first such run. Turn that setting off in the policy's advanced settings for Hermes agents that run under a budget.
 
 Session persistence works via Hermes's `--resume` flag — each run picks
 up where the last one left off, maintaining conversation context,
