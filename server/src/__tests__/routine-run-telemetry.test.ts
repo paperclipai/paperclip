@@ -167,4 +167,25 @@ describeEmbeddedPostgres("routine run telemetry", () => {
       status: "issue_created",
     });
   });
+
+  it("does not fail an already-committed run when telemetry throws synchronously", async () => {
+    const { routine, svc } = await seedFixture();
+    mockTrackRoutineRun.mockImplementationOnce(() => {
+      throw new Error("telemetry state factory blew up");
+    });
+
+    // The run/issue transaction has already committed by the time telemetry runs. A throw
+    // there must not surface as a dispatch failure for a run that durably exists.
+    const run = await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(run.status).toBe("issue_created");
+
+    const runs = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    expect(runs[0]?.failureReason).toBeNull();
+  });
 });
