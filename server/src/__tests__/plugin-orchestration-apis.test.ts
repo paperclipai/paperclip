@@ -213,6 +213,26 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await expect(services.executionWorkspaces.get({ workspaceId, companyId: otherCompanyId })).resolves.toBeNull();
   });
 
+  it.each(["idempotency_key", "recent_open_title"])("does not repeat creation activity when reusing by %s", async (reason) => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const input = {
+      companyId,
+      title: "Scheduled report",
+      ...(reason === "idempotency_key"
+        ? { idempotencyKey: "paperclip.missions:report", allowDuplicate: true }
+        : { allowDuplicate: false }),
+    };
+    const created = await services.issues.create(input);
+    const replayed = await services.issues.create(input);
+    expect(replayed.id).toBe(created.id);
+    const activities = await db.select().from(activityLog).where(and(
+      eq(activityLog.entityId, created.id),
+      eq(activityLog.action, "issue.created"),
+    ));
+    expect(activities).toHaveLength(1);
+  });
+
   it("creates plugin-origin issues with full orchestration fields and audit activity", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const blockerIssueId = randomUUID();
@@ -1313,6 +1333,58 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       ]);
       return { companyId, agentId, openIssueId, privateIssueId };
     }
+
+    it.each(["idempotency_key", "recent_open_title"])("rejects private issue reuse by %s", async (reason) => {
+      const { companyId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+      const input = {
+        companyId,
+        title: "Confidential report",
+        ...(reason === "idempotency_key"
+          ? { idempotencyKey: "paperclip.missions:private-report", allowDuplicate: true }
+          : { allowDuplicate: false }),
+      };
+      const created = await services.issues.create(input);
+      await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, created.id));
+      await expect(services.issues.create(input)).rejects.toThrow("Issue not found");
+      const activities = await db.select().from(activityLog).where(and(
+        eq(activityLog.entityId, created.id),
+        eq(activityLog.action, "issue.created"),
+      ));
+      expect(activities).toHaveLength(1);
+    });
+
+    it.each(["idempotency_key", "recent_open_title"])("redacts private relations when reusing by %s", async (reason) => {
+      const { companyId } = await seedCompanyAndAgent();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+      const input = {
+        companyId,
+        title: "Public scheduled report",
+        ...(reason === "idempotency_key"
+          ? { idempotencyKey: "paperclip.missions:linked-report", allowDuplicate: true }
+          : { allowDuplicate: false }),
+      };
+      const created = await services.issues.create(input);
+      const publicBlockerId = randomUUID();
+      const privateBlockerId = randomUUID();
+      const privateBlockedId = randomUUID();
+      await db.insert(issues).values([
+        { id: publicBlockerId, companyId, title: "Public blocker", status: "todo", visibility: "open" },
+        { id: privateBlockerId, companyId, title: "Secret blocker", status: "todo", visibility: "private" },
+        { id: privateBlockedId, companyId, title: "Secret blocked task", status: "todo", visibility: "private" },
+      ]);
+      await db.insert(issueRelations).values([
+        { companyId, issueId: publicBlockerId, relatedIssueId: created.id, type: "blocks" },
+        { companyId, issueId: privateBlockerId, relatedIssueId: created.id, type: "blocks" },
+        { companyId, issueId: privateBlockerId, relatedIssueId: publicBlockerId, type: "blocks" },
+        { companyId, issueId: created.id, relatedIssueId: privateBlockedId, type: "blocks" },
+      ]);
+      const replayed = await services.issues.create(input);
+      expect(replayed.id).toBe(created.id);
+      expect(replayed.blockedBy?.map((edge) => edge.id)).toEqual([publicBlockerId]);
+      expect(replayed.blockedBy?.[0]?.terminalBlockers).toEqual([]);
+      expect(replayed.blocks).toEqual([]);
+    });
 
     it("omits private issues from issues.list", async () => {
       const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
