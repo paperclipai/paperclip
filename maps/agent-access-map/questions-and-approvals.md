@@ -566,6 +566,8 @@ Agent access: `partial` — agent receives own settled tool result/continuation,
 
 Policy: Decision status distinct from executed/failed/expired/unknown. Test-tab has no agent so approval runs stored test call; agent executionOnApprove uses exact stored operation and current authority. Durable settled/outbox receipts avoid duplicate provider calls/wakes on retry/restart; uncertain write not blindly retried.
 
+If a completed approved call has no parseable stored result, agent replay returns `tool_result_unavailable` without changing its successful execution or repeating the provider call. A dedicated GitHub publication receipt remains eligible for result recovery. [Approval replay regressions](../../server/src/__tests__/tool-gateway-approval-replay.test.ts) cover local MCP and PostgreSQL behavior; they do not qualify a live provider or model.
+
 Evidence: `source-only` — [tool result delivery](../../server/src/services/tool-action-delivery.ts), [settlement](../../server/src/services/tool-gateway.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
 Verification: `not-run` — Failure after approval stays accepted with useful failure context; lost response/restart retains one call/continuation; dismissing doesn't decide; inspect actual useful provider result.

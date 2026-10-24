@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, instanceSettings, createDb, toolConnections, toolPolicies, toolProfileEntries } from "@paperclipai/db";
+import { agents, heartbeatRuns, issues, toolActionRequests, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, instanceSettings, createDb, toolConnections, toolPolicies, toolProfileEntries } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -283,6 +283,18 @@ describe("remote connector lifecycle", () => {
     await expect(gateway.executeTool({ sessionToken: session.token, tool: execute.name, parameters: {} })).rejects.toMatchObject({
       reasonCode: "provider_interaction_required", details: { upstreamPending: { executionId: "fixture-execution" } },
     });
+    const restarted = createToolGatewayService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpRequest: send, toolActionSigningSecret: "fixture-signing-key" });
+    await expect(restarted.executeTool({ sessionToken: session.token, tool: execute.name, parameters: {} })).rejects.toMatchObject({
+      reasonCode: "provider_interaction_required", details: { upstreamPending: { executionId: "fixture-execution" } },
+    });
+    const [providerApproval] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, approvalId));
+    for (const resultSummary of [null, { summary: "{invalid" }]) {
+      await db.update(toolInvocations).set({ resultSummary }).where(eq(toolInvocations.id, providerApproval.invocationId));
+      const withoutSummary = createToolGatewayService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpRequest: send, toolActionSigningSecret: "fixture-signing-key" });
+      await expect(withoutSummary.executeTool({ sessionToken: session.token, tool: execute.name, parameters: {} })).rejects.toMatchObject({
+        reasonCode: "provider_interaction_required",
+      });
+    }
     expect(calls).toHaveLength(3); // Retrying the approved action did not start another execution.
     await service.finishGalleryAppConnection(org.id, connection.connectionId, { enabledCatalogEntryIds: [ids.execute, ids.resume], askFirstCatalogEntryIds: [ids.execute], access: { agentIds: [] } }, actor);
     expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.connectionId))).toHaveLength(0);
