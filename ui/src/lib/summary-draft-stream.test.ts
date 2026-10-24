@@ -39,6 +39,41 @@ describe("extractAssistantOutputText", () => {
     const chunks = [delta("visible "), delta("secret", "thought"), toolCall, nonJson, delta("text")];
     expect(extractAssistantOutputText(chunks)).toBe("visible text");
   });
+
+  it("concatenates agy step_update agent_response text deltas in order", () => {
+    const chunks: RunLogChunk[] = [
+      {
+        ts: "2026-10-04T00:00:00.000Z",
+        stream: "stdout",
+        chunk: JSON.stringify({
+          event: "step_update",
+          step_update: { step_type: "agent_response", text_delta: "STATUS: considering issues...\n" },
+        }),
+      },
+      {
+        ts: "2026-10-04T00:00:01.000Z",
+        stream: "stdout",
+        chunk: JSON.stringify({
+          event: "step_update",
+          step_update: { step_type: "tool", tool_name: "run_command" },
+        }),
+      },
+      {
+        ts: "2026-10-04T00:00:02.000Z",
+        stream: "stdout",
+        chunk: JSON.stringify({
+          event: "step_update",
+          step_update: { step_type: "agent_response", text_delta: "<<<SUMMARY-DRAFT>>>\nDraft\n<<<END-SUMMARY-DRAFT>>>" },
+        }),
+      },
+    ];
+    const extracted = extractAssistantOutputText(chunks);
+    expect(extracted).toBe("STATUS: considering issues...\n<<<SUMMARY-DRAFT>>>\nDraft\n<<<END-SUMMARY-DRAFT>>>");
+    const parsed = parseSummaryDraftStream(extracted);
+    expect(parsed.statusLine).toBe("considering issues...");
+    expect(parsed.draft).toBe("Draft");
+    expect(parsed.draftClosed).toBe(true);
+  });
 });
 
 describe("parseSummaryDraftStream", () => {

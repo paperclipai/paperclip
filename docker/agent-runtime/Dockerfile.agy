@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_TAG=dev
+FROM paperclipai/agent-runtime-base:${BASE_TAG}
+
+USER root
+# Install Antigravity (agy) with the adapter's own sandbox install command
+# (packages/adapters/agy-local SANDBOX_INSTALL_COMMAND): the official
+# installer drops the binary in $HOME/.local/bin, so install as the runtime
+# user and link it onto the shared PATH for the shim's exec.LookPath.
+#
+# This image is pushed and cosign-signed, so the installer itself is pinned
+# by SHA256 and verified before it runs — never pipe a moving remote script
+# into bash. Bump AGY_INSTALLER_SHA256 deliberately when Google publishes a
+# new installer, keeping it in sync with AGY_INSTALLER_SHA256 in
+# packages/adapters/agy-local/src/index.ts (the sandbox bootstrap pin). The
+# installer in turn verifies the CLI binary's SHA512 against the vendor
+# manifest before installing it.
+ARG AGY_INSTALLER_SHA256=62966c07365423bd4dc209355060744058fb30d60f5323e2d360e39de64e5042
+USER 1000:1000
+RUN curl -fsSL --compressed https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh \
+  && echo "${AGY_INSTALLER_SHA256}  /tmp/agy-install.sh" | sha256sum -c - \
+  && bash /tmp/agy-install.sh \
+  && rm -f /tmp/agy-install.sh
+USER root
+RUN ln -sf /home/paperclip/.local/bin/agy /usr/local/bin/agy
+
+USER 1000:1000
+
+# Verify the CLI is on PATH for the shim's exec.LookPath
+RUN command -v agy >/dev/null 2>&1 || (echo "agy not on PATH"; exit 1)

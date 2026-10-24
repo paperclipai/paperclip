@@ -17,3 +17,9 @@ it("uses only a routed connection's configured model IDs", () => {
   const models = [{ id: "us.anthropic.custom", label: "Configured model" }];
   expect(fastResponseCatalogModels({ provider: "anthropic", routing: { ...routing, models } })).toEqual(models);
 });
+
+it("returns empty catalog models for antigravity provider until AI SDK provider is added", () => {
+  const models = fastResponseCatalogModels({ provider: "antigravity" });
+  expect(models).toEqual([]);
+});
+

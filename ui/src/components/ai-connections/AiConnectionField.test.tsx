@@ -148,6 +148,10 @@ it("uses the server's connection-manager permission for company-wide access", as
   expect(credentialProps).toMatchObject({ allAgents: true });
 });
 
+it("maps agy_local to antigravity provider", () => {
+  expect(aiProviderForAdapter("agy_local")).toBe("antigravity");
+});
+
 it("offers Pi account selection before choosing its required model", async () => {
   mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
   expect(aiProviderForAdapter("pi_local")).toBe("openrouter");

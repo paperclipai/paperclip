@@ -10,7 +10,10 @@
  * ~/.hermes/config.yaml at runtime.
  */
 
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import {
+  buildAdapterEnvConfig,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
 
 import {
   DEFAULT_TIMEOUT_SEC,
@@ -79,6 +82,11 @@ export function buildHermesConfig(
   // Prompt template
   if (v.promptTemplate) {
     ac.promptTemplate = v.promptTemplate;
+  }
+
+  const env = buildAdapterEnvConfig(v.envBindings, v.envVars);
+  if (Object.keys(env).length > 0) {
+    ac.env = env;
   }
 
   // Heartbeat config is handled by Paperclip itself

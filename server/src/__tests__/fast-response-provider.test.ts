@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AiConnectionMetadata } from "@paperclipai/shared";
 import {
+  fastResponseModel,
   fastResponsePrompt,
   fastResponseReceipt,
   runFastResponseProvider,
@@ -461,6 +462,15 @@ describe("fast response provider", () => {
       costCents: null,
       costStatus: "unpriced",
     });
+  });
+  it("rejects a provider with no fast-response implementation instead of falling through to xAI", () => {
+    expect(() =>
+      fastResponseModel({
+        metadata: { provider: "antigravity", method: "api_key" },
+        credential: "fixture-key",
+        model: "test-model",
+      }),
+    ).toThrow("Unsupported fast-response provider: antigravity");
   });
 });
 

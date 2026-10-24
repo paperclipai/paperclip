@@ -52,10 +52,20 @@ export function extractAssistantOutputText(chunks: RunLogChunk[]): string {
   for (const chunk of chunks) {
     const record = tryParseRecord(chunk.chunk);
     if (!record) continue;
-    if (record.type !== "acpx.text_delta") continue;
-    const channel = typeof record.channel === "string" ? record.channel : "output";
-    if (channel === "thought" || channel === "thinking") continue;
-    if (typeof record.text === "string") text += record.text;
+    if (record.type === "acpx.text_delta") {
+      const channel = typeof record.channel === "string" ? record.channel : "output";
+      if (channel === "thought" || channel === "thinking") continue;
+      if (typeof record.text === "string") text += record.text;
+    } else if (
+      record.event === "step_update" &&
+      typeof record.step_update === "object" &&
+      record.step_update !== null
+    ) {
+      const step = record.step_update as Record<string, unknown>;
+      if (step.step_type === "agent_response" && typeof step.text_delta === "string") {
+        text += step.text_delta;
+      }
+    }
   }
   return text;
 }

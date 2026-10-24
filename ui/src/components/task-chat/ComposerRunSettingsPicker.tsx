@@ -107,6 +107,9 @@ export function ComposerRunSettingsPicker({
   const modelSupported = supportsComposerModel(agent);
   const view = requestedView === "models" && !modelSupported ? "settings" : requestedView;
   const provider = composerCatalogProvider(agent);
+  const acpxAgent = agent?.adapterType === "paperclip_runner" && provider === "acpx"
+    ? (typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : "claude")
+    : undefined;
   const isMuseRunner = agent?.adapterType === "paperclip_runner" && provider === "muse";
   useEffect(() => {
     if (isMuseRunner && settings !== null) onSettingsChange(null);
@@ -118,10 +121,10 @@ export function ComposerRunSettingsPicker({
   const requestCopilotModels = Boolean(copilotCatalog && open && view !== "agents" && !modelOptionsOverride);
   const { data: fetchedModels = [], isPending: modelsPending, refetch: refreshModels } = useQuery({
     queryKey: agent && modelSupported
-      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, copilotCatalog ?? null]
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider, acpxAgent), poolId ?? null, copilotCatalog ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, ...copilotCatalog,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, ...(acpxAgent ? { acpxAgent } : {}), poolId, ...copilotCatalog,
     }),
     ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(agent && modelSupported && !modelOptionsOverride && (!copilotCatalog || requestCopilotModels)),

@@ -42,8 +42,40 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
+  ensurePaperclipSkillSymlink,
 } from "./server-utils.js";
 
+describe("ensurePaperclipSkillSymlink", () => {
+  it("uses the injected unlink implementation when repairing a managed link", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-link-"));
+    const target = path.join(root, "target");
+    const source = path.join(root, "source");
+    await fs.mkdir(source);
+    await fs.symlink(
+      path.join(root, "missing"),
+      target,
+      process.platform === "win32" ? "junction" : undefined,
+    );
+    const calls: string[] = [];
+    const linkSkill = async (_source: string, target: string) => {
+      calls.push(`link:${target}`);
+    };
+    const unlinkSkill = async (target: string) => {
+      calls.push(`unlink:${target}`);
+    };
+
+    const result = await ensurePaperclipSkillSymlink(
+      source,
+      target,
+      linkSkill,
+      unlinkSkill,
+    );
+
+    expect(result).toBe("repaired");
+    expect(calls).toEqual([`unlink:${target}`, `link:${target}`]);
+    await fs.rm(root, { recursive: true, force: true });
+  });
+});
 it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
   expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
   const saved = { provider: "acpx", acpxAgent: "pi", model: "openrouter/provider/model", piThinkingLevel: "max", acpxPermissionMode: "approve-reads", lifecycleMode: "warm" };

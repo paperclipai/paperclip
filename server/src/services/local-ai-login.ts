@@ -30,7 +30,8 @@ function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiL
   const directory = loginHome(id);
   return {
     sessionId: id, expiresAt: expiresAt.toISOString(),
-    ...(provider === "xai" ? { command: `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)` } : {}),
+    ...(provider === "xai" ? { command: `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)` }
+      : provider === "antigravity" ? { command: `(export HOME=${shellQuote(directory)} && export ANTIGRAVITY_CLI_HOME="$HOME/.gemini/antigravity-cli" GEMINI_CLI_HOME="$HOME/.gemini/antigravity-cli" && mkdir -p "$ANTIGRAVITY_CLI_HOME" && agy)` } : {}),
   };
 }
 async function prepareHome(id: string, provider: string) {
@@ -39,6 +40,8 @@ async function prepareHome(id: string, provider: string) {
   if (provider === "openai") {
     // Idempotent: preserve credentials when a user returns to an active attempt.
     await writeFile(path.join(directory, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
+  } else if (provider === "antigravity") {
+    await mkdir(path.join(directory, ".gemini", "antigravity-cli"), { recursive: true, mode: 0o700 });
   }
 }
 function sameTarget(a: AiConnectionLoginIntent, b: AiConnectionLoginIntent) {
@@ -59,7 +62,7 @@ export function localAiLoginService(db: Db) {
     browserLogins.delete(id);
   }
   function ensureBrowserLogin(id: string, provider: string) {
-    if (provider === "xai" || browserLogins.has(id)) return;
+    if (provider === "xai" || provider === "antigravity" || browserLogins.has(id)) return;
     browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai", loginHome(id)));
   }
   async function reapExpired() {
@@ -84,12 +87,12 @@ export function localAiLoginService(db: Db) {
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false): Promise<LocalAiLoginAttempt> {
-    if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic")
+    if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic" && intent.provider !== "antigravity")
       throw unprocessable("This provider does not use a separate local login home.");
     await reapExpired();
     const attempt = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-local-login:${companyId}:${userId}:${intent.provider}`}, 0))`);
-      const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : "grok_local";
+      const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : intent.provider === "antigravity" ? "agy_local" : "grok_local";
       const [existing] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.companyId, companyId), eq(adapterAuthSessions.startedByUserId, userId),
         eq(adapterAuthSessions.adapterType, adapterType),
@@ -150,7 +153,7 @@ export function localAiLoginService(db: Db) {
   async function check(companyId: string, userId: string, intent: AiConnectionLoginIntent, id?: string): Promise<LocalAiLoginStatus> {
     let directory: string | undefined;
     {
-      if (!id) throw unprocessable(intent.provider === "xai"
+      if (!id) throw unprocessable(intent.provider === "xai" || intent.provider === "antigravity"
         ? "Start local sign-in before checking this account."
         : "Start browser sign-in before checking this account.");
       const [session] = await db.select().from(adapterAuthSessions).where(and(
@@ -170,7 +173,7 @@ export function localAiLoginService(db: Db) {
     } catch {
       const login = id ? browserLogins.get(id) : undefined;
       return { status: "sign_in_required", authorizationUrl: login?.authorizationUrl, code: login?.code,
-        ...(!login && intent.provider !== "xai"
+        ...(!login && intent.provider !== "xai" && intent.provider !== "antigravity"
           ? { error: "The server restarted during sign-in. Start sign-in again." }
           : login?.outcome === "failure"
             ? { error: login.error ?? "Sign-in ended before the account was connected. Start sign-in again." }

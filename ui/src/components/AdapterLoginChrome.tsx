@@ -49,7 +49,14 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
+  gemini_local: "Gemini",
   grok_local: "Grok",
+  kimi_local: "Kimi",
+  cursor: "Cursor",
+  opencode_local: "OpenCode",
+  pi_local: "Pi",
+  agy_local: "Antigravity",
+  hermes_local: "Hermes",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -474,8 +481,8 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
-  const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
+  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : adapterType === "agy_local" ? "Antigravity (agy)" : "Codex CLI";
+  const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local" || adapterType === "agy_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local";
   async function submitBrowserCode() {

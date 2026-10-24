@@ -34,6 +34,7 @@ const CURATED_MODEL_ORDER_ADAPTERS: ReadonlySet<string> = new Set([
   "openclaw_gateway",
   "opencode_local",
   "pi_local",
+  "agy_local",
 ]);
 
 export function adapterCuratesModelOrder(adapterType: string): boolean {

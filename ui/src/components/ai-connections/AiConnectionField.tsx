@@ -35,6 +35,7 @@ export function aiProviderForAdapter(
       opencode_local: "openrouter",
       pi_local: "openrouter",
       grok_local: "xai",
+      agy_local: "antigravity",
       copilot_runtime: "github",
       gemini_local: "google",
       hermes_local: "openrouter",

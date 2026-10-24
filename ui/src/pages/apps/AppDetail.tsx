@@ -342,7 +342,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   });
 
   const startOAuth = useMutation({
-    mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
+    mutationFn: (input?: { asAgentId?: string } | void) => toolsApi.startOAuth(connectionId, input ?? undefined),
     onSuccess: async (start) => {
       try {
         const target = await prepareOAuthNavigation(start);

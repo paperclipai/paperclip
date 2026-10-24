@@ -34,6 +34,7 @@ export const AI_PROVIDERS = [
   "xai",
   "github",
   "google",
+  "antigravity",
 ] as const;
 export const aiProviderSchema = z.enum(AI_PROVIDERS);
 export const aiAuthMethodSchema = z.enum(["subscription", "api_key"]);
@@ -115,6 +116,19 @@ export const AI_CONNECTION_CAPABILITIES: Record<
       api_key: { adapters: ["grok_local"], envKey: "XAI_API_KEY" },
     },
   },
+  antigravity: {
+    name: "Antigravity",
+    methods: {
+      subscription: {
+        adapters: ["agy_local"],
+        envKey: "ANTIGRAVITY_OAUTH_TOKEN",
+      },
+      api_key: {
+        adapters: ["agy_local"],
+        envKey: "GEMINI_API_KEY",
+      },
+    },
+  },
 };
 export function isAiConnectionCompatible(
   requirement: AiConnectionMetadata | AiConnectionBinding,
@@ -131,7 +145,7 @@ export function isAiConnectionCompatible(
     && ["openrouter", "openai", "anthropic", "google"].includes(requirement.provider)
     && typeof model === "string" && model.startsWith(`${requirement.provider}/`);
   if ("mode" in requirement && requirement.mode !== "responsible_user" && requirement.method === "api_key")
-    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "copilot_runtime"].includes(adapterType);
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local", "gemini_local", "grok_local", "agy_local", "copilot_runtime"].includes(adapterType);
   const methods = AI_CONNECTION_CAPABILITIES[requirement.provider].methods;
   const candidates = "mode" in requirement && requirement.mode === "responsible_user"
     ? Object.values(methods)
@@ -140,6 +154,20 @@ export function isAiConnectionCompatible(
     candidates.some((method) => method?.adapters.includes(adapterType)) &&
     (requirement.provider !== "openrouter" ||
       (typeof model === "string" && model.startsWith("openrouter/")))
+  );
+}
+
+export function adapterSupportsAiConnections(
+  adapterType: string,
+  runnerProvider?: unknown,
+  acpxAgent?: unknown,
+): boolean {
+  const harness = aiRoutingHarness(adapterType, runnerProvider, acpxAgent);
+  if (harness === "hermes_local") return true;
+  return Object.values(AI_CONNECTION_CAPABILITIES).some((capability) =>
+    Object.values(capability.methods).some((method) =>
+      method?.adapters.includes(harness),
+    ),
   );
 }
 export type AiConnectionUnavailableReason =
@@ -229,7 +257,7 @@ export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
 export const aiConnectionLoginIntentSchema = z
   .object({
-    provider: z.enum(["anthropic", "openai", "xai"]),
+    provider: z.enum(["anthropic", "openai", "xai", "antigravity"]),
     method: z.literal("subscription"),
     name: z.string().trim().min(1).max(160),
     ownership: z.enum(["personal", "shared"]),

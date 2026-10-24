@@ -30,6 +30,7 @@ import {
   routineTriggers,
 } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL } from "@paperclipai/adapter-agy-local";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -520,8 +521,77 @@ describeEmbeddedPostgres("built-in agents", () => {
       details: {
         code: "built_in_agent_adapter_not_allowed",
         key: "briefs",
-        allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+        allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "agy_local", "process"],
       },
+    });
+  });
+
+  it("allows provisioning summarizer with agy_local defaulting to low-effort model and dangerouslySkipPermissions false", async () => {
+    const companyId = await seedCompany();
+
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(state.status).toBe("paused");
+    expect(state.agent?.adapterType).toBe("agy_local");
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL,
+      dangerouslySkipPermissions: false,
+    });
+
+    const stateExplicitTrue = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+      adapterConfig: { dangerouslySkipPermissions: true },
+    });
+    expect(stateExplicitTrue.agent?.adapterConfig).toMatchObject({
+      dangerouslySkipPermissions: true,
+    });
+  });
+
+  it("drops stale AI connection when reconfiguring summarizer to agy_local", async () => {
+    const companyId = await seedCompany();
+
+    const initial = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(initial.agent?.adapterType).toBe("paperclip_runner");
+    await db.update(agents).set({
+      runtimeConfig: {
+        aiConnection: {
+          provider: "anthropic",
+          method: "api_key",
+          mode: "responsible_user",
+        },
+      },
+    }).where(eq(agents.id, initial.agent!.id));
+
+    const updated = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(updated.agent?.adapterType).toBe("agy_local");
+    expect(updated.agent?.runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it("keeps a router-mode AI connection binding when reconfiguring the summarizer", async () => {
+    const companyId = await seedCompany();
+
+    const initial = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(initial.agent?.adapterType).toBe("paperclip_runner");
+    const poolId = randomUUID();
+    await db.update(agents).set({
+      runtimeConfig: {
+        aiConnection: { mode: "router", connectionId: poolId },
+      },
+    }).where(eq(agents.id, initial.agent!.id));
+
+    const updated = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(updated.agent?.adapterType).toBe("agy_local");
+    expect(updated.agent?.runtimeConfig.aiConnection).toEqual({
+      mode: "router",
+      connectionId: poolId,
     });
   });
 

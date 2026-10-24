@@ -76,4 +76,24 @@ describe("explicit local subscription import", () => {
     expect(mocks.codex).not.toHaveBeenCalled();
     expect(mocks.readFile).not.toHaveBeenCalled();
   });
+  it("verifies an Antigravity subscription from the isolated login home", async () => {
+    const validToken = JSON.stringify({
+      token: {
+        access_token: "agy-access",
+        refresh_token: "agy-refresh",
+        expiry: new Date(Date.now() + 3600000).toISOString(),
+      },
+    });
+    mocks.readFile.mockResolvedValue(validToken);
+    await expect(readVerifiedLocalAiCredential("antigravity", "/isolated/agy")).resolves.toBe(validToken);
+    expect(mocks.readFile).toHaveBeenCalledWith("/isolated/agy/.gemini/antigravity-cli/antigravity-oauth-token", "utf8");
+  });
+  it("rejects an expired Antigravity token that lacks a refresh token", async () => {
+    const expiredToken = JSON.stringify({
+      access_token: "agy-access",
+      expiry: new Date(Date.now() - 3600000).toISOString(),
+    });
+    mocks.readFile.mockResolvedValue(expiredToken);
+    await expect(readVerifiedLocalAiCredential("antigravity", "/isolated/agy")).rejects.toThrow("sign-in command shown");
+  });
 });

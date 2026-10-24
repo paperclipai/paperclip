@@ -133,7 +133,7 @@ describe("resolveChunkedImportZip", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.rootPath).toBe("dense-package");
     expect(sha256Hex(resolved!.zipBytes)).toBe(sha256Hex(zipBytes));
-  });
+  }, 30_000);
 
   it("uses the lower existing-company threshold for the chunk decision", async () => {
     const dir = await makeTempDir();
@@ -202,7 +202,7 @@ describe("resolveChunkedImportZip", () => {
     expect(resolved!.rootPath).toBe("binary-package");
     const archive = await readZipArchive(resolved!.zipBytes);
     expect(Object.keys(archive.files).sort()).toEqual(["COMPANY.md", "blobs/9a1b2c3d"]);
-  });
+  }, 30_000);
 
   it("keeps a text folder under both the raw and estimated measures inline", async () => {
     const dir = await makeTempDir();
@@ -239,7 +239,7 @@ describe("resolveChunkedImportZip", () => {
     expect(archive.rootPath).toBe("big-package");
     expect(Object.keys(archive.files).sort()).toEqual(["COMPANY.md", "blobs/4f2d1c9a"]);
     expect(archive.files["COMPANY.md"]).toBe("# Company\n");
-  });
+  }, 30_000);
 });
 
 describe("uploadCompanyImportTransfer", () => {

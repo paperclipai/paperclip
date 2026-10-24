@@ -1,0 +1,133 @@
+import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+
+export { execute, modelHasEffortSuffix, resolveAgyPrintTimeoutSec } from "./execute.js";
+export { testEnvironment } from "./test.js";
+export {
+  listAgySkills as listSkills,
+  syncAgySkills as syncSkills,
+  resolveAgySkillRoot,
+  resolveAgySkillsHome,
+  syncSkillsForRun,
+  describeRunSkillSync,
+  migrateLegacySkills,
+  sanitizeAgentIdSegment,
+  AGY_WORKSPACE_SKILL_SUBPATH,
+  AGY_GLOBAL_SKILLS_HOME_SEGMENTS,
+  AGY_AGENT_SKILL_ROOT_SEGMENTS,
+} from "./skills.js";
+export { listAgyModels, inferModelProvider } from "./models.js";
+export { listAgyAgents as listAgents, listAgyAgents, parseAgyAgentsOutput } from "./agents.js";
+export {
+  parseAgyJsonl,
+  isAgyUnknownSessionError,
+  detectAgyAuthRequired,
+  detectAgyQuotaExhausted,
+  isAgyTransientNetworkError,
+  isAgySessionUnrecoverableError,
+  isAgySuccessResult,
+} from "./parse.js";
+export {
+  evaluateAgyCredentialReadiness,
+  resolveAgyOAuthTokenPath,
+  hasUsableAgyOAuthToken,
+  parseAgyOAuthToken,
+  resolveAgySettingsPath,
+  ensureAgyApiKeySettings,
+  decideAgyAuthMerge,
+  stageAgyHomeForSync,
+  copyBackAgyAuth,
+  type AgyCredentialReadiness,
+  type AgyCredentialReadinessInput,
+  type CopyBackAgyAuthOutcome,
+  type CopyBackAgyAuthInput,
+  type StageAgyHomeForSyncOptions,
+} from "./credentials.js";
+export {
+  resolveAgyMcpConfigPath,
+  resolveUniqueMcpServerName,
+  writePaperclipAgyMcpConfig,
+  stageAgyMcpConfigForSync,
+  prepareAgyLocalRunMcpHome,
+  type AgyMcpServerConfig,
+  type AgyMcpConfigFile,
+  type WriteAgyMcpConfigInput,
+  type WriteAgyMcpConfigResult,
+  type StageAgyMcpConfigInput,
+  type PrepareAgyLocalRunMcpHomeInput,
+  type PrepareAgyLocalRunMcpHomeResult,
+} from "./mcp.js";
+export { SANDBOX_INSTALL_COMMAND, AGY_INSTALLER_SHA256, ADAPTER_AUTH_MISSING_CHECK_CODE } from "../index.js";
+
+export const sessionCodec: AdapterSessionCodec = {
+  deserialize(raw) {
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      const sessionId = raw.trim();
+      return { sessionId };
+    }
+    const obj = parseObject(raw);
+    const sessionId =
+      asString(obj.sessionId, "") ||
+      asString(obj.conversationId, "") ||
+      asString(obj.session_id, "") ||
+      asString(obj.conversation_id, "");
+    if (!sessionId) return null;
+    const cwd = asString(obj.cwd, "");
+    const workspaceId = asString(obj.workspaceId, "") || asString(obj.workspace_id, "");
+    const repoUrl = asString(obj.repoUrl, "") || asString(obj.repo_url, "");
+    const repoRef = asString(obj.repoRef, "") || asString(obj.repo_ref, "");
+    const mcpServerIdentity = asString(obj.mcpServerIdentity, "");
+    const remoteExecution =
+      typeof obj.remoteExecution === "object" && obj.remoteExecution !== null && !Array.isArray(obj.remoteExecution)
+        ? { ...(obj.remoteExecution as Record<string, unknown>) }
+        : null;
+    return {
+      sessionId,
+      ...(cwd ? { cwd } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(repoUrl ? { repoUrl } : {}),
+      ...(repoRef ? { repoRef } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
+    };
+  },
+  serialize(params) {
+    if (!params) return null;
+    const sessionId =
+      asString(params.sessionId, "") ||
+      asString(params.conversationId, "") ||
+      asString(params.session_id, "") ||
+      asString(params.conversation_id, "");
+    if (!sessionId) return null;
+    const cwd = asString(params.cwd, "");
+    const workspaceId = asString(params.workspaceId, "") || asString(params.workspace_id, "");
+    const repoUrl = asString(params.repoUrl, "") || asString(params.repo_url, "");
+    const repoRef = asString(params.repoRef, "") || asString(params.repo_ref, "");
+    const mcpServerIdentity = asString(params.mcpServerIdentity, "");
+    const remoteExecution =
+      typeof params.remoteExecution === "object" &&
+      params.remoteExecution !== null &&
+      !Array.isArray(params.remoteExecution)
+        ? { ...(params.remoteExecution as Record<string, unknown>) }
+        : null;
+    return {
+      sessionId,
+      ...(cwd ? { cwd } : {}),
+      ...(workspaceId ? { workspaceId } : {}),
+      ...(repoUrl ? { repoUrl } : {}),
+      ...(repoRef ? { repoRef } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
+      ...(remoteExecution ? { remoteExecution } : {}),
+    };
+  },
+  getDisplayId(params) {
+    if (!params) return null;
+    return (
+      asString(params.sessionId, "") ||
+      asString(params.conversationId, "") ||
+      asString(params.session_id, "") ||
+      asString(params.conversation_id, "") ||
+      null
+    );
+  },
+};

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "slug": "antigravity",
+  "name": "Antigravity",
+  "description": "Connect Antigravity accounts for your agents.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/antigravity.svg"
+  },
+  "urlPatterns": [
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-subscription",
+      "label": "Antigravity subscription",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "oauth",
+      "ai": {
+        "provider": "antigravity",
+        "method": "subscription"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3"
+    },
+    {
+      "key": "ai-api_key",
+      "label": "Gemini API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "antigravity",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Authenticate an agent with this account.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter Gemini API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "GEMINI_API_KEY"
+      }
+    }
+  ]
+}

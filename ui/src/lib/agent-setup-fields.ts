@@ -1,3 +1,4 @@
+import { DEFAULT_AGY_LOCAL_MODEL, modelHasEffortSuffix } from "@paperclipai/adapter-agy-local";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import { claudeLocalReasoningEffortsForModel, DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { grokLocalReasoningEffortsForModel } from "@paperclipai/adapter-grok-local";
@@ -38,6 +39,8 @@ export function setupEfforts(adapter: string, model = ""): string[] {
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
     case "grok_local":
       return [...grokLocalReasoningEffortsForModel(model)];
+    case "agy_local":
+      return modelHasEffortSuffix(model || DEFAULT_AGY_LOCAL_MODEL) ? [] : ["low", "medium", "high"];
     default:
       return [];
   }
