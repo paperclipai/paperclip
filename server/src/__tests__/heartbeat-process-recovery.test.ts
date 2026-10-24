@@ -141,6 +141,7 @@ const mockTelemetryClient = vi.hoisted(() => ({
   hashPrivateRef: vi.fn(() => "test-private-reference"),
 }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
+const mockAdapterJwtSupport = vi.hoisted(() => ({ enabled: false }));
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 const mockDetachNativeSessionsForRestart = vi.hoisted(() => vi.fn());
 const mockCloseIdleWarmNativeSessionsForRestart = vi.hoisted(() => vi.fn());
@@ -228,7 +229,7 @@ vi.mock("../adapters/index.ts", async () => {
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
-      supportsLocalAgentJwt: false,
+      supportsLocalAgentJwt: mockAdapterJwtSupport.enabled,
       execute: mockAdapterExecute,
     })),
   };
@@ -1611,6 +1612,40 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("records missing run credentials as a configuration blocker without dispatch or retry", async () => {
+    const jwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const authSecret = process.env.BETTER_AUTH_SECRET;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.BETTER_AUTH_SECRET;
+    mockAdapterJwtSupport.enabled = true;
+    try {
+      const { agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();
+      const heartbeat = heartbeatService(db);
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId, 5_000);
+      await heartbeat.waitForRunExecutionDrain(runId);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "configuration_incomplete",
+        resultJson: { configurationIncomplete: { reason: "agent_jwt_secret_missing" },
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "blocked", assigneeAgentId: agentId, executionRunId: null });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({ status: "active", kind: "configuration_validation", cause: "configuration_incomplete", ownerType: "board" });
+      const [wakeup] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      expect(wakeup.status).toBe("failed");
+      const retries = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "queued")));
+      expect(retries).toHaveLength(0);
+    } finally {
+      mockAdapterJwtSupport.enabled = false;
+      if (jwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = jwtSecret;
+      if (authSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = authSecret;
+    }
+  });
 
   it.each(["owned", "forged"] as const)("keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: %s", async provenance => {
     const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedQueuedIssueRunFixture();

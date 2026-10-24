@@ -24,8 +24,9 @@ import { buildNativeExecutionInput } from "../native-runtime/native-execution-in
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
+import { ConfigurationIncompleteFailure, revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
+import { verifyLocalAgentJwt } from "../../agent-auth-jwt.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
 // and gateway delivery are external boundaries; browser acceptance covers their wiring.
@@ -117,6 +118,63 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  async function withoutJwtSecrets(work: () => Promise<void>) {
+    const keys = ["PAPERCLIP_AGENT_JWT_SECRET", "BETTER_AUTH_SECRET"] as const;
+    const previous = keys.map(key => process.env[key]);
+    for (const key of keys) delete process.env[key];
+    try { await work(); }
+    finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+    }
+  }
+
+  it("rejects a credential-less legacy run before provider work and releases its resources", async () => {
+    await withoutJwtSecrets(async () => {
+      const { input, adapter } = await fixture();
+      input.runtime.adapter.supportsLocalAgentJwt = true;
+      const error = await executeHeartbeatRuntime(db, input).catch(error => error);
+      expect(error).toBeInstanceOf(ConfigurationIncompleteFailure);
+      expect(error).toMatchObject({ code: "configuration_incomplete", resultJson: {
+        configurationIncomplete: { reason: "agent_jwt_secret_missing" },
+      } });
+      expect(adapter.execute).not.toHaveBeenCalled();
+      expect(input.effects.onLegacyAdapterEntered).not.toHaveBeenCalled();
+      expect(await db.select().from(runUsageReceipts)).toHaveLength(0);
+      expect(await finalizations()).toHaveLength(0);
+      expectCleanup(input);
+    });
+  });
+
+  it("allows native authentication without the legacy JWT secret", async () => {
+    await withoutJwtSecrets(async () => {
+      const { input } = await fixture(true);
+      input.runtime.adapter.supportsLocalAgentJwt = true;
+      expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+      expect(executePaperclipNativeSession).toHaveBeenCalledOnce();
+      expectCleanup(input);
+    });
+  });
+
+  it("injects a signed token bound to the selected agent, company and run", async () => {
+    await withoutJwtSecrets(async () => {
+      process.env.PAPERCLIP_AGENT_JWT_SECRET = "runtime-injection-test-secret";
+      const { input, adapter, run } = await fixture();
+      input.runtime.adapter.supportsLocalAgentJwt = true;
+      adapter.execute.mockImplementationOnce(async context => {
+        expect(verifyLocalAgentJwt(context.authToken!)).toMatchObject({
+          sub: input.agent.id, company_id: input.agent.companyId, run_id: run.id,
+        });
+        return { exitCode: 0, signal: null, timedOut: false };
+      });
+      expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+      expect(adapter.execute).toHaveBeenCalledOnce();
+      expectCleanup(input);
+    });
+  });
 
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);

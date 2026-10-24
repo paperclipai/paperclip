@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   costEvents,
   activityLog,
@@ -37,6 +37,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    // This fixture invokes heartbeat directly, without server startup.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-task-drain-run-secret");
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-task-drain-admission-release-");
     db = createDb(tempDb.connectionString);
     await db.insert(authUsers).values({ id: "responsible-user", name: "Drain fixture sponsor",
@@ -80,6 +82,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
   });
 
   async function seedAgentAndIssue() {
