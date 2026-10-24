@@ -1009,6 +1009,36 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    // CHECK and exclusion constraints are added after the data load so that
+    // restored rows are validated once; pg_get_constraintdef keeps NOT VALID.
+    const allCheckConstraints = await sql<{
+      constraint_name: string;
+      schema_name: string;
+      tablename: string;
+      definition: string;
+    }[]>`
+      SELECT c.conname AS constraint_name,
+             n.nspname AS schema_name,
+             t.relname AS tablename,
+             pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE c.contype IN ('c', 'x')
+        AND c.conislocal
+        AND c.conparentid = 0
+        AND ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+      ORDER BY n.nspname, t.relname, c.conname
+    `;
+    const checkConstraints = allCheckConstraints.filter((entry) => includedTableNames.has(tableKey(entry.schema_name, entry.tablename)));
+    if (checkConstraints.length > 0) {
+      emit("-- Check and exclusion constraints");
+      for (const constraint of checkConstraints) {
+        emitStatement(`ALTER TABLE ${quoteQualifiedName(constraint.schema_name, constraint.tablename)} ADD CONSTRAINT ${quoteIdentifier(constraint.constraint_name)} ${constraint.definition};`);
+      }
+      emit("");
+    }
+
     const allTriggers = await sql<{
       schema_name: string;
       tablename: string;

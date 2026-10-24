@@ -136,6 +136,51 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     }
   }, 30_000);
 
+  it("preserves CHECK and exclusion constraints in JavaScript backups", async () => {
+    const source = await createTempDatabase();
+    const target = await createSiblingDatabase(source, "check_constraint_restore_target");
+    const sourceSql = postgres(source, { max: 1, onnotice: () => {} });
+    const targetSql = postgres(target, { max: 1, onnotice: () => {} });
+    const constraintsQuery = `
+      SELECT c.conname, c.contype, pg_get_constraintdef(c.oid) AS definition
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'check_fixture' AND c.contype IN ('c', 'x')
+      ORDER BY c.conname
+    `;
+    try {
+      await sourceSql.unsafe(`
+        CREATE SCHEMA check_fixture;
+        CREATE TABLE check_fixture.bookings (
+          id integer PRIMARY KEY,
+          status text NOT NULL CONSTRAINT bookings_status_check CHECK (status IN ('open', 'closed')),
+          during tstzrange NOT NULL,
+          CONSTRAINT bookings_no_overlap EXCLUDE USING gist (during WITH &&)
+        );
+        INSERT INTO check_fixture.bookings VALUES
+          (1, 'open', '[2026-01-01,2026-01-02)'),
+          (2, 'closed', '[2026-01-03,2026-01-04)');
+        ALTER TABLE check_fixture.bookings
+          ADD CONSTRAINT bookings_id_positive CHECK (id > 1) NOT VALID;
+      `);
+      const sourceConstraints = await sourceSql.unsafe(constraintsQuery);
+      expect(sourceConstraints.map((row) => row.conname)).toEqual([
+        "bookings_id_positive",
+        "bookings_no_overlap",
+        "bookings_status_check",
+      ]);
+
+      const backup = await runDatabaseBackup({ connectionString: source, backupDir: createTempDir("check-backup-"), backupEngine: "javascript", retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 } });
+      await runDatabaseRestore({ connectionString: target, backupFile: backup.backupFile });
+
+      expect(await targetSql.unsafe(constraintsQuery)).toEqual(sourceConstraints);
+    } finally {
+      await sourceSql.end();
+      await targetSql.end();
+    }
+  }, 30_000);
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
