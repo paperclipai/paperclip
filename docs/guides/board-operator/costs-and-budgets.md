@@ -21,7 +21,9 @@ These are aggregated per agent per month (UTC calendar month).
 
 ### Company Budget
 
-Set an overall monthly budget for the company:
+Set an overall monthly budget for the company from the Monthly budget field in
+company settings, or from the API. The settings field takes dollars. Leave it
+blank for no limit.
 
 ```
 PATCH /api/companies/{companyId}
