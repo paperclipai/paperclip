@@ -135,7 +135,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
               <Fragment key={i}>
                 {i > 0 && <BreadcrumbSeparator />}
                 <BreadcrumbItem className={isLast ? "min-w-0" : "shrink-0"}>
-                  {isLast || !crumb.href ? (
+                  {(isLast && breadcrumbs.length > 1) || !crumb.href ? (
                     crumb.leading || crumb.identifier ? (
                       <BreadcrumbPage className={cn("flex min-w-0 gap-1.5", crumb.trailing ? "items-center" : "items-baseline")}>
                         {crumb.leading && (
@@ -195,7 +195,21 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4 md:px-6">
         {menuButton}
         <div className="min-w-0 overflow-hidden flex-1">
-          {breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
+          {breadcrumbs[0].href ? (
+            <h1 className="text-sm font-semibold uppercase tracking-wider">
+              <Link
+                to={breadcrumbs[0].href}
+                onClick={breadcrumbs[0].onClick}
+                className="flex min-w-0 items-center gap-1.5 hover:underline focus-visible:outline-ring"
+              >
+                {breadcrumbs[0].leading && (
+                  <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+                )}
+                <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
+                <span className="truncate">{breadcrumbs[0].label}</span>
+              </Link>
+            </h1>
+          ) : breadcrumbs[0].leading || breadcrumbs[0].identifier ? (
             <h1 className="flex items-baseline gap-1.5 text-sm font-semibold uppercase tracking-wider">
               {breadcrumbs[0].leading && (
                 <span className="flex shrink-0 items-center self-center">{breadcrumbs[0].leading}</span>
