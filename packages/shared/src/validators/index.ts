@@ -421,6 +421,8 @@ export {
 } from "./document-annotation.js";
 
 export {
+  ISSUE_TITLE_MAX_LENGTH,
+  issueTitleSchema,
   createIssueSchema,
   issueSummariesQuerySchema,
   setIssueTitleSchema,
