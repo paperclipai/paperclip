@@ -133,8 +133,6 @@ describe("FileViewerSheet copy actions", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
-  // The toast confirmation lands in a later render than the click's own
-  // microtask + setTimeout(0); poll instead of asserting on one fixed tick.
   async function waitForToast(text: string, attempts = 40): Promise<void> {
     for (let i = 0; i < attempts; i += 1) {
       if (document.body.textContent?.includes(text)) return;

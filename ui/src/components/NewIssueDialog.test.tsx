@@ -1774,7 +1774,6 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "Create sub-task");
     expect(submitButton).not.toBeUndefined();
-    // Submission stays disabled until the parent access lookup resolves.
     await waitForAssertion(() => expect(submitButton!.disabled).toBe(false));
 
     await act(async () => {
@@ -1859,7 +1858,6 @@ describe("NewIssueDialog", () => {
       visualViewport.dispatchEvent(new Event("resize"));
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
-    // The layout effect that keeps the focused editor visible scrolls on the next frame.
     await act(async () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });

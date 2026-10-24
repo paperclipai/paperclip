@@ -117,12 +117,6 @@ async function flushReact() {
   });
 }
 
-// Waits by elapsed time, not by a count of flushes. The data these pages
-// render arrives through react-query notifications and mocked API promises;
-// on a loaded CI runner that work finishes after a flush's act window closes
-// (CI logs show "not wrapped in act" updates for this file that never appear
-// locally) and React commits it later. A fixed 20 flushes (about 220 ms there)
-// ran out before the form or its options rendered.
 async function waitForAssertion(assertion: () => void, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
@@ -227,8 +221,6 @@ describe("CompanyEnvironments", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
-    // A real 60 ms answer: the page must wait for data, as on a loaded CI runner,
-    // instead of finding it already there after a fixed number of flushes.
     const capabilitiesLatency = <T,>(value: T) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), 60));
     mockEnvironmentsApi.capabilities.mockImplementation(() => capabilitiesLatency(
       getEnvironmentCapabilities(AGENT_ADAPTER_TYPES, {
@@ -267,7 +259,6 @@ describe("CompanyEnvironments", () => {
       return Array.from(driverSelect!.options).map((option) => option.value);
     };
 
-    // Sandbox appears once the capabilities answer arrives (60 ms above).
     await waitForAssertion(() => expect(driverOptions()).toEqual(["sandbox", "ssh"]));
     expect(driverOptions()).not.toContain("local");
 

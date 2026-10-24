@@ -1559,8 +1559,6 @@ describe("IssuesList", () => {
     });
   });
 
-  // 250 rows render under act. A timeout inside an open act scope fails every later test, so this
-  // heavy test gets more time than the default.
   it.each([true, false])("retains loaded context while revealing a large automated tree (streamlined=%s)", async (streamlined) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
     const parent = createIssue({ id: "human-root", createdByUserId: "person", originKind: "manual" });
@@ -2092,8 +2090,6 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Manual issue");
       expect(container.textContent).not.toContain("Routine issue");
     });
-    // The list swaps between the streamlined and legacy trees once the experimental
-    // settings read resolves; open the filter only after that swap has rendered.
     await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
     await flush();
 

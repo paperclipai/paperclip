@@ -62,7 +62,6 @@ function reachableCopies(targets: readonly string[]): Map<string, string[]> {
     return entries;
   };
 
-  // An index cursor over a queue that holds each package once.
   for (let next = 0; next < queue.length; next++) {
     const packageDir = queue[next];
 
@@ -83,8 +82,6 @@ function reachableCopies(targets: readonly string[]): Map<string, string[]> {
       for (const entry of packageEntries(dependencyDir)) {
         let entryDir: string;
         try {
-          // One realpath(3) call, where the JS realpathSync lstats every
-          // path component.
           entryDir = realpathSync.native(path.join(dependencyDir, entry));
         } catch {
           continue; // dangling symlink
@@ -103,10 +100,6 @@ function reachableCopies(targets: readonly string[]): Map<string, string[]> {
 }
 
 describe("codemirror single-instance invariant", () => {
-  // One walk serves all three packages; the first copy test pays for it.
-  // Measured locally: three walks took 4.0-4.4 s each (12.4 s), and one
-  // timed out at the 5 s default on a loaded CI runner; this census takes
-  // 2.6-3.3 s, so the copy tests get about 3x that 5 s failure point.
   let installedCopies: Map<string, string[]> | undefined;
   const copiesOf = (pkg: string): string[] => {
     installedCopies ??= reachableCopies(

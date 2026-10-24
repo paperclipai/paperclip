@@ -42,5 +42,4 @@ if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !=
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
 
-// Let 0 ms timers queued by a file's last unmount run before the file's jsdom is torn down (see the helper).
 afterAll(drainQueuedTimers);

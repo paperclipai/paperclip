@@ -189,8 +189,6 @@ async function flushReact() {
   }
 }
 
-// Polls with each wait inside act, so query and sync updates commit inside act
-// instead of between polls.
 async function waitForInAct(assertion: () => void, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

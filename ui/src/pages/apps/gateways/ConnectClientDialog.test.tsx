@@ -79,7 +79,6 @@ function storedToken(): ToolMcpGatewayToken {
     clientLabel: "research-client",
     ownerNote: "",
     allowedActions: ["tools/list", "tools/call"],
-    // Relative to now: a fixed date would expire the fixture on the calendar.
     expiresAt: new Date(Date.now() + 90 * DAY_MS).toISOString(),
     expiryOverrideReason: null,
     expiryOverrideByUserId: null,
@@ -162,9 +161,6 @@ describe("ConnectClientDialog", () => {
     const created = { ...persisted, token: "pcgw_FULL_SECRET" } satisfies ToolMcpGatewayTokenCreated;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    // The dialog picks its token in an effect and re-renders. Under act, that
-    // re-render is flushed before the assertions; a timer wait does not order
-    // it (React schedules it on its own host callback).
     await act(async () => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -182,7 +178,6 @@ describe("ConnectClientDialog", () => {
     expect(container.textContent).toContain("does not give it access to Paperclip or skills");
     const copyButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Copy");
     if (!copyButton) throw new Error("snippet copy button missing");
-    // Enabled only once the selected token is rendered into the snippet.
     expect(copyButton.disabled).toBe(false);
     await act(async () => {
       copyButton.click();

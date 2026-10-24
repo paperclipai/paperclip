@@ -1560,7 +1560,6 @@ describe("AgentConfigForm environment selector", () => {
 
     function LiftedFeedbackHarness() {
       const [login, setLogin] = useState<AdapterLoginDescriptor | null>(null);
-      // A parent keeps this callback stable: the form re-sends feedback whenever it changes.
       const onTestFeedbackChange = useCallback(
         (feedback: { login: AdapterLoginDescriptor | null }) => setLogin(feedback.login),
         [],
