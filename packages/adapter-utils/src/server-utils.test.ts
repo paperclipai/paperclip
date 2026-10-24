@@ -970,6 +970,44 @@ describe("runChildProcess", () => {
       }
     },
   );
+
+  it("keeps the spawn error code when the command cannot be started", async () => {
+    const missing = path.join(os.tmpdir(), `paperclip-missing-command-${randomUUID()}`);
+
+    const error = await runChildProcess(randomUUID(), missing, [], {
+      cwd: process.cwd(),
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+    }).catch((err: unknown) => err);
+
+    expect((error as NodeJS.ErrnoException).code).toBe("ENOENT");
+    expect((error as Error).message).toContain("Failed to start command");
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "keeps the spawn error code when the command is not executable",
+    async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-spawn-error-"));
+      const file = path.join(dir, "not-executable");
+      await fs.writeFile(file, "#!/bin/sh\nexit 0\n");
+      await fs.chmod(file, 0o600);
+      try {
+        const error = await runChildProcess(randomUUID(), file, [], {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        }).catch((err: unknown) => err);
+
+        expect((error as NodeJS.ErrnoException).code).toBe("EACCES");
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("renderPaperclipWakePrompt", () => {

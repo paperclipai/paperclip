@@ -4946,7 +4946,9 @@ export async function runChildProcess(
             errno === "ENOENT"
               ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
               : `Failed to start command "${command}" in "${opts.cwd}": ${err.message}`;
-          reject(new Error(msg));
+          const wrapped = new Error(msg) as NodeJS.ErrnoException;
+          if (errno) wrapped.code = errno;
+          reject(wrapped);
         });
 
         child.on("exit", () => {
