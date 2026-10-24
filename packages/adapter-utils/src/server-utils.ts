@@ -4389,12 +4389,23 @@ export async function ensurePaperclipSkillSymlink(
     .then(() => true)
     .catch(() => false);
   if (linkedPathExists) {
+    if (isMaterialisedVersionOfSameSkill(resolvedLinkedPath, source)) {
+      await fs.unlink(target);
+      await linkSkill(source, target);
+      return "repaired";
+    }
     return "skipped";
   }
 
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+function isMaterialisedVersionOfSameSkill(linkedPath: string, source: string): boolean {
+  const linkedDir = path.dirname(linkedPath);
+  if (linkedDir !== path.dirname(source)) return false;
+  return path.basename(path.dirname(linkedDir)) === "__versions__";
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {

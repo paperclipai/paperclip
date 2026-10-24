@@ -42,6 +42,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
+  ensurePaperclipSkillSymlink,
 } from "./server-utils.js";
 
 it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
@@ -4037,5 +4038,71 @@ describe("wake continuation comment ownership", () => {
       executionContinuation: { ...continuation([]), objective },
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
+  });
+});
+
+describe("ensurePaperclipSkillSymlink", () => {
+  async function makeSkillTree(root: string, skillId: string, versions: string[]) {
+    const dirs: string[] = [];
+    for (const version of versions) {
+      const dir = path.join(root, "__versions__", skillId, version);
+      await fs.mkdir(dir, { recursive: true });
+      dirs.push(dir);
+    }
+    return dirs;
+  }
+
+  it("re-points a link that points at another materialised version of the same skill", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-link-"));
+    try {
+      const [oldVersion, newVersion] = await makeSkillTree(root, "skill-id", ["v1", "v2"]);
+      const target = path.join(root, "skills", "delivery-methodology--abc123");
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(oldVersion, target);
+
+      const outcome = await ensurePaperclipSkillSymlink(newVersion, target);
+
+      expect(outcome).toBe("repaired");
+      expect(await fs.readlink(target)).toBe(newVersion);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a link that belongs to another installation alone", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-link-"));
+    const otherRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-other-"));
+    try {
+      const [source] = await makeSkillTree(root, "skill-id", ["v2"]);
+      const [foreign] = await makeSkillTree(otherRoot, "skill-id", ["v1"]);
+      const target = path.join(root, "skills", "delivery-methodology--abc123");
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(foreign, target);
+
+      const outcome = await ensurePaperclipSkillSymlink(source, target);
+
+      expect(outcome).toBe("skipped");
+      expect(await fs.readlink(target)).toBe(foreign);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a link that already points at the source", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-link-"));
+    try {
+      const [source] = await makeSkillTree(root, "skill-id", ["v2"]);
+      const target = path.join(root, "skills", "delivery-methodology--abc123");
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.symlink(source, target);
+
+      const outcome = await ensurePaperclipSkillSymlink(source, target);
+
+      expect(outcome).toBe("skipped");
+      expect(await fs.readlink(target)).toBe(source);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });
