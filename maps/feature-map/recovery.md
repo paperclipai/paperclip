@@ -21,6 +21,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   conversation context and bounded attempts, without blindly replaying tools.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
+  Repeated scans retain the same settled legacy no-replay hold. One verified
+  reconciliation can resolve historical duplicates of that exact source with
+  one continuation owner. Separate workspace and system recovery stay held.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
