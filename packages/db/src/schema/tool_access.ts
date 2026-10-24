@@ -830,6 +830,7 @@ export const toolActionRequests = pgTable(
     index("tool_action_requests_company_status_idx").on(table.companyId, table.status),
     index("tool_action_requests_pending_expiry_idx").on(table.expiresAt, table.id)
       .where(sql`${table.status} = 'pending'`),
+    index("tool_action_requests_approved_idx").on(table.id).where(sql`${table.status} = 'approved'`),
     index("tool_action_requests_invocation_idx").on(table.invocationId),
     index("tool_action_requests_issue_idx").on(table.companyId, table.issueId),
   ],

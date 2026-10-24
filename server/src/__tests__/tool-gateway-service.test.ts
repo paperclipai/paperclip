@@ -56,6 +56,7 @@ import {
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerToolReviewRecoveryWork } from "../services/tool-review-recovery-work.js";
 import { registerToolReviewExpiryWork } from "../services/tool-review-expiry-work.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
@@ -209,7 +210,7 @@ function runSessionInput(company: IdRef, agent: IdRef, run: IdRef): Parameters<R
 describeEmbeddedPostgres("tool gateway service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let stopExpiryWorker: (() => Promise<void>) | undefined;
+  let stopReviewWorker: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
@@ -220,7 +221,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await stopExpiryWorker?.(); stopExpiryWorker = undefined;
+    await stopReviewWorker?.(); stopReviewWorker = undefined;
     await clearFixtures();
   });
 
@@ -267,7 +268,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       await db.insert(toolPolicies).values(reviewNotePolicyRow(fixture.company));
       gateway = createTestToolGatewayService(db);
       draining = false; errors.length = 0;
-      stopExpiryWorker = stopWorker;
+      stopReviewWorker = stopWorker;
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
     });
     async function stopWorker() {
@@ -308,6 +309,191 @@ describeEmbeddedPostgres("tool gateway service", () => {
         .toMatchObject({ status: "failed", errorCode: "action_expired" });
       expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
     }
+
+    describe("approved review recovery worker", () => {
+      async function startRecovery() {
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+          canReconcile: () => true, onError: error => errors.push(error) });
+        await registerToolReviewRecoveryWork(coordinator, gateway, () => !draining).ready;
+      }
+      const approve = (pending: Awaited<ReturnType<typeof request>>, source = db) => commitToolActionReview(source, {
+        companyId: fixture.company.id, actionRequestId: pending.id, decision: "approved", actor: { userId: "board" },
+      });
+      async function executed(pending: Awaited<ReturnType<typeof request>>) {
+        expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe("executed");
+        expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0].status).toBe("succeeded");
+      }
+
+      it("is quiet while configured idle and executes a committed approval once", async () => {
+        await startRecovery(); await quiet();
+        const pending = await request(); await approve(pending); await settle();
+        await executed(pending); await quiet();
+        expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toHaveLength(1);
+      });
+
+      it("reconstructs a saved approved action after restart", async () => {
+        const pending = await request(); await approve(pending);
+        await startRecovery(); await settle(); await executed(pending); await quiet();
+      });
+
+      it("retries a failed approval dispatch only while the approved action remains unresolved", async () => {
+        const pending = await request(); await approve(pending);
+        const recover = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Recovery dependency unavailable"));
+        await startRecovery();
+        expect(recover).toHaveBeenCalledTimes(1); expect(coordinator!.nextWakeAt()).not.toBeNull();
+        await settle(10_000); expect(recover).toHaveBeenCalledTimes(1);
+        recover.mockRestore(); await settle(); await executed(pending); await quiet();
+      });
+
+      it("keeps deliberately inert legacy approvals quiet", async () => {
+        const pending = await request();
+        await db.update(toolActionRequests).set({ signedArguments: signToolArguments({
+          invocationId: pending.invocationId, toolName: "mcp-remote-fixture:update_note",
+          canonicalArguments: canonicalToolArguments({ noteId: "legacy", body: "inert" }),
+          signingSecret: testToolActionSigningSecret,
+        }) }).where(eq(toolActionRequests.id, pending.id));
+        await approve(pending); await startRecovery(); await quiet();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("approved");
+        expect((await db.select().from(toolInvocations))[0].status).toBe("awaiting_approval");
+      });
+
+      it.each([false, true])("waits for the outer approval transaction (rollback %s)", async rollback => {
+        await startRecovery(); const pending = await request();
+        let release!: () => void, staged!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const ready = new Promise<void>(resolve => { staged = resolve; });
+        const aborted = new Error("approval rollback fixture");
+        const writing = db.transaction(async tx => {
+          await approve(pending, tx as unknown as typeof db); staged(); await gate;
+          if (rollback) throw aborted;
+        }).catch(error => { if (error !== aborted) throw error; });
+        await Promise.race([ready, writing]);
+        try {
+          await vi.advanceTimersByTimeAsync(60_000);
+          expect((await db.select().from(toolActionRequests))[0].status).toBe("pending");
+        } finally { release(); }
+        await writing; await settle();
+        if (rollback) expect((await db.select().from(toolActionRequests))[0].status).toBe("pending");
+        else await executed(pending);
+        await quiet();
+      });
+
+      it("retains the first approval during drain without passive queries", async () => {
+        await startRecovery(); await quiet(); draining = true;
+        const pending = await request(); await approve(pending); await settle();
+        const reads = vi.spyOn(db, "select");
+        await settle(60 * 60_000); expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+        draining = false; await settle(); await executed(pending); await quiet();
+      });
+
+      async function testRequest(provider: NonNullable<ToolGatewayServiceOptions["remoteHttpRequest"]>) {
+        await db.insert(companyMemberships).values({ companyId: fixture.company.id, principalType: "user",
+          principalId: "board", status: "active", membershipRole: "owner" });
+        const remote = await createRemoteMcpToolFixture(db, fixture.company.id);
+        await db.update(toolCatalogEntries).set({ isReadOnly: false, riskLevel: "write" })
+          .where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
+        await db.insert(toolPolicies).values({ companyId: fixture.company.id, name: "Review connected writes",
+          policyType: "require_approval", priority: 10, selectors: { connectionId: remote.connection.id } });
+        gateway = createTestToolGatewayService(db, { remoteHttpRequest: provider });
+        const result = await gateway.executeTestCall({ companyId: fixture.company.id, connectionId: remote.connection.id,
+          agentId: fixture.agent.id, userId: "board", toolName: "needs_input", parameters: { value: "reviewed" } });
+        expect(result.decision).toBe("ask_first");
+        const [pending] = await db.select().from(toolActionRequests);
+        return { pending, remote };
+      }
+      function providerFixture() {
+        let release!: () => void, entered!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const started = new Promise<void>(resolve => { entered = resolve; });
+        const provider = vi.fn(async (_url, init) => {
+          const payload = JSON.parse(String(init.body));
+          expect(payload.method).toBe("tools/call");
+          entered(); await gate;
+          return Response.json({ jsonrpc: "2.0", id: payload.id,
+            result: { content: [{ type: "text", text: "Saved once" }] } });
+        });
+        return { provider, release, started };
+      }
+
+      it.each(["foreground", "recovery"] as const)("claims a Test-tab action once when %s wins", async winner => {
+        const remoteCall = providerFixture();
+        const { pending } = await testRequest(remoteCall.provider);
+        let running: Promise<unknown>;
+        if (winner === "foreground") {
+          await startRecovery();
+          running = gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+        } else {
+          await approve(pending);
+          running = startRecovery();
+        }
+        await Promise.race([remoteCall.started, running]);
+        try {
+          await vi.advanceTimersByTimeAsync(60_000);
+          await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+          expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+        } finally { remoteCall.release(); }
+        await running; await settle(); await executed(pending); await quiet();
+        expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+      });
+
+      it("repairs completed Test-tab history without sending the request again", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider);
+        await gateway.approveActionRequest({ companyId: fixture.company.id, actionRequestId: pending.id, actor: { userId: "board" } });
+        await executed(pending);
+        await db.update(toolActionRequests).set({ status: "approved", signedArguments: "unreadable-old-signature" })
+          .where(eq(toolActionRequests.id, pending.id));
+        remoteCall.provider.mockClear();
+        await startRecovery(); await settle(); await executed(pending); await quiet();
+        expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+
+      it("does not replay an interrupted legacy Test-tab invocation", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider);
+        await approve(pending);
+        await db.update(toolInvocations).set({ status: "executing", startedAt: new Date(Date.now() - 11 * 60_000) })
+          .where(eq(toolInvocations.id, pending.invocationId));
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolActionRequests))[0].status).toBe("executing");
+        await gateway.sweepActionReviews({ includeApproved: false, includeExpiry: false });
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
+        await quiet(); expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+
+      it("does not replay a Test-tab call when persisting its external result fails", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending } = await testRequest(remoteCall.provider);
+        await approve(pending);
+        await db.execute(sql`create function sleep_review_fail() returns trigger language plpgsql as $$
+          begin raise exception 'approval result fixture failure'; end $$`);
+        await db.execute(sql`create trigger sleep_review_fail before update on tool_action_requests
+          for each row when (new.status in ('executed', 'failed')) execute function sleep_review_fail()`);
+        try {
+          await startRecovery();
+          expect((await db.select().from(toolActionRequests))[0].status).toBe("executing");
+          expect((await db.select().from(toolInvocations))[0].status).toBe("executing");
+          expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+        } finally {
+          await db.execute(sql`drop trigger sleep_review_fail on tool_action_requests`);
+        }
+        await settle();
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
+        await gateway.sweepActionReviews({ includeApproved: false, includeExpiry: false });
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
+        await quiet(); expect(remoteCall.provider).toHaveBeenCalledTimes(1);
+      });
+
+      it("revalidates the reviewed Test-tab target before recovery dispatch", async () => {
+        const remoteCall = providerFixture(); remoteCall.release();
+        const { pending, remote } = await testRequest(remoteCall.provider);
+        await approve(pending);
+        await db.update(toolCatalogEntries).set({ versionHash: "changed-after-review" }).where(eq(toolCatalogEntries.id, remote.catalogEntry.id));
+        await startRecovery(); await settle();
+        expect((await db.select().from(toolInvocations))[0]).toMatchObject({ status: "failed", errorCode: "approved_tool_target_changed" });
+        await quiet(); expect(remoteCall.provider).not.toHaveBeenCalled();
+      });
+    });
 
     it("is quiet when configured idle, wakes on signing, expires the review and card, then stays quiet with history", async () => {
       await start(); await quiet();
@@ -726,13 +912,13 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await expect(gateway.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "expire" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [request] = await db.select().from(toolActionRequests);
     await db.update(toolActionRequests).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolActionRequests.id, request.id));
-    await db.insert(toolActionRequests).values(Array.from({ length: 100 }, (_, i) => ({
+    await db.insert(toolActionRequests).values(Array.from({ length: 101 }, (_, i) => ({
       ...request, id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
       interactionId: null, status: "approved" as const,
     })));
     const recover = vi.spyOn(gateway, "approveActionRequest").mockRejectedValue(new Error("Unavailable approval dependency"));
-    expect(await gateway.sweepActionReviews()).toEqual({ scanned: 101 });
-    expect(recover).toHaveBeenCalledTimes(100);
+    expect(await gateway.sweepActionReviews()).toEqual({ scanned: 102 });
+    expect(recover).toHaveBeenCalledTimes(101);
     const [settled] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
     expect(settled.status).toBe("expired");
   });

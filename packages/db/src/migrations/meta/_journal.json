@@ -2647,6 +2647,13 @@
       "when": 1792861791949,
       "tag": "0379_narrow_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 380,
+      "version": "7",
+      "when": 1792863024087,
+      "tag": "0380_funny_adam_warlock",
+      "breakpoints": true
     }
   ]
 }

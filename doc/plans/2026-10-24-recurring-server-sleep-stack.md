@@ -18,7 +18,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Pending |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
-| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), Greptile 5/5 at `c5c53fc43f`, fresh CI running; pending tool-review expiry implemented on slice 04; other review duties pending |
+| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret proposals: [#17446](https://github.com/paperclipai/paperclip/pull/17446), checks passed at `d41590ac0e`; gateway credentials: [#17450](https://github.com/paperclipai/paperclip/pull/17450), Greptile 5/5 at `c5c53fc43f`, fresh CI running; pending tool-review expiry: [#17453](https://github.com/paperclipai/paperclip/pull/17453), local verification passed and CI/review running; other review duties pending |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
@@ -117,3 +117,65 @@ index, applies/replays its migration, and preserves approval-time rejection and
 separate approved/executing/projection recovery. Workspace typecheck/build and all 92 existing gateway acceptance tests also
 passed. The first acceptance command matched no files; the corrected
 `tool-gateway.test.ts` selection passed. Fresh PR CI/review remains required.
+
+
+## Next owner audit: approved tool-action recovery
+
+The next branch is `codex/sleep-05-approved-tool-recovery`, based on pending
+expiry PR #17453 at `ce6a260a83`. Keep this separate from interrupted execution
+and terminal projection repair. The public combined sweep remains compatible.
+
+- `commitToolActionReview` and accepted-interaction inference in the gateway are
+  approved-state producers. Existing notification ownership from slice 04 can
+  carry the new duty without adding another wrapper around callers.
+- Agent execute-on-approve uses an atomic approved-to-executing claim before
+  provider execution. Keep that claim and all current authorization, signed
+  argument, current-target, identity, and issue-state checks in the gateway.
+- Approved history is not uniformly executable. Legacy signed arguments without
+  `executionOnApprove` are deliberately inert. The payload can be encrypted;
+  shared scheduling must not decode it or inspect private provider fields.
+- Board Test-tab invocations are a separate execution origin. The normal fresh
+  approval calls `runApprovedTestInvocation`, but the already-approved branch
+  currently skips test-origin execution. Test execution can leave the request
+  approved while the invocation holds the completed result. Do not treat those
+  completed rows as perpetual unfinished work.
+- Before driving test-origin recovery, establish the same single-execution
+  claim on both foreground and recovery paths. The existing test helper does
+  not claim the request before provider dispatch. Simply invoking it from a
+  new worker would risk duplicate effects during foreground/recovery races.
+- Distinguish saved completed outcomes, never-dispatched approved work, and
+  interrupted execution with unknown outcomes. Known completed provider results
+  must not be converted to unknown-outcome failures because another projection
+  write was interrupted. Retain quarantine for actually uncertain calls.
+- Concrete unresolved approval work may retain a retry; configured idle,
+  terminal invocation history, and deliberately inert legacy approvals must
+  not cause empty recurring scans. Preserve restart reconstruction and all
+  supported producer paths, including transitions that finish an approved row.
+
+This is an audit, not an implementation or readiness claim. Tests must exercise
+real approval producers, foreground/recovery contention, provider failure,
+commit/rollback, legacy inert approvals, completed Test-tab history, and actual
+unfinished Test-tab recovery before the next PR is ready.
+
+Current parent CI note: #17450 at `c5c53fc43f` has Greptile 5/5. Its server shard
+10/12 failed the unchanged login-cleanup consume test waiting for an idle hold.
+All 16 login-cleanup tests passed locally on recheck. The run remains active;
+an attempted single-job rerun was rejected as not rerunnable. Recheck after the
+run finishes before requesting its one justified retry. Do not report it green.
+
+
+Slice 05 implementation now separates approved recovery from the aggregate tick.
+The existing review notification boundary wakes it after outer commit. Legacy
+inert approvals and completed Test-tab history become quiet; unresolved work
+retains a retry. Test-tab foreground and recovery share a claim and atomic outcome
+settlement. No provider call occurs inside that transaction. See
+[approved recovery](../idle-approved-tool-recovery.md). Local service/startup
+verification passes 122 tests, gateway acceptance passes 92, and workspace
+typecheck/build pass. Paging and outcome-failure tests passed again after their
+final strengthening. Full CI/review is not yet complete.
+
+Parent CI follow-up: #17450's completed run was retried once for its unchanged
+login-cleanup timeout after all 16 local tests passed. #17453 has a Runner
+prepared-launch close failure. Seven focused local Runner cases also fail, so
+this is under investigation rather than assumed flaky. No retry of that run has
+been requested. Neither parent is reported green without fresh evidence.
