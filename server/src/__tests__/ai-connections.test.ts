@@ -1084,7 +1084,7 @@ describe("managed AI connections", () => {
     const resumed = await prepareManagedAiRuntime(db, runInput);
     const peer = await prepareManagedAiRuntime(db, { ...runInput, agentId: randomUUID() });
     try {
-      expect(resumed.home).not.toBe(first.home);
+      expect(resumed.home).toBe(first.home);
       expect(peer.home).not.toBe(resumed.home);
       const transcript = path.join(String(resumed.config.env.GROK_HOME), "sessions", "history.json");
       // A separate same-UID process can bypass 0700. It must find no restored
