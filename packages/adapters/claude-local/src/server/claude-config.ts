@@ -19,6 +19,8 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { classifyThrownErrorClass, logSandboxProbeDiagnostic } from "./probe-diagnostics.js";
 
+export const DEFAULT_CLAUDE_HELLO_PROBE_TIMEOUT_SEC = 90;
+
 const SEEDED_SHARED_FILES = ["settings.json", "CLAUDE.md"] as const;
 
 interface SeedFile {

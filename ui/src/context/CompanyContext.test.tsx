@@ -153,6 +153,38 @@ describe("resolveBootstrapCompanySelection", () => {
       storedCompanyId: null,
     })).toBe("company-1");
   });
+
+  it("skips a paused stored company and opens Shepard Solutions", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [
+        { id: "logistics", name: "Logistics", status: "paused" },
+        { id: "operations", name: "Operations", status: "active" },
+        { id: "shepard", name: "Shepard Solutions", status: "active" },
+      ],
+      sidebarCompanies: [
+        { id: "logistics", name: "Logistics", status: "paused" },
+        { id: "operations", name: "Operations", status: "active" },
+        { id: "shepard", name: "Shepard Solutions", status: "active" },
+      ],
+      selectedCompanyId: null,
+      storedCompanyId: "logistics",
+    })).toBe("shepard");
+  });
+
+  it("keeps the company selected during this visit, including a paused one", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [
+        { id: "logistics", name: "Logistics", status: "paused" },
+        { id: "shepard", name: "Shepard Solutions", status: "active" },
+      ],
+      sidebarCompanies: [
+        { id: "logistics", name: "Logistics", status: "paused" },
+        { id: "shepard", name: "Shepard Solutions", status: "active" },
+      ],
+      selectedCompanyId: "logistics",
+      storedCompanyId: "logistics",
+    })).toBe("logistics");
+  });
 });
 
 describe("shouldClearStoredCompanySelection", () => {

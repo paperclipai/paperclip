@@ -476,6 +476,17 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
   });
 
+  it.each([
+    ["the default", {}, 90],
+    ["an explicit override", { helloProbeTimeoutSec: 120 }, 120],
+  ])("gives a non-sandbox hello probe %s timeout", async (_label, override, expectedTimeoutSec) => {
+    probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
+    await probeClaudeAcpSandboxLogin({ config: { engine: "acp", ...override }, target: sshTarget });
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    const call = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as unknown[];
+    expect((call[4] as { timeoutSec: number }).timeoutSec).toBe(expectedTimeoutSec);
+  });
+
   it("spawns the trusted resolved claude and drops hostile caller env on a local probe", async () => {
     probeResult.value = { exitCode: 0, stdout: helloStdout, stderr: "", timedOut: false };
     process.env.HTTPS_PROXY = "http://trusted-proxy:8443";
