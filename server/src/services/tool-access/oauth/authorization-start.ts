@@ -422,6 +422,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       createdByActorId: binding.actorId,
       createdBySessionId: binding.sessionId,
       subjectUserId: authorizationSubjectUserId,
+      subjectAgentId: authorizationSubjectAgentId,
       requestedScopes: authorizationScopes,
       returnTo: input.returnTo,
       issueId: intentLink?.issueId ?? input.issueId,

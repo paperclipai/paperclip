@@ -414,6 +414,7 @@ export function accessService(db: Db) {
     principalType: PrincipalType,
     principalId: string,
     permissionKey: PermissionKey,
+    scope?: Record<string, unknown> | null,
   ): Promise<boolean> {
     return authorization.decidePrincipalGrant({
       companyId,
@@ -421,6 +422,7 @@ export function accessService(db: Db) {
       principalId,
       permissionKey,
       action: permissionKey,
+      scope,
     }).then((decision) => decision.allowed);
   }
 

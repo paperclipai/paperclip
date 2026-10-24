@@ -616,7 +616,11 @@ function connectorEnrollmentPrincipal(req: Request): string {
     return { unrestricted: false, role, isViewer: role === "viewer", isActive };
   }
 
-  async function isToolConnectionManagerQuiet(req: Request, companyId: string) {
+  async function isToolConnectionManagerQuiet(
+    req: Request,
+    companyId: string,
+    scope?: Record<string, unknown> | null,
+  ) {
     const membership = toolMembershipRole(req, companyId);
     if (membership.unrestricted) return true;
     if (!membership.isActive || membership.isViewer) return false;
@@ -626,6 +630,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       "user",
       req.actor.userId,
       "tools:manage_connections",
+      scope,
     ));
   }
 
@@ -1346,7 +1351,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const pendingConnection = await svc.getConnection(pendingState.connectionId, pendingState.companyId);
     const pendingConnectionIntent = await isConnectionIntent(pendingState.interactionId);
     if (!pendingState.subjectUserId) {
-      if (!await isToolConnectionManagerQuiet(req, pendingConnection.companyId)) {
+      if (!await isToolConnectionManagerQuiet(
+        req,
+        pendingConnection.companyId,
+        pendingState.subjectAgentId
+          ? { targetAgentId: pendingState.subjectAgentId }
+          : undefined,
+      )) {
         throw forbidden(ORGANIZATION_GRANT_DENIAL_REASON);
       }
     } else if (pendingState.subjectUserId === req.actor.userId) {
