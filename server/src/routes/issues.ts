@@ -4433,6 +4433,12 @@ export function issueRoutes(
     return value === true || value === "true" || value === "1";
   }
 
+  function firstQueryString(value: unknown): string | undefined {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && typeof value[0] === "string") return value[0];
+    return undefined;
+  }
+
   function parseOptionalBooleanQuery(value: unknown) {
     if (value === undefined) return undefined;
     if (value === true || value === "true" || value === "1") return true;
@@ -8257,14 +8263,10 @@ export function issueRoutes(
       });
       return;
     }
-    const assigneeUserFilterRaw = req.query.assigneeUserId as
-      string | undefined;
-    const touchedByUserFilterRaw = req.query.touchedByUserId as
-      string | undefined;
-    const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as
-      string | undefined;
-    const unreadForUserFilterRaw = req.query.unreadForUserId as
-      string | undefined;
+    const assigneeUserFilterRaw = firstQueryString(req.query.assigneeUserId);
+    const touchedByUserFilterRaw = firstQueryString(req.query.touchedByUserId);
+    const inboxArchivedByUserFilterRaw = firstQueryString(req.query.inboxArchivedByUserId);
+    const unreadForUserFilterRaw = firstQueryString(req.query.unreadForUserId);
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -8452,23 +8454,21 @@ export function issueRoutes(
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: firstQueryString(req.query.participantAgentId),
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
-      originKind: req.query.originKind as string | undefined,
-      originKindPrefix: req.query.originKindPrefix as string | undefined,
-      originId: req.query.originId as string | undefined,
+      projectId: firstQueryString(req.query.projectId),
+      workspaceId: firstQueryString(req.query.workspaceId),
+      executionWorkspaceId: firstQueryString(req.query.executionWorkspaceId),
+      parentId: firstQueryString(req.query.parentId ?? req.query.parentIssueId),
+      descendantOf: firstQueryString(req.query.descendantOf),
+      createdFromIssueId: firstQueryString(req.query.createdFromIssueId),
+      labelId: firstQueryString(req.query.labelId),
+      originKind: firstQueryString(req.query.originKind),
+      originKindPrefix: firstQueryString(req.query.originKindPrefix),
+      originId: firstQueryString(req.query.originId),
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" ||
         req.query.includeRoutineExecutions === "1",
@@ -8488,11 +8488,11 @@ export function issueRoutes(
       creationVisibilityUserId: includeParticipatedTasks === true && req.actor.type === "board" ? req.actor.userId : undefined,
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
       hasPlanDocument,
-      q: req.query.q as string | undefined,
+      q: firstQueryString(req.query.q),
       limit,
       offset,
       sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
-      afterId: req.query.afterId as string | undefined,
+      afterId: firstQueryString(req.query.afterId),
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
     };
@@ -8690,21 +8690,19 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
-      assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
-      assigneeUserId: req.query.assigneeUserId as string | undefined,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
-      originKind: req.query.originKind as string | undefined,
-      originKindPrefix: req.query.originKindPrefix as string | undefined,
-      originId: req.query.originId as string | undefined,
+      assigneeAgentId: firstQueryString(req.query.assigneeAgentId),
+      participantAgentId: firstQueryString(req.query.participantAgentId),
+      assigneeUserId: firstQueryString(req.query.assigneeUserId),
+      projectId: firstQueryString(req.query.projectId),
+      workspaceId: firstQueryString(req.query.workspaceId),
+      executionWorkspaceId: firstQueryString(req.query.executionWorkspaceId),
+      parentId: firstQueryString(req.query.parentId ?? req.query.parentIssueId),
+      descendantOf: firstQueryString(req.query.descendantOf),
+      createdFromIssueId: firstQueryString(req.query.createdFromIssueId),
+      labelId: firstQueryString(req.query.labelId),
+      originKind: firstQueryString(req.query.originKind),
+      originKindPrefix: firstQueryString(req.query.originKindPrefix),
+      originId: firstQueryString(req.query.originId),
       includeRoutineExecutions:
         req.query.includeRoutineExecutions === "true" ||
         req.query.includeRoutineExecutions === "1",
@@ -8717,7 +8715,7 @@ export function issueRoutes(
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
       hasPlanDocument,
-      q: req.query.q as string | undefined,
+      q: firstQueryString(req.query.q),
     } as const;
 
     if (!(await actorCanReadCompanyScope(req, companyId))) {
