@@ -10,6 +10,7 @@ export const SETUP_CREDENTIAL_KEYS: Record<string, string> = {
   cursor_cloud: "CURSOR_API_KEY",
   gemini_local: "GEMINI_API_KEY",
   kimi_local: "KIMI_MODEL_API_KEY",
+  muse_code_local: "META_API_KEY",
   hermes_gateway: "API_SERVER_KEY",
 };
 
@@ -36,6 +37,8 @@ export function setupEfforts(adapter: string, model = ""): string[] {
         .filter(Boolean);
     case "pi_local":
       return ["off", "minimal", "low", "medium", "high", "xhigh"];
+    case "muse_code_local":
+      return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
     case "grok_local":
       return [...grokLocalReasoningEffortsForModel(model)];
     default:
@@ -50,6 +53,8 @@ export const SETUP_LOGIN_HINTS: Record<string, string> = {
     "Use a Gemini API key, or an existing supported Gemini CLI login on the selected environment's host.",
   kimi_local:
     "Use a Kimi API key and model settings below, or run kimi login on the selected environment's host.",
+  muse_code_local:
+    "Use a Meta API key, or run muse login on the selected environment's host.",
   grok_local:
     "Grok Build uses its CLI sign-in. Run grok login on the selected environment's host, then test the connection here.",
   hermes_local:

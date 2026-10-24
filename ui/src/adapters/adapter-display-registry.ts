@@ -119,6 +119,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "OpenCode multi-provider harness",
     icon: OpenCodeLogoIcon,
   },
+  muse_code_local: {
+    label: "Muse",
+    description: "Muse CLI harness",
+    icon: Sparkles,
+  },
   pi_local: {
     label: "Pi",
     description: "Pi harness",

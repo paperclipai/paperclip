@@ -556,7 +556,7 @@ describe("agent test-environment route", () => {
     expect(testEnvironmentSpy).not.toHaveBeenCalled();
   });
 
-  it.each(["CURSOR_API_KEY", "KIMI_MODEL_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY"])("accepts %s as a probe-only credential", async (key) => {
+  it.each(["CURSOR_API_KEY", "KIMI_MODEL_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY", "META_API_KEY"])("accepts %s as a probe-only credential", async (key) => {
     const app = await createApp();
     const res = await request(app)
       .post("/api/companies/company-1/adapters/external_test/test-environment")

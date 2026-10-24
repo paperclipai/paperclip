@@ -116,6 +116,17 @@ import {
   models as openCodeModels,
 } from "@paperclipai/adapter-opencode-local";
 import {
+  execute as museCodeExecute,
+  listMuseCodeSkills,
+  syncMuseCodeSkills,
+  testEnvironment as museCodeTestEnvironment,
+  sessionCodec as museCodeSessionCodec,
+} from "@paperclipai/adapter-muse-code-local/server";
+import {
+  agentConfigurationDoc as museCodeAgentConfigurationDoc,
+  models as museCodeModels,
+} from "@paperclipai/adapter-muse-code-local";
+import {
   execute as openclawGatewayExecute,
   testEnvironment as openclawGatewayTestEnvironment,
 } from "@paperclipai/adapter-openclaw-gateway/server";
@@ -915,6 +926,23 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const museCodeLocalAdapter: ServerAdapterModule = {
+  type: "muse_code_local",
+  runtimeToolDelivery: "environment",
+  execute: museCodeExecute,
+  testEnvironment: museCodeTestEnvironment,
+  listSkills: listMuseCodeSkills,
+  syncSkills: syncMuseCodeSkills,
+  sessionCodec: museCodeSessionCodec,
+  models: museCodeModels,
+  sessionManagement: getAdapterSessionManagement("muse_code_local") ?? undefined,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: museCodeAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   runtimeToolDelivery: "environment",
@@ -954,6 +982,7 @@ function registerBuiltInAdapters() {
     codexLocalAdapter,
     paperclipRunnerAdapter,
     openCodeLocalAdapter,
+    museCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
