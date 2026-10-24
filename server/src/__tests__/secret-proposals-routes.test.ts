@@ -221,6 +221,30 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     return app;
   }
 
+  it("returns 422, not 500, when a proposal omits a required field", async () => {
+    const fixture = await seedRun();
+
+    const secretMissingJustification = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", name: "dev/missing/justification", value: "a-32-character-or-longer-secret", description: "x" });
+    expect(secretMissingJustification.status).toBe(422);
+
+    const secretMissingName = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", value: "a-32-character-or-longer-secret", justification: "Needed by the task" });
+    expect(secretMissingName.status).toBe(422);
+
+    const bindingMissingJustification = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "binding", sourceConfigPath: "env.SOURCE_TOKEN", configPath: "env.TARGET_TOKEN" });
+    expect(bindingMissingJustification.status).toBe(422);
+
+    const complete = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", name: "dev/missing/ok", value: "a-32-character-or-longer-secret", justification: "Needed by the task" });
+    expect(complete.status).toBe(201);
+  });
+
   it("requires company admin access to reject secret proposals", async () => {
     const fixture = await seedRun();
     const proposed = await request(createAgentApp(fixture))
