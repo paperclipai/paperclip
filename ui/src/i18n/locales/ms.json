@@ -4,6 +4,10 @@
       "title": "Cipta syarikat pertama anda",
       "description": "Mulakan dengan mencipta syarikat.",
       "newCompany": "Syarikat Baharu"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

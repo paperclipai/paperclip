@@ -4,6 +4,10 @@
       "title": "మీ మొదటి కంపెనీని సృష్టించండి",
       "description": "కంపెనీని సృష్టించడం ద్వారా ప్రారంభించండి.",
       "newCompany": "కొత్త కంపెనీ"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

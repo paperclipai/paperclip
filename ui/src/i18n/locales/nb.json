@@ -4,6 +4,10 @@
       "title": "Opprett ditt første selskap",
       "description": "Kom i gang ved å opprette et selskap.",
       "newCompany": "Nytt selskap"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }
