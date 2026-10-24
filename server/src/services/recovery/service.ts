@@ -104,6 +104,7 @@ import {
   legacyExecutionNeedsReconciliationWithEvidence,
   terminalizeLegacyExecution,
 } from "../legacy-execution-recovery.js";
+import { selectDecidedReviewSource } from "../decided-review-reassignment.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isExternalChatPresentationContext } from "../heartbeat-run-summary.js";
 import {
@@ -4751,13 +4752,21 @@ export function recoveryService(
         continue;
       }
 
+      // A reviewer stopped after recording its decision stays the recovery
+      // source while its later attempts are only unused, parked admissions.
+      const decidedReviewSource =
+        issue.status === "in_review" && participantAgentId
+          ? await selectDecidedReviewSource(db, issue)
+          : null;
       const participantLatestRunForRecovery =
         issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(
-              issue.companyId,
-              issue.id,
-              participantAgentId,
-            )
+          ? decidedReviewSource?.kind === "selected"
+            ? decidedReviewSource.source
+            : await getLatestIssueRunForAgent(
+                issue.companyId,
+                issue.id,
+                participantAgentId,
+              )
           : null;
       const executionRecoverySource =
         issue.status === "in_review"

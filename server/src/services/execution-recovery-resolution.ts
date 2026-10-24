@@ -542,6 +542,7 @@ export async function settleUnrecoverableExecutions(
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
+        let reviewHoldBlock = action.evidence.reviewHoldBlock;
         if (current) {
           const [projected] = await tx
             .update(issues)
@@ -561,6 +562,15 @@ export async function settleUnrecoverableExecutions(
               run.errorCode === "server_shutdown_interrupted" && claimedAdapterType(run) === "paperclip_runner") {
             nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
+          // Record which pending review this projection blocked. It grants
+          // nothing by itself; a later status or owner change invalidates it.
+          const review = parseIssueExecutionState(task.executionState);
+          if (task.status === "in_review" && run.runtimeMode === "legacy" && review?.status === "pending" &&
+              review.currentStageType === "review" && review.currentParticipant?.type === "agent" &&
+              review.currentParticipant.agentId === run.agentId) {
+            reviewHoldBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: "in_review",
+              stageId: review.currentStageId, lastDecisionId: review.lastDecisionId };
+          }
         }
         await tx
           .update(issueRecoveryActions)
@@ -577,6 +587,7 @@ export async function settleUnrecoverableExecutions(
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
               ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
+              ...(reviewHoldBlock ? { reviewHoldBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,

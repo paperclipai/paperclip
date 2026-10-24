@@ -294,6 +294,11 @@ vi.mock("../services/native-runtime/native-safe-replacement.js", () => ({
   reconcileSafeNativeReplacements: vi.fn(async () => ({ scanned: 0, scheduled: 0 })),
 }));
 
+// Decided review continuation is exercised by its DB-backed suite.
+vi.mock("../services/decided-review-reassignment.js", () => ({
+  continueDecidedReviewReassignments: vi.fn(async () => ({ scanned: 0, woken: 0 })),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
