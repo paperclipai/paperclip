@@ -15730,6 +15730,7 @@ export function issueRoutes(
           previousAssigneeAgentId: existing.assigneeAgentId ?? null,
           nextAssigneeAgentId: issue.assigneeAgentId ?? null,
           blockerSetEdited: Array.isArray(req.body.blockedByIssueIds),
+          hasUnblockDescriptor: issue.unblockDescriptor != null,
           actorType: actor.actorType,
           actorAgentId: actor.agentId ?? null,
         });

@@ -685,6 +685,109 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     });
   });
 
+  it("counts a descriptor-parked dependent as skipped and emits no dependency wake", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    // The VOY-8946 / VOY-9110 shape: blocked on a judgement park, with its
+    // recorded blocker resolved anyway. The owner wake already went out
+    // (`issue_unblock_requested`); a resolved-dependency wake here can only
+    // queue a run that expires unstarted and re-arms on the next tick.
+    await db
+      .update(issues)
+      .set({ unblockDescriptor: { owner: { agentId }, action: "Wait for the upstream service to recover" } })
+      .where(eq(issues.id, blockedIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result).toMatchObject({
+      healed: 0,
+      descriptorParkedSkipped: 1,
+      terminalSkipped: 0,
+      issueIds: [],
+    });
+    expect(
+      await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+          ),
+        ),
+    ).toHaveLength(0);
+    // The blocker edge is untouched: this is a wake-gate, not a data change.
+    expect(
+      await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, blockedIssueId)),
+    ).toHaveLength(1);
+    expect(blockerIssueId).toBeTruthy();
+  });
+
+  it("keeps waking a relation-blocked dependent after the parked gate lands", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes();
+
+    expect(result).toMatchObject({
+      healed: 1,
+      descriptorParkedSkipped: 0,
+      terminalSkipped: 0,
+      issueIds: [blockedIssueId],
+    });
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+        ),
+      );
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0].agentId).toBe(agentId);
+    expect(blockerIssueId).toBeTruthy();
+
+    // The enqueue transaction stamps the wake target's status from the locked
+    // issue row. That stamp is the input for
+    // v_queued_run_expiry_by_wake_reason_status.
+    const runs = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.length).toBeGreaterThan(0);
+    expect(
+      runs.map(
+        (row: { contextSnapshot: unknown }) =>
+          (row.contextSnapshot as Record<string, unknown> | null)?.issueStatusAtEnqueue,
+      ),
+    ).toEqual(expect.arrayContaining(["blocked"]));
+  });
+
+  it("omits a descriptor-parked dependent from the route-time wakeable list", async () => {
+    const { agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const svc = issueService(db);
+
+    // Relation-blocked: the dependent is wakeable at route time.
+    expect((await svc.listWakeableBlockedDependents(blockerIssueId)).map((row) => row.id)).toEqual([
+      blockedIssueId,
+    ]);
+
+    await db
+      .update(issues)
+      .set({ unblockDescriptor: { owner: { agentId }, action: "Board decision on the vendor" } })
+      .where(eq(issues.id, blockedIssueId));
+
+    expect(await svc.listWakeableBlockedDependents(blockerIssueId)).toEqual([]);
+
+    // Clearing the park restores the route-time wake path.
+    await db.update(issues).set({ unblockDescriptor: null }).where(eq(issues.id, blockedIssueId));
+    expect((await svc.listWakeableBlockedDependents(blockerIssueId)).map((row) => row.id)).toEqual([
+      blockedIssueId,
+    ]);
+  });
+
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
     const { companyId, agentId, blockedIssueId, blockerIssueId } =
       await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });

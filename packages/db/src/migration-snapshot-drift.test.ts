@@ -11,6 +11,11 @@ import { generateDrizzleJson, generateMigration } from "drizzle-kit/api";
 // a column the schema never had. This test reproduces the diff `generate`
 // performs — schema modules versus newest snapshot — and fails when it is not
 // empty, so drift is caught in CI instead of inside someone else's migration.
+//
+// A SQL-only migration (a view, an index, a backfill) has no schema change for
+// the generator to record, so it carries no snapshot of its own. The newest
+// journal entry can therefore be newer than the newest snapshot file, and the
+// snapshot this test diffs against is the newest one that exists.
 
 const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
 const schemaDir = fileURLToPath(new URL("./schema", import.meta.url));
@@ -21,14 +26,21 @@ async function readNewestSnapshot(): Promise<{ file: string; snapshot: Record<st
   const journal = JSON.parse(
     await readFile(path.join(migrationsDir, "meta", "_journal.json"), "utf8"),
   ) as { entries: JournalEntry[] };
-  const newest = journal.entries.at(-1);
-  if (!newest) throw new Error("migration journal has no entries");
-  const file = `${String(newest.idx).padStart(4, "0")}_snapshot.json`;
-  const snapshot = JSON.parse(await readFile(path.join(migrationsDir, "meta", file), "utf8")) as Record<
-    string,
-    unknown
-  >;
-  return { file, snapshot };
+  if (journal.entries.length === 0) throw new Error("migration journal has no entries");
+  // Walk back from the newest journal entry to the newest one that owns a
+  // snapshot file (see the note at the top of this file).
+  for (const entry of [...journal.entries].reverse()) {
+    const file = `${String(entry.idx).padStart(4, "0")}_snapshot.json`;
+    try {
+      const snapshot = JSON.parse(
+        await readFile(path.join(migrationsDir, "meta", file), "utf8"),
+      ) as Record<string, unknown>;
+      return { file, snapshot };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error("no journal entry owns a snapshot file");
 }
 
 // drizzle.config.ts points drizzle-kit at every module in the schema directory,

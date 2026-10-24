@@ -29,6 +29,7 @@ import { Buffer } from "node:buffer";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { isExplicitContinuationRetryClaim } from "./explicit-continuation-retry-claim.js";
+import { classifyResolvedDependencyWakeTarget } from "./issue-dependency-wakeups.js";
 import { markdownToPlainText, parseMarkdown } from "chat";
 import { listExternalReviewWaits } from "./native-runtime/external-review-wait.js";
 import {
@@ -9238,6 +9239,7 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
           blockedTransitionAt: issues.blockedTransitionAt,
         })
         .from(issueRelations)
@@ -9252,11 +9254,20 @@ export function issueService(db: Db) {
         );
       if (candidates.length === 0) return [];
 
-      const wakeableCandidates = candidates.filter(
-        (candidate) =>
-          candidate.assigneeAgentId &&
-          !["backlog", "done", "cancelled"].includes(candidate.status),
-      );
+      // A `blocked` row that carries an unblock descriptor is parked on
+      // judgement, not on the dependency that just resolved. Its owner wake is
+      // `issue_unblock_requested` (routeParkedBlockDescriptor), delivered once
+      // per blocked cycle; a resolved-dependency run here can only expire
+      // unstarted. Classify with the same rule the periodic backstop uses so
+      // the two emit paths cannot drift.
+      const wakeableCandidates = candidates.filter((candidate) => {
+        if (!candidate.assigneeAgentId) return false;
+        if (candidate.status === "backlog") return false;
+        return classifyResolvedDependencyWakeTarget({
+          status: candidate.status,
+          hasUnblockDescriptor: candidate.unblockDescriptor != null,
+        }).emit;
+      });
       if (wakeableCandidates.length === 0) return [];
 
       // Defer to the unified readiness check so that a dependent only fires when

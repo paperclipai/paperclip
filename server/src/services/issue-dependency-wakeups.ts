@@ -23,10 +23,24 @@ export function shouldWakeOnRestoredBlockedDependency(input: {
   previousAssigneeAgentId: string | null;
   nextAssigneeAgentId: string | null;
   blockerSetEdited: boolean;
+  hasUnblockDescriptor: boolean;
   actorType: string;
   actorAgentId: string | null;
 }): boolean {
   if (input.nextStatus !== "blocked" || !input.nextAssigneeAgentId) return false;
+  // A row that carries an unblock descriptor is parked on judgement, so the
+  // dependency that just became ready is not what it waits for. Use the same
+  // rule as the other emit paths: the descriptor-owner wake
+  // (`issue_unblock_requested`) owns this row, and a resolved-dependency wake
+  // for it only queues a run that expires unstarted.
+  if (
+    !classifyResolvedDependencyWakeTarget({
+      status: input.nextStatus,
+      hasUnblockDescriptor: input.hasUnblockDescriptor,
+    }).emit
+  ) {
+    return false;
+  }
   const assigneeChanged = input.previousAssigneeAgentId !== input.nextAssigneeAgentId;
   if (input.previousStatus === "blocked" && !input.blockerSetEdited && !assigneeChanged) return false;
   const selfBlockedByAssignee =
@@ -63,6 +77,51 @@ const IDEMPOTENT_DEPENDENCY_WAKE_STATUS_SET = new Set<string>(IDEMPOTENT_DEPENDE
 const IN_FLIGHT_DEPENDENCY_WAKE_STATUS_SET = new Set<string>(IN_FLIGHT_DEPENDENCY_WAKE_STATUSES);
 
 export type IssueBlockersResolvedWakeCycleInput = Date | string | null | undefined;
+
+export type ResolvedDependencyWakeSuppression =
+  | "descriptor_parked"
+  | "terminal_status";
+
+export type ResolvedDependencyWakeTargetDecision = {
+  /** True when a resolved-dependency wake may be emitted for this target. */
+  emit: boolean;
+  /** Why the wake was withheld, or null when `emit` is true. */
+  suppression: ResolvedDependencyWakeSuppression | null;
+};
+
+/**
+ * Which issues may receive an `issue_blockers_resolved` wake.
+ *
+ * A dependency-resolved wake says "the thing that was holding this issue is
+ * done, go look again". That is true for a row blocked by `issueRelations`. It
+ * is not true for a row parked on judgement (`unblockDescriptor`): its wake is
+ * the descriptor-owner notification (`issue_unblock_requested`, delivered once
+ * per blocked cycle by routeParkedBlockDescriptor), and re-arming a
+ * resolved-dependency run for it produces a queued run that can only expire
+ * unstarted, forever, one rung per backstop tick.
+ *
+ * Measured 2026-10-22 on a live 2026.831.1 instance: 45 `issue_blockers_resolved`
+ * wakes in 8 h, with VOY-8946 and VOY-9110 each re-armed on an exact hourly
+ * ladder and every rung cancelled at the 60 min queue bound
+ * (`queued_run_expired`). Both rows already had their descriptor-owner wake
+ * (`blocked_owner_notified_at` set).
+ *
+ * Unknown statuses fail open: a new non-terminal status must not silently lose
+ * its dependency wake.
+ */
+export function classifyResolvedDependencyWakeTarget(input: {
+  status: string | null | undefined;
+  hasUnblockDescriptor: boolean;
+}): ResolvedDependencyWakeTargetDecision {
+  const status = typeof input.status === "string" ? input.status : null;
+  if (status === "done" || status === "cancelled") {
+    return { emit: false, suppression: "terminal_status" };
+  }
+  if (status === "blocked" && input.hasUnblockDescriptor === true) {
+    return { emit: false, suppression: "descriptor_parked" };
+  }
+  return { emit: true, suppression: null };
+}
 
 export type IssueBlockersResolvedReadyStateInput = {
   dependentIssueId: string;

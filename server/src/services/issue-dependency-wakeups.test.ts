@@ -4,6 +4,7 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   buildIssueBlockersResolvedWakeStateKey,
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
+  classifyResolvedDependencyWakeTarget,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "./issue-dependency-wakeups.js";
 
@@ -35,6 +36,56 @@ function dbWithWakes(rows: WakeRow[]): Db {
     },
   } as unknown as Db;
 }
+
+describe("classifyResolvedDependencyWakeTarget", () => {
+  it("withholds the wake for a descriptor-parked blocked row (VOY-8946 / VOY-9110 shape)", () => {
+    expect(
+      classifyResolvedDependencyWakeTarget({ status: "blocked", hasUnblockDescriptor: true }),
+    ).toEqual({ emit: false, suppression: "descriptor_parked" });
+  });
+
+  it("still wakes a relation-blocked row, which has no descriptor", () => {
+    expect(
+      classifyResolvedDependencyWakeTarget({ status: "blocked", hasUnblockDescriptor: false }),
+    ).toEqual({ emit: true, suppression: null });
+  });
+
+  it.each(["done", "cancelled"] as const)("withholds the wake for terminal status %s", (status) => {
+    expect(classifyResolvedDependencyWakeTarget({ status, hasUnblockDescriptor: false })).toEqual({
+      emit: false,
+      suppression: "terminal_status",
+    });
+    // Terminal wins over descriptor-parked: the row is past any wake.
+    expect(classifyResolvedDependencyWakeTarget({ status, hasUnblockDescriptor: true })).toEqual({
+      emit: false,
+      suppression: "terminal_status",
+    });
+  });
+
+  it.each(["todo", "backlog", "in_progress", "in_review"] as const)(
+    "emits for non-terminal status %s even with a parked descriptor",
+    (status) => {
+      expect(
+        classifyResolvedDependencyWakeTarget({ status, hasUnblockDescriptor: true }),
+      ).toEqual({ emit: true, suppression: null });
+    },
+  );
+
+  it("fails open for an unknown status", () => {
+    expect(
+      classifyResolvedDependencyWakeTarget({ status: "some_future_status", hasUnblockDescriptor: true }),
+    ).toEqual({ emit: true, suppression: null });
+  });
+
+  it("fails open when the status is missing", () => {
+    expect(classifyResolvedDependencyWakeTarget({ status: null, hasUnblockDescriptor: true })).toEqual(
+      { emit: true, suppression: null },
+    );
+    expect(
+      classifyResolvedDependencyWakeTarget({ status: undefined, hasUnblockDescriptor: false }),
+    ).toEqual({ emit: true, suppression: null });
+  });
+});
 
 describe("buildIssueBlockersResolvedWakeStateKey", () => {
   it("is identical for the same dependent, blockers, and blockedTransitionAt", () => {

@@ -3360,6 +3360,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
 
+          // The issue row is already locked and read here, so record the status
+          // this wake targeted while it is authoritative. `queued_run_expired`
+          // grouped by wake reason x status-at-enqueue is the counter that was
+          // previously reconstructed by hand from the run context's issueId and
+          // a query-time status read; it is read from
+          // v_queued_run_expiry_by_wake_reason_status (migration 0378).
+          enrichedContextSnapshot.issueStatusAtEnqueue = issue.status;
 
           if (
             worktreeExecutionCutoff &&

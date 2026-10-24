@@ -125,6 +125,7 @@ import {
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
+  classifyResolvedDependencyWakeTarget,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -5732,6 +5733,8 @@ export function recoveryService(
       healed: 0,
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
+      descriptorParkedSkipped: 0,
+      terminalSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -5776,6 +5779,8 @@ export function recoveryService(
             companyId: issues.companyId,
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
             blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
           })
@@ -5792,6 +5797,8 @@ export function recoveryService(
           companyId: issues.companyId,
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
           blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
         })
@@ -5864,6 +5871,25 @@ export function recoveryService(
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
         if (!agentId) continue;
+
+        // Classify before any readiness/dedup work. A descriptor-parked row is
+        // not waiting on this dependency — its owner wake is
+        // `issue_unblock_requested`, delivered once per blocked cycle — and
+        // re-arming a resolved-dependency wake for it only queues a run that
+        // expires unstarted and re-arms on the next tick. A terminal row is
+        // past the point where a dependency wake can mean anything.
+        const wakeTarget = classifyResolvedDependencyWakeTarget({
+          status: candidate.status,
+          hasUnblockDescriptor: candidate.unblockDescriptor != null,
+        });
+        if (!wakeTarget.emit) {
+          if (wakeTarget.suppression === "descriptor_parked") {
+            result.descriptorParkedSkipped += 1;
+          } else {
+            result.terminalSkipped += 1;
+          }
+          continue;
+        }
 
         const readiness = readinessMap.get(candidate.id);
         const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
@@ -5992,6 +6018,22 @@ export function recoveryService(
           );
         }
       }
+    }
+
+    // One aggregate line per tick, not one per suppressed row: a parked fleet
+    // can hold dozens of descriptor-parked dependents, and per-row logging is
+    // what made the original churn hard to see in the first place.
+    if (result.descriptorParkedSkipped > 0 || result.terminalSkipped > 0) {
+      logger.info(
+        {
+          descriptorParkedSkipped: result.descriptorParkedSkipped,
+          terminalSkipped: result.terminalSkipped,
+          source,
+          checked: result.checked,
+          candidateLimitSkipped: result.candidateLimitSkipped,
+        },
+        "issue graph liveness backstop suppressed resolved dependency wakes that cannot be satisfied",
+      );
     }
 
     if (result.healed > 0) {
