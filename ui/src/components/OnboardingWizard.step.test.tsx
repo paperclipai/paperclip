@@ -8,6 +8,11 @@ import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { ONBOARDING_AGENT_STEP } from "../lib/onboarding-route";
 
+vi.mock("../api/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/access")>();
+  return { ...actual, accessApi: { ...actual.accessApi, getCurrentBoardAccess: vi.fn(async () => ({ source: "session", isInstanceAdmin: true })) } };
+});
+
 /**
  * Which step the onboarding wizard *lands on*, and what is allowed to move it
  * afterwards.

@@ -25,6 +25,12 @@ pnpm paperclipai onboard
 
 Login required. Supports two exposure policies.
 
+### Organization creation on self-hosted instances
+
+Only instance administrators can create organizations. An owner or administrator role in an existing organization does not grant this permission. The UI hides creation actions until it confirms instance administrator access. The onboarding route shows an explanation when creation is unavailable, or a retry when the access check fails. Adding agents to an existing organization keeps its existing permission rules.
+
+Local implicit boards can still create organizations in `local_trusted` mode. Managed Cloud instances keep their Cloud creation flow.
+
 ### `authenticated` + `private`
 
 For private network access (Tailscale, VPN, LAN).
