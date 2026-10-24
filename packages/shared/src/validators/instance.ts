@@ -22,6 +22,32 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+function isAbsoluteTemplatePath(value: string): boolean {
+  // POSIX, home-relative, or Windows drive-qualified. The renderer rejects
+  // anything else, so reject it at save time instead of silently ignoring it.
+  return value.startsWith("/") || value.startsWith("~/") || /^[A-Za-z]:[\\/]/.test(value);
+}
+
+const defaultProjectWorkspacePathTemplateSchema = z
+  .string()
+  .max(1024)
+  .refine((value) => value.trim() === "" || /\{project_(name|slug|id)\}/.test(value), {
+    message: "Template must include {project_name}, {project_slug}, or {project_id}",
+  })
+  .refine((value) => {
+    const trimmed = value.trim();
+    if (trimmed === "") return true;
+    // Match the renderer: '.' and '..' segments cannot be resolved into a
+    // stable project folder, so reject them at save time instead of silently
+    // ignoring the setting later.
+    return isAbsoluteTemplatePath(trimmed)
+      && !trimmed.split(/[\\/]+/).some((segment) => segment === "." || segment === "..");
+  }, {
+    message: "Template must be an absolute path (or start with ~/) and must not contain '.' or '..' segments",
+  })
+  .nullable()
+  .optional();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
@@ -31,6 +57,9 @@ export const instanceGeneralSettingsSchema = z.object({
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
+  // Absolute template for a new project's primary workspace. Absent/empty
+  // keeps the Paperclip-managed checkout default.
+  defaultProjectWorkspacePathTemplate: defaultProjectWorkspacePathTemplateSchema,
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

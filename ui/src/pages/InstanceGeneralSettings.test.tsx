@@ -91,6 +91,31 @@ describe("InstanceGeneralSettings sign-out", () => {
       .find((button) => button.textContent?.trim() === "Sign out");
   }
 
+  it("saves the default project folder template", async () => {
+    await renderPage(SELF_HOSTED_HEALTH);
+
+    const input = container.querySelector<HTMLInputElement>(
+      'input[placeholder="/home/you/Workspaces/{project_name}"]',
+    );
+    expect(input).not.toBeNull();
+    flushSync(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(input, "/work/{project_slug}");
+      input?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const saveButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    flushSync(() => saveButton?.click());
+
+    await vi.waitFor(() =>
+      expect(mockInstanceSettingsApi.updateGeneral).toHaveBeenCalledWith(
+        { defaultProjectWorkspacePathTemplate: "/work/{project_slug}" },
+        expect.anything(),
+      ),
+    );
+  });
+
   it("uses the Cloud-managed top-level logout without calling local auth", async () => {
     await renderPage(CLOUD_HEALTH);
 

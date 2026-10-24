@@ -67,7 +67,10 @@ import {
 import { resolvePersistedGitWorkspaceSource } from "../persisted-workspace-source.js";
 import { verifiedRecordedIsolatedRemoteSource } from "../isolated-remote-workspace-source.js";
 import { issueService } from "../issues.js";
-import { projectService } from "../projects.js";
+import {
+  isApprovedDefaultProjectWorkspacePath,
+  projectService,
+} from "../projects.js";
 import {
   authorizationService,
   type AuthorizationActor,
@@ -584,11 +587,24 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   projectId: string;
   cwd: string | null;
   repoUrl: string | null;
+  repoRef?: string | null;
+  /** True when the stored cwd was created by the admin-controlled default folder template. */
+  cwdFromDefaultTemplate?: boolean;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    if (input.cwdFromDefaultTemplate) {
+      const materialized = await materializeDefaultProjectWorkspaceCwd({
+        cwd: configuredCwd,
+        repoUrl: readNonEmptyString(input.repoUrl),
+        repoRef: readNonEmptyString(input.repoRef),
+        resolveGitAuth: input.resolveGitAuth ?? null,
+        prepareLocalSource: input.prepareLocalSource,
+      });
+      if (materialized) return materialized;
+    }
     return { cwd: configuredCwd, warning: null };
   }
   return ensureManagedProjectWorkspace({
@@ -598,6 +614,41 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
     resolveGitAuth: input.resolveGitAuth ?? null,
     prepareLocalSource: input.prepareLocalSource,
   });
+}
+
+/**
+ * Materialize a missing cwd that workspace creation recorded as coming from the instance
+ * "default project folder" template. The server owns that metadata marker, so this is the only
+ * configured cwd the server may create, clone into, or repair. Any other missing cwd keeps the
+ * fail-closed behavior, and an existing path is never adopted or replaced here.
+ */
+async function materializeDefaultProjectWorkspaceCwd(input: {
+  cwd: string;
+  repoUrl: string | null;
+  repoRef: string | null;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
+  prepareLocalSource?: PrepareManagedLocalSource;
+}): Promise<{ cwd: string; warning: string | null } | null> {
+  if (await fs.lstat(input.cwd).catch(() => null)) return null;
+  const localSource = input.repoUrl ? localRepositoryPath(input.repoUrl) : null;
+  const guardLocalSource = localSource
+    ? await input.prepareLocalSource?.(localSource, input.cwd)
+    : undefined;
+  await guardLocalSource?.(input.cwd);
+  const result = await materializeManagedProjectWorkspace(input.cwd, {
+    repoUrl: input.repoUrl,
+    repoRef: input.repoRef,
+    localSource,
+    resolveGitAuth: input.resolveGitAuth ?? null,
+    ...(guardLocalSource
+      ? {
+        beforeCopy: guardLocalSource,
+        beforePublish: () => guardLocalSource(input.cwd),
+      }
+      : {}),
+  });
+  await guardLocalSource?.(input.cwd);
+  return result;
 }
 
 /**
@@ -704,6 +755,10 @@ export async function resolveAdditionalProjectWorkspace(
       projectId,
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
+      repoRef: workspace.repoRef,
+      cwdFromDefaultTemplate: isApprovedDefaultProjectWorkspacePath(
+        workspace.metadata as Record<string, unknown> | null,
+      ),
     });
     // A directory that exists but holds no content is not a realized workspace. Accept the row only
     // when the resolved directory has real content, so an empty directory never masks a missing one.
@@ -3545,6 +3600,10 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
               workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
+            repoRef: workspace.repoRef,
+            cwdFromDefaultTemplate: isApprovedDefaultProjectWorkspacePath(
+              workspace.metadata as Record<string, unknown> | null,
+            ),
             resolveGitAuth,
             prepareLocalSource: managedLocalSourceGuard(agent, issueId, readNonEmptyString(context.executionIdentityRunId)),
           });

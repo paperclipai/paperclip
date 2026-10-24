@@ -12,6 +12,7 @@ import { healthApi } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { ModeBadge } from "@/components/access/ModeBadge";
 import { Button } from "../components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -24,6 +25,7 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [defaultProjectWorkspacePathTemplate, setDefaultProjectWorkspacePathTemplate] = useState("");
 
   const signOutMutation = useSignOut();
 
@@ -39,6 +41,10 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
   });
+
+  useEffect(() => {
+    setDefaultProjectWorkspacePathTemplate(generalQuery.data?.defaultProjectWorkspacePathTemplate ?? "");
+  }, [generalQuery.data?.defaultProjectWorkspacePathTemplate]);
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
@@ -357,6 +363,40 @@ export function InstanceGeneralSettings({ embedded = false }: { embedded?: boole
       </section>
 
       )}
+
+      <section>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Default project folder</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Template for the local folder used when a project workspace is created without an explicit
+              path. Supports {"{project_name}"}, {"{project_slug}"}, {"{project_id}"}, {"{company_id}"}, and
+              {"{repo_name}"}. Leave empty to keep Paperclip-managed checkouts. Must include
+              {"{project_name}"}, {"{project_slug}"}, or {"{project_id}"}.
+            </p>
+          </div>
+          <div className="flex max-w-2xl items-center gap-2">
+            <Input
+              value={defaultProjectWorkspacePathTemplate}
+              onChange={(event) => setDefaultProjectWorkspacePathTemplate(event.target.value)}
+              placeholder="/home/you/Workspaces/{project_name}"
+              disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+            />
+            <Button
+              type="button"
+              size="sm"
+              disabled={updateGeneralMutation.isPending || signOutMutation.isPending}
+              onClick={() =>
+                updateGeneralMutation.mutate({
+                  defaultProjectWorkspacePathTemplate: defaultProjectWorkspacePathTemplate.trim() || null,
+                })
+              }
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+      </section>
 
       {showSignOut && (
       <section>

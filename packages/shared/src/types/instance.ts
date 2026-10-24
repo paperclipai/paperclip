@@ -37,6 +37,7 @@ export interface InstanceGeneralSettings {
    * Kubernetes sandbox provider and denies local/ssh execution.
    */
   executionMode?: InstanceExecutionMode;
+  defaultProjectWorkspacePathTemplate?: string | null;
 }
 
 export interface InstanceExperimentalSettings {
