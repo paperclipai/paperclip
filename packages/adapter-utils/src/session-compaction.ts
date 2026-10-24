@@ -36,6 +36,25 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   maxSessionAgeHours: 0,
 };
 
+// hermes does attempt native context management, but its own compression stalls
+// on long sessions: ~/.hermes/logs/errors.log reports
+// "Context compression made no progress for 300.0s (total wait 300.0s, ceiling
+// 600.0s); continuing without compression", and the session row records
+// compression_failure_error backoff:stall_interrupted. That burns half the run
+// budget and then still fails, so hermes sessions must be rotated by Paperclip
+// rather than trusted to compress themselves.
+//
+// maxSessionRuns and maxSessionAgeHours complement each other across agent
+// cadences: a ~4x/day agent hits 12 runs in ~3 days, a daily agent reaches the
+// 168h age backstop first. Individual agents can still override via
+// runtimeConfig.heartbeat.sessionCompaction.
+const HERMES_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
+  enabled: true,
+  maxSessionRuns: 12,
+  maxRawInputTokens: 500_000,
+  maxSessionAgeHours: 168,
+};
+
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
   "claude_local",
   "codex_local",
@@ -98,7 +117,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   hermes_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",
-    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+    defaultSessionCompaction: HERMES_SESSION_COMPACTION_POLICY,
   },
 };
 
