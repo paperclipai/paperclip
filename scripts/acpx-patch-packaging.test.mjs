@@ -432,8 +432,8 @@ test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
 
 test("published packages preserve the patched embedded-postgres runtime", () => {
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
-    "patches/embedded-postgres@18.1.0-beta.16.patch",
+    rootPackage.pnpm.patchedDependencies["embedded-postgres@18.4.0-beta.17"],
+    "patches/embedded-postgres@18.4.0-beta.17.patch",
   );
   assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres"]);
   assert.equal(bundledCliNpmDependencies.has("embedded-postgres"), true);

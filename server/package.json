@@ -98,7 +98,7 @@
     "dompurify": "^3.4.16",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
-    "embedded-postgres": "^18.1.0-beta.16",
+    "embedded-postgres": "18.4.0-beta.17",
     "express": "^5.1.0",
     "heif2jpeg": "0.1.6",
     "jsdom": "^30.0.1",
