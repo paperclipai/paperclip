@@ -314,6 +314,24 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
+Managed Codex checks project authentication only from the physical working
+directory to its nearest `.git` root, including the root. A Git worktree's
+`.git` file is also a root marker. Without a Git root, it checks only the
+working directory. This matches the default project boundary in the isolated
+Codex home. A host user's configuration above that boundary does not conflict
+with the selected connection. Authentication overrides inside that boundary
+remain blocked. Local and shell-backed remote checks use the same boundary;
+task-only plugin environments retain their provider-owned validation contract.
+For a Codex harness, credential preparation checks explicit argument
+overrides but defers project files until the execution target is ready. Runs
+check project files after workspace realization and before provider execution.
+Environment probes first create or validate their working directory on the
+selected target, then check that directory before starting the adapter.
+A probe without an explicit directory checks its actual fallback directory;
+a remote probe never substitutes the server's filesystem. The harness selects
+the project-file policy, including when a routed account uses a different
+provider name.
+
 A subscription invocation takes no lease. Two invocations of one grant, from
 the same or a different provider account, run at the same time. At cleanup,
 each invocation re-reads the credential stored at that moment under a row

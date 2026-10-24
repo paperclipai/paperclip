@@ -114,6 +114,21 @@ remaining operations before qualifying the whole capability.
 Gaps: Environment test path checks creation/configuration policy; missing provider auth
 must use its owner setup flow.
 
+Managed Codex project-file checks inspect the resolved physical workspace up
+to its nearest `.git` root, or only the working directory without a Git root.
+Unrelated host configuration above that boundary is not a credential source.
+Project authentication overrides and explicit configuration arguments remain
+blocked. The [runtime guard](../../server/src/services/ai-connection-runtime.ts)
+keeps existing company, grant, and caller authorization unchanged. Local and
+shell-backed remote filesystem regressions are control evidence, not proof of
+agent authorization or task-only plugin execution.
+Credential preparation defers Codex project files to the resolved execution
+target. Managed environment tests create or validate their exact probe
+directory, including a default directory, before the guard allows the adapter
+to start. Remote probe paths do not fall back to the server filesystem.
+The harness selects this policy for direct and routed accounts, consistently
+in credential preparation, environment probes, and the post-realization guard.
+
 Scoped source-only Claude CLI preparation: both the selected environment test
 and normal CLI execution use
 [versioned sandbox preparation](../../packages/adapters/claude-local/src/server/sandbox-cli-version.ts).

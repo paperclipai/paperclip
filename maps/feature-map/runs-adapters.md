@@ -82,6 +82,21 @@ Cloud onboarding must not offer shell commands the customer cannot run.
 
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
 
+For a managed Codex connection, keep an unrelated host `.codex/config.toml`
+above the task repository and verify that setup and execution still work.
+Place an authentication override inside the repository and verify that it is
+rejected. Repeat with a nested directory, a Git worktree, and a non-Git
+workspace. File checks must use the resolved task directory, not the server's
+working directory. Local and shell-backed remote paths share this contract;
+task-only plugin environments retain their provider-owned check.
+For environment tests, also check a new working directory and an omitted
+directory. The probe must create the new directory on its selected target and
+reject authentication overrides in its actual fallback directory before
+starting the adapter. A remote-only path must not be checked on the server.
+Repeat these checks with a routed Codex account in both the legacy Codex
+adapter and native Runner. The account's provider name must not change the
+harness-specific project-file policy.
+
 For Legacy Codex, assign a service secret such as `SLACK_BOT_TOKEN` through agent
 configuration and run a task that checks its presence without printing its value.
 Check both ACP and CLI execution. Remove the binding and repeat on the next run.

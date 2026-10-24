@@ -4,6 +4,11 @@ import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-wr
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  ensureAdapterExecutionTargetDirectory,
+  overrideAdapterExecutionTargetRemoteCwd,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { aiRoutingHarness, ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, type AiConnectionBinding } from "@paperclipai/shared";
@@ -13,7 +18,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, managedAiProjectAuthProvider } from "./ai-connection-runtime.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
@@ -529,7 +534,22 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         return { adapterType, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: error instanceof HttpError ? String(asRecord(error.details)?.code ?? "COPILOT_REQUEST_FAILED") : "COPILOT_REQUEST_FAILED", level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
       }
     }
-    await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
+    const taskOnly = context.executionTarget?.kind === "remote"
+      && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask;
+    const projectAuthProvider = managedAiProjectAuthProvider(context.config, binding.provider, adapterType);
+    if (projectAuthProvider === "openai" && !taskOnly) {
+      const cwd = resolveAdapterExecutionTargetCwd(context.executionTarget,
+        typeof context.config.cwd === "string" ? context.config.cwd : undefined, process.cwd());
+      await ensureAdapterExecutionTargetDirectory(`ai-auth-probe-${randomUUID()}`, context.executionTarget, cwd, {
+        cwd, env: {}, createIfMissing: true,
+      });
+      context = {
+        ...context,
+        config: { ...context.config, cwd },
+        executionTarget: overrideAdapterExecutionTargetRemoteCwd(context.executionTarget, cwd),
+      };
+    }
+    await assertManagedAiProjectAuth(context.config, projectAuthProvider, context.executionTarget);
     const target = context.executionTarget;
     const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
       ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,

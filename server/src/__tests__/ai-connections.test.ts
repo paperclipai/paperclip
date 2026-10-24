@@ -74,6 +74,75 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it.each(([
+    { provider: "openai", adapterType: "codex_local" },
+    { provider: "openrouter", adapterType: "codex_local" },
+    { provider: "openrouter", adapterType: "paperclip_runner" },
+  ] as const).flatMap(variant => (["local-new", "remote-new", "remote-host-conflict", "local-default-conflict"] as const)
+    .map(mode => ({ ...variant, mode }))))(
+    "checks the prepared Codex probe directory on the correct target ($provider, $adapterType, $mode)",
+    async ({ mode, provider, adapterType }) => {
+      const { requireServerAdapter } = await import("../adapters/index.js");
+      const { agentEnvironmentTestService } = await import("../services/agent-environment-test.js");
+      const transport = await import("@paperclipai/adapter-utils/execution-target");
+      const owner = `project-probe-${provider}-${adapterType}-${mode}`;
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const account = await service.save(companyId, owner, { provider, method: "api_key", ownership: "personal",
+        name: owner, apiKey: "fixture-project-probe", allAgents: true, agentIds: [],
+        ...(provider === "openrouter" ? { routing: { kind: "openrouter", protocol: "responses", auth: "bearer", models: [] } as const } : {}),
+      }, "fixture-project-probe");
+      const selected = { provider, method: "api_key", mode: "delegated", ...account } as const;
+      const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-probe-auth-")));
+      const remote = mode.startsWith("remote");
+      const conflict = mode.endsWith("conflict");
+      const cwd = mode === "remote-new" ? `/remote-only/${randomUUID()}/new` : mode === "local-new" ? path.join(root, "new") : root;
+      if (conflict) {
+        await fs.mkdir(path.join(root, ".codex"));
+        await writeFile(path.join(root, ".codex", "config.toml"), 'model_provider = "host-only"\n');
+      }
+      const config = { ...(mode === "local-default-conflict" ? {} : { cwd }), model: "openai/gpt-5.4",
+        ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+      const target = remote ? { kind: "remote", transport: "sandbox", remoteCwd: "/remote-default" } as const : undefined;
+      const adapter = vi.spyOn(requireServerAdapter(adapterType), "testEnvironment").mockImplementation(async context => {
+        expect(context.config.cwd).toBe(cwd);
+        if (!remote) expect((await stat(cwd)).isDirectory()).toBe(true);
+        return { adapterType, status: "fail", testedAt: new Date().toISOString(), checks: [] };
+      });
+      const directory = vi.spyOn(transport, "ensureAdapterExecutionTargetDirectory");
+      const shell = vi.spyOn(transport, "runAdapterExecutionTargetProcess");
+      if (remote) {
+        directory.mockResolvedValue(undefined);
+        shell.mockImplementation(async (_id, checkedTarget, _command, args) => {
+          expect(checkedTarget).toMatchObject({ kind: "remote", remoteCwd: cwd });
+          expect(args).toContain(cwd);
+          return { stdout: "", stderr: "", exitCode: 0, signal: null, timedOut: false };
+        });
+      }
+      const serverCwd = mode === "local-default-conflict" ? vi.spyOn(process, "cwd").mockReturnValue(root) : undefined;
+      try {
+        const probing = withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType,
+          binding: selected, config }, managed => agentEnvironmentTestService(db).testManagedEnvironment(
+          adapterType, { companyId, adapterType, config: managed.config, executionTarget: target }, selected, managed, agentId,
+        ));
+        if (mode === "local-default-conflict") {
+          await expect(probing).rejects.toMatchObject({ details: { code: "ai_connection_incompatible" } });
+          expect(adapter).not.toHaveBeenCalled();
+        } else {
+          await expect(probing).resolves.toMatchObject({ status: "fail" });
+          expect(adapter).toHaveBeenCalledOnce();
+        }
+        expect(directory).toHaveBeenCalledWith(expect.any(String), target, cwd, expect.objectContaining({ createIfMissing: true }));
+        if (remote) expect(shell).toHaveBeenCalledOnce();
+      } finally {
+        serverCwd?.mockRestore();
+        adapter.mockRestore();
+        directory.mockRestore();
+        shell.mockRestore();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },
