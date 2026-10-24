@@ -3096,7 +3096,7 @@ export function heartbeatService(
         // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
         const runningAgent = await db
           .update(agents)
-          .set({ status: "running", updatedAt: new Date() })
+          .set({ status: "running", errorReason: null, updatedAt: new Date() })
           .where(
             and(
               eq(agents.id, agent.id),
