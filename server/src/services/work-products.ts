@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, heartbeatRunEvents, issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
@@ -269,6 +269,32 @@ export function workProductService(
         .where(eq(issueWorkProducts.id, id))
         .then((rows) => rows[0] ?? null);
       return row ? toIssueWorkProduct(row) : null;
+    },
+
+    findArtifactForAttachment: async (input: {
+      companyId: string;
+      issueId: string;
+      attachmentId: string;
+      createdByRunId: string | null;
+    }) => {
+      const row = await db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(
+          and(
+            eq(issueWorkProducts.companyId, input.companyId),
+            eq(issueWorkProducts.issueId, input.issueId),
+            eq(issueWorkProducts.type, "artifact"),
+            eq(issueWorkProducts.provider, "paperclip"),
+            eq(issueWorkProducts.externalId, input.attachmentId),
+            input.createdByRunId
+              ? eq(issueWorkProducts.createdByRunId, input.createdByRunId)
+              : isNull(issueWorkProducts.createdByRunId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row?.id ?? null;
     },
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {

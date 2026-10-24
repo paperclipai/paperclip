@@ -18,6 +18,7 @@ const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
+  findArtifactForAttachment: vi.fn(async () => null),
 }));
 const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(async () => ({
