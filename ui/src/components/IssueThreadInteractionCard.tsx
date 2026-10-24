@@ -1248,15 +1248,15 @@ function AskUserQuestionsCard({
               className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-(--shadow-extract-9)"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
+                <div className="min-w-0 flex-1">
                   <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Question {index + 1}
                   </div>
                   <div
                     id={`${interaction.id}-${question.id}-prompt`}
-                    className="mt-1 text-sm font-semibold text-foreground"
+                    className="mt-1 min-w-0 text-sm font-semibold text-foreground"
                   >
-                    {question.prompt}
+                    <MarkdownBody mediaMode="reference" externalReferences={externalReferences}>{question.prompt}</MarkdownBody>
                   </div>
                   {question.helpText ? (
                     <p className="mt-1 text-sm leading-6 text-muted-foreground">
@@ -1448,8 +1448,8 @@ function AskUserQuestionsCard({
                 key={question.id}
                 className="rounded-2xl border border-border/70 bg-background/82 p-4"
               >
-                <div className="text-sm font-semibold text-foreground">
-                  {question.prompt}
+                <div className="min-w-0 text-sm font-semibold text-foreground">
+                  <MarkdownBody mediaMode="reference" externalReferences={externalReferences}>{question.prompt}</MarkdownBody>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {labels.length > 0 ? (

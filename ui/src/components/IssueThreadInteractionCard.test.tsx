@@ -11,6 +11,7 @@ import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
+  answeredAskUserQuestionsInteraction,
   pendingAskUserQuestionsInteraction,
   pendingAskUserQuestionsWithFreeTextOption,
   commentExpiredAskUserQuestionsInteraction,
@@ -282,6 +283,93 @@ describe("IssueThreadInteractionCard", () => {
     );
     expect(otherLink?.getAttribute("role")).toBeNull();
     expect(otherLink?.className).toContain("underline");
+  });
+
+  const markdownPromptQuestion = {
+    id: "setup",
+    prompt: "**Set up access**\n\n1. Open the console.\n2. Run:\n\n```sh\nvery-long-command --target=https://example.org/a/long/unbroken/path/that/exceeds/a/mobile/viewport\n```",
+    selectionMode: "single" as const,
+    required: true,
+    options: [{ id: "done", label: "Done" }],
+  };
+
+  function expectMarkdownPrompt(prompt: Element | null | undefined) {
+    const body = prompt?.querySelector(".paperclip-markdown");
+    expect(body?.className).toContain("min-w-0");
+    expect(body?.className).toContain("break-words");
+    expect(body?.querySelector("strong")?.textContent).toBe("Set up access");
+    expect(body?.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(body?.querySelector(".paperclip-markdown-codeblock pre")?.textContent).toContain(
+      "very-long-command --target=https://example.org/a/long/unbroken/path/that/exceeds/a/mobile/viewport",
+    );
+    expect(prompt?.textContent).not.toContain("**");
+    expect(prompt?.textContent).not.toContain("```");
+  }
+
+  it("renders pending question prompts as width-constrained markdown", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [markdownPromptQuestion] },
+      },
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    const prompt = host.querySelector(`[id="${pendingAskUserQuestionsInteraction.id}-setup-prompt"]`);
+    expectMarkdownPrompt(prompt);
+    expect(prompt?.parentElement?.className).toContain("min-w-0");
+  });
+
+  it("renders answered question prompts as markdown", () => {
+    const host = renderCard({
+      interaction: {
+        ...answeredAskUserQuestionsInteraction,
+        payload: { ...answeredAskUserQuestionsInteraction.payload, questions: [markdownPromptQuestion] },
+        result: { version: 1, answers: [{ questionId: "setup", optionIds: ["done"] }] },
+      },
+    });
+
+    expectMarkdownPrompt(host.querySelector(".paperclip-markdown")?.parentElement);
+    expect(host.textContent).toContain("Done");
+  });
+
+  const imagePromptQuestion = {
+    ...markdownPromptQuestion,
+    prompt: "Check this:\n\n![tracking pixel](https://example.org/pixel.png)",
+  };
+
+  function expectImageReference(prompt: Element | null | undefined) {
+    expect(prompt).toBeTruthy();
+    expect(prompt?.querySelector("img")).toBeNull();
+    const reference = prompt?.querySelector("[data-markdown-image-reference]");
+    expect(reference?.textContent).toContain("tracking pixel");
+    expect(reference?.textContent).toContain("https://example.org/pixel.png");
+  }
+
+  it("does not load images from pending question prompts", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [imagePromptQuestion] },
+      },
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    expectImageReference(host.querySelector(`[id="${pendingAskUserQuestionsInteraction.id}-setup-prompt"]`));
+    expect(host.querySelector('img[src="https://example.org/pixel.png"]')).toBeNull();
+  });
+
+  it("does not load images from answered question prompts", () => {
+    const host = renderCard({
+      interaction: {
+        ...answeredAskUserQuestionsInteraction,
+        payload: { ...answeredAskUserQuestionsInteraction.payload, questions: [imagePromptQuestion] },
+        result: { version: 1, answers: [{ questionId: "setup", optionIds: ["done"] }] },
+      },
+    });
+
+    expectImageReference(host.querySelector(".paperclip-markdown")?.parentElement);
+    expect(host.querySelector('img[src="https://example.org/pixel.png"]')).toBeNull();
   });
 
   it("submits written Other answers for pending questions", async () => {
