@@ -37,6 +37,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   installFromCatalog: vi.fn(),
   createLocalSkill: vi.fn(),
   updateSkill: vi.fn(),
+  recordFileStateOutsideVersionHistory: vi.fn(),
   updateFile: vi.fn(),
   deleteFile: vi.fn(),
   scanProjectWorkspaces: vi.fn(),

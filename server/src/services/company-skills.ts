@@ -412,6 +412,10 @@ type CreateVersionOptions = {
   database?: DbOrTransaction;
 };
 
+type RecordFileStateOptions = {
+  afterRecord?: (version: CompanySkillVersion, database: Db) => Promise<void>;
+};
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
 
@@ -1926,6 +1930,23 @@ function serializeVersionFileInventory(
   }));
 }
 
+function sameVersionFileInventory(
+  left: CompanySkillVersionFileInventoryEntry[],
+  right: CompanySkillVersionFileInventoryEntry[],
+): boolean {
+  // Compare what a reader of the file sees. "kind" is derived from the path, so a
+  // difference there is not a change in file state.
+  const comparable = (entries: CompanySkillVersionFileInventoryEntry[]) => entries
+    .map((entry) => ({
+      path: entry.path,
+      content: entry.content,
+      encoding: entry.encoding ?? "utf8",
+      executable: Boolean(entry.executable),
+    }))
+    .sort((first, second) => first.path.localeCompare(second.path));
+  return JSON.stringify(comparable(left)) === JSON.stringify(comparable(right));
+}
+
 function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
   return {
     ...row,
@@ -3080,8 +3101,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
   async function collectVersionFileInventoryFromDirectory(
     skillDir: string,
+    mode: LocalSkillInventoryMode = "full",
   ): Promise<CompanySkillVersionFileInventoryEntry[]> {
-    const inventory = await collectLocalSkillInventory(skillDir);
+    const inventory = await collectLocalSkillInventory(skillDir, mode);
     return Promise.all(inventory.map(async (entry) => ({
       ...snapshotFile(entry.path, entry.kind, await fs.readFile(path.join(skillDir, entry.path)), Boolean((await fs.stat(path.join(skillDir, entry.path))).mode & 0o111)),
     })));
@@ -3459,9 +3481,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       ?? await getByKey(companyId, ref);
   }
 
-  async function getVersion(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
-    if (!await getById(companyId, skillId)) return null;
-    const row = await db
+  async function getVersion(
+    companyId: string,
+    skillId: string,
+    versionId: string,
+    database: DbOrTransaction = db,
+  ): Promise<CompanySkillVersion | null> {
+    if (!await getById(companyId, skillId, database)) return null;
+    const row = await database
       .select()
       .from(companySkillVersions)
       .where(and(
@@ -4730,6 +4757,57 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     })
       .where(and(eq(companySkills.companyId, skill.companyId), eq(companySkills.id, skill.id)));
     return inventory;
+  }
+
+  // A skill version id only moves when a write goes through this service. The files
+  // of a local_path skill can also change on disk without it: an editor, a script, a
+  // checkout. The current version then describes content that is no longer there, and
+  // the optimistic "expectedVersionId" check still accepts a write prepared from the
+  // older file. That write drops the on-disk edits and leaves no record of them.
+  //
+  // Record the on-disk state as its own version first. Version history then keeps the
+  // edits, and a write based on the earlier file gets a conflict instead of winning.
+  //
+  // Callers must run this before the write transaction opens, never inside it: a
+  // conflict rolls that transaction back, and this version has to survive the
+  // rollback so the retry can read the new version id.
+  async function recordFileStateOutsideVersionHistory(
+    companyId: string,
+    skillId: string,
+    options: RecordFileStateOptions = {},
+  ): Promise<CompanySkillVersion | null> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select ${companySkills.id}
+        from ${companySkills}
+        where ${companySkills.id} = ${skillId}
+          and ${companySkills.companyId} = ${companyId}
+        for update
+      `);
+      const skill = await getById(companyId, skillId, tx);
+      if (!skill || skill.sourceType !== "local_path" || !skill.currentVersionId) return null;
+      const recorded = await getVersion(companyId, skillId, skill.currentVersionId, tx);
+      if (!recorded) return null;
+      // Read the directory itself, and read it with this transaction only. Reading a
+      // file through the service instead refreshes the company's skill inventory, and
+      // that refresh writes this skill row when the file set changed on disk: it would
+      // wait for the lock held above while this transaction waits for it.
+      const skillDir = normalizeSkillDirectory(skill);
+      // An unreadable directory is a transient mount problem, not an edit. Leave
+      // version history alone instead of recording an empty skill over it.
+      const onDisk = skillDir
+        ? await collectVersionFileInventoryFromDirectory(skillDir, inferLocalSkillInventoryMode(skill)).catch(() => null)
+        : null;
+      if (!onDisk?.length || sameVersionFileInventory(recorded.fileInventory, onDisk)) return null;
+      const version = await createVersion(companyId, skillId, { label: "Edited outside version history" }, null, {
+        database: tx, skill, fileInventory: onDisk, skipInventoryRefresh: true,
+      });
+      // This version moves "currentVersionId", so it is a change of its own. Record it
+      // where the caller records its write: the write can still fail the version check
+      // after this, and that must not leave the change unlogged.
+      await options.afterRecord?.(version, tx as unknown as Db);
+      return version;
+    });
   }
 
   async function updateFile(
@@ -7439,6 +7517,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     updateStatus,
     readFile,
     updateSkill,
+    recordFileStateOutsideVersionHistory,
     updateFile,
     deleteFile,
     createLocalSkill,

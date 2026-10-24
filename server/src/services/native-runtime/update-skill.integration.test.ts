@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -64,6 +64,68 @@ describe("runner update_skill through the real skill API", () => {
     await expect(replacement.execute({ tool: "update_skill", callId: "changed-key", arguments: { ...args, markdown: args.markdown + "More." } })).rejects.toThrow(/different inputs/);
     await expect(replacement.execute({ tool: "update_skill", callId: "stale", arguments: { ...args, idempotencyKey: randomUUID() } })).rejects.toThrow(/version changed/);
   });
+
+  it("keeps an edit made outside the API and rejects the write prepared from the earlier file", async () => {
+    const { companyId, skill, args, authority } = await fixture();
+    const service = companySkillService(server.db);
+    const outOfBand = "---\nname: release-review\ndescription: Review releases.\n---\n\n# Review\nCheck the signatures first.\n";
+    await writeFile(join(String(skill.sourceLocator), "SKILL.md"), outOfBand, "utf8");
+
+    await expect(authority.execute({ tool: "update_skill", callId: "stale-after-disk-edit",
+      arguments: { ...args, idempotencyKey: randomUUID() } })).rejects.toThrow(/version changed/);
+    expect((await service.readFile(companyId, skill.id, "SKILL.md"))?.content).toBe(outOfBand);
+    const versions = await service.listVersions(companyId, skill.id);
+    expect(versions).toHaveLength(2);
+    expect(versions[0].fileInventory.find(entry => entry.path === "SKILL.md")?.content).toBe(outOfBand);
+    // The recorded version moved "currentVersionId" while the write that followed it
+    // failed, so this version is the only record of the change and needs its own entry.
+    expect((await server.db.select().from(activityLog).where(eq(activityLog.action, "company.skill_version_created")))
+      .filter(event => event.entityId === versions[0].id))
+      .toEqual([expect.objectContaining({ entityId: versions[0].id,
+        details: expect.objectContaining({ skillId: skill.id, editedOutsideVersionHistory: true }) })]);
+
+    const reconciled = await service.getById(companyId, skill.id);
+    expect(reconciled?.currentVersionId).toBe(versions[0].id);
+    expect(await authority.execute({ tool: "update_skill", callId: "retry-after-conflict",
+      arguments: { ...args, expectedVersionId: reconciled?.currentVersionId, idempotencyKey: randomUUID() } }))
+      .toMatchObject({ skillId: skill.id, path: "SKILL.md" });
+    expect(await service.listVersions(companyId, skill.id)).toHaveLength(3);
+  });
+
+  it("adds no version when the files on disk match the current version", async () => {
+    const { companyId, skill } = await fixture();
+    const service = companySkillService(server.db);
+    expect(await service.recordFileStateOutsideVersionHistory(companyId, skill.id)).toBeNull();
+    expect(await service.listVersions(companyId, skill.id)).toHaveLength(1);
+  });
+
+  it("records files added and removed on disk, then accepts a write based on that record", async () => {
+    const { companyId, skill, args, authority } = await fixture();
+    const service = companySkillService(server.db);
+    const skillDir = String(skill.sourceLocator);
+    await mkdir(join(skillDir, "reference"), { recursive: true });
+    await writeFile(join(skillDir, "reference", "checklist.md"), "# Checklist\nVerify the signatures.\n", "utf8");
+
+    // A file set that changed on disk is what the company inventory refresh writes the
+    // skill row for. Reading those files through a path that refreshes would make the
+    // refresh wait for the row lock its own caller holds, so the request would hang.
+    await expect(authority.execute({ tool: "update_skill", callId: "after-disk-add",
+      arguments: { ...args, idempotencyKey: randomUUID() } })).rejects.toThrow(/version changed/);
+    const added = await service.listVersions(companyId, skill.id);
+    expect(added).toHaveLength(2);
+    expect(added[0].fileInventory.map(entry => entry.path).sort()).toEqual(["SKILL.md", "reference/checklist.md"]);
+
+    await rm(join(skillDir, "reference"), { recursive: true, force: true });
+    await expect(authority.execute({ tool: "update_skill", callId: "after-disk-removal",
+      arguments: { ...args, expectedVersionId: added[0].id, idempotencyKey: randomUUID() } })).rejects.toThrow(/version changed/);
+    const removed = await service.listVersions(companyId, skill.id);
+    expect(removed).toHaveLength(3);
+    expect(removed[0].fileInventory.map(entry => entry.path)).toEqual(["SKILL.md"]);
+
+    expect(await authority.execute({ tool: "update_skill", callId: "write-on-recorded-state",
+      arguments: { ...args, expectedVersionId: removed[0].id, idempotencyKey: randomUUID() } }))
+      .toMatchObject({ skillId: skill.id, path: "SKILL.md" });
+  }, 45_000);
 
   it("denies policy changes and cross-company skill IDs", async () => {
     const first = await fixture();
