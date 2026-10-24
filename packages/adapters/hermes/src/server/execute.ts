@@ -53,6 +53,7 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
+import { readProfileDeferral } from "../shared/profile-deferral.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -617,6 +618,25 @@ export async function execute(
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
+  const profileDeferral = readProfileDeferral({
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  });
+  if (profileDeferral) {
+    executionResult.errorCode = profileDeferral.errorCode;
+    executionResult.retryAfterS = profileDeferral.retryAfterS;
+    executionResult.retryable = profileDeferral.retryable;
+    executionResult.errorMessage = profileDeferral.message;
+    if (profileDeferral.profile) {
+      executionResult.deferredProfile = profileDeferral.profile;
+    }
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Deferred: profile_deferred_capacity (retryAfterS=${profileDeferral.retryAfterS}${profileDeferral.profile ? `, profile=${profileDeferral.profile}` : ""}) — not an adapter failure\n`,
+    );
+  }
+
   if (parsed.usage) {
     executionResult.usage = parsed.usage;
   }
@@ -636,6 +656,17 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(profileDeferral
+      ? {
+          deferral: {
+            errorCode: profileDeferral.errorCode,
+            reasonCode: profileDeferral.reasonCode,
+            retryAfterS: profileDeferral.retryAfterS,
+            retryable: profileDeferral.retryable,
+            profile: profileDeferral.profile,
+          },
+        }
+      : {}),
   };
 
   // Store session ID for next run

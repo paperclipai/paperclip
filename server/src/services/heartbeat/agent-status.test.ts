@@ -302,7 +302,7 @@ describePostgres("heartbeat agent status", () => {
     expect((await agent(agentId)).status).toBe("running");
   });
 
-  it.each(["succeeded", "interrupted", "cancelled", "failed", "timed_out"] as const)("keeps completion semantics for %s", async outcome => {
+  it.each(["succeeded", "interrupted", "cancelled", "failed", "timed_out", "deferred"] as const)("keeps completion semantics for %s", async outcome => {
     const { agentId } = await seed(outcome);
     await service.finalizeAgentStatus(agentId, outcome, "Failure detail");
     expect(await agent(agentId)).toMatchObject({
@@ -316,5 +316,23 @@ describePostgres("heartbeat agent status", () => {
     const { agentId } = await seed("failed");
     await service.finalizeAgentStatus(agentId, "failed", "Retrying", { keepIdleOnFailure: true });
     expect(await agent(agentId)).toMatchObject({ status: "idle", errorReason: null });
+  });
+
+  it("settles a deferred run idle and never paints an error with a null reason", async () => {
+    const { agentId } = await seed("scheduled_retry");
+    await db.update(agents).set({ status: "running", errorReason: "Timed out" }).where(eq(agents.id, agentId));
+    await service.finalizeAgentStatus(agentId, "deferred", "profile_deferred_capacity: waiting for a serve slot");
+    expect(await agent(agentId)).toMatchObject({
+      status: "idle",
+      errorReason: null,
+      lastHeartbeatAt: expect.any(Date),
+    });
+  });
+
+  it("keeps a parked deferral as live work during reconciliation", async () => {
+    const { agentId } = await seed("scheduled_retry");
+    await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.agentId, agentId));
+    expect(await reconcile()).toEqual([]);
+    expect((await agent(agentId)).status).toBe("running");
   });
 });

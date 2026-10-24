@@ -2720,7 +2720,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
   function mergeRunStopMetadataForAgent(
     agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">,
-    outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
+    outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out" | "deferred",
     options?: {
       resultJson?: Record<string, unknown> | null;
       conversationContinuationEligible?: boolean;

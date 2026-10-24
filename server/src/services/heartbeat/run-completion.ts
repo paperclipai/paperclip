@@ -4,6 +4,11 @@ import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } f
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
 import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspaceGitScanCode } from "./retries.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
+import {
+  PROFILE_DEFERRED_CAPACITY_CODE,
+  readProfileDeferralFromAdapterResult,
+  resolveProfileDeferralBooking,
+} from "./profile-deferral.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
@@ -392,6 +397,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       failedProcessRunCancellations.get(run.id);
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
+    const profileDeferral = readProfileDeferralFromAdapterResult(adapterResult);
     const latestRun = await getRun(run.id);
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
@@ -410,6 +416,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       outcome = "timed_out";
     } else if (adapterResult.resultJson?.status === "cancelled") {
       outcome = "cancelled";
+    } else if (profileDeferral) {
+      outcome = "deferred";
     } else if (
       (adapterResult.exitCode ?? 0) === 0 &&
       !adapterResult.errorMessage &&
@@ -445,11 +453,17 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
         : outcome === "succeeded"
           ? null
-          : redactCurrentUserText(
-              adapterResult.errorMessage ??
-                (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-              currentUserRedactionOptions,
-            );
+          : outcome === "deferred"
+            ? redactCurrentUserText(
+                profileDeferral?.message ??
+                  "profile_deferred_capacity: waiting for a serve slot",
+                currentUserRedactionOptions,
+              )
+            : redactCurrentUserText(
+                adapterResult.errorMessage ??
+                  (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                currentUserRedactionOptions,
+              );
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(latestRun?.errorCode);
     const runErrorCode =
@@ -457,11 +471,19 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ? "timeout"
         : outcome === "cancelled"
           ? (latestRun?.errorCode ?? "cancelled")
-          : outcome === "failed"
-            ? (adapterResult.errorCode ??
-              recordedResponsibleUserDenialCode ??
-              "adapter_failed")
-            : null;
+          : outcome === "deferred"
+            ? (profileDeferral?.errorCode ?? PROFILE_DEFERRED_CAPACITY_CODE)
+            : outcome === "failed"
+              ? (adapterResult.errorCode ??
+                recordedResponsibleUserDenialCode ??
+                "adapter_failed")
+              : null;
+    const profileDeferralBooking = outcome === "deferred" && profileDeferral
+      ? resolveProfileDeferralBooking({
+          retryAfterS: profileDeferral.retryAfterS,
+          attempt: latestRun?.scheduledRetryAttempt ?? run.scheduledRetryAttempt ?? 0,
+        })
+      : null;
 
     async function persistSessionState(finalizedRun: Run) {
       await updateRuntimeState(
@@ -528,11 +550,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const status =
       outcome === "succeeded"
         ? "succeeded"
-        : outcome === "cancelled"
-          ? "cancelled"
-          : outcome === "timed_out"
-            ? "timed_out"
-            : "failed";
+        : outcome === "deferred"
+          ? "scheduled_retry"
+          : outcome === "cancelled"
+            ? "cancelled"
+            : outcome === "timed_out"
+              ? "timed_out"
+              : "failed";
 
     const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
       ? null : resolveCacheAdjustedCostUsd(adapterResult);
@@ -624,7 +648,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // Accounting must acknowledge even a proven pre-provider failure:
       // that transaction releases the reservation without creating a charge.
       costAccountingPending: true,
-      finishedAt: new Date(),
+      finishedAt: profileDeferralBooking ? null : new Date(),
+      ...(profileDeferralBooking
+        ? {
+            scheduledRetryAt: profileDeferralBooking.retryAt,
+            scheduledRetryReason: profileDeferralBooking.retryReason,
+            scheduledRetryAttempt: profileDeferralBooking.attempt + 1,
+          }
+        : {}),
       error: runErrorMessage,
       errorCode: runErrorCode,
       exitCode: adapterResult.exitCode,
@@ -713,15 +744,19 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     await setWakeupStatus(
       run.wakeupRequestId,
-      outcome === "succeeded" ? "completed" : status,
+      outcome === "succeeded"
+        ? "completed"
+        : outcome === "deferred"
+          ? "queued"
+          : status,
       {
-        finishedAt: new Date(),
+        finishedAt: outcome === "deferred" ? null : new Date(),
         error: runErrorMessage,
       },
     );
 
     const finalizedRun = persistedRun ?? (await getRun(run.id));
-    const settleAgent = () => finalizeAgentStatus(agent.id, outcome, runErrorMessage, {
+    const settleAgent = () => finalizeAgentStatus(agent.id, outcome, outcome === "deferred" ? null : runErrorMessage, {
       keepIdleOnFailure:
         outcome === "failed" &&
         ((finalizedRun
@@ -734,12 +769,20 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       await appendRunEvent(finalizedRun, {
         eventType: "lifecycle",
         stream: "system",
-        level: outcome === "succeeded" ? "info" : "error",
+        level: outcome === "succeeded" || outcome === "deferred" ? "info" : "error",
         message: `run ${outcome}`,
         payload: {
           status,
           exitCode: adapterResult.exitCode,
           ...(readRunCancellation(finalizedRun.resultJson) ? { cancellation: readRunCancellation(finalizedRun.resultJson) } : {}),
+          ...(profileDeferralBooking
+            ? {
+                errorCode: runErrorCode,
+                retryAfterS: profileDeferralBooking.retryAfterS,
+                scheduledRetryAt: profileDeferralBooking.retryAt.toISOString(),
+                deferredProfile: profileDeferral?.profile ?? null,
+              }
+            : {}),
         },
       });
       try {
@@ -946,33 +989,49 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           agent,
         );
       }
-      const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
-        livenessRun,
-        agent,
-        resolvedPresentationDecision,
-      );
-      const conversationSettled = await settleConversationTurn(db, livenessRun);
-      await releaseIssueExecutionAndPromote(livenessRun, {
-        suppressImmediateRecovery: conversationSettled ||
-          readNonEmptyString(
-            parseObject(livenessRun.contextSnapshot).goalControlRequestId,
-          ) !== null ||
-          parseObject(livenessRun.contextSnapshot)
-            .resumeSessionGoalHeartbeat === true,
-      });
-      if (!conversationSettled) {
-        await handleIssueReviewPathDisposition(livenessRun);
-        if (livenessRun.runtimeMode !== "native") {
-          await recovery.reconcileLegacyContinuation(livenessRun.id);
-        } else {
-          await handleRunLivenessContinuation(livenessRun);
-          await handleSuccessfulRunHandoff(
-            issueCommentPolicyResult.outcome === "retry_queued" ||
-              issueCommentPolicyResult.outcome === "retry_exhausted"
-              ? { ...livenessRun, issueCommentStatus: issueCommentPolicyResult.outcome }
-              : livenessRun,
-            agent,
-          );
+      if (outcome === "deferred") {
+        await appendRunEvent(livenessRun, {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: `Deferred for ${profileDeferralBooking?.multiplier ?? 1}x retryAfterS; re-admission scheduled for ${(profileDeferralBooking?.retryAt ?? new Date()).toISOString()}`,
+          payload: {
+            errorCode: PROFILE_DEFERRED_CAPACITY_CODE,
+            retryAfterS: profileDeferralBooking?.retryAfterS ?? null,
+            scheduledRetryAt: profileDeferralBooking?.retryAt.toISOString() ?? null,
+            scheduledRetryAttempt: (profileDeferralBooking?.attempt ?? 0) + 1,
+            deferredProfile: profileDeferral?.profile ?? null,
+          },
+        });
+      } else {
+        const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
+          livenessRun,
+          agent,
+          resolvedPresentationDecision,
+        );
+        const conversationSettled = await settleConversationTurn(db, livenessRun);
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: conversationSettled ||
+            readNonEmptyString(
+              parseObject(livenessRun.contextSnapshot).goalControlRequestId,
+            ) !== null ||
+            parseObject(livenessRun.contextSnapshot)
+              .resumeSessionGoalHeartbeat === true,
+        });
+        if (!conversationSettled) {
+          await handleIssueReviewPathDisposition(livenessRun);
+          if (livenessRun.runtimeMode !== "native") {
+            await recovery.reconcileLegacyContinuation(livenessRun.id);
+          } else {
+            await handleRunLivenessContinuation(livenessRun);
+            await handleSuccessfulRunHandoff(
+              issueCommentPolicyResult.outcome === "retry_queued" ||
+                issueCommentPolicyResult.outcome === "retry_exhausted"
+                ? { ...livenessRun, issueCommentStatus: issueCommentPolicyResult.outcome }
+                : livenessRun,
+              agent,
+            );
+          }
         }
       }
       if (

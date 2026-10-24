@@ -580,6 +580,23 @@ This pre-provider wait records `ai_connection_busy` on the cancelled run and doe
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
 
+## Profile capacity deferral
+
+A run dispatched to a model profile whose serve-slot ceiling is full never reaches the provider. The
+Hermes adapter reports that child as `hermes_profile_deferred_capacity` with the ceiling's
+`retryAfterS`, and run completion books it as a wait: `status = scheduled_retry`,
+`error_code = profile_deferred_capacity`, no `finishedAt`, and `scheduled_retry_at`,
+`scheduled_retry_reason`, and `scheduled_retry_attempt` stamped on the run row. The run log then holds
+an informational `lifecycle` event whose message is `run deferred`.
+
+Its payload carries `status`, `exitCode`, `errorCode` (`profile_deferred_capacity`), `retryAfterS`,
+`scheduledRetryAt` (ISO deadline), and `deferredProfile` (the profile name, or `null`). `exitCode` is
+the child's own exit status: a settled deferral is 75 (EX_TEMPFAIL), and a completed turn whose
+transcript merely mentions the reason code is not a deferral at all. The scheduled-retry promotion
+sweep re-admits the run at `scheduledRetryAt`; a cancelled or timed-out run that also carried the
+code keeps its finish time and carries no retry fields. The event stays in the instance run log and
+adds no Telemetry or OpenTelemetry export.
+
 ## Managed Agent File Save Receipts
 
 The server writes `instruction_save` after managed file collection or a warm

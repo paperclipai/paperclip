@@ -78,7 +78,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     if (run.resultJson?.cancellation || run.resultJson?.startupCancellation) throw conflict("Run cancellation already requested");
     if (run.costAccountedAt || !["queued", "running"].includes(run.status)) throw conflict("Run can no longer start provider work");
     const [existing] = await tx.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, runId)));
-    if (existing) {
+    if (existing && existing.state !== "released") {
       // The native coordinator fences recovery ownership. Reuse the original
       // hold only for that live owner, never for an ordinary duplicate dispatch.
       const [owner] = recoveryLeaseOwner && run.runtimeMode === "native" && existing.state === "held"
@@ -116,6 +116,20 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
       const committed = centsToUnits(observed.ledgerCents) + centsToUnits(observed.effectiveHeldCents);
       const limit = centsToUnits(policy.amount);
       if (committed >= limit || committed + amount > limit) return { admissionBlockReason: "Available budget is reserved by unfinished runs" };
+    }
+    if (existing) {
+      // A released row is a previous attempt that provably started no provider
+      // work (a capacity deferral). This dispatch is the run's own re-admission,
+      // so re-arm that row instead of duplicating it: one run, one hold, fresh
+      // estimate. A held or settled row still fenced duplicate dispatch above.
+      const [rearmed] = await tx.update(budgetReservations).set({ state: "held", agentId: run.agentId,
+        projectId, amountCents: unitsToCents(amount), providerStartedAt: new Date(), settledAt: null,
+      }).where(and(eq(budgetReservations.id, existing.id), eq(budgetReservations.state, "released"))).returning();
+      if (!rearmed) throw conflict("Provider dispatch has already reserved this run");
+      await tx.update(heartbeatRuns).set({ costAccountingPending: true,
+        usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({ accountingReceiptReady: false, ledgerScope: { ...(run.usageJson?.ledgerScope as object ?? {}), ...ledgerScope, projectId } })}::jsonb`,
+      }).where(eq(heartbeatRuns.id, runId));
+      return { ...rearmed, reused: false };
     }
     // A zero-valued row also fences duplicate dispatch when estimates are off.
     const [reservation] = await tx.insert(budgetReservations).values({ companyId, runId, agentId: run.agentId, projectId,

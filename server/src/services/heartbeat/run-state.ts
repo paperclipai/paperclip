@@ -863,7 +863,12 @@ export function normalizeSessionParams(
 }
 
 export type RunSessionOutcome =
-  "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
+  | "succeeded"
+  | "interrupted"
+  | "failed"
+  | "cancelled"
+  | "timed_out"
+  | "deferred";
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 

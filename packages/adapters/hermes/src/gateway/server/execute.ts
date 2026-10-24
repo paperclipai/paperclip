@@ -27,6 +27,7 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import { readProfileDeferral, TURN_NOT_ADMITTED_EXIT_CODE } from "../../shared/profile-deferral.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -740,6 +741,42 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
   return { exitCode: 1, signal: null, errorCode: "hermes_gateway_protocol_error" };
 }
 
+interface TerminalResultCode {
+  exitCode: number;
+  signal: string | null;
+  errorCode: string | null;
+  retryAfterS?: number;
+  deferredProfile?: string | null;
+}
+
+function resolveTerminalResultCode(terminal: TerminalState): TerminalResultCode {
+  const mapped = terminalResultCode(terminal.status);
+  if (terminal.status === "completed") return mapped;
+  const payload = asRecord(terminal.payload) ?? {};
+  const rawExitCode = payload.exit_code ?? payload.exitCode;
+  const numericExitCode =
+    typeof rawExitCode === "number"
+      ? rawExitCode
+      : typeof rawExitCode === "string" && rawExitCode.trim().length > 0 && Number.isFinite(Number(rawExitCode))
+        ? Number(rawExitCode)
+        : null;
+  const deferral = readProfileDeferral({
+    exitCode: numericExitCode,
+    stdout: "",
+    stderr: [extractErrorMessage(payload), typeof terminal.output === "string" ? terminal.output : ""]
+      .filter((part): part is string => typeof part === "string" && part.length > 0)
+      .join("\n"),
+  });
+  if (!deferral) return mapped;
+  return {
+    exitCode: TURN_NOT_ADMITTED_EXIT_CODE,
+    signal: null,
+    errorCode: deferral.errorCode,
+    retryAfterS: deferral.retryAfterS,
+    deferredProfile: deferral.profile,
+  };
+}
+
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
@@ -754,7 +791,7 @@ export function mapFinalResultForTest(input: {
   );
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
-  const mapped = terminalResultCode(input.terminal.status);
+  const mapped = resolveTerminalResultCode(input.terminal);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
   const errorMessage = mapped.errorCode
@@ -767,6 +804,8 @@ export function mapFinalResultForTest(input: {
     provider: "hermes_gateway",
     model: extractModel(payload),
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
+    ...(mapped.retryAfterS ? { retryAfterS: mapped.retryAfterS, retryable: true as const } : {}),
+    ...(mapped.deferredProfile ? { deferredProfile: mapped.deferredProfile } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),

@@ -165,6 +165,65 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, expected, expect.any(String), expect.objectContaining({ keepIdleOnFailure: result.errorCode === "provider_quota" }));
   });
 
+  it("books a profile capacity deferral as a wait, never adapter_failed", async () => {
+    const f = await fixture();
+    const before = Date.now();
+    Object.assign(f.input.adapterResult, {
+      exitCode: 75,
+      errorCode: "hermes_profile_deferred_capacity",
+      retryAfterS: 300,
+      retryable: true,
+      deferredProfile: "nwc",
+      errorMessage:
+        "Gateway deferred: profile_deferred_capacity (retryAfterS=300, retryable=true, profile=nwc): no slot among 17 served of 43 installed (ceiling 17)",
+    });
+    await f.completion.completeRun(f.input);
+
+    const deferred = await read(f.run.id);
+    expect(deferred).toMatchObject({
+      status: "scheduled_retry",
+      errorCode: "profile_deferred_capacity",
+      finishedAt: null,
+      scheduledRetryReason: "profile_deferred_capacity",
+      scheduledRetryAttempt: 1,
+      resultJson: { stopReason: "profile_deferred_capacity" },
+    });
+    expect(deferred.errorCode).not.toBe("adapter_failed");
+    expect(deferred.scheduledRetryAt?.getTime()).toBeGreaterThanOrEqual(before + 300_000);
+    expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect(f.deps.handleRunLivenessContinuation).not.toHaveBeenCalled();
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.setWakeupStatus).toHaveBeenCalledWith(f.wake.id, "queued", expect.any(Object));
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "deferred", null, expect.any(Object));
+  });
+
+  it.each(["timedOut", "cancelled"] as const)(
+    "keeps the terminal finish time when a %s run also carries a deferral code",
+    async terminal => {
+      const f = await fixture();
+      Object.assign(f.input.adapterResult, {
+        exitCode: 75,
+        errorCode: "hermes_profile_deferred_capacity",
+        retryAfterS: 300,
+        retryable: true,
+        errorMessage: "Gateway deferred: profile_deferred_capacity (retryAfterS=300)",
+        ...(terminal === "timedOut"
+          ? { timedOut: true }
+          : { resultJson: { status: "cancelled" } }),
+      });
+      await f.completion.completeRun(f.input);
+
+      const stopped = await read(f.run.id);
+      expect(stopped).toMatchObject({
+        status: terminal === "timedOut" ? "timed_out" : "cancelled",
+        scheduledRetryAt: null,
+        scheduledRetryReason: null,
+      });
+      expect(stopped.finishedAt).not.toBeNull();
+    },
+  );
+
   it.each(["completeRun", "failRun"] as const)("waits for an owned Stop before %s can write a competing outcome", async operation => {
     const f = await fixture();
     let settle!: () => void;

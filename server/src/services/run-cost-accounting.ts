@@ -9,8 +9,21 @@ import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.j
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
+import { PROFILE_DEFERRED_CAPACITY_ERROR_CODES } from "./heartbeat/profile-deferral.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
+/** A capacity deferral ends an attempt before provider work, but the run stays
+ * schedulable under the same id. Its accounting closes without a final
+ * acknowledgement so a promoted dispatch can reserve the run again. */
+const deferredAttemptStatus = "scheduled_retry";
+function isDeferredAttempt(row: { status: string; errorCode: string | null }) {
+  return row.status === deferredAttemptStatus && row.errorCode !== null
+    && PROFILE_DEFERRED_CAPACITY_ERROR_CODES.has(row.errorCode);
+}
+function deferredAttemptPredicate() {
+  return and(eq(heartbeatRuns.status, deferredAttemptStatus),
+    inArray(heartbeatRuns.errorCode, [...PROFILE_DEFERRED_CAPACITY_ERROR_CODES]));
+}
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
@@ -20,9 +33,11 @@ const amount = (value: unknown) => typeof value === "number" && Number.isFinite(
 export async function accountRunCost(db: Db, runId: string, hooks: BudgetServiceHooks = {}, receiptIndex?: UsageReceiptIndex) {
   const [identity] = await db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status,
     pending: heartbeatRuns.costAccountingPending, accountedAt: heartbeatRuns.costAccountedAt,
+    errorCode: heartbeatRuns.errorCode,
     issueId: sql<string | null>`${heartbeatRuns.usageJson}->'ledgerScope'->>'issueId'`,
   }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-  if (!identity || !identity.pending || !terminalStatuses.includes(identity.status)) return false;
+  if (!identity || !identity.pending
+    || (!terminalStatuses.includes(identity.status) && !isDeferredAttempt(identity))) return false;
   // Finalization can call twice. Settled or active runs owe no accounting work.
   // Pending acknowledgements still receive the locked stale-marker cleanup.
   const index = identity.pending && !identity.accountedAt && terminalStatuses.includes(identity.status)
@@ -36,12 +51,33 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       eq(issues.companyId, identity.companyId), eq(issues.id, issueId),
     )).for("key share");
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
-    if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
+    if (!run?.costAccountingPending
+      || (!terminalStatuses.includes(run.status) && !isDeferredAttempt(run))) return false;
     if (run.costAccountedAt) {
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
         text(object(object(run.usageJson).ledgerScope).projectId));
       return false;
+    }
+    if (isDeferredAttempt(run)) {
+      // Nothing on a capacity-deferred attempt reached the provider, so the
+      // attempt owes no charge: close its accounting and release the hold. The
+      // same run id is dispatchable again, and its promotion re-arms that row.
+      // A final acknowledgement here would be wrong twice over — it would
+      // invent closure for work that has not happened and refuse re-admission.
+      if (run.runtimeMode === "native") {
+        // A live native coordinator can still resume this run. Only its closed
+        // boundary authorizes releasing the hold that fences that recovery.
+        const [coordinator] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        if (coordinator && !coordinator.resultId && coordinator.phase !== "terminal_failure") return false;
+      }
+      await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
+      await tx.update(budgetReservations).set({ state: "released", settledAt: new Date() })
+        .where(and(eq(budgetReservations.companyId, run.companyId),
+          eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
+        text(object(object(run.usageJson).ledgerScope).projectId));
+      return true;
     }
     // The bounded global replay can leave a newer receipt behind an older
     // complete snapshot. Drain this run under the accounting lock before
@@ -163,8 +199,14 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
 
 function actionableRunAccounting() {
   return and(
-    eq(heartbeatRuns.costAccountingPending, true), inArray(heartbeatRuns.status, terminalStatuses),
-    or(sql`${heartbeatRuns.costAccountedAt} is not null`, and(
+    eq(heartbeatRuns.costAccountingPending, true),
+    // A deferred attempt is closed without a terminal status; keeping it in the
+    // sweep means a release interrupted after the booking is repaired rather
+    // than leaving a hold that blocks the run's own re-admission.
+    or(inArray(heartbeatRuns.status, terminalStatuses), deferredAttemptPredicate()),
+    // A deferral proves no provider work, so receipt completeness cannot defer
+    // closing the attempt.
+    or(deferredAttemptPredicate(), sql`${heartbeatRuns.costAccountedAt} is not null`, and(
       sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
       sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
         or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'
