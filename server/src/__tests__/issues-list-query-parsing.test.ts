@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import request from "supertest";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import * as services from "../services/index.js";
 import { issues } from "@paperclipai/db";
 import { issueRoutes } from "../routes/issues.js";
 import {
@@ -20,6 +21,29 @@ import {
 describeEmbeddedPostgres("issue list status query parsing", () => {
   const ctx = useEmbeddedPostgres("paperclip-issues-list-query-parsing-", {
     resetEach: resetCompanyIssueFixtures,
+  });
+
+  it.each([
+    ["status=todo&status=todo&status=done", ["todo", "done"]],
+    ["status=blocked,blocked,in_review", ["blocked", "in_review"]],
+    ["status=done,in_review&status=done", ["done", "in_review"]],
+  ])("passes distinct statuses to list and count for %s", async (query, expected) => {
+    const company = await seedCompanyWithBoardAccess(ctx.db, "Distinct statuses");
+    const service = services.issueService(ctx.db);
+    const list = vi.spyOn(service, "list").mockResolvedValue([]);
+    const count = vi.spyOn(service, "count").mockResolvedValue(0);
+    const factory = vi.spyOn(services, "issueService").mockReturnValue(service);
+    try {
+      const app = routeApp(ctx.db, company.actor, issueRoutes);
+      await request(app).get(`/api/companies/${company.companyId}/issues?${query}`).expect(200);
+      expect(list).toHaveBeenCalledWith(company.companyId, expect.objectContaining({ status: expected }));
+      await request(app).get(`/api/companies/${company.companyId}/issues/count?attention=blocked&${query}`).expect(200);
+      expect(count).toHaveBeenCalledWith(company.companyId, expect.objectContaining({ status: expected }));
+    } finally {
+      factory.mockRestore();
+      list.mockRestore();
+      count.mockRestore();
+    }
   });
 
   async function listStatuses(query: string) {

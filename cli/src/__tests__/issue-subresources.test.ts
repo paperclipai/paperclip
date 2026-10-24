@@ -36,6 +36,21 @@ async function run(args: string[]): Promise<void> {
 }
 
 describe("issue subresource commands", () => {
+  it.each([
+    ["todo,done,todo", ["todo", "done"]],
+    ["todo,todo", ["todo"]],
+    [" done , in_review,done ", ["done", "in_review"]],
+  ])("deduplicates list status tokens in %s", async (status, expected) => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse([])));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run(["issue", "list", "--company-id", COMPANY_ID, "--status", status]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = new URL(fetchMock.mock.calls[0]?.[0] as string);
+    expect(url.searchParams.getAll("status")).toEqual(expected);
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_API_KEY;
