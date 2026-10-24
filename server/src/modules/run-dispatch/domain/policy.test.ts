@@ -475,6 +475,63 @@ describe("decideQueuedRunStaleness", () => {
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
+
+  describe("interaction addressee wake", () => {
+    // The assignee asked agent-1 to answer a card on an issue agent-1 does
+    // not own, so the issue assignee is not the owner this wake answers to.
+    const addresseeFacts = (isPendingAddressee: boolean): QueuedRunFacts => ({
+      ...baseStalenessFacts(),
+      wakeReason: "interaction_pending",
+      issueAssigneeAgentId: "agent-2",
+      issueStatus: "in_review",
+      interactionAddressee: { interactionId: "interaction-1", isPendingAddressee },
+      reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    });
+
+    it("admits the verified addressee of a pending interaction without treating the issue as reassigned", () => {
+      expect(decideQueuedRunStaleness(addresseeFacts(true), NOW)).toEqual({ stale: false });
+    });
+
+    it("admits the verified addressee even when a review stage names another participant", () => {
+      expect(decideQueuedRunStaleness({
+        ...addresseeFacts(true),
+        reviewParticipant: {
+          isInReview: true, hasParticipant: true, participantIsAgent: true, participantAgentId: "agent-3",
+          currentStageType: "review", currentParticipant: { type: "agent", agentId: "agent-3" },
+        },
+      }, NOW)).toEqual({ stale: false });
+    });
+
+    it("cancels a non-owner wake whose interaction is no longer pending for the agent, not as an assignee change", () => {
+      expect(decideQueuedRunStaleness(addresseeFacts(false), NOW)).toEqual({
+        stale: true,
+        errorCode: "issue_interaction_not_pending",
+        reason: expect.stringContaining("no longer pending"),
+        details: { issueId: "issue-1", interactionId: "interaction-1", currentAssigneeAgentId: "agent-2" },
+      });
+    });
+
+    it("still runs the assignee's own addressee wake after the card is gone", () => {
+      expect(decideQueuedRunStaleness({ ...addresseeFacts(false), issueAssigneeAgentId: "agent-1" }, NOW))
+        .toEqual({ stale: false });
+    });
+
+    it("does not let an unverified addressee wake bypass the review participant check", () => {
+      expect(decideQueuedRunStaleness({
+        ...addresseeFacts(false),
+        issueAssigneeAgentId: "agent-1",
+        reviewParticipant: {
+          isInReview: true, hasParticipant: true, participantIsAgent: true, participantAgentId: "agent-3",
+          currentStageType: "review", currentParticipant: { type: "agent", agentId: "agent-3" },
+        },
+      }, NOW)).toMatchObject({ stale: true, errorCode: "issue_review_participant_changed" });
+    });
+
+    it("keeps reporting an assignee change for wakes that name no interaction", () => {
+      expect(decideQueuedRunStaleness({ ...addresseeFacts(false), interactionAddressee: null }, NOW))
+        .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    });
+  });
 });
 
 describe("native replacement execution authority", () => {
