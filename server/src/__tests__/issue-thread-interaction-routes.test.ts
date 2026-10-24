@@ -2468,6 +2468,7 @@ describe("issue thread interaction routes", () => {
       agentId: ASSIGNEE_AGENT_ID,
       companyId: "company-1",
       runId: RUN_2,
+      keyId: "agent-key-1",
     });
 
     const res = await request(app)
@@ -2482,6 +2483,7 @@ describe("issue thread interaction routes", () => {
       {
         agentId: ASSIGNEE_AGENT_ID,
         runId: RUN_2,
+        agentApiKeyId: "agent-key-1",
         userId: null,
         resolverPolicyRestriction: "anyone",
         suggestedTaskEffectsAuthorized: true,
