@@ -137,8 +137,12 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
   }
 }
 
+// This process's start time never changes; probing it again inside the
+// runner's post-auth welcome window only adds latency under load.
+let observedControllerStart: Date | null = null;
+
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
-  const observed = await observedProcessStart(process.pid);
+  const observed = observedControllerStart ??= await observedProcessStart(process.pid);
   const fallback = new Date(getServerInfoSnapshot().processStartedAt);
   return {
     bootId: controllerBootId,
