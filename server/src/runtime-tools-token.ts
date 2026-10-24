@@ -13,6 +13,7 @@ export interface RuntimeToolsTokenClaims {
 }
 
 const TOKEN_TTL_SECONDS = 60 * 60;
+const MAX_RUN_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 
 function secret() {
   return process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim()
@@ -45,9 +46,18 @@ export function createRuntimeToolsToken(input: {
   runId: string;
   responsibleUserId: string;
   scope?: RuntimeToolsTokenClaims["scope"];
+  expiresAt?: Date;
 }) {
   if (!secret()) return null;
   const now = Math.floor(Date.now() / 1000);
+  const connectionExpiry = input.expiresAt
+    ? Math.floor(input.expiresAt.getTime() / 1000)
+    : now + TOKEN_TTL_SECONDS;
+  if (input.scope !== "github_credentials" &&
+      (!Number.isFinite(connectionExpiry) || connectionExpiry <= now ||
+       connectionExpiry - now > MAX_RUN_TOKEN_TTL_SECONDS)) {
+    throw new Error("Run-scoped connection token expiry must be within 24 hours");
+  }
   const instanceId = resolvePaperclipInstanceId();
   const claims: RuntimeToolsTokenClaims = {
     sub: input.agentId,
@@ -57,7 +67,7 @@ export function createRuntimeToolsToken(input: {
     scope: input.scope ?? "connection_intents",
     iat: now,
     // Broker tokens remain scoped to a live run, which is rechecked on every use.
-    exp: now + (input.scope === "github_credentials" ? 30 * 24 * 60 * 60 : TOKEN_TTL_SECONDS),
+    exp: input.scope === "github_credentials" ? now + 30 * 24 * 60 * 60 : connectionExpiry,
     instance_id: instanceId,
   };
   const signingInput = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(claims)}`;

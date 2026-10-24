@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   activityLog,
@@ -46,6 +46,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.useRealTimers();
     if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
     else process.env.PAPERCLIP_API_URL = originalApiUrl;
     await db.delete(toolMcpGatewayTokens);
@@ -166,8 +167,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     for (const token of tokens) {
       expect(token.subjectType).toBe("heartbeat_run");
       expect(token.subjectId).toMatch(/^[0-9a-f-]{36}$/);
-      expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
-      expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
+      expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 4 * 60 * 60 * 1000);
+      expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 4 * 60 * 60 * 1000);
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
 
@@ -273,6 +274,69 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     }
     return seeded;
   }
+
+  it("keeps the run gateway usable at minute 80, then rejects a completed run and expiry", async () => {
+    const [owner] = await seedAssignedAgents(1);
+    const [connection] = await db.select().from(toolConnections);
+    await db.update(toolConnections).set({ healthStatus: "ok", credentialPolicy: "shared" })
+      .where(eq(toolConnections.id, connection!.id));
+    await db.insert(toolCatalogEntries).values({
+      companyId: owner!.agent.companyId,
+      applicationId: connection!.applicationId,
+      connectionId: connection!.id,
+      name: "read_fixture",
+      toolName: "read_fixture",
+      entryKind: "tool",
+      riskLevel: "read",
+      isReadOnly: true,
+      isWrite: false,
+      versionHash: "fixture",
+      status: "active",
+    });
+    await db.insert(connectionGrants).values({
+      companyId: owner!.agent.companyId,
+      connectionId: connection!.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+    });
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: owner!.agent, runId: owner!.run.id });
+    const [gateway] = await db.select().from(toolMcpGateways);
+    const service = createToolGatewayService(db, {
+      remoteHttpRequest: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0", id: body.id,
+          result: body.method === "initialize"
+            ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
+            : { content: [{ type: "text", text: "fixture result" }], structuredContent: { resources: [] } },
+        }), { headers: { "content-type": "application/json" } });
+      },
+    });
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(service));
+    const call = (method: string, params?: Record<string, unknown>) =>
+      request(app).post(`/mcp/gateways/${gateway!.gatewayPublicId}`)
+        .set("Authorization", `Bearer ${server!.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method, params });
+    const mintedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(mintedAt + 80 * 60 * 1_000);
+    const initialized = await call("initialize").expect(200);
+    expect(initialized.body.result.protocolVersion).toBeTruthy();
+    const listed = await call("tools/list").expect(200);
+    const readTool = listed.body.result.tools.find((tool: { title?: string }) => tool.title === "read_fixture");
+    expect(readTool).toBeDefined();
+    const called = await call("tools/call", { name: readTool.name, arguments: {} }).expect(200);
+    expect(called.body.result.isError).toBe(false);
+    expect(called.body.result.structuredContent).toMatchObject({
+      structuredContent: { resources: [] }, isError: false,
+    });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, owner!.run.id));
+    await call("initialize").expect(401);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, owner!.run.id));
+    vi.setSystemTime(mintedAt + 4 * 60 * 60 * 1_000 + 1_000);
+    await call("initialize").expect(401);
+  });
 
   it("rejects another agent's run token on a run-scoped gateway", async () => {
     const [owner, other] = await seedAssignedAgents(2);
