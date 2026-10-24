@@ -37,13 +37,15 @@ export async function callProjectTool(input: {
     body = createProjectSchema.extend({ idempotencyKey: z.string().min(1).max(255) }).parse(args);
   } else if (input.name === "create_task") {
     const key = z.string().min(1).max(150).parse(args.idempotencyKey);
+    const status = z.enum(["backlog", "todo"]).optional().parse(args.status);
     path = `/companies/${input.companyId}/issues`;
     body = createIssueSchema.parse({
       title: args.title, description: args.description, priority: args.priority,
       projectId: args.projectId, initialPlan: args.initialPlan,
       assigneeAgentId: args.assigneeActorId ?? input.agentId,
       parentId: input.conversation ? null : input.issueId,
-      status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
+      status: status === "backlog" ? "backlog"
+        : Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });

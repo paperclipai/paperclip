@@ -3,8 +3,8 @@ import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { activityLog, agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
@@ -121,6 +121,21 @@ const support = await getEmbeddedPostgresTestSupport();
       companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: true });
     expect(result).toMatchObject({ parentId: null, projectId: f.projectId, assigneeAgentId: f.agentId });
     expect((await documentService(server.db).getIssueDocumentByKey(result.id, "plan"))?.body).toContain("Implement in the execution task");
+  });
+
+  it("honors a backlog status on MCP create_task without queueing an assignment wake", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const toolInput = { name: "create_task", apiUrl: server.apiUrl, token: createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!,
+      companyId: f.companyId, issueId: f.issueId, agentId: f.agentId, conversation: false };
+    const created = async (id: string) => (await server.db.select().from(activityLog)
+      .where(and(eq(activityLog.entityId, id), eq(activityLog.action, "issue.created"))))[0]?.details;
+    const backlog = await callProjectTool({ ...toolInput, arguments: { title: "Save for later", idempotencyKey: "backlog", status: "backlog", blockedByTaskIds: [f.issueId] } });
+    expect(backlog).toMatchObject({ status: "backlog", assigneeAgentId: f.agentId });
+    expect(await created(backlog.id)).toMatchObject({ status: "backlog", assignmentWakeSkipped: true, assignmentWakeSkipReason: "assigned_backlog" });
+    const todo = await callProjectTool({ ...toolInput, arguments: { title: "Start now", idempotencyKey: "todo" } });
+    expect(todo).toMatchObject({ status: "todo" });
+    expect(await created(todo.id)).toMatchObject({ status: "todo", assignmentWakeSkipped: false });
+    await expect(callProjectTool({ ...toolInput, arguments: { title: "Invalid", idempotencyKey: "invalid", status: "done" } })).rejects.toThrow();
   });
 
   it("allows low-trust chat handoffs and self-assigned subtasks through both creation endpoints", async () => {
