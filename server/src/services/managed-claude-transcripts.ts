@@ -6,9 +6,10 @@ import { agentTaskSessions, agents, heartbeatRuns, issues, type Db } from "@pape
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { resolveManagedClaudeTranscriptsDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
-export const MANAGED_CLAUDE_TRANSCRIPT_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
-export const MANAGED_CLAUDE_TRANSCRIPT_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
+export const MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS = 60 * 60 * 1000;
 export const MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DEFAULT_DAYS = 7;
 
 const TASK_FILE = "task.json";
@@ -25,6 +26,12 @@ const CLOSED_ISSUE_STATUSES = ["done", "cancelled"];
 export function managedClaudeTranscriptRetentionEnabled(): boolean {
   return process.env.PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED === "true";
 }
+
+// A freshly retained scope is new work the cleanup worker does not know about
+// yet. Set once at startup by registerManagedClaudeTranscriptCleanupWork, so a
+// worker that went idle (nothing to expire) wakes instead of staying asleep
+// until some unrelated event happens to touch it.
+let onScopeRetained: (() => void) | null = null;
 
 export async function retainManagedClaudeTranscripts(input: {
   runtime: { home: string; sessionIdentity: string } | undefined;
@@ -43,6 +50,7 @@ export async function retainManagedClaudeTranscripts(input: {
     await fs.mkdir(projectsDir, { recursive: true, mode: 0o700 });
     await fs.writeFile(path.join(scopeDir, TASK_FILE), JSON.stringify({ taskKey }), { mode: 0o600 });
     await fs.symlink(await fs.realpath(projectsDir), path.join(runtime.home, "provider", PROJECTS_DIR));
+    onScopeRetained?.();
     return runtime.home;
   } catch (err) {
     logger.warn({ err, agentId: input.agentId }, "Could not retain Claude transcripts; this run will not be resumable");
@@ -65,6 +73,8 @@ export type ManagedClaudeTranscriptExpirationResult = {
   failed: number;
   truncated: boolean;
   skipped: Record<string, number>;
+  /** Earliest time a known scope becomes due, or null with nothing left to wait on. */
+  nextDueAt: number | null;
 };
 
 type Owner = { companyId: string; agentId: string };
@@ -217,7 +227,7 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     const root = path.resolve(options.instanceRoot ?? defaults.instanceRoot ?? resolvePaperclipInstanceRoot());
     const cutoff = new Date((options.now ?? defaults.now ?? new Date()).getTime() - retentionDays * DAY_MS);
     const result: ManagedClaudeTranscriptExpirationResult = {
-      checked: 0, expired: 0, clearedTaskSessions: 0, failed: 0, truncated: false, skipped: {},
+      checked: 0, expired: 0, clearedTaskSessions: 0, failed: 0, truncated: false, skipped: {}, nextDueAt: null,
     };
 
     const scopes: Scope[] = [];
@@ -230,9 +240,14 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
         scopes.push({ ...owner, dir, task: await readTaskKey(dir) });
       }
     }
-    const inUse = new Set(scopes
-      .filter((scope) => scope.task && scope.task.lastUsed >= cutoff)
-      .map((scope) => `${path.dirname(scope.dir)}\0${scope.task!.taskKey}`));
+    const notYetDue = scopes.filter((scope) => scope.task && scope.task.lastUsed >= cutoff);
+    const inUse = new Set(notYetDue.map((scope) => `${path.dirname(scope.dir)}\0${scope.task!.taskKey}`));
+    // Blocked scopes (an open issue, a live run) have no predictable due time;
+    // they are swept opportunistically whenever this fires for another reason.
+    for (const scope of notYetDue) {
+      const due = scope.task!.lastUsed.getTime() + retentionDays * DAY_MS;
+      if (result.nextDueAt === null || due < result.nextDueAt) result.nextDueAt = due;
+    }
     scopes.sort((a, b) => (a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0));
     const pending = cursor ? scopes.filter((scope) => scope.dir > cursor!) : scopes;
     for (const scope of pending) {
@@ -255,4 +270,32 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
   }
 
   return { tick };
+}
+
+export function registerManagedClaudeTranscriptCleanupWork(
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  service: ReturnType<typeof managedClaudeTranscriptExpirationService>,
+  onResult: (result: ManagedClaudeTranscriptExpirationResult) => void,
+) {
+  let next: number | null = null;
+  let idle = true;
+  const worker = coordinator.register(DELIVERY_QUEUES.managedClaudeTranscriptCleanup, {
+    retryMs: MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS,
+    run: async () => {
+      const result = await service.tick();
+      onResult(result);
+      // A truncated pass has more of the current batch to go; come straight
+      // back rather than waiting for the next real deadline.
+      next = result.truncated ? Date.now() + 1000 : result.nextDueAt;
+      idle = next === null;
+    },
+    hasPending: async () => false,
+    nextRunAt: () => next,
+  });
+  onScopeRetained = () => {
+    if (!idle) return;
+    idle = false;
+    worker.wake();
+  };
+  return worker;
 }
