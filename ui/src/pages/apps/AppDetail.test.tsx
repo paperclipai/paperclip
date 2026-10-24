@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
+import { act } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -180,20 +180,29 @@ vi.mock("@/context/ToastContext", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
-
 async function flushReact() {
   for (let i = 0; i < 3; i += 1) {
     await act(async () => {
       await Promise.resolve();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
+  }
+}
+
+// Polls with each wait inside act, so query and sync updates commit inside act
+// instead of between polls.
+async function waitForInAct(assertion: () => void, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+    }
   }
 }
 
@@ -463,7 +472,7 @@ describe("AppDetail", () => {
   });
 
   afterEach(() => {
-    flushSync(() => root?.unmount());
+    act(() => root?.unmount());
     container.remove();
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -496,7 +505,7 @@ describe("AppDetail", () => {
     listAggregatorAppsMock.mockResolvedValue(prior);
     syncAggregatorAppsMock.mockResolvedValue({ ...prior, sync: { ...prior.sync, status: "syncing", checked: 0 } });
     const client = await renderAppDetail();
-    await vi.waitFor(() => expect(container.textContent).toContain("Refreshing apps… 0 of 2"));
+    await waitForInAct(() => expect(container.textContent).toContain("Refreshing apps… 0 of 2"));
     expect(syncAggregatorAppsMock).toHaveBeenCalledTimes(1);
     expect(syncAggregatorAppsMock).toHaveBeenCalledWith("conn-1", true);
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Composio"]')?.disabled).toBe(true);
@@ -519,12 +528,12 @@ describe("AppDetail", () => {
     listAggregatorAppsMock.mockResolvedValue(observed);
     syncAggregatorAppsMock.mockResolvedValue(observed);
     await renderAppDetail();
-    await vi.waitFor(() => expect(container.textContent).toContain("Apps refreshed."));
+    await waitForInAct(() => expect(container.textContent).toContain("Apps refreshed."));
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Composio"]')?.disabled).toBe(false);
     syncAggregatorAppsMock.mockRejectedValueOnce(new Error("Authorization expired"));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Composio"]')!.click());
     await flushReact();
-    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Last known apps are shown."));
+    await waitForInAct(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("Last known apps are shown."));
     expect(container.querySelector('ul[aria-label="Connected Composio apps"]')?.textContent).toContain("NotionNot verified");
     expect(syncAggregatorAppsMock.mock.calls).toEqual([["conn-1", true], ["conn-1", true]]);
     expect(finishAppMock).not.toHaveBeenCalled();
@@ -541,7 +550,7 @@ describe("AppDetail", () => {
     listAggregatorAppsMock.mockResolvedValue(observed);
     syncAggregatorAppsMock.mockResolvedValue(observed);
     await renderAppDetail();
-    await vi.waitFor(() => expect(container.textContent).toContain("Apps refreshed."));
+    await waitForInAct(() => expect(container.textContent).toContain("Apps refreshed."));
     const list = container.querySelector('ul[aria-label="Connected Composio apps"]')!;
     expect(list.querySelectorAll("li")).toHaveLength(2);
     expect(list.textContent).toContain("Notion2 accountsConnected");
@@ -553,7 +562,7 @@ describe("AppDetail", () => {
     useComposioConnection();
     listAggregatorAppsMock.mockResolvedValue({ ...aggregatorApps(), discovery: { availability: "unsupported", message: "Account discovery unavailable." } });
     await renderAppDetail();
-    await vi.waitFor(() => expect(container.textContent).toContain("Account discovery unavailable."));
+    await waitForInAct(() => expect(container.textContent).toContain("Account discovery unavailable."));
     expect(syncAggregatorAppsMock).not.toHaveBeenCalled();
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Refresh Composio"]')?.disabled).toBe(true);
   });
@@ -570,7 +579,7 @@ describe("AppDetail", () => {
     listAggregatorAppsMock.mockResolvedValue(observed);
     syncAggregatorAppsMock.mockResolvedValue(observed);
     await renderAppDetail();
-    await vi.waitFor(() => expect(container.textContent).toContain("Apps refreshed."));
+    await waitForInAct(() => expect(container.textContent).toContain("Apps refreshed."));
     expect(container.querySelector('ul[aria-label="Connected Composio apps"]')?.textContent).toBe(`Notion${label}`);
   });
 
@@ -1386,8 +1395,8 @@ describe("AppDetail", () => {
 
     const field = container.querySelector<HTMLInputElement>(`input[aria-label="${fixture.label}"]`);
     expect(field).not.toBeNull();
-    await act(() => setInputValue(field!, fixture.value));
-    await act(() => findButton("Check & reconnect")!.click());
+    await act(async () => setInputValue(field!, fixture.value));
+    await act(async () => findButton("Check & reconnect")!.click());
     await flushReact();
 
     expect(reconnectConnectionMock).toHaveBeenCalledWith("conn-1", { [fixture.path]: fixture.value });
@@ -1653,7 +1662,7 @@ describe("AppDetail", () => {
       method: "POST",
       body: JSON.stringify({ session }),
     }));
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(navigateTopLevelMock).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=personal",
       );

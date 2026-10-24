@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
-import { useState, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,14 +43,6 @@ vi.mock("@/lib/router", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   for (let i = 0; i < 3; i += 1) {
@@ -100,7 +91,7 @@ describe("AuditFeed", () => {
   });
 
   afterEach(() => {
-    flushSync(() => root?.unmount());
+    act(() => root?.unmount());
     container.remove();
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -629,7 +620,7 @@ describe("AuditFeed", () => {
     );
     expect(container.textContent).toContain("Scoped to run run-42");
 
-    flushSync(() => root.unmount());
+    act(() => root.unmount());
     await render({ lockedEntity: { type: "routine", id: "routine-7", label: "Nightly triage" } });
     expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
       expect.objectContaining({ entityType: "routine", entityId: "routine-7" }),

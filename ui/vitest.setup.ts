@@ -1,3 +1,6 @@
+import { afterAll } from "vitest";
+import { drainQueuedTimers } from "./src/lib/test-timer-drain";
+
 const storageEntries = new Map<string, string>();
 
 function installStorageMock(target: Record<string, unknown>) {
@@ -38,3 +41,6 @@ if (typeof window !== "undefined" && window.localStorage !== globalThis.localSto
 if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
+
+// Let 0 ms timers queued by a file's last unmount run before the file's jsdom is torn down (see the helper).
+afterAll(drainQueuedTimers);

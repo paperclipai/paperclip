@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type {
   ExecutionWorkspace,
@@ -198,14 +198,6 @@ vi.mock("@/components/ui/popover", () => ({
 if (!globalThis.PointerEvent) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).PointerEvent = MouseEvent;
-}
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
 }
 
 async function flush() {
@@ -1967,12 +1959,12 @@ describe("IssueProperties", () => {
       issue: createIssue(), childIssues: [], onUpdate: vi.fn(), inline: true,
     });
     await flush();
-    await act(() => findRowTrigger(container, "Project")!.click());
+    await act(async () => findRowTrigger(container, "Project")!.click());
     const option = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Remembered Project")!;
     expect(option).toBeDefined();
     act(() => option.click());
     expect(getLastProjectId("company-1")).toBeUndefined();
-    await act(() => findRowTrigger(container, "Project")!.click());
+    await act(async () => findRowTrigger(container, "Project")!.click());
     const none = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "No project")!;
     act(() => none.click());
     expect(getLastProjectId("company-1")).toBeUndefined();
@@ -1991,7 +1983,7 @@ describe("IssueProperties", () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, { issue, childIssues: [], onUpdate, inline: true });
     await flush();
-    await act(() => findRowTrigger(container, "Project")!.click());
+    await act(async () => findRowTrigger(container, "Project")!.click());
     const project = [...document.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "Target Project")!;
     act(() => project.click());
@@ -1999,7 +1991,7 @@ describe("IssueProperties", () => {
     const assigned = applyOptimisticIssueFieldUpdate(issue, onUpdate.mock.lastCall![0])!;
     expect(assigned.executionWorkspaceId).toBe(workspace.id);
     expect(assigned.currentExecutionWorkspace).toBe(workspace);
-    await act(() => findRowTrigger(container, "Project")!.click());
+    await act(async () => findRowTrigger(container, "Project")!.click());
     const none = [...document.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "No project")!;
     act(() => none.click());
