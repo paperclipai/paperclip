@@ -579,7 +579,6 @@ describe("in-flight mirror growth gate", () => {
       await store.append(handle, smallLine);
       size = (await fs.stat(absPath)).size;
       if (size - first >= Math.ceil(first / 4)) break;
-      // Several intervals pass with appends but under a quarter of growth.
       await sleep(40);
       expect(calls.put).toBe(1);
     }
@@ -604,7 +603,6 @@ describe("in-flight mirror growth gate", () => {
     await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
     await store.append(handle, smallLine);
     const size = (await fs.stat(absPath)).size;
-    // Far under a quarter of the mirrored size, but the log is under 1 MiB.
     expect(size - first).toBeLessThan(first / 4);
     await vi.waitFor(() => expect(objects.get(key)?.length).toBe(size), { timeout: 2000 });
     expect(calls.put).toBe(2);
@@ -633,11 +631,9 @@ describe("in-flight mirror growth gate", () => {
     await store.flushInflightMirrors?.();
     const finalSize = (await fs.stat(absPath)).size;
     expect(objects.get(key)?.length).toBe(finalSize);
-    // The last upload is the shutdown flush; the others passed the growth gate.
     const gated = uploadedBytes.slice(0, -1);
     expect(uploadedBytes.at(-1)).toBe(finalSize);
     for (let i = 1; i < gated.length; i++) expect(gated[i]! * 4).toBeGreaterThanOrEqual(gated[i - 1]! * 5);
-    // Every-interval mirroring would re-upload the whole file about 40 times.
     expect(uploadedBytes.length).toBeLessThan(20);
     expect(gated.reduce((sum, bytes) => sum + bytes, 0)).toBeLessThanOrEqual(5 * finalSize);
     await store.finalize(handle);
@@ -656,7 +652,6 @@ describe("in-flight mirror growth gate", () => {
     const first = (await fs.stat(absPath)).size;
     await vi.waitFor(() => expect(objects.get(key)?.length).toBe(first), { timeout: 2000 });
     await store.append(handle, { stream: "stdout", chunk: "held-tail", ts: "t1" });
-    // The interval check runs and holds the tail back.
     await sleep(60);
     expect(calls.put).toBe(1);
     expect(objects.get(key)!.toString("utf8")).not.toContain("held-tail");
@@ -683,7 +678,6 @@ describe("in-flight mirror growth gate", () => {
     await sleep(60);
     const complete = await fs.readFile(absPath);
 
-    // A second store with the local copy gone serves the mirrored prefix.
     const reader = createDurableRunLogStore({
       basePath: path.join(baseDir, "elsewhere"),
       s3: { provider, keyPrefix: "run-logs" },
@@ -698,10 +692,6 @@ describe("in-flight mirror growth gate", () => {
   });
 });
 
-// SAI-3416: the segmented heads of PR 767 could restore and publish a 64-byte
-// prefix of a 160-byte finalized log when finalize and a retry's first mirror
-// landed inside one locate window (between a reader's HEAD and its GET). The
-// single-object mirror must never shrink the key below the finalized log.
 describe("finalize then a retry's first mirror in one locate window", () => {
   const finalizedBytes = 160;
 
@@ -710,7 +700,6 @@ describe("finalize then a retry's first mirror in one locate window", () => {
     putSizes: number[],
   ) {
     const handle = await store.begin(begin);
-    // One line of exactly 160 bytes: the JSON envelope plus a padded chunk.
     const envelope = Buffer.byteLength(
       `${JSON.stringify({ ts: "t0", attemptId: handle.attemptId, stream: "stdout", chunk: "" })}\n`,
     );
@@ -744,9 +733,6 @@ describe("finalize then a retry's first mirror in one locate window", () => {
       const { handle, finalized } = await finalizeOneLine(store, putSizes);
       const key = `run-logs/${handle.logRef}`;
 
-      // Barrier: after the reader's HEAD (160 bytes), the retry begins,
-      // appends, and its first timer-driven mirror (through the growth gate)
-      // lands before the reader's GET.
       let retryMirrored = false;
       const realGet = provider.getObject.bind(provider);
       provider.getObject = async (input) => {
@@ -765,12 +751,9 @@ describe("finalize then a retry's first mirror in one locate window", () => {
 
       expect(retryMirrored).toBe(true);
       expect(page).toEqual({ content: finalized.subarray(offset).toString("utf8"), nextOffset: undefined });
-      // No upload ever published fewer bytes than the finalized log, and every
-      // one of them starts with the complete finalized log.
       expect(putSizes.length).toBe(3);
       for (const size of putSizes) expect(size).toBeGreaterThanOrEqual(finalizedBytes);
       expect(objects.get(key)!.subarray(0, finalizedBytes).equals(finalized)).toBe(true);
-      // A pod with no local copy restores the full object, never a prefix.
       const restorer = createDurableRunLogStore({
         basePath: path.join(baseDir, "restorer"),
         s3: { provider, keyPrefix: "run-logs" },
@@ -792,8 +775,6 @@ describe("finalize then a retry's first mirror in one locate window", () => {
     const { handle } = await finalizeOneLine(store, putSizes);
     const key = `run-logs/${handle.logRef}`;
 
-    // The restoring pod's HEAD sees 160 bytes; the retry's first mirror on
-    // the original pod lands before its GET.
     let retryMirrored = false;
     const realGet = provider.getObject.bind(provider);
     provider.getObject = async (input) => {
@@ -811,9 +792,7 @@ describe("finalize then a retry's first mirror in one locate window", () => {
 
     expect(retryMirrored).toBe(true);
     for (const size of putSizes) expect(size).toBeGreaterThanOrEqual(finalizedBytes);
-    // Nothing was published at the run's path on the restoring pod.
     await expect(fs.stat(path.join(restorerDir, handle.logRef))).rejects.toMatchObject({ code: "ENOENT" });
-    // Once the window closes, the restore takes the whole object.
     const restored = await restorer.begin(begin);
     expect((await fs.readFile(path.join(restorerDir, restored.logRef))).equals(objects.get(key)!)).toBe(true);
   });

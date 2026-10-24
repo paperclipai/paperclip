@@ -78,25 +78,14 @@ export interface DurableRunLogStoreOptions {
     keyPrefix?: string;
     // When > 0, ALSO mirror the still-running log to the same object key at
     // most once per this interval (plus a flush hook for graceful shutdown),
-    // so a crash mid-run loses at most one interval's tail (for a log past
-    // inflightMirrorEveryIntervalBytes, at most a fifth of it) instead of the
+    // so a crash mid-run loses only the unmirrored tail instead of the
     // whole log. Off (undefined/0) preserves the historical finalize-only
     // mirroring: no extra PUT traffic unless explicitly opted in.
     inflightMirrorMs?: number;
-    // Logs up to this size are re-uploaded on every interval that saw an
-    // append. Past it, an interval re-uploads only once the log has grown by
-    // a quarter of what is already mirrored. Default
-    // DEFAULT_INFLIGHT_MIRROR_EVERY_INTERVAL_BYTES.
     inflightMirrorEveryIntervalBytes?: number;
   };
 }
 
-// Each in-flight mirror re-reads and re-uploads the whole file (S3 has no
-// append), so mirroring a large log every interval re-reads it in full every
-// interval: the reads grow with log size times run length. Small logs stay on
-// the every-interval cadence; a larger log waits for growth of at least
-// 1/INFLIGHT_MIRROR_GROWTH_DIVISOR of its mirrored size, so the bytes re-read
-// over a run stay within a fixed multiple of the final size (5x for 4).
 export const DEFAULT_INFLIGHT_MIRROR_EVERY_INTERVAL_BYTES = 1024 * 1024;
 const INFLIGHT_MIRROR_GROWTH_DIVISOR = 4;
 
@@ -146,10 +135,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     lastMirrorAt: number;
     timer: NodeJS.Timeout | null;
     upload: Promise<boolean> | null;
-    // Size of the last successful in-flight upload of this entry.
     mirroredBytes: number;
-    // Bytes past mirroredBytes were held back by the growth gate; the
-    // shutdown flush must still upload them.
     deferred: boolean;
   }
   const inflightMirrors = new Map<string, InflightMirrorEntry>();
@@ -159,8 +145,6 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     return size - mirroredBytes >= Math.ceil(mirroredBytes / INFLIGHT_MIRROR_GROWTH_DIVISOR);
   }
 
-  // force (the shutdown flush) uploads any unmirrored bytes regardless of the
-  // growth gate.
   function mirrorInflightNow(logRef: string, entry: InflightMirrorEntry, force = false): Promise<boolean> {
     entry.dirty = false;
     const upload = (async () => {
@@ -168,8 +152,6 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const stat = await fs.stat(absPath);
       if (stat.size === 0) return true;
       if (!force && !inflightMirrorDue(stat.size, entry.mirroredBytes)) {
-        // Hold the tail for a later interval, finalize or the shutdown flush.
-        // The next append re-arms the timer.
         entry.deferred = true;
         return true;
       }
