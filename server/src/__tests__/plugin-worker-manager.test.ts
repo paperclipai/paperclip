@@ -1,3 +1,5 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +35,7 @@ import {
   createPluginWorkerHandle,
   createPluginWorkerManager,
   formatWorkerFailureMessage,
+  resolvePluginWorkerInitializeTimeoutMs,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
 
@@ -44,6 +47,7 @@ const INVOCATION_SCOPE_WORKER_ENTRYPOINT = path.join(
 );
 const TERMINATED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-terminated.cjs");
 const EXECUTE_LOG_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-execute-log.cjs");
+const SLOW_INITIALIZE_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-slow-initialize.cjs");
 
 const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   id: "test.plugin",
@@ -127,6 +131,86 @@ describe("resolveRpcCallTimeoutMs", () => {
     }
     expect(resolveRpcCallTimeoutMs(Number.NaN, 24 * 60 * 60 * 1_000)).toBe(MAX_RPC_TIMEOUT_MS);
   });
+});
+
+describe("plugin worker initialize timeout", () => {
+  it("reads the initialize timeout from the environment", () => {
+    expect(resolvePluginWorkerInitializeTimeoutMs({})).toBe(15_000);
+    expect(resolvePluginWorkerInitializeTimeoutMs({ PAPERCLIP_PLUGIN_WORKER_INITIALIZE_TIMEOUT_MS: "60000" })).toBe(60_000);
+    expect(resolvePluginWorkerInitializeTimeoutMs({ PAPERCLIP_PLUGIN_WORKER_INITIALIZE_TIMEOUT_MS: " 45000 " })).toBe(45_000);
+    expect(resolvePluginWorkerInitializeTimeoutMs({ PAPERCLIP_PLUGIN_WORKER_INITIALIZE_TIMEOUT_MS: "99999999999" })).toBe(15 * 60 * 1_000);
+    for (const bad of ["", "0", "-1", "abc", "1.5", "30s"]) {
+      expect(resolvePluginWorkerInitializeTimeoutMs({ PAPERCLIP_PLUGIN_WORKER_INITIALIZE_TIMEOUT_MS: bad })).toBe(15_000);
+    }
+  });
+
+  function slowInitializeHandle(input: { slowAttempts: number; attemptsFile: string; reject?: boolean }) {
+    return createPluginWorkerHandle("test.plugin", {
+      entrypointPath: SLOW_INITIALIZE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: {},
+      autoRestart: false,
+      initializeTimeoutMs: 1_500,
+      env: {
+        SLOW_INIT_ATTEMPTS_FILE: input.attemptsFile,
+        SLOW_INIT_SLOW_ATTEMPTS: String(input.slowAttempts),
+        SLOW_INIT_DELAY_MS: "30000",
+        SLOW_INIT_REJECT: input.reject ? "1" : "0",
+      },
+    });
+  }
+
+  function readAttempts(attemptsFile: string): number {
+    return readFileSync(attemptsFile, "utf8").trim().split("\n").length;
+  }
+
+  it("retries a timed-out initialize once with a fresh worker process", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-plugin-init-retry-"));
+    const attemptsFile = path.join(dir, "attempts");
+    const handle = slowInitializeHandle({ slowAttempts: 1, attemptsFile });
+    try {
+      await handle.start();
+      expect(handle.status).toBe("running");
+      expect(readAttempts(attemptsFile)).toBe(2);
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        expect.objectContaining({ attempt: 1, initializeTimeoutMs: 1_500 }),
+        "worker initialize timed out, retrying",
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("fails after one retry when initialize keeps timing out", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-plugin-init-retry-"));
+    const attemptsFile = path.join(dir, "attempts");
+    const handle = slowInitializeHandle({ slowAttempts: 5, attemptsFile });
+    try {
+      await expect(handle.start()).rejects.toThrow(/Worker initialize failed .*timed out after 1500ms/);
+      expect(handle.status).toBe("crashed");
+      expect(readAttempts(attemptsFile)).toBe(2);
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("does not retry an initialize that the worker rejects", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-plugin-init-retry-"));
+    const attemptsFile = path.join(dir, "attempts");
+    const handle = slowInitializeHandle({ slowAttempts: 0, attemptsFile, reject: true });
+    try {
+      await expect(handle.start()).rejects.toThrow("Worker initialize returned ok=false");
+      expect(readAttempts(attemptsFile)).toBe(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe("plugin-worker-manager stderr failure context", () => {
