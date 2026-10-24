@@ -337,6 +337,49 @@ describe("parseSetupTokenPrompt", () => {
     expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
   });
 
+  it("skips the 2.1.291 copy hint between the URL and the prompt", () => {
+    const hint = chaSpaced("Hold Shift while selecting to use your terminal's native copy".split(" "));
+    const text = [PREAMBLE_LINE, hardWrap(CLAUDE_COM_URL, 130), "", hint, "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  const COPY_HINT = "Hold Shift while selecting to use your terminal's native copy";
+  const PTY_PREAMBLE =
+    "\x1b[38;2;153;153;153mBrowser didn't open? Use the url below to sign in (c to copy)\x1b[39m\r\r\n\r\r\n";
+  const ptyUrlRow = (display: string) =>
+    `\x1b]8;id=1;${CLAUDE_COM_URL}\x07\x1b[38;2;153;153;153m${display}\x1b[39m\x1b]8;;\x07\r\r\n`;
+  const PTY_URL_BLOCK = `${ptyUrlRow(CLAUDE_COM_URL.slice(0, 180))}${ptyUrlRow(CLAUDE_COM_URL.slice(180))}\r\r\n`;
+  const PTY_HINT_WIDE =
+    "\x1b[2G\x1b[38;2;153;153;153mHold\x1b[7GShift\x1b[13Gwhile\x1b[19Gselecting\x1b[29Gto\x1b[32Guse" +
+    "\x1b[36Gyour\x1b[41Gterminal's\x1b[52Gnative\x1b[59Gcopy\x1b[39m\r\r\n\r\r\n\r\r\n";
+  const PTY_HINT_WRAPPED =
+    "\x1b[2G\x1b[38;2;153;153;153mHold\x1b[7GShift\x1b[13Gwhile\x1b[19Gselecting\x1b[29Gto\x1b[32Guse" +
+    "\x1b[36Gyour\x1b[41Gterminal's\x1b[52Gnative\x1b[39m\r\r\n" +
+    "\x1b[2G\x1b[38;2;153;153;153mcopy\x1b[39m\r\r\n\r\r\n\r\r\n";
+  const PTY_PROMPT = "\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>\r\r\n";
+
+  it("parses the Claude Code 2.1.304 PTY output with the copy hint before the prompt", () => {
+    const raw = `${PTY_PREAMBLE}${PTY_URL_BLOCK}${PTY_HINT_WIDE}${PTY_PROMPT}`;
+    expect(parseSetupTokenPrompt(raw)).toEqual({ url: CLAUDE_COM_URL, prompt: SETUP_TOKEN_PROMPT });
+  });
+
+  it("parses the Claude Code 2.1.304 PTY output when the copy hint wraps on a narrow terminal", () => {
+    const raw = `${PTY_PREAMBLE}${PTY_URL_BLOCK}${PTY_HINT_WRAPPED}${PTY_PROMPT}`;
+    expect(parseSetupTokenPrompt(raw)).toEqual({ url: CLAUDE_COM_URL, prompt: SETUP_TOKEN_PROMPT });
+  });
+
+  it("returns null when a partial copy hint sits before the prompt", () => {
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "Hold Shift while selecting", PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null when an unrelated line follows the copy hint", () => {
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, COPY_HINT, "an unrelated line", PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.
@@ -675,6 +718,14 @@ describe("parseSetupTokenCredential", () => {
   it("returns null for a non-string input", () => {
     expect(parseSetupTokenCredential(undefined as unknown as string)).toBeNull();
     expect(parseSetupTokenCredential("")).toBeNull();
+  });
+
+  it("parses the token from the Claude Code 2.1.304 PTY success screen", () => {
+    const raw =
+      "\x1b[38;2;78;186;101m✓ Long-lived authentication token created successfully!\r\x1b[1B\x1b[39m\x1b[K" +
+      `\r\x1b[1B ${SETUP_TOKEN_BEFORE_ANCHOR}\x1b[K\r\x1b[1C\x1b[2B\x1b[38;2;255;193;7m${FULL_TOKEN}` +
+      `\r\x1b[1C\x1b[2B\x1b[38;2;153;153;153m${SETUP_TOKEN_AFTER_ANCHOR}\r\x1b[1C\x1b[1B\x1b[39m\x1b[K\r\r\n`;
+    expect(parseSetupTokenCredential(raw)).toBe(FULL_TOKEN);
   });
 
   it("keeps its token contract in sync with the success fixture", () => {
