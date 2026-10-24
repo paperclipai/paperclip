@@ -559,6 +559,58 @@ async function startServerWithDatabaseTeardown(
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
+      const adminConnectionStringForPort = (targetPort: number) =>
+        configuredAdminConnectionString.replace(`:${configuredPort}/`, `:${targetPort}/`);
+      const embeddedPostmasterProbeTimeoutMs = 5_000;
+      const withEmbeddedPostmasterProbeTimeout = <T>(work: Promise<T>): Promise<T | null> => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        return Promise.race([
+          work,
+          new Promise<null>((settle) => {
+            timer = setTimeout(() => settle(null), embeddedPostmasterProbeTimeoutMs);
+            (timer as { unref?: () => void }).unref?.();
+          }),
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+      };
+      const probeLiveEmbeddedPostmaster = async (): Promise<{ pid: number; port: number } | null> => {
+        const pid = getRunningPid();
+        if (!pid) return null;
+        let ownerPort: number;
+        try {
+          ownerPort = embeddedPostgresOwnerPort(readFileSync(postmasterPidFile, "utf8"), dataDir, pid);
+        } catch {
+          logger.warn({ pid }, "Embedded PostgreSQL pid file does not describe this instance; not adopting it");
+          return null;
+        }
+        if (ownerPort !== port) {
+          logger.warn(
+            { pid, ownerPort, port },
+            "Embedded PostgreSQL serves a port this process is not connected to; not adopting it",
+          );
+          return null;
+        }
+        const actualDataDir = await withEmbeddedPostmasterProbeTimeout(
+          getPostgresDataDirectory(adminConnectionStringForPort(ownerPort)),
+        );
+        if (actualDataDir === null) {
+          logger.warn(
+            { pid, ownerPort },
+            "Embedded PostgreSQL pid file names a live process that is not accepting connections; not adopting it",
+          );
+          return null;
+        }
+        if (resolve(actualDataDir) !== resolve(dataDir)) {
+          logger.warn(
+            { pid, ownerPort, actualDataDir },
+            "Embedded PostgreSQL pid file names a live process for a different data directory; not adopting it",
+          );
+          return null;
+        }
+        return { pid, port: ownerPort };
+      };
+
       try {
         const actualDataDir = await getPostgresDataDirectory(configuredAdminConnectionString);
         if (
@@ -621,6 +673,31 @@ async function startServerWithDatabaseTeardown(
         embeddedPostgresSupervisor = createEmbeddedPostgresSupervisor({
           initialInstance: embeddedPostgres,
           createInstance: createEmbeddedPostgres,
+          adoptRunning: async () => {
+            const live = await probeLiveEmbeddedPostmaster();
+            if (!live) return null;
+            return {
+              owned: false,
+              pid: live.pid,
+              start: async () => {},
+              stop: async () => {},
+            };
+          },
+          probeRunning: async () => (await probeLiveEmbeddedPostmaster()) !== null,
+          adoptedProbeIntervalMs: 5_000,
+          adoptedProbeFailureThreshold: 2,
+          onAdopted: (instance, attempt) => logger.warn(
+            { pid: instance.pid, port, attempt },
+            "Embedded PostgreSQL is already serving the embedded data directory; adopting the live postmaster instead of restarting it",
+          ),
+          onAdoptProbeFailed: (err, attempt) => logger.warn(
+            { err, attempt, port },
+            "Embedded PostgreSQL adoption probe failed",
+          ),
+          onAdoptedLost: (instance) => logger.error(
+            { pid: instance.pid, port },
+            "The adopted embedded PostgreSQL postmaster is gone; attempting recovery",
+          ),
           beforeRestart: () => {
             const runningPostgresPid = getRunningPid();
             if (runningPostgresPid) {
@@ -641,6 +718,13 @@ async function startServerWithDatabaseTeardown(
             "Embedded PostgreSQL recovered after unexpected exit",
           ),
           onRecoveryExhausted: (err) => {
+            if (getRunningPid()) {
+              logger.error(
+                { err, recentLogs: logBuffer.getRecentLogs() },
+                "Embedded PostgreSQL recovery exhausted but a live postmaster is still recorded; keeping the server up in degraded mode",
+              );
+              return;
+            }
             logger.fatal(
               { err, recentLogs: logBuffer.getRecentLogs() },
               "Embedded PostgreSQL recovery exhausted; stopping the unhealthy server",
