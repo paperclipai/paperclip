@@ -3,7 +3,7 @@
 import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
@@ -56,12 +56,38 @@ import {
 
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
+let cardQueryClient: QueryClient | null = null;
 
 const connectionIntentsApiMocks = vi.hoisted(() => ({
   setupOptions: vi.fn(),
   complete: vi.fn(),
   decline: vi.fn(),
 }));
+
+const issueApprovalMocks = vi.hoisted(() => ({ listApprovals: vi.fn() }));
+vi.mock("../api/issues", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../api/issues")>();
+  return { ...original, issuesApi: { ...original.issuesApi, listApprovals: issueApprovalMocks.listApprovals } };
+});
+
+function toolBoardApproval(status = "pending", overrides: Record<string, unknown> = {}) {
+  return {
+    id: "board-approval-for-action",
+    companyId: pendingToolActionDestructiveInteraction.companyId,
+    type: "request_board_approval",
+    status,
+    payload: {
+      source: "tool_gateway",
+      actionRequestId: pendingToolActionDestructiveInteraction.payload.toolAction!.actionRequestId,
+    },
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  issueApprovalMocks.listApprovals.mockReset();
+  issueApprovalMocks.listApprovals.mockResolvedValue([toolBoardApproval("approved")]);
+});
 
 const routerMocks = vi.hoisted(() => ({
   searchParams: new URLSearchParams(),
@@ -130,6 +156,7 @@ function renderCard(
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  cardQueryClient = queryClient;
 
   act(() => {
     root?.render(
@@ -156,6 +183,8 @@ afterEach(() => {
   container?.remove();
   root = null;
   container = null;
+  cardQueryClient?.clear();
+  cardQueryClient = null;
   localStorage.clear();
   routerMocks.readSearchParams.mockClear();
 });
@@ -1190,11 +1219,88 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Launch checklist");
   });
 
-  it("keeps the destructive request warning and approval styling", () => {
+  it("keeps the destructive request warning and approval styling after board approval", async () => {
     const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
     expect(host.textContent).toContain("cannot be undone");
     const approve = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run");
     expect(approve?.getAttribute("data-variant")).toBe("destructive");
+  });
+
+  it.each(["pending", "revision_requested", "rejected", "cancelled"])("routes %s board approval to the exact review instead of execution", async (status) => {
+    issueApprovalMocks.listApprovals.mockResolvedValue([toolBoardApproval(status)]);
+    const accept = vi.fn();
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: accept, onRejectInteraction: vi.fn() });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).toContain("Decline");
+    expect(host.querySelector('a[href="/approvals/board-approval-for-action"]')?.textContent).toBe("Review board approval");
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it("does not offer execution while board approval is loading", () => {
+    issueApprovalMocks.listApprovals.mockReturnValue(new Promise(() => {}));
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn() });
+    expect(host.textContent).toContain("Checking board approval");
+    expect(host.textContent).not.toContain("Approve & run");
+  });
+
+  it("fails closed when the board approval lookup fails", async () => {
+    issueApprovalMocks.listApprovals.mockRejectedValue(new Error("offline"));
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn() });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(host.textContent).toContain("Board approval could not be checked");
+    expect(host.textContent).toContain("Check again");
+    expect(host.textContent).not.toContain("Approve & run");
+  });
+
+  it("does not use approval for another action or company", async () => {
+    issueApprovalMocks.listApprovals.mockResolvedValue([
+      toolBoardApproval("approved", { payload: { source: "tool_gateway", actionRequestId: "another-action" } }),
+      toolBoardApproval("approved", { companyId: "another-company" }),
+    ]);
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn() });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(host.textContent).toContain("The board approval for this action is unavailable");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.querySelector('a[href^="/approvals/"]')).toBeNull();
+  });
+
+  it("leaves ordinary write actions independent of board approval", () => {
+    const host = renderCard({ interaction: pendingToolActionWriteInteraction, onAcceptInteraction: vi.fn() });
+    expect(host.textContent).toContain("Approve & run");
+    expect(issueApprovalMocks.listApprovals).not.toHaveBeenCalled();
+  });
+
+  it("enables execution when the exact board approval is refreshed to approved", async () => {
+    issueApprovalMocks.listApprovals.mockResolvedValue([toolBoardApproval("pending")]);
+    const accept = vi.fn();
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: accept });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(host.textContent).not.toContain("Approve & run");
+    issueApprovalMocks.listApprovals.mockResolvedValue([toolBoardApproval("approved")]);
+    await act(async () => {
+      await cardQueryClient!.invalidateQueries();
+      await new Promise(resolve => setTimeout(resolve, 20));
+    });
+    const approve = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run");
+    expect(approve).toBeTruthy();
+    expect(host.textContent).not.toContain("Review board approval");
+    await act(async () => { approve!.click(); });
+    expect(accept).toHaveBeenCalledExactlyOnceWith(pendingToolActionDestructiveInteraction, undefined, undefined, false);
+  });
+
+  it("refreshes a stale approved board decision after the server refuses execution", async () => {
+    const accept = vi.fn().mockRejectedValue(new ApiError("Board approval required", 409, { reasonCode: "formal_approval_required" }));
+    const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: accept });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    const approve = Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run");
+    issueApprovalMocks.listApprovals.mockResolvedValue([toolBoardApproval("pending")]);
+    await act(async () => { approve!.click(); await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).toContain("Review board approval");
+    expect(host.textContent).not.toContain("Try again");
+    expect(accept).toHaveBeenCalledTimes(1);
   });
 
   it("declines in one click without an optional reason form", async () => {

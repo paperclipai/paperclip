@@ -41,7 +41,7 @@ const INTERACTION_SETTLED_CODES = [
   "interaction_issue_closed",
 ] as const;
 
-export type InteractionResolutionFailureKind = "audience_denied" | "settled" | "transient";
+export type InteractionResolutionFailureKind = "audience_denied" | "approval_required" | "settled" | "transient";
 
 export interface InteractionResolutionFailure {
   kind: InteractionResolutionFailureKind;
@@ -62,6 +62,7 @@ export function interactionResolutionErrorCode(error: unknown): string | null {
   const body = record(record(error)?.body);
   if (!body) return null;
   if (typeof body.code === "string" && body.code) return body.code;
+  if (typeof body.reasonCode === "string" && body.reasonCode) return body.reasonCode;
   const details = record(body.details);
   return typeof details?.code === "string" && details.code ? details.code : null;
 }
@@ -109,6 +110,14 @@ export function describeInteractionResolutionFailure(
 ): InteractionResolutionFailure {
   const code = interactionResolutionErrorCode(error);
   const reason = serverReason(error);
+
+  if (code === "formal_approval_required") {
+    return {
+      kind: "approval_required",
+      code,
+      message: "Board approval is required before this action can run. Open the board approval to review it.",
+    };
+  }
 
   if (isInteractionAudienceDenial(error)) {
     // Only a *narrowed* audience has a responder worth naming. Appending the

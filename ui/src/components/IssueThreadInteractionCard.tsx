@@ -5,6 +5,7 @@ import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { describeInteractionAudience, type InteractionAudienceDescription } from "../lib/interaction-audience";
 import { interactionResolutionErrorMessage } from "../lib/interaction-resolution-error";
+import { useToolActionBoardApproval } from "../lib/tool-action-board-approval";
 import {
   isInteractionPreparingApproval,
   buildSuggestedTaskTree,
@@ -1756,6 +1757,7 @@ function RequestToolActionCard({
   const resolutionErrorMessage = useResolutionErrorMessage();
   const isPending = state === "pending";
   const variant = payload.risk === "destructive" ? "destructive" : "cta";
+  const board = useToolActionBoardApproval(interaction, isPending);
 
   useEffect(() => {
     if (!isPending) setWorking(null);
@@ -1769,6 +1771,7 @@ function RequestToolActionCard({
       else await onAcceptInteraction?.(interaction, undefined, undefined, decision === "always");
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
+      if (board.required) void board.refresh();
     } finally {
       setWorking(null);
     }
@@ -1785,16 +1788,40 @@ function RequestToolActionCard({
           {!isPending ? <ToolActionResolution state={state} interaction={interaction} /> : null}
         </div>
       </div>
+      {isPending && board.blocked ? (
+        <div className="mt-3 space-y-2 text-sm text-muted-foreground" role="status">
+          <p>{board.error
+            ? "Board approval could not be checked."
+            : board.loading
+              ? "Checking board approval…"
+              : board.approval?.status === "rejected"
+                ? "The board rejected this action."
+                : board.approval?.status === "cancelled"
+                  ? "Board approval was cancelled."
+                  : board.approval?.status === "revision_requested"
+                    ? "The board requested a revision before this action can run."
+                    : board.approval
+                      ? "Board approval is required before this action can run."
+                      : "The board approval for this action is unavailable."}</p>
+          {board.approval ? (
+            <Button asChild size="sm" variant="outline">
+              <Link to={`/approvals/${board.approval.id}`}>Review board approval</Link>
+            </Button>
+          ) : board.error || !board.loading ? (
+            <Button size="sm" variant="outline" onClick={() => void board.refresh()}>Check again</Button>
+          ) : null}
+        </div>
+      ) : null}
       {isPending ? (
         <div className="mt-3 flex justify-end gap-2">
           <Button size="sm" variant="ghost" disabled={!onRejectInteraction || working !== null} onClick={() => void decide("reject")}>
             {working === "reject" ? "Declining…" : "Decline"}
           </Button>
-          <div className="inline-flex" role="group" aria-label="Approve request">
+          {!board.blocked ? <div className="inline-flex" role="group" aria-label="Approve request">
             <Button size="sm" variant={variant} className={payload.rememberActionScope ? "rounded-r-none" : undefined} disabled={!onAcceptInteraction || working !== null} onClick={() => void decide("accept")}>
               {working === "accept" || working === "always" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />{working === "always" ? "Saving…" : "Approving…"}</> : "Approve & run"}
             </Button>
-            {payload.rememberActionScope ? (
+            {payload.rememberActionScope && !board.required ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="icon-sm" variant={variant} className="rounded-l-none border-l border-background/30" aria-label="Approval options" disabled={!onAcceptInteraction || working !== null}>
@@ -1808,7 +1835,7 @@ function RequestToolActionCard({
                 </DropdownMenuContent>
               </DropdownMenu>
             ) : null}
-          </div>
+          </div> : null}
         </div>
       ) : null}
       <InteractionActionError message={actionError} />

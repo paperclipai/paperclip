@@ -17,6 +17,17 @@ function denial(status: number, code: string, message: string) {
 }
 
 describe("interactionResolutionErrorCode", () => {
+  it("explains the gateway board gate without suggesting another failed retry", () => {
+    const error = new ApiError("Board approval required", 409, {
+      error: "Board approval required",
+      reasonCode: "formal_approval_required",
+      details: { approvalId: "board-approval" },
+    });
+    expect(interactionResolutionErrorCode(error)).toBe("formal_approval_required");
+    expect(describeInteractionResolutionFailure(error).kind).toBe("approval_required");
+    expect(interactionResolutionErrorMessage(error)).toContain("Open the board approval");
+    expect(interactionResolutionErrorMessage(error)).not.toContain("Try again");
+  });
   it("reads the top-level code the API returns", () => {
     expect(interactionResolutionErrorCode(denial(403, "interaction_human_only", "human-only"))).toBe(
       "interaction_human_only",
