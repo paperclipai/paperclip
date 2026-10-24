@@ -3649,6 +3649,38 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("sends a reply on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    const root = createRoot(container);
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    try {
+      act(() => {
+        renderIssueThread(root, { onAdd });
+      });
+      const editor = container.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Issue chat editor"]',
+      )!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype,
+          "value",
+        )!.set!.call(editor, "LAN follow-up");
+        editor.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () =>
+        Array.from(container.querySelectorAll("button"))
+          .find((button) => button.textContent === "Send")!
+          .click(),
+      );
+      expect(onAdd).toHaveBeenCalledWith("LAN follow-up", undefined, undefined, undefined,
+        expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/));
+    } finally {
+      act(() => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("hides the reopen control and infers reopen for closed agent-assigned issue replies", async () => {
     const root = createRoot(container);
     const onAdd = vi.fn().mockResolvedValue(undefined);

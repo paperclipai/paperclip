@@ -1913,6 +1913,22 @@ describe("TaskChatComposer", () => {
     expect(onAdd.mock.calls[1][4]).not.toBe(onAdd.mock.calls[0][4]);
   });
 
+  it("sends a chat message on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" />);
+      typeText("LAN follow-up");
+      await act(async () => sendButton().click());
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledWith("LAN follow-up", undefined, undefined, undefined,
+        expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   describe("paused task takeover", () => {
     it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
       const onAdd = vi.fn().mockResolvedValue(undefined);
