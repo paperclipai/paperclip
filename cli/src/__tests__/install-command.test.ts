@@ -6,6 +6,7 @@ import {
   type CommandRunner,
   installCommand,
   installGitPayload,
+  prepareGitInstallPackagingInputs,
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
@@ -381,6 +382,68 @@ describe("managed install commands", () => {
     const runCommand = vi.fn(async () => ({ stdout: "", stderr: "" }));
     await expect(installGitPayload("paperclipai/paperclip", "4".repeat(40), runCommand, paths)).rejects.toThrow("unsafe payload root");
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  describe("prepareGitInstallPackagingInputs", () => {
+    const createPackagingCheckout = (checkout: string, options: { withPrepScript: boolean; withRootSkills: boolean }) => {
+      const packages = [
+        { dir: "packages/shared", name: "@paperclipai/shared", packageJson: { name: "@paperclipai/shared", version: "0.3.1", files: ["dist"] } },
+        { dir: "server", name: "@paperclipai/server", packageJson: { name: "@paperclipai/server", version: "0.3.1", dependencies: { "@paperclipai/shared": "workspace:*" }, files: ["dist", "ui-dist", "skills"] } },
+      ];
+      fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(checkout, "scripts", "release-package-manifest.json"),
+        JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))),
+      );
+      if (options.withPrepScript) {
+        fs.writeFileSync(path.join(checkout, "scripts", "prepare-server-ui-dist.sh"), "#!/usr/bin/env bash\n");
+      }
+      for (const workspacePackage of packages) {
+        fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
+        fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
+      }
+      if (options.withRootSkills) {
+        fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "skill");
+      }
+      return checkout;
+    };
+    const testBuildEnv = (extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, ...extra });
+
+    it("runs the ref ui-dist prep script with the release reuse flag", async () => {
+      const checkout = createPackagingCheckout(path.join(root, "prep-checkout"), { withPrepScript: true, withRootSkills: false });
+      const runCommand = vi.fn<CommandRunner>(async () => ({ stdout: "", stderr: "" }));
+      await prepareGitInstallPackagingInputs(checkout, runCommand, testBuildEnv);
+      expect(runCommand).toHaveBeenCalledOnce();
+      expect(runCommand).toHaveBeenCalledWith("bash", ["scripts/prepare-server-ui-dist.sh"], expect.objectContaining({ cwd: checkout }));
+      expect(runCommand.mock.calls[0]?.[2]?.env).toMatchObject({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" });
+    });
+
+    it("skips the ui-dist prep when the ref predates the script", async () => {
+      const checkout = createPackagingCheckout(path.join(root, "legacy-checkout"), { withPrepScript: false, withRootSkills: false });
+      const runCommand = vi.fn<CommandRunner>(async () => ({ stdout: "", stderr: "" }));
+      await prepareGitInstallPackagingInputs(checkout, runCommand, testBuildEnv);
+      expect(runCommand).not.toHaveBeenCalled();
+    });
+
+    it("copies root skills only into packages that declare them and lack them", async () => {
+      const checkout = createPackagingCheckout(path.join(root, "skills-checkout"), { withPrepScript: false, withRootSkills: true });
+      const runCommand = vi.fn<CommandRunner>(async () => ({ stdout: "", stderr: "" }));
+      await prepareGitInstallPackagingInputs(checkout, runCommand, testBuildEnv);
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(checkout, "server", "skills", "paperclip", "SKILL.md"), "utf8")).toBe("skill");
+      expect(fs.existsSync(path.join(checkout, "packages", "shared", "skills"))).toBe(false);
+    });
+
+    it("never clobbers existing package skills dirs", async () => {
+      const checkout = createPackagingCheckout(path.join(root, "existing-skills-checkout"), { withPrepScript: false, withRootSkills: true });
+      fs.mkdirSync(path.join(checkout, "server", "skills"), { recursive: true });
+      fs.writeFileSync(path.join(checkout, "server", "skills", "keep.txt"), "keep");
+      const runCommand = vi.fn<CommandRunner>(async () => ({ stdout: "", stderr: "" }));
+      await prepareGitInstallPackagingInputs(checkout, runCommand, testBuildEnv);
+      expect(fs.readFileSync(path.join(checkout, "server", "skills", "keep.txt"), "utf8")).toBe("keep");
+      expect(fs.existsSync(path.join(checkout, "server", "skills", "paperclip"))).toBe(false);
+    });
   });
 
 });
