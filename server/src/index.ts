@@ -1449,6 +1449,13 @@ async function startServerWithDatabaseTeardown(
 
   await timeStartupRecovery("tool_reviews", () => app.locals.toolGateway.sweepActionReviews()).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
   await timeStartupRecovery("gateway_sessions", () => app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
+  // Reap run-scoped MCP gateway tokens whose run is over. The recurring sweep
+  // is a duty on the shared delivery coordinator, so it does not hang off the
+  // heartbeat scheduler. This is the startup reconstruction of that duty: it
+  // runs on every boot, so a run that died with the server is collected in
+  // the same startup instead of waiting for its token's idle marker to pass.
+  await timeStartupRecovery("gateway_run_tokens", () => app.locals.toolGateway.reapGatewayTokensForDeadRuns())
+    .catch((err: unknown) => logger.error({ err }, "startup gateway run token reap failed"));
   await timeStartupRecovery("delivery_workers", () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)));
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();

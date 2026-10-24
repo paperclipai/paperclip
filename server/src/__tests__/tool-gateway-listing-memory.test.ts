@@ -119,7 +119,7 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     await expect(service.cleanupExpiredSessions({ now })).resolves.toMatchObject({ deletedCount: 0 });
   });
 
-  it("completes an admitted listing after token expiry cleanup without losing its audit", async () => {
+  it("completes an admitted listing after the run token is reaped without losing its audit", async () => {
     const fixture = await createListingFixture(db, 6);
     const service = createToolGatewayService(db);
     let started!: () => void;
@@ -136,9 +136,12 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
     const outcome = listing.then((tools) => ({ tools }), (error: unknown) => ({ error }));
     try {
       await admitted;
-      await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
-        .where(eq(toolMcpGatewayTokens.id, fixture.token.id));
-      await service.cleanupExpiredSessions();
+      // A run token is collected by the liveness reaper, not by the expiry
+      // sweep: its life is the run's life, so the run ending is what ends it.
+      // The admitted listing must still finish.
+      await db.update(heartbeatRuns).set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, fixture.run.id));
+      await service.reapGatewayTokensForDeadRuns();
       resume();
       const result = await outcome;
       expect(result).not.toHaveProperty("error");
@@ -146,6 +149,52 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
       const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.company.id));
       expect(audits.some((audit) => audit.action === "tool_gateway.discovery")).toBe(true);
       await expect(service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token }))
+        .rejects.toMatchObject({ status: 401 });
+    } finally {
+      resume();
+      await outcome;
+      spy.mockRestore();
+    }
+  });
+
+  it("completes an admitted listing after an operator token's expiry cleanup without losing its audit", async () => {
+    const fixture = await createListingFixture(db, 6);
+    const service = createToolGatewayService(db);
+    const operatorToken = await service.createNamedGatewayToken({
+      companyId: fixture.company.id, gatewayId: fixture.namedGateway.id,
+      body: {
+        name: "Operator token",
+        subjectType: "gateway_client",
+        clientLabel: "operator",
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    let started!: () => void;
+    let resume!: () => void;
+    const admitted = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { resume = resolve; });
+    const transaction = db.transaction.bind(db);
+    const spy = vi.spyOn(db, "transaction").mockImplementationOnce(async (work, config) => {
+      started();
+      await gate;
+      return transaction(work, config);
+    });
+    const listing = service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: operatorToken.token });
+    const outcome = listing.then((tools) => ({ tools }), (error: unknown) => ({ error }));
+    try {
+      await admitted;
+      // An operator token keeps its absolute expiry, so the expiry sweep is
+      // what collects it. The admitted listing must still finish.
+      await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
+        .where(eq(toolMcpGatewayTokens.id, operatorToken.id));
+      await service.cleanupExpiredSessions();
+      resume();
+      const result = await outcome;
+      expect(result).not.toHaveProperty("error");
+      expect("tools" in result && result.tools.length).toBeGreaterThan(0);
+      const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.company.id));
+      expect(audits.some((audit) => audit.action === "tool_gateway.discovery")).toBe(true);
+      await expect(service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: operatorToken.token }))
         .rejects.toMatchObject({ status: 401 });
     } finally {
       resume();

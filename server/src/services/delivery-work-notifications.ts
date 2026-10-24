@@ -43,6 +43,7 @@ export const DELIVERY_QUEUES = {
   question: "question-responses",
   pluginLifecycle: "plugin-resource-lifecycle",
   toolAction: "tool-action-receipts",
+  gatewayRunTokens: "gateway-run-tokens",
   terminalWorkspaces: "terminal-workspaces",
   routineSchedules: "routine-schedules",
   issueMonitors: "issue-monitors",

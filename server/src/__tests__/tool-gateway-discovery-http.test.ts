@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectionGrants, createDb, toolMcpGatewayTokens, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
+import { connectionGrants, createDb, heartbeatRuns, toolMcpGatewayTokens, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { createListingFixture } from "./helpers/tool-gateway-listing-fixture.js";
@@ -19,7 +19,7 @@ suite("MCP discovery over HTTP", () => {
   });
   afterAll(async () => { await temp?.cleanup(); });
 
-  it("finishes an admitted provider call when token cleanup runs during dispatch", async () => {
+  it("finishes an admitted provider call when the run token is reaped during dispatch", async () => {
     const fixture = await createListingFixture(db, 6);
     await db.insert(connectionGrants).values({ companyId: fixture.company.id, connectionId: fixture.connection.id,
       kind: "organization", status: "active", isDefault: true });
@@ -28,9 +28,12 @@ suite("MCP discovery over HTTP", () => {
       const body = JSON.parse(String(init.body));
       if (body.method === "tools/call") {
         calls += 1;
-        await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
-          .where(eq(toolMcpGatewayTokens.id, fixture.token.id));
-        await gateway.cleanupExpiredSessions();
+        // A run token is collected by the liveness reaper, not by the expiry
+        // sweep: its life is the run's life, so the run ending is what ends
+        // it. The admitted call must still finish.
+        await db.update(heartbeatRuns).set({ status: "succeeded" })
+          .where(eq(heartbeatRuns.id, fixture.run.id));
+        await gateway.reapGatewayTokensForDeadRuns();
       }
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize"
         ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
@@ -41,6 +44,48 @@ suite("MCP discovery over HTTP", () => {
     const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(gateway));
     const post = () => request(app).post(`/mcp/gateways/${fixture.namedGateway.gatewayPublicId}`)
       .set("Authorization", `Bearer ${fixture.token.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name, arguments: {} } });
+    const response = await post();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(calls).toBe(1);
+    await post().expect(401);
+    expect(calls).toBe(1);
+  });
+
+  it("finishes an admitted provider call when an operator token is cleaned up during dispatch", async () => {
+    const fixture = await createListingFixture(db, 6);
+    await db.insert(connectionGrants).values({ companyId: fixture.company.id, connectionId: fixture.connection.id,
+      kind: "organization", status: "active", isDefault: true });
+    let calls = 0;
+    const operatorToken = await createToolGatewayService(db).createNamedGatewayToken({
+      companyId: fixture.company.id,
+      gatewayId: fixture.namedGateway.id,
+      body: {
+        name: "Operator token",
+        subjectType: "gateway_client",
+        clientLabel: "operator",
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+    const gateway = createToolGatewayService(db, { remoteHttpRequest: async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "tools/call") {
+        calls += 1;
+        // An operator token keeps its absolute expiry, so the expiry sweep is
+        // what collects it. The admitted call must still finish.
+        await db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1) })
+          .where(eq(toolMcpGatewayTokens.id, operatorToken.id));
+        await gateway.cleanupExpiredSessions();
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize"
+        ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fixture", version: "1" } }
+        : { content: [{ type: "text", text: "fixture result" }] } }), { headers: { "content-type": "application/json" } });
+    } });
+    const tools = await gateway.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: operatorToken.token });
+    const tool = tools.find((entry) => entry.catalogEntryId === fixture.entries[4]!.id)!;
+    const app = express().use(express.json()).use(mcpGatewayProtocolRoutes(gateway));
+    const post = () => request(app).post(`/mcp/gateways/${fixture.namedGateway.gatewayPublicId}`)
+      .set("Authorization", `Bearer ${operatorToken.token}`)
       .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool.name, arguments: {} } });
     const response = await post();
     expect(response.status, JSON.stringify(response.body)).toBe(200);
