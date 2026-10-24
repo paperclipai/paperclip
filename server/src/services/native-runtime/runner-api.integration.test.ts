@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +40,50 @@ describe("runner API against real HTTP routes", () => {
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
     if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+  });
+
+  it.each(["http_response", "runner_response"])("counts committed effects independently after losing the %s", async boundary => {
+    const fixture = await server.fixture();
+    const name = `Recovery effect ${randomUUID()}`;
+    const call = { tool: "call_api", callId: "one-project-effect", arguments: {
+      operationId: "POST /api/companies/{companyId}/projects", body: { name },
+    } };
+    const effects = () => server.db.select({ id: projects.id, name: projects.name }).from(projects)
+      .where(and(eq(projects.companyId, fixture.companyId), eq(projects.name, name)));
+    const fetchActual = globalThis.fetch;
+    let dispatched = 0;
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const response = await fetchActual(url, init);
+      if (String(url) === `${fixture.apiUrl}/api/companies/${fixture.companyId}/projects` && init?.method === "POST") {
+        dispatched += 1;
+        expect(response.ok).toBe(true);
+        expect(await effects()).toHaveLength(1);
+        if (boundary === "http_response") throw new TypeError("fixture lost the committed HTTP response");
+      }
+      return response;
+    });
+    try {
+      const first = await fixture.authority.execute(call);
+      const ledgerBeforeRecovery = await effects();
+      expect(ledgerBeforeRecovery).toHaveLength(1);
+      const replacement = new PaperclipRunnerToolAuthority(server.db, fixture);
+      const recovered = await replacement.recover(call);
+      if (boundary === "http_response") {
+        expect(first).toMatchObject({ outcome: "unknown" });
+        expect(recovered).toBeNull();
+        expect(await replacement.execute(call)).toMatchObject({ outcome: "unknown" });
+      } else {
+        expect(first).toMatchObject({ ok: true, status: 201 });
+        expect(recovered).toEqual({ result: first });
+        expect(await replacement.execute(call)).toEqual(first);
+      }
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(replacement.recover(call)).rejects.toThrow("binding_not_authorized");
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+    } finally { network.mockRestore(); }
   });
 
   it.each(["standard", "low_trust_review"])("delivers oversized assigned results without repeating the action (%s)", async trust => {

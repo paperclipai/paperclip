@@ -370,7 +370,7 @@ checkpoint delta contract directly instead of expanding the production interface
 
 The merged protocol/transport suite passed 490 tests. Full workspace typecheck,
 production build, and runner E2E typecheck passed. Final retention discovery uses
-a partial index over checkpoint header rows (migration 0373), so it does not
+a partial index over checkpoint header rows (migration 0378), so it does not
 need to enumerate event payloads or historical runs with no retained checkpoint.
 Fresh Postgres verification with that migration passed all 62 restart, delta,
 and retention tests (five Docker-only skips). Migration safety/numbering and
