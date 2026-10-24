@@ -5,6 +5,7 @@
 ### Patch Changes
 
 - Bound full-tree workspace Git scans with process-wide concurrency, queue, timeout, cancellation, coalescing, and short-lived changed-file caching. Saturated or timed-out changed-file requests now return a retryable degraded response, and hidden file-browser panels no longer initiate scans.
+- Limit automatic external-object refresh to retained mentions with an available resolver. Skip unsupported objects before the batch limit and refresh the oldest due objects first.
 
 ## 0.3.1
 

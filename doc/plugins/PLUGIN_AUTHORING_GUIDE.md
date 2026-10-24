@@ -203,6 +203,13 @@ candidates and return provider-stable identities. Implement
 Paperclip owns inline markdown rendering; plugins must not return React, HTML,
 or `dangerouslySetInnerHTML` content for inline references.
 
+The server's background sweep refreshes due objects for active companies only
+while at least one mention remains and a resolver supports the provider and
+object type. Plugin resolution requires a worker manager, `ready` status, and
+`external.objects.read`. Unsupported objects do not consume the refresh batch.
+Removing a plugin or its read capability pauses automatic refresh without
+making the object terminal; restoring support makes due objects eligible again.
+
 ## Scaffold a plugin
 
 Use the CLI scaffold command:
