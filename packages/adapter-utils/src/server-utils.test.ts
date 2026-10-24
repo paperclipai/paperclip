@@ -32,6 +32,9 @@ import {
   hydrateFreshSessionHandoff,
   runningProcesses,
   runChildProcess,
+  ensurePathInEnv,
+  pathValueFromEnv,
+  resolveCommandForLogs,
   sanitizeSshRemoteEnv,
   sanitizeInheritedPaperclipEnv,
   isForbiddenConfigEnvKey,
@@ -55,6 +58,77 @@ it("reserves identity credentials even for mixed-case inherited or configured ke
   const inherited = Object.fromEntries(keys.map(key => [key, "host-override"]));
   expect(sanitizeInheritedPaperclipEnv({ ...inherited, PATH: "/usr/bin" })).toEqual({ PATH: "/usr/bin" });
   for (const key of keys) expect(isForbiddenConfigEnvKey(key)).toBe(true);
+});
+
+describe("PATH environment-key normalization", () => {
+  it("accepts lowercase and arbitrary casing on Windows", () => {
+    expect(pathValueFromEnv({ path: "C:\\tools" }, "win32")).toBe("C:\\tools");
+    expect(pathValueFromEnv({ pAtH: "C:\\tools" }, "win32")).toBe("C:\\tools");
+  });
+
+  it("keeps the existing PATH and Path precedence", () => {
+    expect(
+      pathValueFromEnv(
+        { PATH: "C:\\path", Path: "C:\\Path", path: "C:\\lower" },
+        "win32",
+      ),
+    ).toBe("C:\\path");
+    expect(
+      pathValueFromEnv({ PATH: "", Path: "C:\\Path", path: "C:\\lower" }, "win32"),
+    ).toBe("C:\\Path");
+  });
+
+  it("preserves an explicitly empty PATH on POSIX", () => {
+    const env = { PATH: "", Path: "/tools" };
+
+    expect(pathValueFromEnv(env, "linux")).toBe("");
+    expect(ensurePathInEnv(env, "linux")).toBe(env);
+  });
+
+  it("normalizes Windows PATH aliases before spawning children", () => {
+    const ensured = ensurePathInEnv({ PATH: "", path: "C:\\tools" }, "win32");
+
+    expect(ensured.PATH).toBe("C:\\tools");
+    expect(Object.keys(ensured).filter((key) => key.toLowerCase() === "path")).toEqual([
+      "PATH",
+    ]);
+  });
+
+  it("canonicalizes a Windows Path alias before spawning children", () => {
+    const ensured = ensurePathInEnv({ Path: "C:\\tools" }, "win32");
+
+    expect(ensured.PATH).toBe("C:\\tools");
+    expect(ensured.Path).toBeUndefined();
+  });
+
+  it("preserves a lowercase Windows path when ensuring the execution environment", () => {
+    const env = { path: "C:\\tools" };
+    const ensured = ensurePathInEnv(env);
+    if (process.platform === "win32") {
+      expect(ensured.PATH).toBe("C:\\tools");
+      expect(ensured.path).toBeUndefined();
+    } else {
+      expect(ensured).not.toBe(env);
+    }
+  });
+
+  it("resolves commands from a lowercase Windows path", async () => {
+    if (process.platform !== "win32") return;
+
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-path-"));
+    const commandPath = path.join(tempDir, "tool.CMD");
+    await fs.writeFile(commandPath, "@echo off\r\n");
+    try {
+      await expect(
+        resolveCommandForLogs("tool", tempDir, {
+          path: tempDir,
+          PATHEXT: ".CMD",
+        }),
+      ).resolves.toBe(commandPath);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runtime connection tool delivery", () => {
