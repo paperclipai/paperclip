@@ -442,6 +442,7 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
 
 vi.mock("../services/secret-proposals.js", () => ({
   createSecretProposalsService: vi.fn(() => ({
+    nextExpiryAt: vi.fn(async () => null),
     sweepExpired: vi.fn(async () => 0),
   })),
 }));

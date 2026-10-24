@@ -1,3 +1,7 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { registerSecretProposalExpiryWork } from "../services/secret-proposal-expiry-work.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -5,7 +9,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -38,7 +42,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_SECRET_PROPOSAL_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("secret proposal routes", () => {
@@ -50,9 +55,10 @@ describeEmbeddedPostgres("secret proposal routes", () => {
   beforeAll(async () => {
     mkdirSync(secretsTmpDir, { recursive: true });
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = path.join(secretsTmpDir, "master.key");
+    if (externalTestDatabase) { db = createDb(externalTestDatabase, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 }); return; }
     const started = await startEmbeddedPostgresTestDatabase("secret-proposal-routes");
     stopDb = started.cleanup;
-    db = createDb(started.connectionString);
+    db = createDb(started.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   });
 
   afterEach(async () => {
@@ -74,6 +80,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await stopDb?.();
     if (previousKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previousKeyFile;
@@ -220,6 +227,172 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     app.use(errorHandler);
     return app;
   }
+
+  describe("expiry scheduling", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let proposals: ReturnType<typeof createSecretProposalsService>;
+    let fixture: Awaited<ReturnType<typeof seedRun>>;
+    let draining: boolean;
+    const errors: unknown[] = [];
+    const expiryMs = 14 * 24 * 60 * 60_000;
+
+    beforeEach(async () => {
+      await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+      fixture = await seedRun();
+      proposals = createSecretProposalsService(db);
+      draining = false;
+      errors.length = 0;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    });
+    afterEach(async () => {
+      await coordinator?.stop();
+      coordinator = undefined;
+      vi.useRealTimers();
+      expect(errors).toEqual([]);
+    });
+    async function start() {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await registerSecretProposalExpiryWork(coordinator, proposals, () => !draining).ready;
+    }
+    async function settle(ms = 60_000) {
+      await vi.advanceTimersByTimeAsync(ms);
+      if (!draining) await vi.waitFor(() => expect(idleWorkSnapshot().active === 0).toBe(true), { timeout: 5000 });
+    }
+    async function quiet() {
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      const reads = vi.spyOn(db, "select");
+      await settle(60 * 60_000);
+      expect(reads).not.toHaveBeenCalled();
+      reads.mockRestore();
+    }
+    const create = (service = proposals) => service.createSecret({ ...fixture, registerForRedaction: () => {} }, {
+      name: "dev/scheduled/secret", value: "expiry-test-only", justification: "Test durable expiry",
+    });
+    const bind = (secretProposalId: string) => proposals.createBinding(fixture, {
+      secretProposalId, configPath: "access.SCHEDULED", justification: "Test dependent expiry",
+      bindingTargetPolicy: "self_and_reports",
+    });
+
+    it("stays quiet until the real proposal deadline, scrubs ciphertext, and leaves terminal history quiet", async () => {
+      await start(); await quiet();
+      const secret = await create();
+      const binding = await bind(secret.id);
+      expect(secret.valueCiphertext).not.toBeNull();
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBe(secret.expiresAt.getTime());
+      const reads = vi.spyOn(db, "select");
+      await settle(24 * 60 * 60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      await settle(expiryMs);
+      expect(await proposals.getById(fixture.companyId, secret.id)).toMatchObject({
+        status: "expired", valueCiphertext: null, ciphertextScrubbedAt: expect.any(Date),
+      });
+      expect(await proposals.getById(fixture.companyId, binding.id)).toMatchObject({ status: "rejected" });
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, binding.interactionId!)))
+        .toEqual([expect.objectContaining({ status: "rejected" })]);
+      await quiet();
+    });
+
+    it.each([false, true])("only observes the producer after outer settlement (rollback %s)", async rollback => {
+      await start(); await quiet();
+      let release!: () => void, written!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const staged = new Promise<void>(resolve => { written = resolve; });
+      const rollbackError = new Error("rollback fixture");
+      const writing = db.transaction(async tx => {
+        await create(createSecretProposalsService(tx as unknown as typeof db));
+        written(); await gate;
+        if (rollback) throw rollbackError;
+      }).catch(error => { if (error !== rollbackError) throw error; });
+      await staged;
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(await proposals.nextExpiryAt()).toBeNull();
+      } finally { release(); }
+      await writing; await settle();
+      expect(await proposals.nextExpiryAt()).toEqual(rollback ? null : expect.any(Number));
+      if (rollback) await quiet();
+      else expect(coordinator!.nextWakeAt()).toBe(await proposals.nextExpiryAt());
+    });
+
+    it("retains a proposal committed while an empty deadline read is finishing", async () => {
+      let release!: () => void, reading!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const entered = new Promise<void>(resolve => { reading = resolve; });
+      const readDeadline = proposals.nextExpiryAt;
+      vi.spyOn(proposals, "nextExpiryAt").mockImplementationOnce(async () => {
+        const stale = await readDeadline();
+        reading(); await gate;
+        return stale;
+      });
+      const starting = start();
+      await entered;
+      let secret!: Awaited<ReturnType<typeof create>>;
+      try { secret = await create(); } finally { release(); }
+      await starting; await settle();
+      expect(coordinator!.nextWakeAt()).toBe(secret.expiresAt.getTime());
+      await proposals.transition(fixture.companyId, secret.id, "withdrawn", { proposerAgentId: fixture.agentId });
+      await quiet();
+    });
+
+    it("reconstructs a deadline after restart and disarms when the proposer withdraws", async () => {
+      const secret = await create();
+      await start(); await settle();
+      expect(coordinator!.nextWakeAt()).toBe(secret.expiresAt.getTime());
+      await proposals.transition(fixture.companyId, secret.id, "withdrawn", { proposerAgentId: fixture.agentId });
+      await quiet();
+      expect(await proposals.getById(fixture.companyId, secret.id)).toMatchObject({ valueCiphertext: null });
+    });
+
+    it.each(["startup", "first_write", "failed_pass"])("retains %s work through drain and still rejects expired approval on use", async mode => {
+      if (mode === "startup") draining = true;
+      await start();
+      if (mode === "first_write") { await quiet(); draining = true; }
+      const secret = await create();
+      if (mode === "failed_pass") {
+        vi.spyOn(proposals, "sweepExpired").mockRejectedValueOnce(new Error("database unavailable"));
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(errors).toHaveLength(1)); errors.length = 0;
+        draining = true;
+      }
+      await settle();
+      vi.setSystemTime(Date.now() + expiryMs);
+      const reads = vi.spyOn(db, "select");
+      await settle(2 * 60 * 60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      expect(await proposals.getById(fixture.companyId, secret.id)).toMatchObject({ status: "pending" });
+      await expect(proposals.approve(fixture.companyId, secret.id, { resolvedByUserId: "board-user" }))
+        .rejects.toThrow("Expired proposals cannot be approved");
+      draining = false; await settle();
+      expect(await proposals.getById(fixture.companyId, secret.id)).toMatchObject({ status: "expired", valueCiphertext: null });
+      await quiet();
+    });
+
+    it.each(["rejected", "execution_failed"])("reschedules when the interaction owner resolves a binding: %s", async mode => {
+      const secret = await create();
+      await start();
+      const approved = await proposals.approve(fixture.companyId, secret.id, { resolvedByUserId: "board-user" });
+      await quiet();
+      const remaining = await proposals.createBinding(fixture, { secretId: approved.createdSecretId,
+        configPath: "access.SECOND", justification: "Independent binding", bindingTargetPolicy: "self_and_reports" });
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBe(remaining.expiresAt.getTime());
+      const interactions = issueThreadInteractionService(db);
+      if (mode === "rejected") {
+        await interactions.rejectInteraction({ id: fixture.issueId, companyId: fixture.companyId, status: "in_progress" },
+          remaining.interactionId!, { reason: "No longer required" }, { userId: "board-user" });
+      } else {
+        await db.update(issueThreadInteractions).set({ status: "accepted", result: { version: 1, outcome: "accepted" },
+          resolvedByUserId: "board-user", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, remaining.interactionId!));
+        await interactions.recordSecretProposalExecutionResult({ id: fixture.issueId, companyId: fixture.companyId },
+          remaining.interactionId!, remaining.id, { status: "failed", errorCode: "permission_denied" });
+      }
+      expect(await proposals.getById(fixture.companyId, remaining.id)).toMatchObject({ status: "rejected" });
+      await quiet();
+    });
+  });
 
   it("requires company admin access to reject secret proposals", async () => {
     const fixture = await seedRun();

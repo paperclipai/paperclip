@@ -647,8 +647,10 @@ Longer polling intervals alone do not complete an item.
   visible within the agreed freshness contract. Source:
   [index.ts](../../server/src/index.ts), `tools.sweepConnectionHealth`.
 
-- [ ] **JOB-21 — Secret proposals and expired action tokens.** Current: **30s**
-  expiry/cleanup queries. Change: enforce expiry synchronously on use and
+- [ ] **JOB-21 — Secret proposals and expired action tokens (partially migrated).**
+  Secret-proposal expiry now uses transaction signals and saved expiry deadlines;
+  see [the lifecycle contract](../idle-secret-proposal-expiry.md). Tool review
+  recovery and gateway token cleanup still use **30s** queries. Change: enforce expiry synchronously on use and
   register required scrub/cleanup deadlines. **Complete when:** idle cleanup
   does not extend authorization or secret-retention periods. Sources:
   [secret-proposals.ts](../../server/src/services/secret-proposals.ts),

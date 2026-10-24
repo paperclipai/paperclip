@@ -12,13 +12,13 @@ Do not mark an item done from a timer removal or a green check alone.
 
 | ID | Original checklist duty | Required slices / disposition | PR / evidence |
 | --- | --- | --- | --- |
-| 01 | Custom-image setup expiry | Session writes, existing expiry, startup/retry/drain | In progress |
+| 01 | Custom-image setup expiry | Session writes, existing expiry, startup/retry/drain | [#17443](https://github.com/paperclipai/paperclip/pull/17443), CI/review running |
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Pending |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Pending |
 | 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | Pending |
-| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Pending |
+| 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Secret-proposal expiry in progress; tool reviews and gateway tokens pending |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |

@@ -1,3 +1,4 @@
+import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
@@ -1757,6 +1758,8 @@ async function startServerWithDatabaseTeardown(
         work().catch((err: unknown) => {
           logger.error({ err, startupStep: name }, "startup housekeeping step failed");
         });
+      await step("secret_proposal_expiry", () => registerSecretProposalExpiryWork(deliveryWork, secretProposals,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready);
       await step("custom_image_setup_cleanup", () => registerCustomImageCleanupWork(deliveryWork, environmentCustomImages,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
         config.heartbeatSchedulerIntervalMs).ready);
@@ -1851,14 +1854,6 @@ async function startServerWithDatabaseTeardown(
           })
           .catch((err) => {
             logger.error({ err }, "periodic tool connection health sweep failed");
-          }));
-
-        trackHeartbeatSchedulerWork(secretProposals.sweepExpired()
-          .then((expired) => {
-            if (expired > 0) logger.warn({ expired }, "periodic secret proposal expiry scrubbed proposals");
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
         trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));

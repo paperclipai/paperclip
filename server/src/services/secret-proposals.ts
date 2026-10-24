@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
@@ -144,6 +145,7 @@ export function createSecretProposalsService(db: Db) {
         });
         return { denial, value: null };
       }
+      await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry);
       return { denial: null, value: await create(txDb) };
     });
     if (result.denial) throw unprocessable(result.denial.message);
@@ -619,6 +621,7 @@ export function createSecretProposalsService(db: Db) {
     appliedBindingConfigPath?: string | null;
   }) {
     const now = new Date();
+    await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry);
     const updated = await txDb.update(companySecretProposals).set({
       status: "approved",
       resolvedByUserId: input.resolvedByUserId,
@@ -794,6 +797,7 @@ export function createSecretProposalsService(db: Db) {
     const now = new Date();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry);
       const updated = await tx.update(companySecretProposals).set({
         status,
         resolvedByUserId: input.resolvedByUserId ?? null,
@@ -887,5 +891,11 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  async function nextExpiryAt(): Promise<number | null> {
+    const [row] = await db.select({ at: sql<string | Date | null>`min(${companySecretProposals.expiresAt})` })
+      .from(companySecretProposals).where(eq(companySecretProposals.status, "pending"));
+    return row?.at == null ? null : new Date(row.at).getTime();
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, nextExpiryAt };
 }
