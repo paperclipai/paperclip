@@ -19,6 +19,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   progress, and next action without requiring a raw-log interpretation.
 - `bounded-continuation`: `recovery/bounded-continuation` — supported interrupted work continues with preserved
   conversation context and bounded attempts, without blindly replaying tools.
+  Remote native runners can retain their active turn across main-server replacement
+  using the encrypted Postgres controller journal. See the five-minute contract
+  and qualification recipe in [remote continuity](../../doc/testing-native-remote-continuity.md#replacing-the-main-server).
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.

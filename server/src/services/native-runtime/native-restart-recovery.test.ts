@@ -8,6 +8,15 @@ import {
 } from "./native-restart-recovery.js";
 
 describe("native restart recovery classification", () => {
+  it.each([true, false])("uses the remote fenced lease instead of the old container PID (live=%s)", async live => {
+    const now = new Date();
+    const probe = vi.fn(() => { throw new Error("must not probe another container's PID"); });
+    const result = await evaluateNativeControllerTakeover({ now, remoteLeaseFenced: true,
+      owner: { leaseOwner: "old-controller", leaseExpiresAt: new Date(now.getTime() + (live ? 1000 : -1000)),
+        controllerPid: process.pid, controllerProcessStartedAt: now }, isProcessAlive: probe });
+    expect(result.allowed).toBe(!live);
+    expect(probe).not.toHaveBeenCalled();
+  });
   it("does not reopen a failed checkpoint or reset an exhausted provider budget", () => {
     const evidence = {
       runnerPidAlive: false,

@@ -118,9 +118,18 @@ These operations do not accept paths. Core checks the active lease and retained
 source task before it calls the plugin. The existing Runner transport validates
 state identity and suspension before it rotates authority.
 
+For controller replacement, Core restores its encrypted PRP journal from Postgres
+and reuses the original active task lease. The task owner checks running status
+and exact Runner identity, then reacquires the connection. It does not call
+`prepare`, `submit`, or `stop`. The running artifact remains pinned even if
+`describe` reports a newer installed version. Launch preparation files on the
+old controller are not required to adopt an already running task.
+The five-minute outage contract and its prerequisites are described in the
+[continuity recipe](../testing-native-remote-continuity.md#replacing-the-main-server).
+
 Core checks company, agent, environment, workspace, driver, and termination
-receipts before it supplies `resumeFrom`. For same-run controller recovery, Core
-first stops and releases the old task. A failed stop prevents replacement.
+receipts before it supplies `resumeFrom`. Historical controller recovery without
+the durable journal first stops and releases the old task. A failed stop prevents replacement.
 A new run prepares its current assignments. Provider compatibility checks remain
 in the existing backends. Missing or incompatible retained state fails closed.
 

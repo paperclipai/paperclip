@@ -173,6 +173,11 @@ plugin capability does not authorize the agent to change its environment.
 The [integration fixture](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 exercises the host and SDK with synthetic tasks and a mocked WebSocket.
 The task API does not transfer files or reveal guest filesystem paths.
+Controller replacement preserves the original task lease and run identity.
+Current company, agent, workspace, and lease checks still gate state reads and
+connection acquisition. Reconnection adds no agent management permission or
+replacement task submission. The integration covers this with synthetic tasks;
+it does not establish deployed plugin recovery.
 This source update does not qualify live agent access, warm retention, or a provider.
 See the [execution contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
 

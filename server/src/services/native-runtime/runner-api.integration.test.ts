@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +40,50 @@ describe("runner API against real HTTP routes", () => {
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
     if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+  });
+
+  it.each(["http_response", "runner_response"])("counts committed effects independently after losing the %s", async boundary => {
+    const fixture = await server.fixture();
+    const name = `Recovery effect ${randomUUID()}`;
+    const call = { tool: "call_api", callId: "one-project-effect", arguments: {
+      operationId: "POST /api/companies/{companyId}/projects", body: { name },
+    } };
+    const effects = () => server.db.select({ id: projects.id, name: projects.name }).from(projects)
+      .where(and(eq(projects.companyId, fixture.companyId), eq(projects.name, name)));
+    const fetchActual = globalThis.fetch;
+    let dispatched = 0;
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const response = await fetchActual(url, init);
+      if (String(url) === `${fixture.apiUrl}/api/companies/${fixture.companyId}/projects` && init?.method === "POST") {
+        dispatched += 1;
+        expect(response.ok).toBe(true);
+        expect(await effects()).toHaveLength(1);
+        if (boundary === "http_response") throw new TypeError("fixture lost the committed HTTP response");
+      }
+      return response;
+    });
+    try {
+      const first = await fixture.authority.execute(call);
+      const ledgerBeforeRecovery = await effects();
+      expect(ledgerBeforeRecovery).toHaveLength(1);
+      const replacement = new PaperclipRunnerToolAuthority(server.db, fixture);
+      const recovered = await replacement.recover(call);
+      if (boundary === "http_response") {
+        expect(first).toMatchObject({ outcome: "unknown" });
+        expect(recovered).toBeNull();
+        expect(await replacement.execute(call)).toMatchObject({ outcome: "unknown" });
+      } else {
+        expect(first).toMatchObject({ ok: true, status: 201 });
+        expect(recovered).toEqual({ result: first });
+        expect(await replacement.execute(call)).toEqual(first);
+      }
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(replacement.recover(call)).rejects.toThrow("binding_not_authorized");
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+    } finally { network.mockRestore(); }
   });
 
   it.each(["standard", "low_trust_review"])("delivers oversized assigned results without repeating the action (%s)", async trust => {
@@ -348,6 +392,47 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
   });
 
+  it.each(["comment_on_task", "write_task_document", "hire_agent"])("recovers completed %s receipts without repeating the write", async tool => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
+    if (tool === "hire_agent") {
+      await server.db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "agent", principalId: fixture.agentId, status: "active", membershipRole: "member" });
+      await server.db.insert(principalPermissionGrants).values([
+        { companyId: fixture.companyId, principalType: "agent", principalId: fixture.agentId, permissionKey: "agents:create" },
+        { companyId: fixture.companyId, principalType: "user", principalId: fixture.responsibleUserId!, permissionKey: "agents:create" },
+      ]);
+    }
+    const args = tool === "hire_agent" ? { name: "Recovery teammate", instructions: "Inspect the assigned task." }
+      : tool === "comment_on_task" ? { taskId: fixture.issueId, body: "  Persisted comment  " }
+      : { taskId: fixture.issueId, key: "recovery", title: "Recovery document", body: "Persisted document", baseRevisionId: null };
+    const call = { tool, callId: "completed-bridge-write", arguments: args };
+    const result = await fixture.authority.execute(call);
+    expect(result).toMatchObject({ ok: true, status: expect.any(Number), apiOperationId: expect.any(String) });
+    const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
+    const effects = async () => {
+      const snapshot = await fixture.snapshot();
+      return { comments: snapshot.comments, revisions: snapshot.documentRevisions, approvals: snapshot.approvals,
+        agents: await server.db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, fixture.companyId)).orderBy(agents.id),
+        calls: snapshot.activity.filter(row => row.action === "runner.api_called") };
+    };
+    const before = await effects();
+    expect(before.calls).toHaveLength(1);
+    expect(await reopened.recover(call)).toEqual({ result });
+    expect(await reopened.recover({ ...call, arguments: { ...args, ...(tool === "hire_agent" ? { name: "Changed teammate" } : { body: "Changed body" }) } })).toBeNull();
+    expect(await reopened.recover({ ...call, callId: "missing-receipt" })).toBeNull();
+    const disabled = new PaperclipRunnerToolAuthority(server.db, { ...fixture.authority.binding, apiToolsEnabled: false });
+    expect(await disabled.recover(call)).toBeNull();
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const pending = structuredClone(run.resultJson!);
+    for (const receipt of Object.values(pending.apiToolReceipts as Record<string, { state: string }>)) receipt.state = "pending";
+    await server.db.update(heartbeatRuns).set({ resultJson: pending }).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(await reopened.recover(call)).toBeNull();
+    await server.db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, fixture.runId));
+    await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(reopened.recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    await server.db.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
+    expect(await effects()).toEqual(before);
+  });
+
   it("returns and replays scoped secret values without plaintext receipts or response assets", async () => {
     const fixture = await server.fixture();
     const value = "disposable-private-credential-".repeat(1500);
@@ -358,6 +443,12 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const result = await fixture.authority.execute(call);
     expect(result).toMatchObject({ ok: true, status: 200, data: { key: secret.key, value } });
     expect(await fixture.authority.execute(call)).toEqual(result);
+    expect(await fixture.authority.recover(call)).toEqual({ result });
+    const disabled = new PaperclipRunnerToolAuthority(server.db, { ...fixture.authority.binding, apiToolsEnabled: false });
+    expect(await disabled.recover(call)).toBeNull();
+    await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(fixture.authority.recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    await server.db.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
     const snapshot = await fixture.snapshot();
     expect(snapshot.assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
