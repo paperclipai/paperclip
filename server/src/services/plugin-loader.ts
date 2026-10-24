@@ -2266,6 +2266,8 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
+      const pkgJson = await readPackageJson(packageRoot);
+      if (pkgJson) await ensureLocalPluginBuilt(packageRoot, pkgJson);
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
