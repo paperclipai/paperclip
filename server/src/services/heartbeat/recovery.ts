@@ -1708,7 +1708,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
           runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
         });
-        if (useRecordedTeardown) {
+        if (lease.provider === "ssh") {
+          // An SSH lease runs in the configured remote directory and creates no
+          // provider resource, and the SSH driver has no teardown. Retrying
+          // would keep the lease in pending_cleanup forever, so settle it.
+          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+            expectedPendingCleanupAttemptId: claimed,
+            cleanupStatus: "success",
+            failureReason: "pending_cleanup_retry",
+          });
+          if (released) destroyed += 1;
+        } else if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
           // cleanup-authorized secret versions. Preserve any provider receipt;
           // a completed retry must grant the same evidence as initial cleanup.
