@@ -546,6 +546,19 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     return runExclusiveUpsert(input, () => upsertSourceScopedUnlocked(input));
   }
 
+  /** Creates the source's active action only when the source has none; concurrent callers converge on one row. */
+  async function insertSourceScopedIfAbsent(
+    input: UpsertIssueRecoveryActionInput,
+  ): Promise<IssueRecoveryAction | null> {
+    const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
+    const [created] = await writeExecutionControl(db, [DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.executionContinuation], tx => tx
+      .insert(issueRecoveryActions)
+      .values(buildInsertValues(input, ownerType, new Date()))
+      .onConflictDoNothing()
+      .returning());
+    return created ? toReadModel(created) : null;
+  }
+
   async function resolveActiveForIssue(
     input: ResolveIssueRecoveryActionInput,
     dbOrTx: DbOrTransaction = db,
@@ -587,6 +600,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
   return {
     getActiveForIssue,
     listActiveForIssues,
+    insertSourceScopedIfAbsent,
     resolveActiveForIssue,
     upsertSourceScoped,
   };

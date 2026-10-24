@@ -285,7 +285,8 @@ export interface IssueRelationIssueSummary {
 export type IssueBlockerDiagnosticFlag =
   | "done_but_blocking"
   | "cancelled_blocker_in_set"
-  | "workspace_finalize_pending";
+  | "workspace_finalize_pending"
+  | "workspace_finalize_failed";
 
 export interface IssueBlockerDiagnosticIssueSummary {
   id: string;
