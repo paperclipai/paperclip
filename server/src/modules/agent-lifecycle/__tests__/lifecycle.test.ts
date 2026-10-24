@@ -9,6 +9,7 @@ import { approvalService } from "../../../services/approvals.js";
 import { updateAgentConfigurationInTransaction } from "../../../services/agent-configuration-transaction.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import express from "express";
 import request from "supertest";
 import { agentRoutes } from "../../../routes/agents.js";
@@ -355,6 +356,33 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("ignores a reused process group whose members all started after the run ended", async () => {
+    const agent = await hire();
+    const finishedAt = new Date(Date.now() - 60_000);
+    // The recorded leader is gone; an unrelated process now holds a group with the same ID.
+    const processGroupId = Number(execFileSync("ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+    await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "succeeded", invocationSource: "on_demand",
+      runtimeMode: "legacy", startedAt: finishedAt, finishedAt, processPid: 2_000_000_000, processGroupId });
+    const probe = (memberStartedAt: Date) => ({ groupMemberPids: async () => [process.pid],
+      processStartedAt: async () => memberStartedAt.toISOString() });
+    expect(await agentExecutionsHaveStopped(db, [agent.id], probe(new Date(finishedAt.getTime() - 1_000)))).toBe(false);
+    expect(await agentExecutionsHaveStopped(db, [agent.id], { ...probe(new Date()), groupMemberPids: async () => null })).toBe(false);
+    expect(await agentExecutionsHaveStopped(db, [agent.id], probe(new Date()))).toBe(true);
+  });
+
+  it("accepts a cancelled legacy run that never left preparation under an expired foreign controller", async () => {
+    const agent = await hire();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled", invocationSource: "on_demand",
+      runtimeMode: "legacy", executionStage: "dispatching", startedAt: new Date(), finishedAt: new Date(),
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date(Date.now() - 1_000) }).returning();
+    const probe = { groupMemberPids: async () => null, processStartedAt: async () => null };
+    expect(await agentExecutionsHaveStopped(db, [agent.id], probe)).toBe(false);
+    await db.update(heartbeatRuns).set({ executionStage: "preparing", controllerBootId: null }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id], probe)).toBe(false);
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id], probe)).toBe(true);
   });
 
   it("does not advance termination while a cancelled process still runs", async () => {

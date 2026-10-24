@@ -5,9 +5,27 @@ import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } fro
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
+import { execFile } from "node:child_process";
+
+/** Host facts used as stop evidence. Each returns null when the platform cannot answer. */
+export type HostProcessProbe = {
+  groupMemberPids(processGroupId: number): Promise<number[] | null>;
+  processStartedAt(pid: number): Promise<string | null>;
+};
+
+export const hostProcessProbe: HostProcessProbe = {
+  groupMemberPids(processGroupId) {
+    if (process.platform === "win32") return Promise.resolve(null);
+    return new Promise(resolve => execFile("ps", ["-A", "-o", "pid=,pgid="], { encoding: "utf8", timeout: 1_500 },
+      (error, stdout) => resolve(error ? null : stdout.split("\n").map(line => line.trim().split(/\s+/).map(Number))
+        .filter(([pid, group]) => pid > 0 && group === processGroupId).map(([pid]) => pid))));
+  },
+  processStartedAt: pid => readProcessStartedAt(pid).catch(() => null),
+};
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
-export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
+export async function agentExecutionsHaveStopped(db: Db, agentIds: string[], host: HostProcessProbe = hostProcessProbe) {
   if (!agentIds.length) return true;
   const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
   const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
@@ -43,18 +61,30 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     let processAlive = Boolean(run.processPid && !absent(run.processPid));
     let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
     if (processAlive && run.processStartedAt) {
-      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
+      const observed = await host.processStartedAt(run.processPid!);
       if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
         processAlive = false;
         if (run.processGroupId === run.processPid) groupAlive = false;
       }
+    }
+    if (groupAlive && !processAlive && run.finishedAt) {
+      // A group ID is reused only after every original member exited, so a group whose
+      // members all started after the run ended was created by someone else.
+      const members = await host.groupMemberPids(run.processGroupId!);
+      const started = members?.length ? await Promise.all(members.map(pid => host.processStartedAt(pid))) : null;
+      if (started?.every(at => at && new Date(at).getTime() > run.finishedAt!.getTime())) groupAlive = false;
     }
     if (processAlive || groupAlive) return false;
     if (run.status !== "cancelled" || !run.startedAt) continue;
     if (run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
-    if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
+    // Legacy dispatch commits the "dispatching" stage under a live controller lease before any
+    // adapter process starts. A run still preparing whose controller boot is gone never dispatched.
+    const neverDispatched = run.runtimeMode === "legacy" && run.executionStage === "preparing" &&
+      Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
+        run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
+    if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId && !neverDispatched &&
         (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
         !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return false;
