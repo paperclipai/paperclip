@@ -61,6 +61,53 @@ describe("document text projection", () => {
 });
 
 describe("document anchor verification and remapping", () => {
+  it("keeps delimiter characters that do not format text", () => {
+    const cases: Array<[string, string]> = [
+      ["Set user_id and file_name.py here.", "Set user_id and file_name.py here."],
+      ["Compute 5 * 3 and a ~ b today.", "Compute 5 * 3 and a ~ b today."],
+      ["Path C:\\Users\\ann\\docs is local.", "Path C:\\Users\\ann\\docs is local."],
+      ["Escaped \\*literal\\* and \\_x\\_.", "Escaped *literal* and _x_."],
+      ["Real **bold**, _em_, ~~gone~~ and __init__.", "Real bold, em, gone and init."],
+      ["Unmatched *nix and ~/path stay.", "Unmatched *nix and ~/path stay."],
+      ["\\[not a link](https://example.com)", "[not a link](https://example.com)"],
+      ["Read ***bold** tail* now.", "Read bold tail now."],
+      ["Read *the [guide](a*b) now* please.", "Read the guide now please."],
+      ["Mixed *foo**bar* text.", "Mixed foo**bar text."],
+      ["Nested **outer *inner* more** end.", "Nested outer inner more end."],
+      ["Read *one***two***three* now.", "Read onetwothree now."],
+      ["ab*~~*~~*a", "ab~~~~*a"],
+      ["ab~*~a*a~a", "ab~*a*aa"],
+      ["ab.*~~ba~a~~a~a", "ab.*ba~aa~a"],
+      ["a*****b*c**d*e", "a**b*cde"],
+    ];
+
+    for (const [markdown, rendered] of cases) {
+      expect(projectMarkdownToText(markdown).text).toBe(rendered);
+    }
+  });
+
+  it("pairs delimiters in linear time on long lines", () => {
+    const lines = [
+      "*a* ~b~ ".repeat(50_000),
+      "_a ".repeat(80_000) + "b* ".repeat(80_000),
+      " **x".repeat(60_000) + "a*b".repeat(80_000),
+      "~~a ".repeat(60_000) + "b~ ".repeat(60_000),
+    ];
+
+    for (const line of lines) {
+      const started = performance.now();
+      projectMarkdownToText(line);
+      expect(performance.now() - started).toBeLessThan(5_000);
+    }
+  });
+
+  it("maps an escaped character to its own source offset", () => {
+    const projection = projectMarkdownToText("a \\* b");
+    const star = projection.text.indexOf("*");
+
+    expect(projection.positions[star]).toEqual({ sourceStart: 3, sourceEnd: 4 });
+  });
+
   it("verifies a selector against its base revision", () => {
     const markdown = "Intro text with **selected text** inside.";
     const selector = selectorFor(markdown, "selected text");
