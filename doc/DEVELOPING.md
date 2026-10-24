@@ -3284,6 +3284,27 @@ unavailable. Use a separate, disposable database whose name ends in `_test` for 
 `PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL`. The suites apply migrations and create
 test data; the synchronization suite truncates company data between tests.
 
+### Remote Runner exit verification
+
+Active supervision and adopted-runner probes share process generation checks. A
+missing process file followed by ESRCH confirms exit. A zombie also confirms exit
+when its boot identity and start ticks match the saved generation. Permission
+failures, unreadable metadata and changed generations do not confirm exit.
+
+Remote supervision requires a working `node` on the remote launch `PATH`. The
+launcher checks that Node can execute the signal-zero probe before it creates
+state directories or detaches the Runner. A missing or broken Node fails the
+launch before work starts. An unavailable boot identity still permits a launch
+without a start fingerprint; it does not remove the Node requirement.
+
+Run the focused checks with `pnpm exec vitest run
+server/src/services/native-runtime/remote-runner-recovery-diagnostics.test.ts
+server/src/services/native-runtime/native-session-executor.test.ts`. Existing
+ownership holds still need separate recovery with explicit exit evidence. This
+change does not release them automatically. The adopted-runner `isAlive()`
+boolean contract is unchanged; this patch does not add unknown-state propagation
+to its callers.
+
 ### Public MCP and Dot event delivery
 
 Public MCP task events and Dot mailbox events use separate topics in the shared

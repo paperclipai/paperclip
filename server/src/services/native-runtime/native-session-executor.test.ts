@@ -363,6 +363,7 @@ import {
   resolveNativeBilling,
   parseRemoteRunnerProcessIdentity,
   REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT,
+  REMOTE_RUNNER_LAUNCH_SCRIPT,
   verifyRemoteRunnerReattachment,
   readRemoteProviderPackManifest,
   readBundledRemoteProviderPackManifest,
@@ -770,6 +771,31 @@ describe("remote controller restart adoption", () => {
 
 
 describe("remote runner launch fingerprint compatibility", () => {
+  it.each(["missing", "broken", "available"])("checks remote Node before detaching a Runner (Node=%s)", async nodeState => {
+    const root = await mkdtemp(join(tmpdir(), "remote-launch-node-"));
+    const bin = join(root, "bin");
+    const dispatched = join(root, "dispatched");
+    const marker = join(root, "state", "identity");
+    try {
+      await mkdir(bin);
+      for (const name of ["dirname", "mkdir"]) await symlink(execFileSync("sh", ["-c", `command -v ${name}`], { encoding: "utf8" }).trim(), join(bin, name));
+      // Record the detach boundary without starting an unmanaged child.
+      await writeFile(join(bin, "nohup"), '#!/bin/sh\nprintf dispatched > "$DISPATCH_RECEIPT"\n', { mode: 0o755 });
+      if (nodeState === "available") await symlink(process.execPath, join(bin, "node"));
+      if (nodeState === "broken") await writeFile(join(bin, "node"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+      const result = spawnSync("/bin/sh", ["-c", REMOTE_RUNNER_LAUNCH_SCRIPT + "; wait", "launch", marker, "nonce", "runner", "exit 0"], {
+        env: { ...process.env, PATH: bin, DISPATCH_RECEIPT: dispatched }, encoding: "utf8", timeout: 3_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(nodeState === "available" ? 0 : nodeState === "missing" ? 127 : 1);
+      if (nodeState === "available") expect(await readFile(dispatched, "utf8")).toBe("dispatched");
+      else {
+        await expect(access(dispatched)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(access(dirname(marker))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it.each([true, false])("launches with the guaranteed Node runtime when boot identity is available: %s", async (hasBootIdentity) => {
     const root = await mkdtemp(join(tmpdir(), "remote-launch-generation-"));
     try {
@@ -795,6 +821,92 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it.each([true, false])("rechecks disappearance during fingerprint read without releasing a live PID (retired=%s)", async (retired) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-fingerprint-race-"));
+    const marker = join(root, "identity");
+    const proc = join(root, "proc");
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    const pid = child.pid!;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { command: string; args?: string[] }) => {
+      const args = [...(input.args ?? [])];
+      if (args[2] === "paperclip-runner-launch") {
+        await writeFile(marker, `${args[4]}\n${pid}\n2026-10-21T00:00:00.000Z\nrunner-exit\nlinux:abcd-1234:100\n`);
+        return ok;
+      }
+      if (args[2] === "paperclip-runner-monitor") {
+        args[1] = (retired
+          ? 'node() { case "$2" in *readFileSync*) kill -KILL "$expected_pid"; while kill -0 "$expected_pid" 2>/dev/null; do sleep 0.01; done ;; esac; command node "$@"; }; '
+          : "") + args[1]!.replaceAll("/proc/", `${proc}/`);
+      }
+      return await new Promise<Omit<typeof ok, "exitCode"> & { exitCode: number | null }>(resolve => {
+        execFile(input.command, args, { timeout: 3_000 }, (error, stdout, stderr) => resolve({
+          ...ok, exitCode: error ? typeof error.code === "number" ? error.code : null : 0,
+          timedOut: !!error?.killed, stdout, stderr,
+        }));
+      });
+    });
+    try {
+      await mkdir(join(proc, String(pid)), { recursive: true });
+      await writeFile(join(proc, String(pid), "cmdline"), "node\0--runner-id\0runner-exit\0");
+      const handle = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: root },
+        runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: marker,
+        stateDirectory: root, diagnosticsDirectory: join(root, "diagnostics"), runnerInstanceId: "runner-exit",
+      })({ command: "/controller/runnerd", args: [], cwd: root, environment: {} });
+      if (retired) await expect(handle.completion).resolves.toMatchObject({ code: null });
+      else expect(await handle.completion.catch(readRemoteRunnerRecoveryError)).toEqual({ stage: "process_verification", reason: "fingerprint_unavailable" });
+      expect(handle.isExitConfirmed?.()).toBe(retired);
+      expect(execute.mock.calls.filter(([x]) => x.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+    } finally {
+      child.kill("SIGKILL");
+      await exited;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("confirms zombie shutdown only with the launch generation (reused=%s)", async (reused) => {
+    const root = await mkdtemp(join(tmpdir(), "runner-zombie-monitor-"));
+    const marker = join(root, "identity");
+    const proc = join(root, "proc");
+    const pid = process.pid;
+    const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
+    const execute = vi.fn(async (input: { command: string; args?: string[] }) => {
+      const args = [...(input.args ?? [])];
+      if (args[2] === "paperclip-runner-launch") {
+        await writeFile(marker, `${args[4]}\n${pid}\n2026-10-21T00:00:00.000Z\nrunner-zombie\nlinux:abcd-1234:100\n`);
+        return ok;
+      }
+      if (args[2] === "paperclip-runner-monitor") args[1] = args[1]!.replaceAll("/proc/", `${proc}/`);
+      return await new Promise<Omit<typeof ok, "exitCode"> & { exitCode: number | null }>(resolve => {
+        execFile(input.command, args, { timeout: 2_000 }, (error, stdout, stderr) => resolve({
+          ...ok, exitCode: error ? typeof error.code === "number" ? error.code : null : 0,
+          timedOut: !!error?.killed, stdout, stderr,
+        }));
+      });
+    });
+    try {
+      await mkdir(join(proc, String(pid)), { recursive: true });
+      await mkdir(join(proc, "sys/kernel/random"), { recursive: true });
+      await writeFile(join(proc, String(pid), "stat"), `${pid} (runner (child)) ${["Z", ...Array(18).fill("0"), reused ? 101 : 100].join(" ")}\n`);
+      await writeFile(join(proc, String(pid), "cmdline"), "");
+      await writeFile(join(proc, "sys/kernel/random/boot_id"), "abcd-1234\n");
+      const handle = createRemoteRunnerProcessLauncher({
+        target: { kind: "remote", transport: "sandbox", environmentId: "environment", leaseId: "lease", remoteCwd: root },
+        runner: { execute } as never, remoteBinary: "/runtime/runnerd", processIdentityPath: marker,
+        stateDirectory: root, diagnosticsDirectory: join(root, "diagnostics"), runnerInstanceId: "runner-zombie",
+      })({ command: "/controller/runnerd", args: [], cwd: root, environment: {} });
+      if (reused) {
+        expect(await handle.completion.catch(readRemoteRunnerRecoveryError)).toEqual({ stage: "process_verification", reason: "process_generation_changed" });
+      } else {
+        await expect(handle.completion).resolves.toMatchObject({ code: null });
+      }
+      expect(handle.isExitConfirmed?.()).toBe(!reused);
+      expect(execute.mock.calls.some(([input]) => input.args?.[2] === "paperclip-runner-kill")).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("preserves a real listening process and its marker when a health RPC times out", async () => {
     const root = await mkdtemp(join(tmpdir(), "runner-health-listener-"));
     const marker = join(root, "identity");
