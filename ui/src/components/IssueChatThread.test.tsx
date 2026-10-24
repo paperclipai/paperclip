@@ -2959,6 +2959,37 @@ describe("IssueChatThread", () => {
     },
   );
 
+  it("sends a comment on plain HTTP when randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+    const send = () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Send") as HTMLButtonElement;
+    try {
+      await act(async () => root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+            onAdd={onAdd} draftKey="plain-http-issue-chat" enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      ));
+      act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), "Please continue with the blocked step");
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => send().click());
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd.mock.calls[0]![0]).toBe("Please continue with the blocked step");
+      expect(onAdd.mock.calls[0]![4])
+        .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+      await act(async () => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each(["newer local text", "foreign pending receipt", "matching text with new attachments", "matching full text with new attachments", "own receipt with newer stored text", "unavailable recovery storage"])(
     "preserves both tabs through settlement and reload: %s",
     async (scenario) => {
