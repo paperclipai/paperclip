@@ -3,8 +3,23 @@
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { DragStartEvent } from "@dnd-kit/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+
+const dragState = vi.hoisted(() => ({ start: undefined as ((event: DragStartEvent) => void) | undefined }));
+
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/core")>();
+  return {
+    ...actual,
+    DndContext: (props: React.ComponentProps<typeof actual.DndContext>) => {
+      dragState.start = props.onDragStart;
+      return <actual.DndContext {...props} />;
+    },
+    DragOverlay: ({ children }: { children: React.ReactNode }) => <div data-testid="drag-preview">{children}</div>,
+  };
+});
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -24,6 +39,10 @@ vi.mock("@/lib/router", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const mountedRoots: Root[] = [];
+
+const projectById = new Map([
+  ["project-1", { name: "Commerce platform", color: "royalblue" }],
+]);
 
 function act(callback: () => void): void {
   flushSync(callback);
@@ -231,5 +250,53 @@ describe("KanbanBoard", () => {
     expect(resolveKanbanTargetStatus("done", issues)).toBe("done");
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
+  });
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    "shows project badges with compactCards=%s and overflow fades=%s",
+    (compactCards, showOverflowFades) => {
+      const issue = { ...createIssue(1, "todo"), projectId: "project-1" };
+      const { container, render } = renderBoard({ issues: [issue], projectById, showProjects: true, compactCards, showOverflowFades });
+
+      const badge = container.querySelector('[title="Commerce platform"]');
+      expect(badge?.textContent).toBe("Commerce platform");
+      expect(badge?.querySelector<HTMLElement>('[aria-hidden="true"]')?.style.backgroundColor).toBe("royalblue");
+      expect(container.querySelector('a[href="/issues/PAP-1"]')?.contains(badge)).toBe(true);
+
+      render({ issues: [issue], projectById, showProjects: false, compactCards, showOverflowFades });
+      expect(container.textContent).not.toContain("Commerce platform");
+    },
+  );
+
+  it("omits badges for unset or unknown projects and when visibility is not enabled", () => {
+    const issues = [createIssue(1, "todo"), { ...createIssue(2, "todo"), projectId: "unknown" }];
+    const { container, render } = renderBoard({ issues, projectById, showProjects: true });
+    expect(container.querySelector('[data-slot="badge"][title]')).toBeNull();
+
+    render({ issues: [{ ...createIssue(1, "todo"), projectId: "project-1" }], projectById });
+    expect(container.textContent).not.toContain("Commerce platform");
+  });
+
+  it("keeps long project names readable without expanding the card", () => {
+    const name = "A project name long enough to overflow the fixed-width board card";
+    const { container } = renderBoard({
+      issues: [{ ...createIssue(1, "todo"), projectId: "project-1" }],
+      projectById: new Map([["project-1", { name, color: null }]]),
+      showProjects: true,
+    });
+    const badge = container.querySelector(`[title="${name}"]`);
+    expect(badge?.className).toContain("max-w-full");
+    expect(badge?.querySelector(".truncate")?.textContent).toBe(name);
+    expect(badge?.querySelector<HTMLElement>('[aria-hidden="true"]')?.style.backgroundColor).toBe("var(--muted-foreground)");
+  });
+
+  it("keeps project visibility in sync in the drag preview", () => {
+    const issue = { ...createIssue(1, "todo"), projectId: "project-1" };
+    const { container, render } = renderBoard({ issues: [issue], projectById, showProjects: true });
+    act(() => dragState.start?.({ active: { id: issue.id } } as DragStartEvent));
+    expect(container.querySelector('[data-testid="drag-preview"]')?.textContent).toContain("Commerce platform");
+
+    render({ issues: [issue], projectById, showProjects: false });
+    expect(container.querySelector('[data-testid="drag-preview"]')?.textContent).not.toContain("Commerce platform");
   });
 });

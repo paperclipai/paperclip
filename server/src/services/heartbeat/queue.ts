@@ -4900,7 +4900,25 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return { scanned: candidates.length, dispatched, recovered, deferred };
   }
 
+  async function resumeDeferredIssueWakesAfterCleanup(run: HeartbeatRun) {
+    const issueId = readNonEmptyString(run.contextSnapshot?.issueId);
+    if (run.runtimeMode !== "legacy" || !isHeartbeatRunTerminalStatus(run.status) || !issueId) return;
+    const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload, agentId: agentWakeupRequests.agentId })
+      .from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+      )).limit(1);
+    if (!pending) return;
+    if (pending.agentId === run.agentId && pending.payload?.queuedCommentInterrupt) {
+      await resumeQueuedCommentInterrupt(run.companyId, pending.id);
+    } else {
+      await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true, resumeStrandedQueue: true });
+    }
+  }
+
   return {
+    resumeDeferredIssueWakesAfterCleanup,
     enqueueWakeup,
     dispatchPendingNativeStatusWakeups,
     startNextQueuedRunForAgent,

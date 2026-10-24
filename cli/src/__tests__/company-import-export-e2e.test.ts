@@ -12,10 +12,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { createStoredZipArchive } from "./helpers/zip.js";
+import { waitForServer } from "./helpers/wait-for-server.js";
 import { removeTestHome } from "../../../tests/helpers/remove-test-home.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
+const SERVER_SETUP_TIMEOUT_MS = 60_000;
+const SERVER_SETUP_RESERVE_MS = 5_000;
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -246,34 +249,6 @@ async function runCliJson<T>(
   return JSON.parse(stdout.slice(jsonStart)) as T;
 }
 
-async function waitForServer(
-  apiBase: string,
-  child: ServerProcess,
-  output: { stdout: string[]; stderr: string[] },
-) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
-    if (child.exitCode !== null) {
-      throw new Error(
-        `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
-      );
-    }
-
-    try {
-      const res = await fetch(`${apiBase}/api/health`);
-      if (res.ok) return;
-    } catch {
-      // Server is still starting.
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  throw new Error(
-    `Timed out waiting for ${apiBase}/api/health.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
-  );
-}
-
 describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let tempRoot = "";
   let configPath = "";
@@ -286,6 +261,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    const startupDeadline = Date.now() + SERVER_SETUP_TIMEOUT_MS - SERVER_SETUP_RESERVE_MS;
     tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-company-cli-e2e-"));
     configPath = path.join(tempRoot, "config", "config.json");
     exportDir = path.join(tempRoot, "exported-company");
@@ -324,8 +300,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output.stderr.push(String(chunk));
     });
 
-    await waitForServer(apiBase, child, output);
-  }, 60_000);
+    await waitForServer(apiBase, child, output, startupDeadline);
+  }, SERVER_SETUP_TIMEOUT_MS);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);

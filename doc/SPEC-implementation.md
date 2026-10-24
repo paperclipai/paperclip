@@ -1887,6 +1887,12 @@ Required UX behaviors:
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 
+The task collection's Project visibility setting also controls project badges on
+Kanban cards. When enabled, a card shows the known project's name and color in
+regular, compact, and drag-preview states. Long names truncate within the card
+and keep the full name in a tooltip. Tasks without a known project show no badge.
+Disabling Project hides the badges without changing task data or board behavior.
+
 Regular task chats and Agent Chat keep requests as compact, reopenable entries
 at their original position in the feed. Dismissing any composer request clears
 its form and pending reminder, including completion reviews, confirmations,
@@ -2590,3 +2596,7 @@ Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
 optionally classifies existing tool-result boundaries through a shared OpenRouter
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
+
+### Legacy execution cleanup and deferred handoffs
+
+After a terminal legacy execution finishes releasing its controller and environment resources, queue recovery must reconsider deferred wakes for the same company and issue, including a wake for the next signoff participant. Recovery uses the existing issue-lock release and admission path; it must preserve current assignment, pause/Stop, budget, cleanup and company-isolation checks. A terminal status alone does not authorize successor execution before cleanup.

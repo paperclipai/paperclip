@@ -79,6 +79,8 @@ Use a human/unassigned task to verify persistence without invoking a model.
 
 Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
 
+Automated: [board cards](../../ui/src/components/KanbanBoard.test.tsx) cover Project badge visibility, color, compact cards, missing projects, and long names. [Collection preferences](../../ui/src/components/IssuesList.test.tsx) cover the saved Project setting passed to the board. In board view, enable Project in Columns to show each known project's badge; disable it to hide the badges. Full browser navigation and persistence remain manual checks.
+
 Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.

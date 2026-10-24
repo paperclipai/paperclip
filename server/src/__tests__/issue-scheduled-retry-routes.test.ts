@@ -276,6 +276,16 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
         : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: "Verified source recovery; continue the original work." });
 
       expect(res.status, JSON.stringify(res.body)).toBe(method === "post" ? 201 : 200);
+      // The route's async wake decision can outlive the response, before heartbeat tracks it.
+      await expect.poll(() => db.select({ payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, f.companyId),
+          eq(agentWakeupRequests.agentId, f.agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ))).toMatchObject([{ payload: {
+          issueId: f.issueId,
+          _paperclipWakeContext: { wakeReason: "issue_commented" },
+        } }]);
       await heartbeat.drainActiveRunExecutions();
       const progress = once(child, "message", { signal: AbortSignal.timeout(5_000) });
       child.send("continue-work");

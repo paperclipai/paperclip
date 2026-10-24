@@ -1393,6 +1393,31 @@ describe("IssuesList", () => {
     });
   });
 
+  it.each([true, false])("passes saved Project visibility (%s) and project metadata to the board", async (showProjects) => {
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "paperclip:test-issues" }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "paperclip:test-issues",
+        viewState: { viewMode: "board" },
+        columns: showProjects ? ["project"] : [],
+      }),
+    );
+    const project = { id: "project-1", name: "Commerce platform", color: "royalblue" };
+    const { root } = renderWithQueryClient(
+      <IssuesList issues={[]} projects={[project]} viewStateKey="paperclip:test-issues" onUpdateIssue={() => undefined} />,
+      container,
+    );
+    await waitForAssertion(() => {
+      expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
+        showProjects,
+        projectById: new Map([[project.id, { name: project.name, color: project.color }]]),
+      }));
+    });
+    act(() => root.unmount());
+  });
+
   it("uses compact cards and collapsed cold lanes for high-volume boards", async () => {
     localStorage.setItem(
       "paperclip:test-issues:company-1",

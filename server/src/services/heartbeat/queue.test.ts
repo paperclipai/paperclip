@@ -1,6 +1,6 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -36,6 +36,19 @@ describe("heartbeat queue module boundary", () => {
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.resumeExecutionWaitComments).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["running", "native", "missing_issue"])("does not recover %s executions through legacy cleanup", async kind => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    await createHeartbeatQueue(database.db, deps).resumeDeferredIssueWakesAfterCleanup({
+      id: "source", companyId: "company", agentId: "actor",
+      runtimeMode: kind === "native" ? "native" : "legacy",
+      status: kind === "running" ? "running" : "succeeded",
+      contextSnapshot: kind === "missing_issue" ? {} : { issueId: "issue" },
+    } as Parameters<ReturnType<typeof createHeartbeatQueue>["resumeDeferredIssueWakesAfterCleanup"]>[0]);
+    expect(database.access).not.toHaveBeenCalled();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
   });
 
   it("tracks pending wakes across instances and clears each rejected wake", async () => {
@@ -112,6 +125,58 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     }).returning();
     return { ...seeded, recipient, pending };
   }
+
+  it("promotes a next-agent handoff only after real lease cleanup", async () => {
+    const { company, issue, run } = await fixture("succeeded");
+    const [finished] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    const [reviewer] = await db.insert(agents).values({ companyId: company.id, name: "Reviewer", role: "qa", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    await db.update(issues).set({ assigneeAgentId: reviewer.id, status: "in_review" }).where(eq(issues.id, issue.id));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: reviewer.id,
+      source: "assignment", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId: issue.id, _paperclipWakeContext: { issueId: issue.id, taskId: issue.id } },
+    }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: company.id, issueId: issue.id,
+      heartbeatRunId: run.id, status: "pending_cleanup", cleanupStatus: "pending",
+    }).returning();
+    const deps = callbacks(db);
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, {
+      resolveResponsibleUserId: async () => "responsible-user",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    }), recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined } });
+    deps.releaseIssueExecutionAndPromote.mockImplementation(async (source, options) => {
+      await release({ companyId: source.companyId, runId: source.id, now: new Date(), ...options });
+    });
+    const queue = createHeartbeatQueue(db, deps);
+    await queue.resumeDeferredIssueWakesAfterCleanup(finished);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(1);
+
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+      .where(eq(environmentLeases.id, lease.id));
+    await queue.resumeDeferredIssueWakesAfterCleanup(finished);
+    const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(promoted).toMatchObject({ status: "queued", runId: expect.any(String) });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, promoted.runId!)))[0])
+      .toMatchObject({ agentId: reviewer.id, wakeupRequestId: wake.id, contextSnapshot: { issueId: issue.id } });
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0])
+      .toMatchObject({ status: "in_review", assigneeAgentId: reviewer.id });
+    await queue.resumeDeferredIssueWakesAfterCleanup(finished);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(2);
+  });
+
+  it("does not recover another issue's deferred wake after cleanup", async () => {
+    const { company, agent, run } = await fixture("succeeded");
+    const [other] = await db.insert(issues).values({ companyId: company.id, title: "Other task", status: "todo", assigneeAgentId: agent.id }).returning();
+    await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "assignment", reason: "issue_execution_deferred", status: "deferred_issue_execution", payload: { issueId: other.id },
+    });
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeDeferredIssueWakesAfterCleanup({ ...run, runtimeMode: "legacy" });
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
 
   it("rechecks a handoff's assignment version under the issue claim lock", async () => {
     const { company, agent, issue, wake, run } = await fixture("queued");
