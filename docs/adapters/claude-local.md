@@ -132,6 +132,23 @@ This differs from [`codex_local`](/adapters/codex-local), where a
 Paperclip-managed sandbox run uploads a host-owned `CODEX_HOME/auth.json` and
 therefore shadows any Codex login already present inside the sandbox image.
 
+## Sandbox memory limits
+
+A sandbox has a fixed memory limit. When a tool command (for example a type
+check or a dependency install) uses most of that memory, the kernel kills one
+process. Without help it can kill the Claude Code process, and the run fails
+with "The connection to Claude was lost."
+
+For managed sandbox runs, the same materialization step installs a
+`tool-shell-prefix.sh` script in the run's Claude runtime directory and sets
+`CLAUDE_CODE_SHELL_PREFIX` to it. Claude Code runs each Bash tool command and
+hook through that script. The script raises the command's `oom_score_adj` to
+1000 and then runs the command in the shell that Claude Code selects. The
+kernel then kills the tool command first, and Claude sees a failed command
+(exit 137) that it can recover from. Paperclip sets the variable only after the
+sandbox confirms the install. An operator `CLAUDE_CODE_SHELL_PREFIX` in the
+adapter env is kept, and no script is installed.
+
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 
 ```sh
