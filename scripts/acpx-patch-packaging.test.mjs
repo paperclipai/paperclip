@@ -24,7 +24,9 @@ import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
 import {
   createBundledInstallManifest,
   configureBundledProviderOverrides,
+  clearWorkspaceVersionCache,
   materializePublishManifest,
+  readWorkspaceVersions,
   selectBundledDependencyPatches,
   stageBundledEsbuildOptionalDependencies,
   stageBundledProviderOptionalDependencies,
@@ -461,6 +463,66 @@ test("bundled package staging materializes workspace dependency versions", () =>
     caret: "^2026.723.0",
     tilde: "~2026.723.0",
   });
+});
+
+test("workspace:* resolves to the target workspace package version, not the dependent's", () => {
+  // Regression: server@0.3.1 depends on plugin-sdk via workspace:* while
+  // plugin-sdk itself is at 1.0.0. Staging must require 1.0.0 (matching the
+  // co-packed tarball), not the phantom 0.3.1 that npm cannot resolve.
+  const staged = materializePublishManifest(
+    {
+      name: "@paperclipai/server",
+      version: "0.3.1",
+      dependencies: { "@paperclipai/plugin-sdk": "workspace:*" },
+    },
+    { workspaceVersions: new Map([["@paperclipai/plugin-sdk", "1.0.0"]]) },
+  );
+
+  assert.equal(staged.dependencies["@paperclipai/plugin-sdk"], "1.0.0");
+});
+
+test("workspace:* falls back to the dependent version for unknown targets", () => {
+  // Release flow rewrites every workspace package to one uniform calver
+  // version, so an unresolvable target must keep the old behavior.
+  const staged = materializePublishManifest({
+    name: "@paperclipai/example",
+    version: "2026.723.0",
+    dependencies: { "@paperclipai/unknown": "workspace:*" },
+  });
+
+  assert.equal(staged.dependencies["@paperclipai/unknown"], "2026.723.0");
+});
+
+test("workspace version scan finds independently versioned packages", (t) => {
+  clearWorkspaceVersionCache();
+  t.after(() => clearWorkspaceVersionCache());
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "paperclip-workspace-versions-"));
+  t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+  const writeManifest = (dir, manifest) => {
+    mkdirSync(join(fixtureRoot, dir), { recursive: true });
+    writeFileSync(join(fixtureRoot, dir, "package.json"), JSON.stringify(manifest));
+  };
+  writeManifest("server", { name: "@paperclipai/server", version: "0.3.1" });
+  writeManifest("sdk", { name: "@paperclipai/plugin-sdk", version: "1.0.0" });
+  // node_modules manifests must not shadow workspace sources.
+  writeManifest("server/node_modules/@paperclipai/plugin-sdk", {
+    name: "@paperclipai/plugin-sdk",
+    version: "9.9.9",
+  });
+
+  const versions = readWorkspaceVersions(fixtureRoot);
+  assert.equal(versions.get("@paperclipai/server"), "0.3.1");
+  assert.equal(versions.get("@paperclipai/plugin-sdk"), "1.0.0");
+
+  const staged = materializePublishManifest(
+    {
+      name: "@paperclipai/server",
+      version: "0.3.1",
+      dependencies: { "@paperclipai/plugin-sdk": "workspace:*" },
+    },
+    { sourceRoot: fixtureRoot },
+  );
+  assert.equal(staged.dependencies["@paperclipai/plugin-sdk"], "1.0.0");
 });
 
 test("bundled package staging installs only dependencies included in the tarball", () => {
