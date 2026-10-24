@@ -132,7 +132,7 @@ it.each([
   }
 }, 45000);
 
-it.each(["local", "custom local directory", "external launcher", "grok external launcher"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
+it.each(["local", "custom local directory", "external launcher", "grok external launcher", "external launcher empty controller"])("reattaches the %s Rust bridge without duplicate operations and refuses lost checkpoints", async launch => {
   const root = await mkdtemp(join(tmpdir(), "dot-driver-recovery-"));
   await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
   const input = execution(root, launch === "grok external launcher" ? "grok_bot" : "openai_dot");
@@ -142,6 +142,8 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
   const settlements = new Map<string, unknown>();
   const dispatches: unknown[] = [];
   let controllerPort = 0;
+  const emptyController = launch === "external launcher empty controller";
+  let checkpoint: controlPlane.DurablePrpCheckpoint | undefined;
   const options: RunnerdDotDriverOptions = {
     execution: input, stateDirectory: join(root, "state"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
@@ -149,6 +151,10 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
     runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
     onSpawn: process => { spawned = process; },
     controlPlaneRegistration: async authority => {
+      if (emptyController) {
+        authority.setCheckpointPersistence(async saved => { checkpoint = controlPlane.decodeDurablePrpCheckpoint(new Map(saved.records)); });
+        await authority.flushCheckpoint();
+      }
       await authority.start(controllerPort);
       controllerPort = Number(new URL(authority.connectUrl).port);
       return { connectUrl: authority.connectUrl, release: () => authority.stop() };
@@ -160,7 +166,7 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
   };
   const runnerState = launch === "local" ? join(root, "state/runner") : join(root, "external-runtime/runner");
   if (launch === "custom local directory") options.runnerStateDirectory = runnerState;
-  if (["external launcher", "grok external launcher"].includes(launch)) {
+  if (launch.includes("external launcher")) {
     await mkdir(runnerState, { recursive: true });
     options.runnerStateDirectory = runnerState;
     options.readProviderState = async () => {
@@ -168,6 +174,7 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
     };
     options.runnerProcessLauncher = spec => {
+      if (emptyController) expect(Object.keys(JSON.parse(checkpoint!.records.get("header")!).state.tickets)).toHaveLength(1);
       expect(spec.environment).not.toHaveProperty("OPENAI_API_KEY");
       expect(spec.args).toContain(runnerState);
       const child = spawn(spec.command, [...spec.args], { cwd: runnerState, env: spec.environment, stdio: "ignore" });
@@ -199,7 +206,14 @@ it.each(["local", "custom local directory", "external launcher", "grok external 
     const snapshot = await session.snapshot();
     expect(snapshot).toMatchObject({ providerSessionId: null, activeTurnId: options.identity.turnId, providerRecoveryPolicy: "same_session_only" });
     await session.detachControllerForRestart!();
-    const recoveredDriver = new RunnerdDotDriver({ ...options, adoptExistingRunner: { ...spawned!, isAlive: () => true } });
+    if (emptyController) {
+      await rm(options.stateDirectory, { recursive: true });
+      checkpoint!.restoreSessionDirectory(options.stateDirectory);
+    }
+    const recoveredDriver = new RunnerdDotDriver({ ...options,
+      ...(emptyController ? { runnerBinary: join(root, "unavailable-old-runner"),
+        runnerArtifact: { version: checkpoint!.runnerVersion, digest: checkpoint!.runnerDigest } } : {}),
+      adoptExistingRunner: { ...spawned!, isAlive: () => true } });
     const recovered = await recoveredDriver.recoverSession(snapshot, { signal: new AbortController().signal });
     expect(recovered.recovered).toBe(true);
     session = recovered.session!;

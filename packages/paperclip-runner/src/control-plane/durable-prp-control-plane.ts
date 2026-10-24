@@ -141,6 +141,8 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema | typeof transitionCoreStateSchema;
   identity: DurableRecoveryIdentity;
+  /** External checkpoints contain control state, not a duplicate output log. */
+  checkpointEventPolicy?: "control-v1";
   warmTransition?: {
     receipt: DurableWarmRunTransition;
     phase: "awaiting_result" | "prepared" | "activated";
@@ -225,6 +227,7 @@ interface PendingChallenge {
   warmTransitionVersion?: 1;
   warmTransitionId?: string;
   requestedIdentity?: DurableRecoveryIdentity;
+  acknowledgedSourceSeq?: number;
 }
 
 interface SecureChannel {
@@ -268,11 +271,142 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  recoverSemanticToolInput?: (
+    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
+  ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
   /** Stop this exact owner after a proven, authenticated permanent integrity fault. */
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
   connectionLeaseTtlMs?: number;
+}
+
+export interface DurablePrpCheckpoint {
+  /** Read-only protocol evidence. Does not grant attachment or execution authority. */
+  readonly recoveryEvidence: {
+    readonly runnerInstanceId: string;
+    readonly normalizedSessionId: string;
+    readonly authenticatedConnectionCount: number;
+    readonly highestRecordedSourceSeq: number;
+  };
+  readonly runnerVersion: string;
+  readonly runnerDigest: string;
+  readonly runId: string;
+  readonly predecessor: { readonly runId: string; readonly normalizedSessionId: string } | null;
+  readonly records: ReadonlyMap<string, string>;
+  /** Atomic write set relative to the preceding callback for this run. */
+  readonly changedRecords: ReadonlyMap<string, string>;
+  readonly removedRecords: readonly string[];
+  /** First write for a run replaces any older checkpoint atomically. */
+  readonly reset: boolean;
+  readonly workCommandIds: readonly string[];
+  restoreSessionDirectory(root: string): void;
+}
+
+type CheckpointHeader = {
+  schema: "paperclip.runner.controller-checkpoint.v2";
+  runnerVersion: string;
+  runnerDigest: string;
+  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries">;
+};
+
+function checkpointRunId(state: StoredCoreState): string {
+  if (state.warmTransition) return state.warmTransition.receipt.newIdentity.runId;
+  const attachment = state.commands.findLast(command => command.type === "run.attach");
+  const next = attachment?.payload.paperclipNextAuthority as { identity?: { runId?: string } } | undefined;
+  return next?.identity?.runId ?? state.identity.runId;
+}
+
+function isStreamingEvent(event: Pick<DurableRecoveryCommittedEvent, "eventType" | "priority">): boolean {
+  return event.priority !== 0 && ["item.delta", "usage.reported"].includes(event.eventType);
+}
+
+function evictionCandidate(state: StoredCoreState): number {
+  // Keep the latest identity/turn/result anchors through arbitrarily long text
+  // streams. Unsettled semantic inputs retain their existing stronger fence.
+  const anchors = new Set(["harness.ready", "session.started", "session.resumed", "turn.started",
+    "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "run.result.proposed", "usage.reported"]);
+  const latest = new Map<string, DurableRecoveryCommittedEvent>();
+  for (const event of state.committedEvents) if (anchors.has(event.eventType)) latest.set(event.eventType, event);
+  return state.committedEvents.findIndex(event => latest.get(event.eventType) !== event && !unsettledSemanticInput(event, state));
+}
+
+function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string,
+  previous?: DurablePrpCheckpoint): DurablePrpCheckpoint {
+  const runId = checkpointRunId(state);
+  const reset = !previous || previous.runId !== runId;
+  const records = new Map<string, string>();
+  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, ...metadata } = state;
+  const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
+  const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
+  for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
+  for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
+  const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
+    runnerVersion, runnerDigest, state: { ...metadata, checkpointEventPolicy: "control-v1" } };
+  records.set("header", JSON.stringify(header));
+  records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
+    commandCount: commands.length, eventCount: recoveryEvents.length }));
+  const changedRecords = new Map([...records].filter(([key, value]) => reset || previous.records.get(key) !== value));
+  const removedRecords = reset ? [] : [...previous.records.keys()].filter(key => !records.has(key));
+  const maintenance = new Set(["runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
+  return {
+    runnerVersion, runnerDigest, runId, records, changedRecords, removedRecords, reset,
+    recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
+      authenticatedConnectionCount: state.connectionCount,
+      highestRecordedSourceSeq: state.committedEvents.reduce((highest, event) => Math.max(highest, event.sourceSeq), state.ackedSourceSeq) },
+    predecessor: state.identity.runId === runId ? null
+      : { runId: state.identity.runId, normalizedSessionId: state.identity.normalizedSessionId },
+    workCommandIds: commands.filter(command => !maintenance.has(command.type)).map(command => command.commandId),
+    restoreSessionDirectory(root) {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      verifyPrivateDirectory(root);
+      const directory = resolve(root, "control-plane");
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      verifyPrivateDirectory(directory);
+      atomicPrivateWrite(resolve(directory, "control-plane-state.json"), JSON.stringify(checkpointState(records).state));
+    },
+  };
+}
+
+function checkpointState(records: ReadonlyMap<string, string>) {
+  const header: unknown = JSON.parse(records.get("header") ?? "null");
+  if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2"].includes(String(header.schema))
+    || typeof header.runnerVersion !== "string" || !header.runnerVersion
+    || typeof header.runnerDigest !== "string" || !runnerDigestPattern.test(header.runnerDigest)
+    || !isRecord(header.state) || !exactIdentity(header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  const read = (key: string): unknown => {
+    const value = records.get(key);
+    if (value === undefined) throw new Error("native_runner_checkpoint_incomplete");
+    return JSON.parse(value);
+  };
+  const v2 = header.schema === "paperclip.runner.controller-checkpoint.v2";
+  const keys = (prefix: string) => [...records.keys()].filter(key => key.startsWith(prefix))
+    .sort((a, b) => Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)));
+  const commandKeys = v2 ? keys("command:") : header.commands;
+  const eventKeys = v2 ? keys("event:") : header.events;
+  if (!Array.isArray(commandKeys) || commandKeys.length > maxCommands
+    || !Array.isArray(eventKeys) || eventKeys.length > maxCommittedEventWindow
+    || commandKeys.some(key => typeof key !== "string" || !/^command:\d+$/.test(key))
+    || eventKeys.some(key => typeof key !== "string" || !/^event:\d+$/.test(key))
+    || new Set(commandKeys).size !== commandKeys.length || new Set(eventKeys).size !== eventKeys.length) {
+    throw new Error("native_runner_checkpoint_invalid");
+  }
+  const cursor = v2 ? read("cursor") : header.state;
+  if (!isRecord(cursor) || (v2 && (cursor.commandCount !== commandKeys.length || cursor.eventCount !== eventKeys.length
+    || records.size !== commandKeys.length + eventKeys.length + 2))) throw new Error("native_runner_checkpoint_incomplete");
+  const state = { ...header.state, ackedSourceSeq: cursor.ackedSourceSeq, replayDeliveries: cursor.replayDeliveries,
+    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) };
+  if (!isStoredCoreState(state, header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  if (state.commands.some((command, index) => commandKeys[index] !== `command:${command.controllerSeq}`)
+    || state.committedEvents.some((event, index) => eventKeys[index] !== `event:${event.sourceSeq}`)) {
+    throw new Error("native_runner_checkpoint_invalid");
+  }
+  return { state, runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest };
+}
+
+export function decodeDurablePrpCheckpoint(records: ReadonlyMap<string, string>): DurablePrpCheckpoint {
+  const decoded = checkpointState(records);
+  return captureCheckpoint(decoded.state, decoded.runnerVersion, decoded.runnerDigest);
 }
 
 export interface RunnerProcessResult {
@@ -644,6 +778,7 @@ function isStoredCoreState(
     (value.schema !== coreStateSchema &&
       value.schema !== transitionCoreStateSchema) ||
     canonicalJson(value.identity) !== canonicalJson(identity) ||
+    (value.checkpointEventPolicy !== undefined && value.checkpointEventPolicy !== "control-v1") ||
     !isRecord(value.tickets) ||
     !isRecord(value.leases) ||
     !Array.isArray(commands) ||
@@ -1218,6 +1353,7 @@ class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
   #writeIndeterminate = false;
+  revision = 0;
 
   constructor(directory: string, identity: DurableRecoveryIdentity) {
     try {
@@ -1253,7 +1389,24 @@ class DurableCoreStore {
     return this.#state;
   }
 
+  saveEvent(event: DurableRecoveryCommittedEvent): void {
+    this.assertWritable();
+    // Output ACKs depend on the runner's durable cursor, not a database timer.
+    // The next control change captures the latest usage and removes old records.
+    if (isStreamingEvent(event)) {
+      if (this.#state.checkpointEventPolicy !== "control-v1") this.write();
+      return;
+    }
+    this.write();
+    this.revision += 1;
+  }
+
   save(): void {
+    this.write();
+    this.revision += 1;
+  }
+
+  private write(): void {
     this.assertWritable();
     atomicPrivateWrite(this.path, `${JSON.stringify(this.#state, null, 2)}\n`);
   }
@@ -1268,9 +1421,11 @@ class DurableCoreStore {
   /** Persist a complete candidate before publishing any new authority in memory. */
   commit(candidate: StoredCoreState): void {
     this.assertWritable();
+    candidate.checkpointEventPolicy ??= this.#state.checkpointEventPolicy;
     try {
       atomicPrivateWrite(this.path, `${JSON.stringify(candidate, null, 2)}\n`);
       this.#state = candidate;
+      this.revision += 1;
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -1516,10 +1671,17 @@ export class DurablePrpControlPlane {
   #port: number | null = null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
+  #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
+  #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
+  #persistedRevision = -1;
+  #lastCheckpoint?: DurablePrpCheckpoint;
+  #persistenceTail = Promise.resolve();
+  #sendQueues = new Map<AuthorityConnection, Promise<void>>();
+  #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -1540,6 +1702,9 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    if (this.#store.state.checkpointEventPolicy === "control-v1") {
+      this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
+    }
     this.#expectedRunnerVersion = options.expectedRunnerVersion;
     this.#expectedRunnerDigest = options.expectedRunnerDigest;
     const transition = this.#store.state.warmTransition;
@@ -1554,6 +1719,7 @@ export class DurablePrpControlPlane {
     }
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
@@ -1561,6 +1727,51 @@ export class DurablePrpControlPlane {
 
   get store(): DurablePrpControlPlaneStore {
     return this.#store;
+  }
+
+  /** Sparse, already-acknowledged history; never permits gaps in new delivery. */
+  get recoveredSourceSeq(): number {
+    return this.#recoveredCursor?.runId === this.#identity.runId ? this.#recoveredCursor.sourceSeq : 0;
+  }
+
+  setCheckpointPersistence(persist: (checkpoint: DurablePrpCheckpoint) => Promise<void>): void {
+    if (this.#connections.size > 0 || this.#persistCheckpoint !== null) {
+      throw new Error("runner_controller_persistence_already_active");
+    }
+    this.#persistCheckpoint = persist;
+    this.#store.state.checkpointEventPolicy = "control-v1";
+    this.#store.save();
+  }
+
+  flushCheckpoint(): Promise<void> {
+    if (!this.#persistCheckpoint || this.#persistedRevision === this.#store.revision) {
+      return this.#persistenceTail;
+    }
+    const checkpoint = captureCheckpoint(this.#store.state,
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest, this.#lastCheckpoint);
+    this.#lastCheckpoint = checkpoint;
+    this.#persistedRevision = this.#store.revision;
+    const persist = this.#persistCheckpoint;
+    this.#persistenceTail = this.#persistenceTail.then(() => persist(checkpoint));
+    void this.#persistenceTail.catch(() => this.disconnectActiveRunner());
+    return this.#persistenceTail;
+  }
+
+  #sendJson(connection: AuthorityConnection, value: unknown): void {
+    if (!this.#persistCheckpoint) {
+      connection.sendJson(value);
+      return;
+    }
+    const checkpoint = this.flushCheckpoint();
+    const frame = structuredClone(value);
+    const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
+      .then(() => checkpoint)
+      .then(() => connection.sendJson(frame))
+      .catch(() => connection.close());
+    this.#sendQueues.set(connection, sending);
+    void sending.finally(() => {
+      if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
+    });
   }
 
   getCommand(commandId: string): DurableRecoveryCoreCommand | undefined {
@@ -1576,6 +1787,31 @@ export class DurablePrpControlPlane {
         ? this.#store.state.completedWarmTransition.command
         : undefined)
     );
+  }
+
+  async recoverPendingSemanticInputs(): Promise<void> {
+    if (!this.#recoverSemanticToolInput) return;
+    const identity = this.#identity;
+    for (const saved of [...this.#store.state.committedEvents]) {
+      if (!unsettledSemanticInput(saved, this.#store.state)) continue;
+      const event = saved.envelope.payload as PrpEvent;
+      const semantic = (event.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
+      if (!semantic || event.runId !== identity.runId || event.normalizedSessionId !== identity.normalizedSessionId) continue;
+      if (typeof semantic.callId !== "string" || typeof semantic.operationId !== "string") continue;
+      const commandId = `command_tool_${createHash("sha256").update(`${identity.runId}\0${semantic.callId}`).digest("hex").slice(0, 32)}`;
+      if (this.#pendingSemanticCalls.has(commandId)) continue;
+      const call = { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
+        sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
+        correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+          turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
+      const outcome = await this.#recoverSemanticToolInput(call);
+      if (this.#identity !== identity || this.#semanticCallbacksRetired) return;
+      if (!outcome || this.getCommand(commandId)) continue;
+      const { input, ...metadata } = call;
+      this.queueCommand("semantic_tool.result", { ...metadata, inputDigest: canonicalDigest(input),
+        result: outcome.result, isError: outcome.isError === true }, commandId, true);
+      await this.flushCheckpoint();
+    }
   }
 
   get connectUrl(): string {
@@ -2011,6 +2247,7 @@ export class DurablePrpControlPlane {
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
     this.#store.save();
+    void this.flushCheckpoint().catch(() => undefined);
     if (deliverImmediately) {
       for (const connection of this.#connections) {
         if (connection.secureChannel !== null) {
@@ -2233,7 +2470,7 @@ export class DurablePrpControlPlane {
         this.#store.commit(candidate);
         connection.lease = this.#store.state.leases[transition.credentialId]!;
       }
-      connection.sendJson(
+      this.#sendJson(connection,
         this.#controlEnvelope(
           connection,
           `activation_ack_${receipt.transitionId}`,
@@ -2293,7 +2530,7 @@ export class DurablePrpControlPlane {
       this.#store.commit(candidate);
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `lease_renewed_${expectedExpiry}`,
@@ -2525,6 +2762,16 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    const requiresRecoveryCursor = this.#persistCheckpoint !== null || this.#store.state.checkpointEventPolicy === "control-v1";
+    const resume = payload.resume;
+    const acknowledgedSourceSeq = payload.recoveryCursorVersion === 1 && isRecord(resume)
+      && Number.isSafeInteger(resume.ackedSourceSeq) && (resume.ackedSourceSeq as number) >= 0
+      && Number.isSafeInteger(resume.nextSourceEventSeq) && (resume.nextSourceEventSeq as number) > (resume.ackedSourceSeq as number)
+      ? resume.ackedSourceSeq as number : undefined;
+    if ((requiresRecoveryCursor || payload.recoveryCursorVersion !== undefined) && acknowledgedSourceSeq === undefined) {
+      connection.close();
+      return;
+    }
     const serverNonce = randomUUID();
     const selectedVersion =
       authorization.kind === "lease"
@@ -2556,6 +2803,9 @@ export class DurablePrpControlPlane {
       ...(typeof payload.warmTransitionId === "string"
         ? { warmTransitionId: payload.warmTransitionId }
         : {}),
+      ...(acknowledgedSourceSeq !== undefined
+        ? { recoveryCursorVersion: 1, recoveryAckedSourceSeq: acknowledgedSourceSeq }
+        : {}),
     };
     const canonicalChallenge = canonicalJson(challengePayload);
     const serverProof = domainHmac(
@@ -2581,8 +2831,9 @@ export class DurablePrpControlPlane {
         ? { warmTransitionId: payload.warmTransitionId }
         : {}),
       requestedIdentity: structuredClone(authorization.identity),
+      acknowledgedSourceSeq,
     };
-    connection.sendJson({
+    this.#sendJson(connection, {
       protocol,
       version: selectedVersion,
       kind: "auth_challenge",
@@ -2748,6 +2999,16 @@ export class DurablePrpControlPlane {
         lease = this.#store.state.leases[lease.credentialId]!;
       }
     }
+    // The authenticated peer's durable ACK covers only events this authority
+    // previously released. Every control event was checkpointed before that ACK;
+    // only display/usage streaming may be absent from the restored event window.
+    if (pending.acknowledgedSourceSeq !== undefined
+      && (this.#persistCheckpoint !== null || this.#store.state.checkpointEventPolicy === "control-v1")
+      && canonicalJson(requestedIdentity) === canonicalJson(this.#store.state.identity)) {
+      const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
+      this.#store.state.ackedSourceSeq = cursor;
+      this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
+    }
     connection.pendingChallenge = null;
     connection.lease = lease;
     connection.identity = structuredClone(requestedIdentity);
@@ -2802,7 +3063,7 @@ export class DurablePrpControlPlane {
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
     this.#store.save();
-    connection.sendJson({
+    this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
       envelopeId: `welcome_${this.#store.state.connectionCount}`,
@@ -2913,7 +3174,7 @@ export class DurablePrpControlPlane {
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_${command.commandId}_${this.#store.state.commandDeliveryCounts[command.commandId]}`,
@@ -3051,7 +3312,7 @@ export class DurablePrpControlPlane {
     connection: AuthorityConnection,
     receipt: DurableWarmRunTransition,
   ): void {
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_result_ack_${receipt.controllerSeq}`,
@@ -3080,7 +3341,7 @@ export class DurablePrpControlPlane {
     if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_result_ack_${command.controllerSeq}`,
@@ -3230,10 +3491,7 @@ export class DurablePrpControlPlane {
     const eventToEvict =
       existing === undefined &&
       this.#store.state.committedEvents.length >= maxCommittedEventWindow
-        ? this.#store.state.committedEvents.findIndex(
-            (candidate) =>
-              !unsettledSemanticInput(candidate, this.#store.state),
-          )
+        ? evictionCandidate(this.#store.state)
         : null;
     if (eventToEvict === -1) {
       connection.close();
@@ -3272,9 +3530,7 @@ export class DurablePrpControlPlane {
         // The awaited business commit may allow another authenticated owner
         // or a tool completion to advance the window. Re-evaluate, never use
         // an index sampled before that await to delete a different input.
-        const currentEviction = this.#store.state.committedEvents.findIndex(
-          (candidate) => !unsettledSemanticInput(candidate, this.#store.state),
-        );
+        const currentEviction = evictionCandidate(this.#store.state);
         if (currentEviction < 0) {
           connection.close();
           return;
@@ -3292,7 +3548,9 @@ export class DurablePrpControlPlane {
       });
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
-    this.#store.save();
+    this.#store.saveEvent(existing ?? this.#store.state.committedEvents.at(-1)!);
+    await this.flushCheckpoint();
+    if (this.#eventOwner !== connection || this.#identity !== identity) return;
 
     if (
       isSemanticInput &&
@@ -3383,7 +3641,7 @@ export class DurablePrpControlPlane {
       }
     }
 
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `ack_${this.#store.state.ackedSourceSeq}`,

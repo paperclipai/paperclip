@@ -57,6 +57,29 @@ PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
 protocol validation before execution; ordinary persisted v1 summaries remain
 compatible.
 
+## External controller checkpoints
+
+The optional controller persistence callback stores recovery control state, not
+an output transcript. Text deltas do not trigger callbacks; usage updates are
+coalesced into the next control checkpoint. Authentication, command intents and
+outcomes, semantic inputs, lifecycle and result events retain commit barriers.
+Priority-zero and unknown event kinds are never treated as disposable output.
+
+Supporting runners advertise `recoveryCursorVersion: 1` in `auth_hello`. The core
+includes that capability and `recoveryAckedSourceSeq` in both authentication
+proofs. The runner verifies the cursor equals its persisted acknowledgement.
+After authentication and owner admission, a replacement core can reconcile that
+cursor with its sparse checkpoint. It only skips already-acknowledged history;
+new delivery remains contiguous. Unacknowledged events use the existing outbox.
+A peer without this capability cannot attach to a sparse external checkpoint.
+New runners can still authenticate to older controllers that use full journals.
+
+There is no per-output external checkpoint timer or remote-controller cache
+fsync. Local-only controllers retain their full file journal. Existing application
+callbacks, the bounded runner outbox, and backpressure remain. Losing the
+controller before acknowledged display output reaches its application log can
+leave a display tail gap; this must not trigger provider or tool reexecution.
+
 ## Connection and authentication
 
 The connection starts in this order:
@@ -405,6 +428,36 @@ unacknowledged facts.
 The production durable control plane and live-session suites cover reconnect,
 ACK replay, restart recovery, backpressure, lease expiry, drain, and revoke.
 
+`src/control-plane/runner-recovery-fixture.test.ts` builds the test-only Cargo
+example `recovery-fixture`. It links the unchanged production durable runner with
+a scripted `CommandExecutor`, whose worker thread performs bounded hashing steps
+and retains each resulting output until the normal executor ACK transfers it to
+the runner outbox. There is one process, no HTTP counter service, and no production
+provider-admission switch. Private fixture receipts report completed steps, queue
+depth and process identity; they do not acknowledge or recover protocol events.
+
+The short experiment starts one turn, removes the controller, then releases real
+work. Eight retained events fill the fixture queue and pause work explicitly.
+A replacement authenticates and drains through PRP. At step 32 the executor waits
+for a controller command, survives another replacement, then completes 64 steps
+without repeating the turn. The test runs with ordinary filesystem persistence
+and with opaque external checkpoints restored onto empty controller storage.
+An independent short-deadline case checks termination with recovery state intact.
+These prove the runner mechanism, not Codex, Claude, Daytona or application
+authorization. Server adoption and installed-artifact qualification have separate
+owners and evidence.
+
+Run the short experiment from this package with:
+
+```sh
+pnpm exec vitest run src/control-plane/runner-recovery-fixture.test.ts --maxWorkers=1
+```
+
+The fixture builds through Cargo during test setup. Production distribution builds
+do not include the example. Existing control-plane tests separately inject failed
+checkpoint persistence, stale/unauthenticated cursors and output floods, including
+the zero-per-text-checkpoint-write gate.
+
 Use `--json` for the complete trace or `--output <path>` to write it. The CLI
 and browser show connection counts, safe lease ID and expiry, stable identities,
 source and ACK cursors, outbox current/peak bytes, command delivery/effect
@@ -417,3 +470,5 @@ Regenerate the checked fault matrix and every exact per-fault trace with:
 ```sh
 # Recorded evidence generation is deferred from this release.
 ```
+
+Checkpoint decoding also exposes read-only recovery evidence: the admitted runner/session identity, authenticated connection count, and highest recorded source sequence. This projection grants no authority and adds no checkpoint writes. Qualification compares it across controller replacement; a replayed canonical event by itself does not prove that a replacement controller has authenticated a runner.

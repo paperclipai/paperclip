@@ -1057,6 +1057,44 @@ it("refuses a reusable close checkpoint when the local provider snapshot is unre
   }
 }, 15_000);
 
+it("uses the same API result envelope for live dispatch and recovered receipts", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-recovered-api-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  let outcome: { result: unknown; isError?: boolean } | null = {
+    result: { ok: true, apiOperationId: "POST /api/example", data: { saved: true } }, isError: false,
+  };
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+    recoverSemanticToolInput: async () => outcome,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({ success: !outcome?.isError,
+    contentItems: [{ type: "inputText", text: JSON.stringify(outcome?.result) }] }));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
+      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+    const live = await callbacks.onSemanticToolInput!(call);
+    expect(live).toMatchObject({ isError: false, result: { ok: true, operationId: "call_api", callId: call.callId, result: outcome!.result } });
+    expect(await callbacks.recoverSemanticToolInput!(call)).toMatchObject({ result: live.result, isError: live.isError });
+    outcome = { result: { error: "saved failure" }, isError: true };
+    const liveError = await callbacks.onSemanticToolInput!(call);
+    expect(await callbacks.recoverSemanticToolInput!(call)).toMatchObject({ result: liveError.result, isError: liveError.isError });
+    outcome = null;
+    expect(await callbacks.recoverSemanticToolInput!(call)).toBeNull();
+  } finally {
+    await bundle.transport.close();
+    coreSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
   async (mode) => {
@@ -8297,6 +8335,7 @@ async function verifyLiveRunnerAdoption(
   goalMidTurn = false,
   detachBeforeCleanup = false,
   startWithoutCheckpoint = false,
+  preparedTask = false,
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
@@ -8342,7 +8381,24 @@ async function verifyLiveRunnerAdoption(
     lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
     controlPlaneRegistration: registration,
   };
-  const first = createCapabilityRunnerdCodexTransport(sharedOptions);
+  const prepareLaunch = vi.fn(async (requirements: RunnerProviderLaunchRequirements) => ({
+    configurationId: "adopted-preparation", requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+    provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: sharedOptions.codexArgs },
+      root: stateDirectory, cwd: tmpdir(), codexHome: join(stateDirectory, "codex-home"),
+      codexCommand: fakeCodex, providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: "" }),
+  }));
+  const options = { ...sharedOptions, ...(preparedTask ? {
+    prepareLaunch, runnerArtifact: readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary()),
+    runnerProcessLauncher: (spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+      const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: { ...process.env, ...spec.environment },
+        detached: process.platform !== "win32", stdio: "ignore" });
+      return { child, processGroupId: child.pid ?? null, completion: new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }>((resolveExit, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+      }) };
+    },
+  } : {}) };
+  const first = createCapabilityRunnerdCodexTransport(options);
   let runnerPid: number | null = null;
   let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | null =
     null;
@@ -8408,13 +8464,17 @@ async function verifyLiveRunnerAdoption(
     };
     if (!startWithoutCheckpoint) await compactProviderIdentityEvents();
 
+    if (preparedTask) {
+      await rm(join(stateDirectory, "launch-preparation.json"));
+      prepareLaunch.mockClear();
+    }
     const duplicateLauncher = vi.fn(() => {
       throw new Error("duplicate runner spawn attempted");
     });
     const openedThread = opened.thread as Record<string, unknown>;
     const signal = vi.fn(() => true);
     adopted = createCapabilityRunnerdCodexTransport({
-      ...sharedOptions,
+      ...options,
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
       ...(mismatchedArtifact
@@ -8515,6 +8575,10 @@ async function verifyLiveRunnerAdoption(
       expect(observed.params).toMatchObject({ threadId: "codex-thread-1", turnId: "provider-goal-turn-1" });
     }
     expect(duplicateLauncher).not.toHaveBeenCalled();
+    if (preparedTask) {
+      expect(prepareLaunch).not.toHaveBeenCalled();
+      expect((await adopted.transport.request("thread/read", {})).thread).toMatchObject({ cwd: tmpdir() });
+    }
     expect(adopted.evidence().diagnostics).toContain(
       `adopted runner ${runnerPid} authenticated to its durable PRP authority`,
     );
@@ -8560,6 +8624,9 @@ it(
   () => verifyLiveRunnerAdoption(false),
   30_000,
 );
+
+it("adopts a prepared runner after losing its controller launch cache without preparing resources again",
+  () => verifyLiveRunnerAdoption(false, false, false, false, false, true), 30_000);
 
 it(
   "blocks adopted runner artifact drift without duplicate launch, checkpoint replacement, or process signals",

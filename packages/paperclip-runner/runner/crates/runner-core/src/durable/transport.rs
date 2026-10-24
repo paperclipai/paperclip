@@ -1014,6 +1014,7 @@ impl AuthenticatedTransport {
                     "protocolMin": PROTOCOL_MIN_VERSION,
                     "protocolMax": PROTOCOL_VERSION,
                     "warmTransitionVersion": 1,
+                    "recoveryCursorVersion": 1,
                     "runnerInstanceId": state.runner_instance_id,
                     "environmentLeaseId": state.environment_lease_id,
                     "runId": state.run_id,
@@ -1199,6 +1200,10 @@ struct AuthChallenge {
     warm_transition_version: Option<u64>,
     #[serde(default)]
     warm_transition_id: Option<String>,
+    #[serde(default)]
+    recovery_cursor_version: Option<u64>,
+    #[serde(default)]
+    recovery_acked_source_seq: Option<u64>,
 }
 
 fn validate_challenge(
@@ -1274,6 +1279,15 @@ fn validate_challenge(
             "warm transition capability or receipt was not authenticated",
         ));
     }
+    if (challenge.recovery_cursor_version.is_some()
+        || challenge.recovery_acked_source_seq.is_some())
+        && (challenge.recovery_cursor_version != Some(1)
+            || challenge.recovery_acked_source_seq != Some(state.acked_source_seq))
+    {
+        return Err(DurableRunnerError::invalid(
+            "recovery cursor does not match the runner's durable acknowledgement",
+        ));
+    }
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
@@ -1317,6 +1331,12 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
     }
     if let Some(id) = &challenge.warm_transition_id {
         body["warmTransitionId"] = json!(id);
+    }
+    if let Some(version) = challenge.recovery_cursor_version {
+        body["recoveryCursorVersion"] = json!(version);
+    }
+    if let Some(cursor) = challenge.recovery_acked_source_seq {
+        body["recoveryAckedSourceSeq"] = json!(cursor);
     }
     canonical_json(&body).into_bytes()
 }
@@ -1805,6 +1825,8 @@ mod tests {
             server_proof: String::new(),
             warm_transition_version: None,
             warm_transition_id: None,
+            recovery_cursor_version: Some(1),
+            recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
         let signing = challenge_signing_bytes(&challenge);
         challenge.server_proof = hex_encode(&hmac_domain(
@@ -1837,6 +1859,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "recoveryCursorVersion": challenge.recovery_cursor_version,
+                    "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },
             }),
             config.max_frame_bytes,
@@ -2395,6 +2419,8 @@ mod tests {
                 server_proof: String::new(),
                 warm_transition_version: None,
                 warm_transition_id: None,
+                recovery_cursor_version: None,
+                recovery_acked_source_seq: None,
             };
             let signing = challenge_signing_bytes(&challenge);
             challenge.server_proof = hex_encode(&hmac_domain(

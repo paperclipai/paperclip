@@ -1225,6 +1225,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
+  recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
@@ -3997,6 +3998,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
     this.#handler = handler;
+    if (this.options.recoverSemanticToolInput && this.#startupComplete) {
+      void Promise.resolve().then(() => this.#core?.recoverPendingSemanticInputs())
+        .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))));
+    }
   }
 
   async #awaitWarmRunAttachmentReady(): Promise<void> {
@@ -4770,7 +4775,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   // The prepared launch is the only source of the provider directory. Core
   // records it in session metadata; the session cannot move to another one.
-  #recordPreparedWorkingDirectory(prepared: PreparedRunnerProviderLaunch): void {
+  #recordPreparedWorkingDirectory(prepared: Pick<PreparedRunnerProviderLaunch, "provider">): void {
     const workingDirectory = preparedRunnerLaunchWorkingDirectory(prepared);
     if (workingDirectory === null) {
       throw new Error("runner_prepared_launch_working_directory_unavailable");
@@ -5018,6 +5023,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoverSemanticToolInput ? call => this.#recoverSemanticToolInput(call) : undefined,
       onCommittedEvent: async (event) => {
         if (event.eventType === "auth.credentials.updated") {
           await this.options.onCredentialsUpdated?.(event);
@@ -5062,6 +5068,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#assertStartupOpen();
     const admissionDeadline = this.#coldAdmissionDeadline();
+    const bootstrapTicket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+    await core.flushCheckpoint();
+    this.#assertStartupOpen();
     const handle = spawnRunner({
       connection: registration?.connection ?? {
         mode: "connect",
@@ -5070,7 +5079,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       stateDirectory:
         this.options.runnerStateDirectory ?? resolve(this.#root, "runner"),
       identity,
-      ticket: core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
+      ticket: bootstrapTicket,
       maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
       p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
       maxRuntimeMs: 0,
@@ -5436,6 +5445,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoverSemanticToolInput ? call => this.#recoverSemanticToolInput(call) : undefined,
       onCommittedEvent: async (event) => {
         if (event.eventType === "auth.credentials.updated") {
           await this.options.onCredentialsUpdated?.(event);
@@ -5463,8 +5473,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    // An adopted process already owns its prepared resources. The checkpoint
+    // preserves that launch descriptor even when the controller filesystem is
+    // gone; calling prepareLaunch again could relocate a surviving session.
+    if (this.options.prepareLaunch && this.options.adoptExistingRunner) {
+      this.#recordPreparedWorkingDirectory({ provider: record(record(controlPlaneState!.runAttachTemplate).provider) });
+    }
     let environmentPrepared: PreparedRunnerProviderLaunch | undefined;
-    if (this.options.prepareLaunch) {
+    if (this.options.prepareLaunch && !this.options.adoptExistingRunner) {
       const preparations = new RunnerLaunchPreparationStore(this.#root);
       const saved = preparations.load(desiredIdentity);
       const previous = preparations.load(controlPlaneIdentity(controlPlaneState!));
@@ -5739,6 +5755,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             RUNNER_BOOTSTRAP_TICKET_TTL_MS,
           )
         : core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+    await core.flushCheckpoint();
     if (warmRecovery) {
       await this.options.authorizeWarmTransitionRecovery?.("before_spawn");
     }
@@ -5892,6 +5909,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+  async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
+    if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
+      return this.#handleSemanticToolInput(call);
+    }
+    const outcome = await this.options.recoverSemanticToolInput?.(call);
+    return outcome ? this.#bindSemanticToolOutcome(call, outcome) : null;
+  }
+
   async #handleSemanticToolInput(
     call: Parameters<
       NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>
@@ -5957,15 +5982,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.options.provider === "acpx" &&
         (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"),
     );
+    return this.#bindSemanticToolOutcome(call, outcome);
+  }
+
+  #bindSemanticToolOutcome(call: { operationId: string; callId: string }, outcome: { result: unknown; isError?: boolean }) {
     if (call.operationId === "call_api") {
       const result = record(outcome.result);
       if (
         result.operationId !== call.operationId ||
         result.callId !== call.callId
       ) {
-        // HTTP receipts also contain `ok` and `operationId` (the HTTP route).
-        // Bind that application value inside a real semantic envelope so the
-        // runner cannot mistake the route for the provider tool's identity.
         return {
           ...outcome,
           result: {
@@ -6293,8 +6319,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       const event =
         deferredEvent ??
         events.find((candidate) => candidate.sourceSeq > this.#eventSourceSeq);
-      if (event === undefined) return;
+      if (event === undefined) {
+        this.#eventSourceSeq = Math.max(this.#eventSourceSeq, core.recoveredSourceSeq);
+        return;
+      }
       const fromDeferredQueue = deferredEvent !== undefined;
+      if (!fromDeferredQueue && event.sourceSeq > this.#eventSourceSeq + 1) {
+        this.#eventSourceSeq = Math.max(this.#eventSourceSeq, Math.min(event.sourceSeq - 1, core.recoveredSourceSeq));
+      }
       if (!fromDeferredQueue && event.sourceSeq !== this.#eventSourceSeq + 1) {
         throw new Error(
           `PRP provider event window advanced past source sequence ${this.#eventSourceSeq + 1}`,
@@ -7033,9 +7065,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const priorConnectionCount = this.#core.store.state.connectionCount;
         let recoveredHandle: RunnerProcessHandle;
         try {
-          recoveredHandle = restart(
-            this.#core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS),
-          );
+          const ticket = this.#core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
+          await this.#core.flushCheckpoint();
+          if (this.#closed || this.#failure !== null) return;
+          recoveredHandle = restart(ticket);
         } catch (error) {
           lastDetail = error instanceof Error ? error.message : String(error);
           attempt += 1;

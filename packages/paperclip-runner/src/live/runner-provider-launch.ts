@@ -147,7 +147,7 @@ export function validatePreparedRunnerLaunch(
  * Providers without a filesystem working directory return null.
  */
 export function preparedRunnerLaunchWorkingDirectory(
-  prepared: PreparedRunnerProviderLaunch,
+  prepared: Pick<PreparedRunnerProviderLaunch, "provider">,
 ): string | null {
   return prepared.provider.cwd === undefined
     ? null : validatePreparedLaunchWorkingDirectory(prepared.provider.cwd);

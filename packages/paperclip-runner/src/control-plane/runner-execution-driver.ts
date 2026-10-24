@@ -53,9 +53,9 @@ export interface RunnerExecutionDriver {
    * never calls the process launcher while the process remains alive.
    */
   adoptExistingRunner?: {
-    pid: number;
+    pid: number | null;
     processGroupId: number | null;
-    startedAt: string;
+    startedAt: string | null;
     isAlive: () => Promise<boolean> | boolean;
     signal?: (signal: NodeJS.Signals) => Promise<boolean> | boolean;
   };
