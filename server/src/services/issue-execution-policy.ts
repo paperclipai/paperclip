@@ -1203,11 +1203,57 @@ export function buildIssueMonitorTriggeredPatch(input: {
   };
 }
 
+export function buildIssueMonitorDeferredPatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  nextCheckAt: Date;
+  attemptCount: number;
+  rawExternalRef?: string | null;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  const monitor = input.policy?.monitor ?? null;
+  const nextMonitorState: IssueExecutionMonitorState = {
+    status: "scheduled",
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    lastTriggeredAt: currentMonitorState?.lastTriggeredAt ?? null,
+    attemptCount: input.attemptCount,
+    notes: currentMonitorState?.notes ?? null,
+    scheduledBy: currentMonitorState?.scheduledBy ?? null,
+    ...(monitor ? monitorMetadataFromPolicy(monitor) : monitorMetadataFromState(currentMonitorState)),
+    clearedAt: null,
+    clearReason: null,
+  };
+  const nextPolicy = monitor
+    ? {
+      ...input.policy!,
+      monitor: {
+        ...monitor,
+        externalRef: input.rawExternalRef ?? monitor.externalRef,
+        nextCheckAt: input.nextCheckAt.toISOString(),
+      },
+    }
+    : (input.policy ?? null);
+
+  return {
+    executionPolicy: nextPolicy as Record<string, unknown> | null,
+    executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
+    monitorNextCheckAt: input.nextCheckAt,
+    monitorWakeRequestedAt: null,
+    monitorAttemptCount: input.attemptCount,
+  };
+}
+
 export function buildIssueMonitorClearedPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
   clearReason: IssueExecutionMonitorClearReason;
   clearedAt?: Date;
+  nextAttemptCount?: number;
 }) {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const currentMonitorState = derivePersistedMonitorState({
@@ -1226,6 +1272,9 @@ export function buildIssueMonitorClearedPatch(input: {
     executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
     monitorNextCheckAt: null,
     monitorWakeRequestedAt: null,
+    ...(input.nextAttemptCount !== undefined
+      ? { monitorAttemptCount: input.nextAttemptCount }
+      : {}),
   };
 }
 

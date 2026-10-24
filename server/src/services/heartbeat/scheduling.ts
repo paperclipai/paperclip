@@ -41,6 +41,7 @@ import { logActivity, publishActivity, type ActivityPublication } from "../activ
 import {
   normalizeIssueExecutionPolicy,
   buildIssueMonitorClearedPatch,
+  buildIssueMonitorDeferredPatch,
   parseIssueExecutionState,
   buildIssueMonitorTriggeredPatch,
 } from "../issue-execution-policy.js";
@@ -53,7 +54,8 @@ import {
 } from "../legacy-execution-recovery.js";
 import { logger } from "../../middleware/logger.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
-import { evaluateAgentInvokability } from "../agent-invokability.js";
+import { evaluateAgentInvokability, evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import type { Db } from "@paperclipai/db";
 import type { issueService } from "../issues.js";
 import type { createHeartbeatQueue } from "./queue.js";
@@ -192,16 +194,31 @@ export function createHeartbeatScheduling(
     monitor: IssueExecutionMonitorPolicy | null;
     nextAttemptCount: number;
     now: Date;
+    attemptJustFailed?: boolean;
   }): IssueExecutionMonitorClearReason | null {
     const timeoutAt = parseMonitorDate(input.monitor?.timeoutAt ?? null);
     if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
       return "timeout_exceeded";
     }
     const maxAttempts = input.monitor?.maxAttempts ?? null;
-    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
-      return "max_attempts_exhausted";
+    if (maxAttempts !== null) {
+      const exhausted = input.attemptJustFailed
+        ? input.nextAttemptCount >= maxAttempts
+        : input.nextAttemptCount > maxAttempts;
+      if (exhausted) return "max_attempts_exhausted";
     }
     return null;
+  }
+
+  const MONITOR_DISPATCH_DEFER_BASE_MS = 5 * 60 * 1000;
+  const MONITOR_DISPATCH_DEFER_MAX_MS = 60 * 60 * 1000;
+
+  function monitorDispatchDeferDelayMs(attemptCount: number) {
+    const exponent = Math.max(0, attemptCount - 1);
+    return Math.min(
+      MONITOR_DISPATCH_DEFER_BASE_MS * 2 ** exponent,
+      MONITOR_DISPATCH_DEFER_MAX_MS,
+    );
   }
 
   function monitorRecoveryPolicy(
@@ -409,42 +426,85 @@ export function createHeartbeatScheduling(
       return;
     }
 
-    await enqueueWakeup(input.claimed.assigneeAgentId!, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_monitor_recovery",
-      idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
-      payload: withRecoveryContext(
-        {
-          issueId: input.claimed.id,
-          monitorAttemptCount: input.nextAttemptCount,
-          monitorNotes: input.claimed.monitorNotes ?? null,
+    const fallBackToRecoveryComment = async (reason: string) => {
+      await db.insert(issueComments).values({
+        companyId: input.claimed.companyId,
+        issueId: input.claimed.id,
+        body: `${monitorRecoveryComment({
+          issue: input.claimed,
           clearReason: input.clearReason,
-          serviceName: input.monitor?.serviceName ?? null,
-          timeoutAt: input.monitor?.timeoutAt ?? null,
-          maxAttempts: input.monitor?.maxAttempts ?? null,
-          ...(reviewPathContext ?? {}),
-        },
-        "status_only",
-      ),
-      requestedByActorType: input.actorType,
-      requestedByActorId: input.actorId,
-      contextSnapshot: withRecoveryContext(
-        {
-          issueId: input.claimed.id,
-          source: "issue.monitor.recovery",
-          wakeReason: "issue_monitor_recovery",
-          monitorAttemptCount: input.nextAttemptCount,
-          monitorNotes: input.claimed.monitorNotes ?? null,
-          clearReason: input.clearReason,
-          serviceName: input.monitor?.serviceName ?? null,
-          timeoutAt: input.monitor?.timeoutAt ?? null,
-          maxAttempts: input.monitor?.maxAttempts ?? null,
-          ...(reviewPathContext ?? {}),
-        },
-        "status_only",
-      ),
-    });
+          recoveryPolicy: input.recoveryPolicy,
+          nextAttemptCount: input.nextAttemptCount,
+        })}\n\nThe assignee could not be woken (${reason}); escalating here instead.`,
+      });
+
+      await logActivity(db, {
+        companyId: input.claimed.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: "issue.monitor_recovery_wake_skipped",
+        entityType: "issue",
+        entityId: input.claimed.id,
+        details: { ...details, reason },
+      });
+    };
+
+    const ownerAgent = await getAgent(input.claimed.assigneeAgentId!);
+    const ownerInvokability = await evaluateAgentInvokabilityFromDb(
+      db,
+      ownerAgent && isAgentAwaitingSetup(ownerAgent) ? { ...ownerAgent, status: "idle" } : ownerAgent,
+    );
+    if (!ownerInvokability.invokable) {
+      await fallBackToRecoveryComment(ownerInvokability.reason ?? "not invokable");
+      return;
+    }
+
+    try {
+      await enqueueWakeup(input.claimed.assigneeAgentId!, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_monitor_recovery",
+        idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
+        payload: withRecoveryContext(
+          {
+            issueId: input.claimed.id,
+            monitorAttemptCount: input.nextAttemptCount,
+            monitorNotes: input.claimed.monitorNotes ?? null,
+            clearReason: input.clearReason,
+            serviceName: input.monitor?.serviceName ?? null,
+            timeoutAt: input.monitor?.timeoutAt ?? null,
+            maxAttempts: input.monitor?.maxAttempts ?? null,
+            ...(reviewPathContext ?? {}),
+          },
+          "status_only",
+        ),
+        requestedByActorType: input.actorType,
+        requestedByActorId: input.actorId,
+        contextSnapshot: withRecoveryContext(
+          {
+            issueId: input.claimed.id,
+            source: "issue.monitor.recovery",
+            wakeReason: "issue_monitor_recovery",
+            monitorAttemptCount: input.nextAttemptCount,
+            monitorNotes: input.claimed.monitorNotes ?? null,
+            clearReason: input.clearReason,
+            serviceName: input.monitor?.serviceName ?? null,
+            timeoutAt: input.monitor?.timeoutAt ?? null,
+            maxAttempts: input.monitor?.maxAttempts ?? null,
+            ...(reviewPathContext ?? {}),
+          },
+          "status_only",
+        ),
+      });
+    } catch (err) {
+      if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+        await fallBackToRecoveryComment(err.message);
+        return;
+      }
+      throw err;
+    }
 
     await logActivity(db, {
       companyId: input.claimed.companyId,
@@ -482,6 +542,7 @@ export function createHeartbeatScheduling(
           policy: input.policy,
           clearReason: input.clearReason,
           clearedAt: input.now,
+          nextAttemptCount: input.nextAttemptCount,
         })),
         updatedAt: input.now,
       })
@@ -531,6 +592,16 @@ export function createHeartbeatScheduling(
     return {
       ...patch,
       executionPolicy: sql`nullif(${issues.executionPolicy} - 'monitor', '{}'::jsonb)`,
+      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
+        '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
+    };
+  }
+
+  function monitorDeferDispatchPatch(patch: ReturnType<typeof buildIssueMonitorDeferredPatch>) {
+    const monitorPolicyValue = (patch.executionPolicy as { monitor?: unknown } | null)?.monitor ?? null;
+    return {
+      ...patch,
+      executionPolicy: sql`jsonb_set(coalesce(${issues.executionPolicy}, '{}'::jsonb), '{monitor}', ${JSON.stringify(monitorPolicyValue)}::jsonb)`,
       executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
         '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
     };
@@ -614,6 +685,11 @@ export function createHeartbeatScheduling(
       claimed.executionPolicy ?? null,
     );
     const monitor = policy?.monitor ?? null;
+    const rawMonitorExternalRef =
+      typeof (claimed.executionPolicy as { monitor?: { externalRef?: unknown } } | null)?.monitor
+        ?.externalRef === "string"
+        ? (claimed.executionPolicy as { monitor: { externalRef: string } }).monitor.externalRef
+        : null;
     const clearReason = issueMonitorLimitClearReason({
       monitor,
       nextAttemptCount,
@@ -663,7 +739,7 @@ export function createHeartbeatScheduling(
         claimed,
         policy,
         scheduledAtIso,
-        nextAttemptCount,
+        nextAttemptCount: claimed.monitorAttemptCount ?? 0,
         clearReason,
         recoveryPolicy,
         monitor,
@@ -818,18 +894,52 @@ export function createHeartbeatScheduling(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          const deferClearReason = issueMonitorLimitClearReason({
+            monitor,
+            nextAttemptCount,
+            now: input.now,
+            attemptJustFailed: true,
+          });
+          if (deferClearReason) {
+            return clearIssueMonitorAndRecover({
+              claimed,
+              policy,
+              scheduledAtIso,
+              nextAttemptCount,
+              clearReason: deferClearReason,
+              recoveryPolicy,
+              monitor,
+              now: input.now,
+              actorType: input.actorType,
+              actorId: input.actorId,
+              agentId: input.agentId,
+              runId: input.runId,
+              activitySource: input.activitySource,
+            });
+          }
+
+          const deferDelayMs = monitorDispatchDeferDelayMs(nextAttemptCount);
+          const monitorTimeoutAt = monitor?.timeoutAt ? new Date(monitor.timeoutAt) : null;
+          const uncappedDeferredTo = new Date(input.now.getTime() + deferDelayMs);
+          const deferredTo =
+            monitorTimeoutAt && monitorTimeoutAt.getTime() < uncappedDeferredTo.getTime()
+              ? monitorTimeoutAt
+              : uncappedDeferredTo;
+          const deferred = await db
             .update(issues)
             .set({
-              ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
+              ...monitorDeferDispatchPatch(buildIssueMonitorDeferredPatch({
                 issue: claimed,
                 policy,
-                clearReason: "dispatch_skipped",
-                clearedAt: input.now,
+                nextCheckAt: deferredTo,
+                attemptCount: nextAttemptCount,
+                rawExternalRef: rawMonitorExternalRef,
               })),
               updatedAt: new Date(),
             })
-            .where(issueMonitorClaimCondition(claimed));
+            .where(issueMonitorClaimCondition(claimed))
+            .returning({ id: issues.id });
+          if (deferred.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
 
           await logActivity(db, {
             companyId: claimed.companyId,
@@ -847,6 +957,11 @@ export function createHeartbeatScheduling(
               notes: claimed.monitorNotes ?? null,
               reason: err.message,
               source: input.activitySource,
+              outcome: "deferred",
+              deferredTo: deferredTo.toISOString(),
+              deferDelayMs,
+              timeoutAt: monitor?.timeoutAt ?? null,
+              maxAttempts: monitor?.maxAttempts ?? null,
             },
           });
 

@@ -194,7 +194,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       source: "on_demand", requestedByActorType: "user", requestedByActorId: "board-user",
     }));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null });
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: new Date(now.getTime() + 5 * 60 * 1000), monitorAttemptCount: 1 });
   });
 
   it("retains monitors after transient admission failures", async () => {
