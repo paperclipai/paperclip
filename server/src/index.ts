@@ -1,3 +1,4 @@
+import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
@@ -1756,12 +1757,9 @@ async function startServerWithDatabaseTeardown(
         work().catch((err: unknown) => {
           logger.error({ err, startupStep: name }, "startup housekeeping step failed");
         });
-      await step("custom_image_setup_cleanup", async () => {
-        const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
-        if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
-          logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
-        }
-      });
+      await step("custom_image_setup_cleanup", () => registerCustomImageCleanupWork(deliveryWork, environmentCustomImages,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+        config.heartbeatSchedulerIntervalMs).ready);
       await step("tool_connection_health", async () => {
         const toolHealthSweep = await tools.sweepConnectionHealth();
         if (toolHealthSweep.failed > 0) {
@@ -1842,18 +1840,6 @@ async function startServerWithDatabaseTeardown(
         })().catch((err) => {
           logger.error({ err }, "status-card scheduler tick failed");
         }));
-
-        if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
-        trackHeartbeatSchedulerWork(environmentCustomImages
-          .cleanupExpiredSetupSessions()
-          .then((result) => {
-            if (result.timedOut > 0 || result.failed > 0) {
-              logger.warn({ ...result }, "environment customImage setup cleanup changed sessions");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "environment customImage setup cleanup failed");
-          }));
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(tools

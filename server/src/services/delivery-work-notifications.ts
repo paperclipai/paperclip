@@ -8,6 +8,7 @@ export const DELIVERY_QUEUES = {
   executionStatus: "execution-status",
   executionDisposition: "execution-disposition",
   environmentCleanup: "environment-cleanup",
+  customImageExpiry: "custom-image-expiry",
   historicalCleanup: "historical-cleanup",
   adapterLoginCleanup: "adapter-login-cleanup",
   setupTokenCleanup: "setup-token-cleanup",

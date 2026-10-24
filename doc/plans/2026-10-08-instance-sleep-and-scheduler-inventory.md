@@ -634,10 +634,11 @@ Longer polling intervals alone do not complete an item.
   [idle-login-cleanup.md](../idle-login-cleanup.md) for producer coverage,
   verification and remaining provider-orphan boundaries.
 
-- [ ] **JOB-19 — Custom-image setup expiry.** Current: **30s** active-session
-  expiry scans. Change: register `expiresAt` and cleanup attempts. **Complete
-  when:** no sessions means no SQL and expired provider resources are released.
-  Source: [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts).
+- [x] **JOB-19 — Custom-image setup expiry.** Uses committed setup-session
+  changes and the earliest existing active-session expiry. Startup reconstructs
+  deadlines; empty and terminal history disarm. Failed reconciliation and first
+  writes retain their wake through drain. Provider teardown and historical cleanup
+  remain with the existing services. See [idle-environment-cleanup.md](../idle-environment-cleanup.md#custom-image-setup-expiry).
 
 - [ ] **JOB-20 — Tool connection health.** Current: **30s** DB inventory;
   provider probes are conditional. Change: check on use/configuration change,

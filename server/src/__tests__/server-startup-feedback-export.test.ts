@@ -129,6 +129,7 @@ const {
   };
   const issueThreadInteractionServiceFactoryMock = vi.fn(() => issueThreadInteractionServiceMock);
   const environmentCustomImagesServiceMock = {
+    nextSetupCleanupAt: vi.fn(async (): Promise<number | null> => null),
     cleanupExpiredSetupSessions: vi.fn(async () => ({ scanned: 0, timedOut: 0, failed: 0 })),
   };
   const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
@@ -843,7 +844,8 @@ describe("startServer feedback export wiring", () => {
       expect(issueThreadInteractionServiceMock.sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(1);
       expect(executionWorkspaceServiceMock.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
-      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
+      expect(deliveryWorkRegisterMock.mock.calls.some(([queue]) => queue === DELIVERY_QUEUES.customImageExpiry)).toBe(true);
     } finally {
       setIntervalSpy.mockRestore();
     }
@@ -960,10 +962,10 @@ describe("startServer feedback export wiring", () => {
     try {
       await expect(startServer()).resolves.toBeDefined();
       await settleStartupHousekeeping();
-      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-        expect.objectContaining({ startupStep: "custom_image_setup_cleanup" }),
-        "startup housekeeping step failed",
-      );
+      const registration = deliveryWorkRegisterMock.mock.calls.find(([queue]) => queue === DELIVERY_QUEUES.customImageExpiry);
+      expect(registration).toBeDefined();
+      expect(await registration![1].hasPending!()).toBe(true);
+      expect(environmentCustomImagesServiceMock.nextSetupCleanupAt).not.toHaveBeenCalled();
       // The scheduler starts only after every housekeeping step settled.
       expect(heartbeatIntervals).toHaveLength(1);
     } finally {
