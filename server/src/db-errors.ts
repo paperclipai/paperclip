@@ -1,5 +1,6 @@
 const UNIQUE_VIOLATION = "23505";
 const FOREIGN_KEY_VIOLATION = "23503";
+const INVALID_TEXT_REPRESENTATION = "22P02";
 const MAX_CAUSE_DEPTH = 4;
 
 /**
@@ -46,6 +47,27 @@ export function isForeignKeyViolation(error: unknown): boolean {
   for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth += 1) {
     const candidate = current as { code?: unknown; cause?: unknown };
     if (candidate.code === FOREIGN_KEY_VIOLATION) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
+
+/**
+ * Recognizes a Postgres invalid-text-representation failure (SQLSTATE 22P02).
+ *
+ * Comparing a non-UUID string against a `uuid` column raises this code, so a
+ * route that accepts either a UUID or another identifier form uses it to tell
+ * "that was not a UUID, try the other lookup" apart from a real database
+ * failure. Drizzle wraps the driver failure in its own `Failed query: ...`
+ * error, so the Postgres error that carries the code is reachable only through
+ * `cause`. This helper walks the `cause` chain, the same way
+ * `isUniqueViolation` does.
+ */
+export function isInvalidTextRepresentation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && current && typeof current === "object"; depth += 1) {
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === INVALID_TEXT_REPRESENTATION) return true;
     current = candidate.cause;
   }
   return false;
