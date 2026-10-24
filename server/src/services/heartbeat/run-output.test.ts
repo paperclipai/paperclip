@@ -98,6 +98,22 @@ describe("heartbeat run output log recovery", () => {
     expect(row.logRef).toBe(path.join("company-1", "agent-1", "run-1.ndjson"));
   });
 
+  it("redacts credential-shaped output before storing excerpts and durable logs", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir });
+    const row = { ...newRunRow };
+    const { output, onLog } = await beginAttempt(store, row);
+    const canary = "canary-fake-output-000";
+    await onLog("stdout", `MY_API_TOKEN=${canary}\n`);
+    await onLog("stderr", `Authorization: Bearer ${canary}\n`);
+    for (const excerpt of [output.stdoutExcerpt, output.stderrExcerpt]) {
+      expect(excerpt).not.toContain(canary);
+      expect(excerpt).toContain("***REDACTED***");
+    }
+    const raw = await fs.readFile(path.join(baseDir, row.logRef!), "utf8");
+    expect(raw).not.toContain(canary);
+    expect(raw).toContain("***REDACTED***");
+  });
+
   it("restores an existing attempt's durable log after local state is lost", async () => {
     const { provider, objects, calls } = createMemoryProvider();
     const row = { ...newRunRow };

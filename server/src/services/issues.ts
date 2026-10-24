@@ -167,6 +167,7 @@ import {
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { sanitizeTextForPersistence } from "../persistence-sanitizer.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
@@ -12578,7 +12579,7 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactCurrentUserText(sanitizeTextForPersistence(body), currentUserRedactionOptions);
       if (actor.userId && options?.clientRequestId) {
         const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
           eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));

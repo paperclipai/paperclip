@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterInvocationMeta, AdapterRuntimeEvent } from "../../adapters/index.js";
 import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../log-redaction.js";
+import { sanitizeTextForPersistence } from "../../persistence-sanitizer.js";
 import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { publishLiveEvent } from "../live-events.js";
@@ -105,7 +106,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       await getCurrentUserRedactionOptions();
     const appendIdentityRedactedLog = async (stream: "stdout" | "stderr", chunk: string) => {
       const sanitizedChunk = compactRunLogChunk(
-        redactCurrentUserText(chunk, currentUserRedactionOptions),
+        redactCurrentUserText(sanitizeTextForPersistence(chunk), currentUserRedactionOptions),
       );
       if (stream === "stdout")
         stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
