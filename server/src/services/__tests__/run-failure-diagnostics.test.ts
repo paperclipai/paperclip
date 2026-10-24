@@ -479,6 +479,37 @@ describe("run failure diagnostics", () => {
     },
   );
 
+  it("includes how the sandbox agent process session ended", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpProcessTerminalSource: "remote_event", acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137, acpProcessTerminalSignal: "SIGKILL",
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpProcessTerminalSource: "remote_event", acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137, acpProcessTerminalSignal: "SIGKILL",
+    });
+  });
+
+  it.each(["private source", "", "PROXY_CLOSE", ["proxy_close"], 1, null])(
+    "omits every process terminal field when the source is not a closed label (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        acpProcessTerminalSource: value, acpProcessTerminalOutcome: "exit",
+        acpProcessTerminalExitCode: 1, acpProcessTerminalSignal: "SIGTERM",
+      } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
+  it.each([-1, 256, 1.5, NaN, "1", "private", "SIGPRIVATE", "sigkill", null])(
+    "omits invalid process terminal details (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: {
+        acpProcessTerminalSource: "proxy_close", acpProcessTerminalOutcome: value,
+        acpProcessTerminalExitCode: value, acpProcessTerminalSignal: value,
+      } }), {});
+      expect(result.execution).toEqual({ acpProcessTerminalSource: "proxy_close" });
+    },
+  );
+
   it.each(["execute,private command", "", "execute,", "Execute", ["execute"], 1])(
     "omits pending tool kinds that are not closed labels (%j)", (value) => {
       const result = collectRunFailureDiagnostics(run({ resultJson: { acpPendingToolKinds: value } }), {});
