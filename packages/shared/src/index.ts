@@ -1904,6 +1904,7 @@ export {
   addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
+  isRepositoryUrl,
   type CreateProject,
   type UpdateProject,
   type AddProjectAccessMember,
