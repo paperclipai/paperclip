@@ -8,6 +8,8 @@ import {
   companies,
   completionContracts,
   createDb,
+  environmentLeases,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -24,7 +26,10 @@ import {
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+import * as activityLogService from "../services/activity-log.js";
+
 import { heartbeatService } from "../services/heartbeat.ts";
+import { logger } from "../middleware/logger.js";
 import { recoveryService } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -48,6 +53,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     mockTelemetryClient.track.mockClear();
     await db.delete(nativeRunFinalizations);
     await db.delete(nativeRunResults);
@@ -56,6 +62,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(costEvents);
+    await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
     await db.delete(completionContracts);
     await db.delete(issues);
@@ -389,6 +396,349 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(second.cleared).toBe(0);
   });
 
+  async function seedOrphanedRunIssue(input: { companyId: string; agentId: string; runningRunId: string }) {
+    const issueId = randomUUID();
+    await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 }).where(eq(heartbeatRuns.id, input.runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Orphaned running run teardown",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: input.agentId,
+      checkoutRunId: input.runningRunId,
+      executionRunId: input.runningRunId,
+      executionLockedAt: new Date(),
+    });
+    return issueId;
+  }
+
+  it("releases leases and settles the agent when the sweep terminalizes a run whose process is gone", async () => {
+    const seeded = await seed();
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, seeded.agentId));
+    const issueId = await seedOrphanedRunIssue(seeded);
+
+    const [existingEnvironment] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    const localEnvironment = existingEnvironment ?? (await db.insert(environments).values({
+      name: "Recovery local environment",
+      driver: "local",
+      config: {},
+    }).returning())[0]!;
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({
+      id: leaseId,
+      companyId: seeded.companyId,
+      environmentId: localEnvironment.id,
+      heartbeatRunId: seeded.runningRunId,
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "local",
+      metadata: { driver: "local" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.sweepStaleIssueLocks();
+    expect(result.terminalizedRunIds).toEqual([seeded.runningRunId]);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(lease?.releasedAt).toBeInstanceOf(Date);
+    expect(lease?.status).toBe("released");
+
+    const [agent] = await db.select({ status: agents.status }).from(agents).where(eq(agents.id, seeded.agentId));
+    expect(agent?.status).toBe("idle");
+    const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it.each(["terminalization", "lock update", "activity log"])(
+    "drains committed teardown even when a later %s fails",
+    async (failurePoint) => {
+      const seeded = await seed();
+      await seedOrphanedRunIssue(seeded);
+      // A second candidate lets the pre-pass fail after the first terminal write.
+      const otherRunId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: otherRunId, companyId: seeded.companyId, agentId: seeded.agentId,
+        status: "running", invocationSource: "manual", processPid: 2_000_000_000,
+      });
+      await seedOrphanedRunIssue({ ...seeded, runningRunId: otherRunId });
+      const failure = new Error(`injected ${failurePoint} failure`);
+      const releaseEnvironmentLeasesForRun = vi.fn(async () => {});
+      const finalizeAgentStatus = vi.fn(async () => {});
+      let writes = 0;
+      const update = db.update.bind(db);
+      const updateSpy = vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
+        if (failurePoint === "lock update" && table === issues) throw failure;
+        return update(table as typeof issues);
+      }) as typeof db.update);
+      const logSpy = vi.spyOn(activityLogService, "logActivity");
+      if (failurePoint === "activity log") logSpy.mockRejectedValueOnce(failure);
+      try {
+        const recovery = recoveryService(db, {
+          enqueueWakeup: vi.fn(), releaseEnvironmentLeasesForRun, finalizeAgentStatus,
+          beforeOrphanedRunTerminalWrite: async () => {
+            if (++writes === 2 && failurePoint === "terminalization") throw failure;
+          },
+        });
+        await expect(recovery.sweepStaleIssueLocks()).rejects.toBe(failure);
+        expect(releaseEnvironmentLeasesForRun).toHaveBeenCalledTimes(
+          failurePoint === "terminalization" ? 1 : 2,
+        );
+        expect(finalizeAgentStatus).toHaveBeenCalledTimes(
+          failurePoint === "terminalization" ? 1 : 2,
+        );
+        if (failurePoint === "activity log") {
+          const clearedIssueId = logSpy.mock.calls[0]![1].entityId;
+          expect((await db.select().from(issues).where(eq(issues.id, clearedIssueId)))[0]!.executionRunId).toBeNull();
+        }
+      } finally {
+        updateSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])("serializes same-agent finalizers past timeout while other agents progress (first rejects: %s)", async (rejectFirst) => {
+    const seeded = await seed();
+    await seedOrphanedRunIssue(seeded);
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId, companyId: seeded.companyId, name: "Other coder",
+      role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    for (const agentId of [seeded.agentId, otherAgentId]) {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId, companyId: seeded.companyId, agentId, status: "running",
+        invocationSource: "manual", processPid: 2_000_000_000,
+      });
+      await seedOrphanedRunIssue({ ...seeded, agentId, runningRunId: runId });
+    }
+    let unblock!: () => void;
+    const stalled = new Promise<void>(resolve => { unblock = resolve; });
+    const errorLog = vi.spyOn(logger, "error");
+    let sameAgentCalls = 0;
+    let lastHeartbeatAt: Date | null = null;
+    let firstHeartbeatEvents = 0;
+    const finalizeAgentStatus = vi.fn(async (agentId: string) => {
+      if (agentId !== seeded.agentId) return;
+      const wasFirst = !lastHeartbeatAt;
+      const call = ++sameAgentCalls;
+      await stalled;
+      if (rejectFirst && call === 1) throw new Error("first finalizer failed");
+      lastHeartbeatAt = new Date();
+      if (wasFirst) firstHeartbeatEvents++;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const sweep = recoveryService(db, {
+      enqueueWakeup: vi.fn(), releaseEnvironmentLeasesForRun: vi.fn(async () => {}),
+      finalizeAgentStatus,
+    }).sweepStaleIssueLocks();
+    try {
+      await vi.waitFor(() => expect(finalizeAgentStatus).toHaveBeenCalledWith(
+        otherAgentId, "interrupted", expect.any(String),
+      ));
+      await vi.advanceTimersByTimeAsync(5_000);
+      // The wait may expire, but the first finalizer still owns serialization.
+      expect(sameAgentCalls).toBe(1);
+      expect(errorLog).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.objectContaining({ message: "orphaned run cleanup exceeded 5000ms" }) }),
+        "orphaned run agent finalization wait exceeded 5000ms; queued work may still complete",
+      );
+      unblock();
+      await vi.runAllTimersAsync();
+      await sweep;
+      expect(sameAgentCalls).toBe(2);
+      expect(firstHeartbeatEvents).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      unblock();
+      await vi.runAllTimersAsync();
+      await sweep;
+      vi.useRealTimers();
+    }
+  });
+
+  it("still terminalizes and clears the lock when orphaned-run teardown throws", async () => {
+    const seeded = await seed();
+    const issueId = await seedOrphanedRunIssue(seeded);
+    const releaseEnvironmentLeasesForRun = vi.fn(async () => { throw new Error("lease store unavailable"); });
+    const finalizeAgentStatus = vi.fn(async () => { throw new Error("agent store unavailable"); });
+    const errorLog = vi.spyOn(logger, "error");
+
+    const result = await recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      releaseEnvironmentLeasesForRun,
+      finalizeAgentStatus,
+    }).sweepStaleIssueLocks();
+
+    expect(releaseEnvironmentLeasesForRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: seeded.runningRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "interrupted",
+    }));
+    expect(finalizeAgentStatus).toHaveBeenCalledWith(seeded.agentId, "interrupted", expect.any(String));
+    expect(result.terminalizedRunIds).toEqual([seeded.runningRunId]);
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.objectContaining({ message: "agent store unavailable" }) }),
+      "orphaned run agent finalization failed; operator recovery required",
+    );
+    const [issue] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("clears the lock when orphaned-run lease cleanup never settles", async () => {
+    const seeded = await seed();
+    const issueId = await seedOrphanedRunIssue(seeded);
+    const releaseEnvironmentLeasesForRun = vi.fn(() => new Promise<void>(() => {}));
+    const finalizeAgentStatus = vi.fn(async () => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const sweep = recoveryService(db, {
+        enqueueWakeup: vi.fn(),
+        releaseEnvironmentLeasesForRun,
+        finalizeAgentStatus,
+      }).sweepStaleIssueLocks();
+      await vi.waitFor(() => expect(releaseEnvironmentLeasesForRun).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(5_000);
+      vi.useRealTimers();
+      const result = await sweep;
+      expect(finalizeAgentStatus).toHaveBeenCalledWith(seeded.agentId, "interrupted", expect.any(String));
+      expect(result.terminalizedRunIds).toEqual([seeded.runningRunId]);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.executionRunId).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { stalledHooks: "leases", agentCount: 1 },
+    { stalledHooks: "agents", agentCount: 1 },
+    { stalledHooks: "both", agentCount: 1 },
+    { stalledHooks: "agents", agentCount: 120 },
+  ])(
+    "bounds the sweep teardown wait with stalled $stalledHooks hooks across $agentCount agents",
+    async ({ stalledHooks, agentCount }) => {
+      const { companyId, agentId, runningRunId } = await seed();
+      const agentIds = [agentId, ...Array.from({ length: agentCount - 1 }, () => randomUUID())];
+      if (agentIds.length > 1) {
+        await db.insert(agents).values(agentIds.slice(1).map(id => ({
+          id, companyId, name: "Recovery worker", role: "engineer", status: "active",
+          adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+        })));
+      }
+      const runIds = [runningRunId, ...Array.from({ length: 119 }, () => randomUUID())];
+      await db.insert(heartbeatRuns).values(runIds.slice(1).map((id, index) => ({
+        id, companyId, agentId: agentIds[(index + 1) % agentIds.length]!,
+        status: "running", invocationSource: "manual", startedAt: new Date(),
+      })));
+      await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 })
+        .where(eq(heartbeatRuns.companyId, companyId));
+      await db.insert(issues).values(runIds.map((runId, index) => ({
+        id: randomUUID(), companyId, title: "Crashed run with stalled teardown",
+        status: "in_progress", assigneeAgentId: agentIds[index % agentIds.length]!,
+        checkoutRunId: runId, executionRunId: runId, executionLockedAt: new Date(),
+      })));
+
+      let unblock!: () => void;
+      const stalled = new Promise<void>((resolve) => { unblock = resolve; });
+      let teardownStarted!: () => void;
+      const firstTeardown = new Promise<void>((resolve) => { teardownStarted = resolve; });
+      const releaseEnvironmentLeasesForRun = vi.fn(async () => {
+        teardownStarted();
+        if (stalledHooks !== "agents") await stalled;
+      });
+      const finalizeAgentStatus = vi.fn(async (_agentId: string) => {
+        if (stalledHooks !== "leases") await stalled;
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let returned = false;
+      const sweep = recoveryService(db, {
+        enqueueWakeup: vi.fn(), releaseEnvironmentLeasesForRun, finalizeAgentStatus,
+      }).sweepStaleIssueLocks().then((result) => {
+        returned = true;
+        return result;
+      });
+      try {
+        await firstTeardown;
+        // All locks clear before any stalled teardown finishes; only eight
+        // workers start cleanup rather than launching every run at once.
+        expect(releaseEnvironmentLeasesForRun).toHaveBeenCalledTimes(8);
+        const locks = await db.select({
+          checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        }).from(issues).where(eq(issues.companyId, companyId));
+        expect(locks).toHaveLength(runIds.length);
+        expect(locks.every((lock) => lock.checkoutRunId === null
+          && lock.executionRunId === null && lock.executionLockedAt === null)).toBe(true);
+
+        if (agentCount > 1) {
+          // Let the resolved lease hooks hand off to the actual finalizers,
+          // without advancing the fake clock toward the sweep deadline.
+          for (let tick = 0; tick < 10; tick++) await Promise.resolve();
+          expect(finalizeAgentStatus).toHaveBeenCalledTimes(8);
+          expect(new Set(finalizeAgentStatus.mock.calls.map(call => call[0])).size).toBe(8);
+        }
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(returned).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(returned).toBe(true);
+        const result = await sweep;
+        expect(result.cleared).toBe(runIds.length);
+        expect(new Set(result.terminalizedRunIds)).toEqual(new Set(runIds));
+        expect(finalizeAgentStatus.mock.calls.length).toBeLessThan(runIds.length);
+
+        // The deadline releases startup without dropping queued cleanup.
+        unblock();
+        await vi.runAllTimersAsync();
+        expect(releaseEnvironmentLeasesForRun).toHaveBeenCalledTimes(runIds.length);
+        expect(finalizeAgentStatus).toHaveBeenCalledTimes(runIds.length);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        unblock();
+        await vi.runAllTimersAsync();
+        await sweep;
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("settles a process-gone run with the terminal issue outcome", async () => {
+    const seeded = await seed();
+    const issueId = await seedOrphanedRunIssue(seeded);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const releaseEnvironmentLeasesForRun = vi.fn(async () => {});
+    const finalizeAgentStatus = vi.fn(async () => {});
+
+    await recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      releaseEnvironmentLeasesForRun,
+      finalizeAgentStatus,
+    }).sweepStaleIssueLocks();
+
+    expect(releaseEnvironmentLeasesForRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: seeded.runningRunId, status: "succeeded",
+    }));
+    expect(finalizeAgentStatus).toHaveBeenCalledWith(seeded.agentId, "succeeded", null);
+  });
+
+  it("leaves leases and agent status to the owning execution when only the issue is terminal", async () => {
+    const seeded = await seed();
+    const issueId = await seedOrphanedRunIssue(seeded);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const releaseEnvironmentLeasesForRun = vi.fn(async () => {});
+    const finalizeAgentStatus = vi.fn(async () => {});
+
+    await recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      liveRunExecutions: { has: () => true },
+      releaseEnvironmentLeasesForRun,
+      finalizeAgentStatus,
+    }).sweepStaleIssueLocks();
+
+    expect(releaseEnvironmentLeasesForRun).not.toHaveBeenCalled();
+    expect(finalizeAgentStatus).not.toHaveBeenCalled();
+  });
+
   it("terminalizes an orphaned running run whose process is gone, then clears the lock", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     // The run recorded a pid, but the process and its sandbox are gone. A pid
@@ -444,8 +794,10 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // agent.task_run event for the run it just terminalized. The write
     // never awaits the emission, so wait for it here instead of asserting
     // it fired synchronously.
+    // Agent teardown may also emit the agent's first-heartbeat event; count
+    // only the task-run events.
     await vi.waitFor(() => {
-      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+      expect(mockTelemetryClient.track.mock.calls.filter(([event]) => event === "agent.task_run")).toHaveLength(1);
     });
     expect(mockTelemetryClient.track).toHaveBeenCalledWith(
       "agent.task_run",
