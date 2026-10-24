@@ -1192,7 +1192,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             { id: "reject", label: "Reject", description: "Reject the request." },
             { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
           ),
-          inlineResolvable: approval.type !== "request_board_approval",
+          // Board approvals and secret operations carry consequences that are only
+          // legible in the full card — never resolve them from a list row.
+          inlineResolvable:
+            approval.type !== "request_board_approval" && approval.type !== "secret_operation",
           entryRule: "approvals.status = 'pending'",
           exitRule: "Approval leaves pending status.",
           dedupKey,

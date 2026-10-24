@@ -690,6 +690,9 @@ export const APPROVAL_TYPES = [
   "approve_ceo_strategy",
   "budget_override_required",
   "request_board_approval",
+  // Board-authorized secret maintenance. The approved row is the authorization:
+  // the server performs the operation, so no agent needs board credentials.
+  "secret_operation",
 ] as const;
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 

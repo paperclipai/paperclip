@@ -9,6 +9,10 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  executeApprovedSecretOperation,
+  type SecretOperationResult,
+} from "./secret-approval-hook.js";
 
 export function approvalRecords(db: Db) {
   const instanceSettings = instanceSettingsService(db);
@@ -186,9 +190,22 @@ export function approvalService(db: Db) {
     const approval = await getExistingApproval(id);
     if (approval.type === "hire_agent") {
       const result = await decideHire({ approvalId: id }, status, userId, note);
-      return { approval: result!.approval!, applied: result!.applied };
+      return { approval: result!.approval!, applied: result!.applied, secretOperation: null };
     }
-    return resolveApproval(id, status, userId, note);
+    const resolved = await resolveApproval(id, status, userId, note);
+    // The approved row is the authorization: execute server-side so that no
+    // agent needs board credentials to carry out a decision the board made.
+    // Gated on `applied`, so a second approve does not delete a second time.
+    let secretOperation: SecretOperationResult | null = null;
+    if (status === "approved" && resolved.applied && resolved.approval.type === "secret_operation") {
+      secretOperation = await executeApprovedSecretOperation(db, {
+        companyId: resolved.approval.companyId,
+        approvalId: resolved.approval.id,
+        // The stored row, never the redacted read-model.
+        payload: resolved.approval.payload as Record<string, unknown>,
+      });
+    }
+    return { ...resolved, secretOperation };
   }
   return { ...records,
     approveHire: (agentId: string, userId: string, note?: string | null) => decideHire(agentId, "approved", userId, note),

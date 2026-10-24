@@ -649,11 +649,15 @@ export {
   requestApprovalRevisionSchema,
   resubmitApprovalSchema,
   addApprovalCommentSchema,
+  secretOperationPayloadSchema,
+  SECRET_OPERATION_OPS,
   type CreateApproval,
   type ResolveApproval,
   type RequestApprovalRevision,
   type ResubmitApproval,
   type AddApprovalComment,
+  type SecretOperationOp,
+  type SecretOperationPayload,
 } from "./approval.js";
 
 export {
