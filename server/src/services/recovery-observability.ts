@@ -1,4 +1,3 @@
-import { historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
@@ -13,6 +12,27 @@ const DEFAULT_WINDOW_WEEKS = 8;
 // (~2 years of weekly buckets is far beyond any real dashboard use).
 export const MAX_WINDOW_WEEKS = 104;
 
+// Churn-signal windows. `activeCount` only counts rows still active when the
+// report is read, so a cause whose rows are created and resolved within one
+// recovery sweep always reads 0 — indistinguishable from "fixed". These windows
+// are computed from `issue_recovery_actions.created_at`, which never rolls
+// back, so a self-concealing cause cannot hide from them.
+export const CHURN_LAST_HOUR_MS = 60 * 60 * 1000;
+// The periodic recovery sweep (the heartbeat scheduler tick that runs the
+// stranded/legacy reconciliation chain) fires on the heartbeat scheduler
+// interval. Deployed instances may tune `HEARTBEAT_SCHEDULER_INTERVAL_MS`, so
+// the default tracks the configured value.
+export const RECOVERY_SWEEP_INTERVAL_MS = Math.min(
+  600_000,
+  Math.max(10_000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30_000),
+);
+// A row whose whole lifetime fits inside one sweep period cannot have been
+// visible to any poll between sweeps, so it is "resolved inside the same sweep"
+// (the supersede/fold signature, outcome `cancelled`). The ceiling bounds a
+// hostile env value; a legitimate recovery takes at least a dispatch
+// round-trip plus agent work, never seconds.
+export const SELF_RESOLVE_WINDOW_CEILING_MS = 10 * 60 * 1000;
+
 // Weeks are ISO/Monday-anchored to match the retrospective table (2026-06-01 is
 // a Monday). Postgres `date_trunc('week', ...)` is Monday-based, so this keeps
 // the live report aligned with the numbers in the plan document.
@@ -22,7 +42,14 @@ export type WeeklyRecoveryRate = {
   weekStart: string;
   runs: number;
   recoveryActions: number;
-  /** recoveryActions / runs, as a percentage (0 when there are no runs). */
+  /**
+   * Rows created this week that were cancelled within one recovery-sweep
+   * interval (see `SELF_RESOLVE_WINDOW_CEILING_MS`). These churn rows are
+   * excluded from `ratePercent` so the 2% alert measures real recoveries;
+   * they remain visible in `recoveryActions` and `byCause[].selfResolvedCount`.
+   */
+  selfResolvedRecoveryActions: number;
+  /** (recoveryActions - selfResolvedRecoveryActions) / runs, as a percentage (0 when there are no runs). */
   ratePercent: number;
 };
 
@@ -42,6 +69,21 @@ export type RecoveryCauseGroup = {
   activeCount: number;
   resolvedCount: number;
   cancelledCount: number;
+  /**
+   * Rows created within the last hour (default `CHURN_LAST_HOUR_MS`). A cause
+   * that inserts-and-resolves inside one sweep keeps `activeCount` at 0 while
+   * this counter keeps climbing — the signal that cannot self-conceal.
+   */
+  createdLastHour: number;
+  /** `createdLastHour` normalized to rows/minute over the actual exposure window. */
+  insertRatePerMinute: number;
+  /**
+   * Cancelled rows whose entire lifetime fit inside one recovery-sweep interval
+   * (`resolvedAt - createdAt < selfResolveWindowMs`, outcome `cancelled` — the
+   * same-sweep supersede/fold signature). These are excluded from the primary
+   * alert rate; the raw cause stays visible here.
+   */
+  selfResolvedCount: number;
 };
 
 export type RecoveryHandoffSummary = {
@@ -53,7 +95,6 @@ export type RecoveryHandoffSummary = {
   /** Original agent recovered its own issue (owner == original assignee). */
   selfRecovery: number;
   boardOwned: number;
-  systemOwned: number;
   activeTakeovers: number;
   /** handedBack / (handedBack + ownerCompleted); null when no resolved takeovers. */
   handedBackRatio: number | null;
@@ -74,11 +115,16 @@ export type RecoveryCauseRouting = {
 };
 
 export type RecoveryObservabilityReport = {
-  historicalRecovery: Awaited<ReturnType<typeof historicalRecoveryCounts>>;
   companyId: string;
   generatedAt: string;
   window: { weeks: number; since: string };
   thresholdPercent: number;
+  /** Definitions of the churn-signal windows (default 1h created-window and the sweep-interval self-resolve ceiling). */
+  churnWindow: {
+    createdLastHourMs: number;
+    selfResolveWindowMs: number;
+    selfResolveWindowCeilingMs: number;
+  };
   weekly: WeeklyRecoveryRate[];
   alert: RecoveryRateAlert;
   byCause: RecoveryCauseGroup[];
@@ -91,12 +137,10 @@ export type HandoffClass =
   | "handed_back"
   | "owner_completed"
   | "board_owned"
-  | "system_owned"
   | "active"
   | "other";
 
 type RecoveryActionFacts = {
-  ownerType?: string;
   status: string;
   outcome: string | null;
   ownerAgentId: string | null;
@@ -119,7 +163,6 @@ const TERMINAL_ISSUE_STATUSES = new Set(["done"]);
  * doing the work becomes rare".
  */
 export function classifyRecoveryHandoff(facts: RecoveryActionFacts): HandoffClass {
-  if (facts.ownerType === "system") return "system_owned";
   if (ACTIVE_STATUSES.has(facts.status)) return "active";
   if (!facts.ownerAgentId) return "board_owned";
   // Original agent recovered its own issue — the ideal per-cause routing, not a takeover.
@@ -158,6 +201,26 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/**
+ * A recovery row that was cancelled within one recovery-sweep interval of being
+ * created never existed long enough to require a real recovery: the next sweep
+ * (or the supersede path itself) folded it away. Counting these in the primary
+ * recovery-rate alert permanently saturates it, hiding genuine regressions.
+ */
+export function isSelfResolvedRecoveryAction(
+  row: { status: string; outcome: string | null; createdAtMs: number; resolvedAtMs: number | null },
+  selfResolveWindowMs: number,
+): boolean {
+  if (row.status !== "cancelled" || row.outcome !== "cancelled") return false;
+  if (row.resolvedAtMs == null) return false;
+  return row.resolvedAtMs - row.createdAtMs < selfResolveWindowMs;
+}
+
+function clampSelfResolveWindowMs(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return RECOVERY_SWEEP_INTERVAL_MS;
+  return Math.min(SELF_RESOLVE_WINDOW_CEILING_MS, Math.max(1, Math.floor(raw)));
+}
+
 function utcWeekStart(now: Date, weeksAgo: number): Date {
   const utcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   const dayOfWeek = new Date(utcMidnight).getUTCDay(); // 0 = Sunday
@@ -169,7 +232,15 @@ function utcWeekStart(now: Date, weeksAgo: number): Date {
 export function recoveryObservabilityService(db: Db) {
   async function report(
     companyId: string,
-    opts?: { now?: Date; weeks?: number; thresholdPercent?: number },
+    opts?: {
+      now?: Date;
+      weeks?: number;
+      thresholdPercent?: number;
+      /** Override the churn `createdLastHour` window (capped at 24h). Tests/clients only. */
+      churnWindowMs?: number;
+      /** Override the self-resolve sweep-interval ceiling (capped at `SELF_RESOLVE_WINDOW_CEILING_MS`). Defaults to `RECOVERY_SWEEP_INTERVAL_MS`. */
+      selfResolveWindowMs?: number;
+    },
   ): Promise<RecoveryObservabilityReport> {
     const now = opts?.now ?? new Date();
     const weeks = Math.min(
@@ -179,6 +250,12 @@ export function recoveryObservabilityService(db: Db) {
     const thresholdPercent = opts?.thresholdPercent ?? DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT;
     const since = utcWeekStart(now, weeks - 1);
     const sinceIso = since.toISOString();
+    const churnWindowMs =
+      typeof opts?.churnWindowMs === "number" && Number.isFinite(opts.churnWindowMs)
+        ? Math.min(24 * 60 * 60 * 1000, Math.max(1, Math.floor(opts.churnWindowMs)))
+        : CHURN_LAST_HOUR_MS;
+    const selfResolveWindowMs = clampSelfResolveWindowMs(opts?.selfResolveWindowMs);
+    const churnWindowSinceIso = new Date(now.getTime() - churnWindowMs).toISOString();
 
     // Weekly run volume (denominator) — normalizes the recovery rate per run.
     const runRows = (await db.execute(sql`
@@ -191,37 +268,54 @@ export function recoveryObservabilityService(db: Db) {
       GROUP BY week_start
     `)) as unknown as Iterable<{ week_start: string; runs: number | string }>;
 
-    // Weekly recovery-action volume (numerator).
+    // Weekly recovery-action volume (numerator), plus the same-sweep
+    // self-resolved churn that the primary alert rate must exclude.
     const actionRows = (await db.execute(sql`
       SELECT
         to_char(date_trunc('week', ${issueRecoveryActions.createdAt} AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS week_start,
-        count(*)::int AS actions
+        count(*)::int AS actions,
+        count(*) FILTER (
+          WHERE ${issueRecoveryActions.status} = 'cancelled'
+            AND ${issueRecoveryActions.outcome} = 'cancelled'
+            AND ${issueRecoveryActions.resolvedAt} IS NOT NULL
+            AND ${issueRecoveryActions.resolvedAt} - ${issueRecoveryActions.createdAt} < ${selfResolveWindowMs} * interval '1 millisecond'
+        )::int AS self_resolved
       FROM ${issueRecoveryActions}
       WHERE ${issueRecoveryActions.companyId} = ${companyId}
         AND ${issueRecoveryActions.createdAt} >= ${sinceIso}::timestamptz
       GROUP BY week_start
-    `)) as unknown as Iterable<{ week_start: string; actions: number | string }>;
+    `)) as unknown as Iterable<{ week_start: string; actions: number | string; self_resolved: number | string }>;
 
     const runsByWeek = new Map<string, number>();
     for (const row of runRows) runsByWeek.set(String(row.week_start), Number(row.runs));
     const actionsByWeek = new Map<string, number>();
-    for (const row of actionRows) actionsByWeek.set(String(row.week_start), Number(row.actions));
+    const selfResolvedByWeek = new Map<string, number>();
+    for (const row of actionRows) {
+      actionsByWeek.set(String(row.week_start), Number(row.actions));
+      selfResolvedByWeek.set(String(row.week_start), Number(row.self_resolved));
+    }
 
     const weekly: WeeklyRecoveryRate[] = Array.from({ length: weeks }, (_, index) => {
       const weekStart = utcWeekStart(now, weeks - 1 - index).toISOString().slice(0, 10);
       const runs = runsByWeek.get(weekStart) ?? 0;
       const recoveryActions = actionsByWeek.get(weekStart) ?? 0;
+      const selfResolvedRecoveryActions = Math.min(recoveryActions, selfResolvedByWeek.get(weekStart) ?? 0);
+      const alertedRecoveryActions = recoveryActions - selfResolvedRecoveryActions;
       return {
         weekStart,
         runs,
         recoveryActions,
-        ratePercent: runs > 0 ? round2((recoveryActions / runs) * 100) : 0,
+        selfResolvedRecoveryActions,
+        ratePercent: runs > 0 ? round2((alertedRecoveryActions / runs) * 100) : 0,
       };
     });
 
     const alert = evaluateRecoveryRateAlert(weekly, thresholdPercent);
 
-    // Cause + latestRunErrorCode taxonomy (from the action's evidence snapshot).
+    // Cause + latestRunErrorCode taxonomy (from the action's evidence snapshot),
+    // plus the churn signal (`created_last_hour`, computed from `created_at`, so
+    // a cause that self-resolves inside one sweep can still be seen) and the
+    // same-sweep self-resolved count the alert rate excludes.
     const causeRows = (await db.execute(sql`
       SELECT
         ${issueRecoveryActions.cause} AS cause,
@@ -229,7 +323,14 @@ export function recoveryObservabilityService(db: Db) {
         count(*)::int AS count,
         count(*) FILTER (WHERE ${issueRecoveryActions.status} IN ('active', 'escalated'))::int AS active_count,
         count(*) FILTER (WHERE ${issueRecoveryActions.status} = 'resolved')::int AS resolved_count,
-        count(*) FILTER (WHERE ${issueRecoveryActions.status} = 'cancelled')::int AS cancelled_count
+        count(*) FILTER (WHERE ${issueRecoveryActions.status} = 'cancelled')::int AS cancelled_count,
+        count(*) FILTER (WHERE ${issueRecoveryActions.createdAt} >= ${churnWindowSinceIso}::timestamptz)::int AS created_last_hour,
+        count(*) FILTER (
+          WHERE ${issueRecoveryActions.status} = 'cancelled'
+            AND ${issueRecoveryActions.outcome} = 'cancelled'
+            AND ${issueRecoveryActions.resolvedAt} IS NOT NULL
+            AND ${issueRecoveryActions.resolvedAt} - ${issueRecoveryActions.createdAt} < ${selfResolveWindowMs} * interval '1 millisecond'
+        )::int AS self_resolved_count
       FROM ${issueRecoveryActions}
       WHERE ${issueRecoveryActions.companyId} = ${companyId}
         AND ${issueRecoveryActions.createdAt} >= ${sinceIso}::timestamptz
@@ -242,16 +343,31 @@ export function recoveryObservabilityService(db: Db) {
       active_count: number | string;
       resolved_count: number | string;
       cancelled_count: number | string;
+      created_last_hour: number | string;
+      self_resolved_count: number | string;
     }>;
 
-    const byCause: RecoveryCauseGroup[] = Array.from(causeRows).map((row) => ({
-      cause: String(row.cause),
-      latestRunErrorCode: String(row.error_code),
-      count: Number(row.count),
-      activeCount: Number(row.active_count),
-      resolvedCount: Number(row.resolved_count),
-      cancelledCount: Number(row.cancelled_count),
-    }));
+    // The insert-rate denominator is the exposure window, not the nominal hour:
+    // a report whose window starts less than an hour ago would otherwise
+    // under-report a brand-new churn burst.
+    const churnExposureMs = Math.max(
+      1,
+      now.getTime() - Math.max(since.getTime(), now.getTime() - churnWindowMs),
+    );
+    const byCause: RecoveryCauseGroup[] = Array.from(causeRows).map((row) => {
+      const createdLastHour = Number(row.created_last_hour);
+      return {
+        cause: String(row.cause),
+        latestRunErrorCode: String(row.error_code),
+        count: Number(row.count),
+        activeCount: Number(row.active_count),
+        resolvedCount: Number(row.resolved_count),
+        cancelledCount: Number(row.cancelled_count),
+        createdLastHour,
+        insertRatePerMinute: round2(createdLastHour / (churnExposureMs / 60_000)),
+        selfResolvedCount: Number(row.self_resolved_count),
+      };
+    });
 
     // Hand-back accounting + per-cause routing. Recovery actions are inherently
     // low-volume (they are the exception path), so we join to the source issue
@@ -262,7 +378,6 @@ export function recoveryObservabilityService(db: Db) {
         status: issueRecoveryActions.status,
         outcome: issueRecoveryActions.outcome,
         ownerAgentId: issueRecoveryActions.ownerAgentId,
-        ownerType: issueRecoveryActions.ownerType,
         returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
         finalAssigneeAgentId: issues.assigneeAgentId,
         finalIssueStatus: issues.status,
@@ -283,7 +398,6 @@ export function recoveryObservabilityService(db: Db) {
       otherTakeover: 0,
       selfRecovery: 0,
       boardOwned: 0,
-      systemOwned: 0,
       activeTakeovers: 0,
       handedBackRatio: null,
       ownerCompletedRatio: null,
@@ -331,10 +445,6 @@ export function recoveryObservabilityService(db: Db) {
       if (row.status === "cancelled" && row.outcome !== "false_positive") routing.cancelled += 1;
 
       switch (klass) {
-        case "system_owned":
-          handoff.systemOwned += 1;
-          if (ACTIVE_STATUSES.has(row.status)) routing.active += 1;
-          break;
         case "self_recovery":
           handoff.selfRecovery += 1;
           if (row.status === "resolved") routing.retriedByOriginalSucceeded += 1;
@@ -373,12 +483,16 @@ export function recoveryObservabilityService(db: Db) {
       generatedAt: now.toISOString(),
       window: { weeks, since: sinceIso.slice(0, 10) },
       thresholdPercent,
+      churnWindow: {
+        createdLastHourMs: churnWindowMs,
+        selfResolveWindowMs,
+        selfResolveWindowCeilingMs: SELF_RESOLVE_WINDOW_CEILING_MS,
+      },
       weekly,
       alert,
       byCause,
       handoff,
       perCauseRouting,
-      historicalRecovery: await historicalRecoveryCounts(db, companyId),
     };
   }
 

@@ -15,8 +15,10 @@ import {
 import {
   classifyRecoveryHandoff,
   evaluateRecoveryRateAlert,
+  isSelfResolvedRecoveryAction,
   MAX_WINDOW_WEEKS,
   recoveryObservabilityService,
+  SELF_RESOLVE_WINDOW_CEILING_MS,
   type WeeklyRecoveryRate,
 } from "../services/recovery-observability.ts";
 
@@ -34,9 +36,40 @@ function week(runs: number, recoveryActions: number, weekStart: string): WeeklyR
     weekStart,
     runs,
     recoveryActions,
+    selfResolvedRecoveryActions: 0,
     ratePercent: runs > 0 ? Math.round((recoveryActions / runs) * 10000) / 100 : 0,
   };
 }
+
+describe("isSelfResolvedRecoveryAction", () => {
+  const base = {
+    status: "cancelled",
+    outcome: "cancelled",
+    createdAtMs: Date.parse("2026-07-14T12:00:00.000Z"),
+    resolvedAtMs: Date.parse("2026-07-14T12:00:20.000Z"),
+  };
+
+  it("marks a cancelled row resolved within one sweep interval as self-resolved", () => {
+    expect(isSelfResolvedRecoveryAction(base, 60_000)).toBe(true);
+  });
+
+  it("keeps a cancelled row that survived past the sweep interval", () => {
+    expect(
+      isSelfResolvedRecoveryAction(
+        { ...base, resolvedAtMs: Date.parse("2026-07-14T12:05:00.000Z") },
+        60_000,
+      ),
+    ).toBe(false);
+  });
+
+  it("never marks a resolved (real recovery) row as self-resolved", () => {
+    expect(isSelfResolvedRecoveryAction({ ...base, status: "resolved", outcome: "restored" }, 60_000)).toBe(false);
+  });
+
+  it("never marks a still-active row as self-resolved", () => {
+    expect(isSelfResolvedRecoveryAction({ ...base, status: "active", resolvedAtMs: null }, 60_000)).toBe(false);
+  });
+});
 
 describe("evaluateRecoveryRateAlert", () => {
   it("fires when a week crosses the 2% threshold", () => {
@@ -200,6 +233,7 @@ describeEmbeddedPostgres("recovery observability report", () => {
     returnOwnerAgentId: string | null;
     finalAssigneeAgentId: string | null;
     finalIssueStatus: string;
+    resolvedAt?: Date | null;
   }) {
     const sourceIssueId = randomUUID();
     await db.insert(issues).values({
@@ -228,7 +262,8 @@ describeEmbeddedPostgres("recovery observability report", () => {
       nextAction: "recover",
       outcome: input.outcome,
       createdAt: input.createdAt,
-      updatedAt: input.createdAt,
+      updatedAt: input.resolvedAt ?? input.createdAt,
+      resolvedAt: input.resolvedAt ?? null,
     });
   }
 
@@ -394,6 +429,118 @@ describeEmbeddedPostgres("recovery observability report", () => {
     expect(report.window.since).toBe(report.weekly[0]?.weekStart);
     expect(report.window.since).not.toContain("T");
     expect(report.weekly).toHaveLength(MAX_WINDOW_WEEKS);
+  });
+
+  it("keeps a same-sweep churn fixture visible while activeCount stays 0", async () => {
+    const { companyId, managerId, coderId } = await seedBaseline();
+
+    // Churn fixture: 6 legacy rows created 5 minutes before the report reads,
+    // each inserted and supersede-cancelled within one 30s sweep interval, so
+    // nothing is ever active when the report runs.
+    const churnCreatedAt = new Date(now.getTime() - 5 * 60 * 1000);
+    for (let i = 0; i < 6; i += 1) {
+      await seedRecoveryAction({
+        companyId,
+        n: 200 + i,
+        createdAt: new Date(churnCreatedAt.getTime() + i * 1000),
+        cause: "legacy_execution_requires_reconciliation",
+        errorCode: "(none)",
+        status: "cancelled",
+        outcome: "cancelled",
+        ownerAgentId: managerId,
+        returnOwnerAgentId: coderId,
+        finalAssigneeAgentId: coderId,
+        finalIssueStatus: "in_progress",
+        resolvedAt: new Date(churnCreatedAt.getTime() + i * 1000 + 20_000),
+      });
+    }
+
+    const report = await recoveryObservabilityService(db).report(companyId, {
+      now,
+      weeks: 8,
+      selfResolveWindowMs: 30_000,
+    });
+
+    const churn = report.byCause.find(
+      (c) => c.cause === "legacy_execution_requires_reconciliation",
+    );
+    // The defect this issue exists for: activeCount reads 0...
+    expect(churn).toMatchObject({ count: 6, activeCount: 0, cancelledCount: 6, selfResolvedCount: 6 });
+    // ...but the created_at-derived signal cannot self-conceal.
+    expect(churn?.createdLastHour).toBe(6);
+    expect(churn?.insertRatePerMinute ?? 0).toBeGreaterThan(0);
+    expect(report.churnWindow.selfResolveWindowMs).toBe(30_000);
+
+    // The primary alert rate excludes the self-resolved churn entirely.
+    const latest = report.weekly.find((w) => w.weekStart === "2026-07-13");
+    expect(latest).toMatchObject({
+      runs: 100,
+      recoveryActions: 6,
+      selfResolvedRecoveryActions: 6,
+      ratePercent: 0,
+    });
+    expect(report.alert.breached).toBe(false);
+  });
+
+  it("moves the alert for a genuine regression even while self-resolved churn saturates the raw rate", async () => {
+    const { companyId, managerId, coderId } = await seedBaseline();
+    const churnCreatedAt = new Date(now.getTime() - 5 * 60 * 1000);
+
+    // 4 same-sweep churn rows (raw rate would be 4% > 2% with no exclusion).
+    for (let i = 0; i < 4; i += 1) {
+      await seedRecoveryAction({
+        companyId,
+        n: 300 + i,
+        createdAt: new Date(churnCreatedAt.getTime() + i * 1000),
+        cause: "legacy_execution_requires_reconciliation",
+        errorCode: "(none)",
+        status: "cancelled",
+        outcome: "cancelled",
+        ownerAgentId: managerId,
+        returnOwnerAgentId: coderId,
+        finalAssigneeAgentId: coderId,
+        finalIssueStatus: "in_progress",
+        resolvedAt: new Date(churnCreatedAt.getTime() + i * 1000 + 10_000),
+      });
+    }
+    // 3 genuine recoveries that survived past the sweep interval (3% real rate).
+    for (let i = 0; i < 3; i += 1) {
+      await seedRecoveryAction({
+        companyId,
+        n: 400 + i,
+        createdAt: latestWeek,
+        cause: "stranded_assigned_issue",
+        errorCode: "adapter_failed",
+        status: "resolved",
+        outcome: "restored",
+        ownerAgentId: managerId,
+        returnOwnerAgentId: coderId,
+        finalAssigneeAgentId: managerId,
+        finalIssueStatus: "done",
+        resolvedAt: new Date(latestWeek.getTime() + 30 * 60 * 1000),
+      });
+    }
+
+    const report = await recoveryObservabilityService(db).report(companyId, {
+      now,
+      weeks: 8,
+      thresholdPercent: 2,
+      selfResolveWindowMs: 30_000,
+    });
+
+    const churn = report.byCause.find(
+      (c) => c.cause === "legacy_execution_requires_reconciliation",
+    );
+    expect(churn).toMatchObject({ activeCount: 0, createdLastHour: 4, selfResolvedCount: 4 });
+
+    const latest = report.weekly.find((w) => w.weekStart === "2026-07-13");
+    expect(latest).toMatchObject({
+      recoveryActions: 7,
+      selfResolvedRecoveryActions: 4,
+      ratePercent: 3,
+    });
+    expect(report.alert.latestWeekBreached).toBe(true);
+    expect(report.alert.breachedWeeks.map((w) => w.weekStart)).toEqual(["2026-07-13"]);
   });
 
   it("counts an active board recovery action without reporting an active takeover", async () => {
