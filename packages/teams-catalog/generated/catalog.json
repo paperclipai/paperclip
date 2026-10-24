@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-10-08T10:35:56.448Z",
+  "generatedAt": "2026-10-13T21:29:08.672Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -534,6 +534,216 @@
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
       "contentHash": "sha256:06822cec5f2b6910cb37ba0ebd5e04ed5c7e34f77225564ddddc2470779cdaa6"
+    },
+    {
+      "id": "paperclipai:optional:software-development:full-sdlc-team",
+      "key": "paperclipai/optional/software-development/full-sdlc-team",
+      "kind": "optional",
+      "category": "software-development",
+      "slug": "full-sdlc-team",
+      "name": "Full SDLC Team",
+      "description": "End-to-end software delivery team covering analysis, design, build, test, security and DevOps, with human approval gates between phases.",
+      "path": "catalog/optional/software-development/full-sdlc-team",
+      "entrypoint": "TEAM.md",
+      "schema": "agentcompanies/v1",
+      "defaultInstall": false,
+      "recommendedForCompanyTypes": [
+        "software",
+        "agency",
+        "startup"
+      ],
+      "tags": [
+        "engineering",
+        "sdlc",
+        "devops",
+        "qa",
+        "security"
+      ],
+      "counts": {
+        "agents": 10,
+        "projects": 1,
+        "tasks": 0,
+        "routines": 1,
+        "localSkills": 0,
+        "catalogSkills": 5,
+        "externalSkillSources": 0
+      },
+      "rootAgentSlugs": [
+        "delivery-lead"
+      ],
+      "agentSlugs": [
+        "architect",
+        "backend-dev",
+        "business-analyst",
+        "delivery-lead",
+        "devops",
+        "frontend-dev",
+        "mobile-dev",
+        "qa",
+        "security",
+        "ux-designer"
+      ],
+      "projectSlugs": [
+        "delivery"
+      ],
+      "requiredSkills": [
+        {
+          "type": "catalog",
+          "ref": "doc-maintenance",
+          "agentSlugs": [
+            "architect",
+            "backend-dev",
+            "business-analyst",
+            "delivery-lead",
+            "devops",
+            "frontend-dev",
+            "mobile-dev",
+            "security",
+            "ux-designer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:docs:doc-maintenance",
+          "catalogSkillKey": "paperclipai/bundled/docs/doc-maintenance"
+        },
+        {
+          "type": "catalog",
+          "ref": "github-pr-workflow",
+          "agentSlugs": [
+            "architect",
+            "backend-dev",
+            "delivery-lead",
+            "devops",
+            "frontend-dev",
+            "mobile-dev"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow",
+          "catalogSkillKey": "paperclipai/bundled/software-development/github-pr-workflow"
+        },
+        {
+          "type": "catalog",
+          "ref": "qa-acceptance",
+          "agentSlugs": [
+            "qa",
+            "security"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:quality:qa-acceptance",
+          "catalogSkillKey": "paperclipai/bundled/quality/qa-acceptance"
+        },
+        {
+          "type": "catalog",
+          "ref": "task-planning",
+          "agentSlugs": [
+            "business-analyst",
+            "delivery-lead"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:paperclip-operations:task-planning",
+          "catalogSkillKey": "paperclipai/bundled/paperclip-operations/task-planning"
+        },
+        {
+          "type": "catalog",
+          "ref": "wireframe",
+          "agentSlugs": [
+            "ux-designer"
+          ],
+          "resolved": true,
+          "catalogSkillId": "paperclipai:bundled:product:wireframe",
+          "catalogSkillKey": "paperclipai/bundled/product/wireframe"
+        }
+      ],
+      "envInputs": [],
+      "sourceRefs": [],
+      "files": [
+        {
+          "path": "TEAM.md",
+          "kind": "team",
+          "sizeBytes": 2567,
+          "sha256": "3322707c96a3c2b962dea11be001689e41a0fe82263d2487da0d5f2e4463b328"
+        },
+        {
+          "path": ".paperclip.yaml",
+          "kind": "extension",
+          "sizeBytes": 91,
+          "sha256": "36cc5e7471a0fa482a9baf14ace26fd2137fd39f17f5f603ce369e440048a411"
+        },
+        {
+          "path": "agents/architect/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 536,
+          "sha256": "d6aebb4396986fba8655d96714e1a1f186c6200d467f1a6513914aaa9925436d"
+        },
+        {
+          "path": "agents/backend-dev/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 422,
+          "sha256": "61df080e8bb69771565db30a96f9cec9f79b98ac98dc68febf2eedff8c84fbef"
+        },
+        {
+          "path": "agents/business-analyst/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 480,
+          "sha256": "e618bcd98f9fa69fc2e16e58fc807a1861e18bcdf5765626022076266616a547"
+        },
+        {
+          "path": "agents/delivery-lead/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 618,
+          "sha256": "afa5f100fcaa444b5f1f72d66fd879fea14d2b561456b18348b2781a0cbc2cef"
+        },
+        {
+          "path": "agents/devops/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 488,
+          "sha256": "d2cdc69ad16d9c43096ea2301f3254606a31e3232de4b978bf8e6e80f0933e63"
+        },
+        {
+          "path": "agents/frontend-dev/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 373,
+          "sha256": "2ca5a745859de2e1b57458d7f3f695597a8d905ffefec647dac30b4d6e939160"
+        },
+        {
+          "path": "agents/mobile-dev/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 624,
+          "sha256": "326ace56533de94694d46be0a1c65f7196269813b8dcdbdeedbb1c14ee70cbaa"
+        },
+        {
+          "path": "agents/qa/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 400,
+          "sha256": "3d1c435c272c22a30333ebdfaf1152cbc10291cb2b1ff66af102f1750a20ac28"
+        },
+        {
+          "path": "agents/security/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 423,
+          "sha256": "b90bb052b3987ed4c3ed73864d7f562a1b5ef0188ee0d7f82e7132866b3250e0"
+        },
+        {
+          "path": "agents/ux-designer/AGENTS.md",
+          "kind": "agent",
+          "sizeBytes": 432,
+          "sha256": "42ac31be7681ac3d8ae585f01a998343efe5f9fb27bf94681f060548cdff724c"
+        },
+        {
+          "path": "projects/delivery/PROJECT.md",
+          "kind": "project",
+          "sizeBytes": 325,
+          "sha256": "8474ecaf5ed2539147a58397b86c0ee172ec859f35cb1691c0c09a02ed83967e"
+        },
+        {
+          "path": "projects/delivery/tasks/weekly-delivery-review/TASK.md",
+          "kind": "task",
+          "sizeBytes": 485,
+          "sha256": "2db4322dcd2d661deaef74f04d7523415a3e32470d6dfd0ea679d79563221f2e"
+        }
+      ],
+      "trustLevel": "assets",
+      "compatibility": "compatible",
+      "contentHash": "sha256:2228f1f3408e3b40ce1bfc7d5984064d02ee7d65fe2745a11d91f32e1a63822b"
     }
   ]
 }
