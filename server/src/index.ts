@@ -18,6 +18,11 @@ import {
   registerNativeWorkspaceSyncRetentionWork,
 } from "./services/native-runtime/native-workspace-sync-retention.js";
 import { markGitRestorePointExpired } from "./services/git-restore-point-storage.js";
+import {
+  managedClaudeTranscriptExpirationService,
+  managedClaudeTranscriptRetentionEnabled,
+  registerManagedClaudeTranscriptCleanupWork,
+} from "./services/managed-claude-transcripts.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
@@ -1347,6 +1352,15 @@ async function startServerWithDatabaseTeardown(
   });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
+  if (managedClaudeTranscriptRetentionEnabled()) {
+    registerManagedClaudeTranscriptCleanupWork(
+      deliveryWork,
+      managedClaudeTranscriptExpirationService(db as any, { retentionDays: config.managedClaudeTranscriptRetentionDays }),
+      (result) => {
+        if (result.expired > 0 || result.failed > 0) logger.info({ ...result }, "managed Claude transcript expiration");
+      },
+    );
+  }
   skillSourceSync.start(deliveryWork);
   const caseHandoffDeliveries = caseHandoffDeliveryService(db as any, { heartbeat: environmentLeaseCleanupHeartbeat });
   deliveryWork.register(DELIVERY_QUEUES.caseHandoffs, {

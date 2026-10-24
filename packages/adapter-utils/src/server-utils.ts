@@ -172,6 +172,19 @@ export function isForbiddenConfigEnvKey(key: string): boolean {
   return key === "PAPERCLIP_API_KEY" || key === "PAPERCLIP_WAKE_PAYLOAD_JSON" ||
     AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase());
 }
+
+export function managedAiHomeEnvironment(home: string): Record<string, string> {
+  const providerHome = path.join(home, "provider");
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: path.join(home, "config"),
+    XDG_DATA_HOME: path.join(home, "data"),
+    CODEX_HOME: providerHome,
+    GROK_HOME: providerHome,
+    CLAUDE_CONFIG_DIR: providerHome,
+    HERMES_HOME: providerHome,
+  };
+}
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",

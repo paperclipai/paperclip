@@ -102,6 +102,7 @@ export interface Config {
   gitRestorePointsEnabled: boolean;
   gitRestorePointTerminalDelayDays: number;
   gitRestorePointIdleDays: number;
+  managedClaudeTranscriptRetentionDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -352,6 +353,7 @@ export function loadConfig(): Config {
   const gitRestorePointRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS", 90));
   const gitRestorePointTerminalDelayDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS", 3);
   const gitRestorePointIdleDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS", 7);
+  const managedClaudeTranscriptRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_DAYS", 7));
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -420,6 +422,7 @@ export function loadConfig(): Config {
     gitRestorePointsEnabled: process.env.PAPERCLIP_GIT_RESTORE_POINTS_ENABLED === "true",
     gitRestorePointTerminalDelayDays,
     gitRestorePointIdleDays,
+    managedClaudeTranscriptRetentionDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

@@ -22,6 +22,7 @@ import { decideCodexAuthMerge, withAccountHomeSecretMutationLock } from "@paperc
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import { managedAiHomeEnvironment } from "@paperclipai/adapter-utils/server-utils";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
@@ -187,19 +188,6 @@ done`,
     if (parent === directory) break;
     directory = parent;
   }
-}
-
-function managedAiHomeEnvironment(home: string): Record<string, string> {
-  const providerHome = path.join(home, "provider");
-  return {
-    HOME: home,
-    XDG_CONFIG_HOME: path.join(home, "config"),
-    XDG_DATA_HOME: path.join(home, "data"),
-    CODEX_HOME: providerHome,
-    GROK_HOME: providerHome,
-    CLAUDE_CONFIG_DIR: providerHome,
-    HERMES_HOME: providerHome,
-  };
 }
 
 /** Only the server-created credential home is volatile; retain all other config. */
