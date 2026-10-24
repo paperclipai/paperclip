@@ -77,6 +77,96 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("classifies a 10,000-task dependency chain without losing the full path", () => {
+    for (const size of [100, 1_000, 10_000]) {
+      const issues = Array.from({ length: size }, (_, index) => issue({
+        id: `scale-${size}-${index}`,
+        identifier: `SCL-${index}`,
+        title: `Dependency ${index}`,
+        status: index === 0 ? "todo" : "blocked",
+        assigneeAgentId: index === 0 ? null : coderId,
+      }));
+      const relations = Array.from({ length: size - 1 }, (_, index) => ({
+        companyId,
+        blockerIssueId: `scale-${size}-${index}`,
+        blockedIssueId: `scale-${size}-${index + 1}`,
+      }));
+      const startedAt = performance.now();
+      const findings = classifyIssueGraphLiveness({
+        issues,
+        relations,
+        agents: [agent(), manager],
+      });
+      const elapsedMs = performance.now() - startedAt;
+      console.info(`issue_liveness_chain tasks=${size} relations=${size - 1} elapsed_ms=${elapsedMs.toFixed(1)}`);
+      expect(findings).toHaveLength(1);
+      expect(findings[0]).toMatchObject({
+        issueId: `scale-${size}-${size - 1}`,
+        state: "blocked_by_unassigned_issue",
+        dependencyPath: expect.arrayContaining([
+          expect.objectContaining({ issueId: `scale-${size}-0` }),
+          expect.objectContaining({ issueId: `scale-${size}-${size - 1}` }),
+        ]),
+      });
+      expect(findings[0]?.dependencyPath).toHaveLength(size);
+    }
+  }, 30_000);
+
+  it("does not revisit shared dependency subgraphs in a diamond graph", () => {
+    const depth = 16;
+    const graphIssues = [
+      issue({ id: "diamond-0a", status: "todo", assigneeAgentId: null, assigneeUserId: "human-1" }),
+      issue({ id: "diamond-0b", status: "todo", assigneeAgentId: null, assigneeUserId: "human-1" }),
+    ];
+    const relations: Array<{ companyId: string; blockerIssueId: string; blockedIssueId: string }> = [];
+    let previous = ["diamond-0a", "diamond-0b"];
+    for (let level = 1; level <= depth; level += 1) {
+      const current = [`diamond-${level}a`, `diamond-${level}b`];
+      for (const id of current) {
+        graphIssues.push(issue({ id, status: "blocked" }));
+        for (const blockerIssueId of previous) {
+          relations.push({ companyId, blockerIssueId, blockedIssueId: id });
+        }
+      }
+      previous = current;
+    }
+    const startedAt = performance.now();
+
+    const findings = classifyIssueGraphLiveness({
+      issues: graphIssues,
+      relations,
+      agents: [agent(), manager],
+      activeRuns: Array.from({ length: 10_000 }, (_, index) => ({
+        companyId,
+        issueId: `unrelated-live-task-${index}`,
+        agentId: coderId,
+        status: "running",
+      })),
+    });
+
+    console.info(`issue_liveness_diamond tasks=${graphIssues.length} relations=${relations.length} elapsed_ms=${(performance.now() - startedAt).toFixed(1)}`);
+    expect(findings).toEqual([]);
+  }, 30_000);
+
+  it("terminates on cyclic and missing dependency references", () => {
+    const cycleA = issue({ id: "cycle-a", status: "blocked" });
+    const cycleB = issue({ id: "cycle-b", status: "blocked" });
+    const source = issue({ id: "cycle-source", status: "blocked" });
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [cycleA, cycleB, source],
+      relations: [
+        { companyId, blockerIssueId: cycleA.id, blockedIssueId: source.id },
+        { companyId, blockerIssueId: cycleB.id, blockedIssueId: cycleA.id },
+        { companyId, blockerIssueId: cycleA.id, blockedIssueId: cycleB.id },
+        { companyId, blockerIssueId: "missing-issue", blockedIssueId: source.id },
+      ],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";

@@ -154,25 +154,6 @@ function isInvokableAgent(
   return Boolean(agent && isAgentInvokable({ agent, agents: [...agentsById.values()] }));
 }
 
-function hasActiveExecutionPath(
-  companyId: string,
-  issueId: string,
-  activeRuns: IssueLivenessExecutionPathInput[],
-  queuedWakeRequests: IssueLivenessExecutionPathInput[],
-) {
-  return [...activeRuns, ...queuedWakeRequests].some(
-    (entry) => entry.companyId === companyId && entry.issueId === issueId,
-  );
-}
-
-function hasWaitingPath(
-  companyId: string,
-  issueId: string,
-  waitingPaths: IssueLivenessWaitingPathInput[],
-) {
-  return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
-}
-
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -496,6 +477,23 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const issuePathKey = (companyId: string, issueId: string) => `${companyId}\u0000${issueId}`;
+  const activeExecutionPathKeys = new Set<string>();
+  for (const entry of activeRuns) {
+    if (entry.issueId) activeExecutionPathKeys.add(issuePathKey(entry.companyId, entry.issueId));
+  }
+  for (const entry of queuedWakeRequests) {
+    if (entry.issueId) activeExecutionPathKeys.add(issuePathKey(entry.companyId, entry.issueId));
+  }
+  const pendingInteractionKeys = new Set(
+    pendingInteractions.map((entry) => issuePathKey(entry.companyId, entry.issueId)),
+  );
+  const pendingApprovalKeys = new Set(
+    pendingApprovals.map((entry) => issuePathKey(entry.companyId, entry.issueId)),
+  );
+  const openRecoveryIssueKeys = new Set(
+    openRecoveryIssues.map((entry) => issuePathKey(entry.companyId, entry.issueId)),
+  );
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -528,12 +526,13 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
+    const key = issuePathKey(issue.companyId, issue.id);
     return Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
-      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      activeExecutionPathKeys.has(key) ||
+      pendingInteractionKeys.has(key) ||
+      pendingApprovalKeys.has(key) ||
+      openRecoveryIssueKeys.has(key);
   }
 
   function reviewFinding(
@@ -698,22 +697,51 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     seen: Set<string>,
   ): IssueLivenessFinding | null {
     if (seen.has(current.id)) return null;
-    seen.add(current.id);
 
-    const relations = blockersByBlockedIssueId.get(current.id) ?? [];
-    for (const relation of relations) {
-      if (relation.companyId !== current.companyId || relation.companyId !== source.companyId) continue;
+    // A diamond shaped blocker graph can have exponentially many paths but
+    // only linearly many distinct nodes. Traverse it iteratively and remember
+    // subgraphs already proven to contain no attention finding. Keep the
+    // active path separate so cycles still follow the existing path-local rule.
+    const exhausted = new Set<string>();
+    const activePath = new Set(seen);
+    const path = [...dependencyPath];
+    const stack = [{
+      issue: current,
+      relations: blockersByBlockedIssueId.get(current.id) ?? [],
+      nextRelation: 0,
+    }];
+    activePath.add(current.id);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      if (frame.nextRelation >= frame.relations.length) {
+        exhausted.add(frame.issue.id);
+        activePath.delete(frame.issue.id);
+        stack.pop();
+        path.pop();
+        continue;
+      }
+
+      const relation = frame.relations[frame.nextRelation++]!;
+      if (relation.companyId !== frame.issue.companyId || relation.companyId !== source.companyId) continue;
       const blocker = issuesById.get(relation.blockerIssueId);
       if (!blocker || blocker.companyId !== source.companyId || blocker.status === "done") continue;
-      const path = [...dependencyPath, blocker];
 
       if (blocker.status === "blocked") {
-        const nested = firstBlockedChainFinding(source, blocker, path, new Set(seen));
-        if (nested) return nested;
+        if (!activePath.has(blocker.id) && !exhausted.has(blocker.id)) {
+          activePath.add(blocker.id);
+          path.push(blocker);
+          stack.push({
+            issue: blocker,
+            relations: blockersByBlockedIssueId.get(blocker.id) ?? [],
+            nextRelation: 0,
+          });
+          continue;
+        }
         if (hasExplicitWaitingPath(blocker)) continue;
       }
 
-      const leafFinding = blockedFindingForLeaf(source, blocker, path);
+      const leafFinding = blockedFindingForLeaf(source, blocker, [...path, blocker]);
       if (leafFinding) return leafFinding;
     }
 
