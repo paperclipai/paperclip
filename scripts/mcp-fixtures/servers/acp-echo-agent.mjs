@@ -32,6 +32,10 @@ async function handleRequest(request) {
   }
   if (request.method === "session/new") return { sessionId: randomUUID() };
   if (request.method === "session/prompt") {
+    // An untyped prompt error, as sent by an agent without the AIR channel.
+    if (process.env.PAPERCLIP_ACPX_PROMPT_ERROR) {
+      throw new Error(process.env.PAPERCLIP_ACPX_PROMPT_ERROR);
+    }
     const typedFailure = process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE
       ? JSON.parse(await readFile(process.env.PAPERCLIP_ACPX_TYPED_FAILURE_FILE, "utf8"))
       : {};
