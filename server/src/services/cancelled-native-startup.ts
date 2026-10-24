@@ -1,7 +1,7 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { claimedAdapterType } from "./conversation-continuation.js";
+import { claimedAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
@@ -39,8 +39,31 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     (run.resultJson === null || cancellation?.beforeNativeSelection === true) &&
     Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
       run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
+  // A legacy conversation turn cancelled while it still prepares never
+  // reached provider dispatch, so no owner survives that could ever write a
+  // stop record. Demanding one that can never exist holds the thread
+  // permanently: every later user message defers behind
+  // process_identity_missing, and on a chat thread the symptom is silence.
+  //
+  // The stage is the proof. legacyControllerClaim() commits 'preparing' with
+  // the run claim, and it only advances in assertOwned("dispatching"), which
+  // commits before the provider handoff. A terminal run still at 'preparing'
+  // therefore provably never dispatched. That is a stronger fact than an
+  // unresolved runtime mode, and it does not depend on the startupCancellation
+  // fence — which Stop only writes while runtimeModeResolvedAt is null, so a
+  // turn that resolved its mode and was then cancelled still preparing has no
+  // fence to check.
+  //
+  // The controller lease must have elapsed. Renewal requires status 'running',
+  // so nothing can renew a terminal run's lease and no assertOwned() can ever
+  // succeed afterwards; which boot claimed it does not change that.
+  const legacyBeforeDispatch = run.runtimeMode === "legacy" &&
+    run.executionStage === "preparing" && !run.nativeIssueId && !run.nativeSessionId && !coordinator &&
+    isConversationAdapter(claimedAdapterType(run) ?? "") &&
+    Boolean(run.controllerBootId &&
+      run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
   const beforeReviewDispatch = isPreDispatchReviewWait(run) && !coordinator;
-  const beforeSelection = beforeReviewDispatch || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  const beforeSelection = beforeReviewDispatch || historicalBeforeSelection || legacyBeforeDispatch || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -55,7 +78,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
-  if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
+  if ((!settled && leases.length === 0 && !historicalBeforeSelection && !legacyBeforeDispatch) || leases.some(lease =>
     lease.provider === "local"
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease))) return false;
