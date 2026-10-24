@@ -4469,8 +4469,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A local directory the runtime did not create, such as the project checkout a
+  // shared workspace points at, is never removed above. Keeping it is the
+  // intended outcome, so its continued existence is not a cleanup failure.
+  const retainsUnownedLocalDirectory =
+    input.workspace.providerType === "local_fs" && !createdByRuntime;
   const cleaned =
     !workspacePath ||
+    retainsUnownedLocalDirectory ||
     !(await directoryExists(workspacePath));
   if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
