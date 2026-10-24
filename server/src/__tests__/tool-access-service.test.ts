@@ -18635,6 +18635,94 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("requires agent configuration permission for agent-target profile bind and unbind", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const deniedActor = boardSessionActor(
+      company.id,
+      "operator",
+      `profile-operator-${randomUUID()}`,
+    );
+    const permittedActor = boardSessionActor(
+      company.id,
+      "operator",
+      `profile-configurer-${randomUUID()}`,
+    );
+    await grantBoardUser(
+      db,
+      company.id,
+      deniedActor.userId!,
+      ["tasks:assign"],
+      "operator",
+    );
+    await grantBoardUser(
+      db,
+      company.id,
+      permittedActor.userId!,
+      ["agents:configure"],
+      "operator",
+    );
+    const service = createTestToolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `agent-binding-auth-${randomUUID()}`,
+      name: "Agent binding auth",
+      defaultAction: "deny",
+    });
+    const bindPath =
+      `/api/companies/${company.id}/tools/profiles/${profile.id}/bind`;
+    const unbindPath =
+      `/api/companies/${company.id}/tools/profiles/${profile.id}/unbind`;
+    const target = { targetType: "agent", targetId: agent.id };
+    const otherCompany = await createCompany(db);
+    const foreignAgent = await createAgent(db, otherCompany.id);
+
+    const deniedBind = await request(createRouteApp(db, deniedActor))
+      .post(bindPath)
+      .send(target);
+    expect(deniedBind.status).toBe(403);
+    expect(deniedBind.body.error).toContain("cannot edit agent");
+    expect(
+      await db
+        .select()
+        .from(toolProfileBindings)
+        .where(eq(toolProfileBindings.profileId, profile.id)),
+    ).toHaveLength(0);
+
+    const foreignTarget = await request(createRouteApp(db, permittedActor))
+      .post(bindPath)
+      .send({ targetType: "agent", targetId: foreignAgent.id });
+    expect(foreignTarget.status).toBe(422);
+
+    await request(createRouteApp(db, permittedActor))
+      .post(bindPath)
+      .send(target)
+      .expect(201);
+
+    const deniedUnbind = await request(createRouteApp(db, deniedActor))
+      .post(unbindPath)
+      .send(target);
+    expect(deniedUnbind.status).toBe(403);
+    expect(deniedUnbind.body.error).toContain("cannot edit agent");
+    expect(
+      await db
+        .select()
+        .from(toolProfileBindings)
+        .where(eq(toolProfileBindings.profileId, profile.id)),
+    ).toHaveLength(1);
+
+    const permittedUnbind = await request(createRouteApp(db, permittedActor))
+      .post(unbindPath)
+      .send(target)
+      .expect(200);
+    expect(permittedUnbind.body).toEqual({ unbound: 1 });
+    expect(
+      await db
+        .select()
+        .from(toolProfileBindings)
+        .where(eq(toolProfileBindings.profileId, profile.id)),
+    ).toHaveLength(0);
+  });
+
   it("deletes an application with zero connections and records activity", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);

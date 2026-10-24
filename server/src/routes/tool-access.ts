@@ -540,6 +540,28 @@ function connectorEnrollmentPrincipal(req: Request): string {
     return membership;
   }
 
+  async function assertAgentConfigUpdate(
+    req: Request,
+    companyId: string,
+    agentId: string,
+    denialContext: string,
+  ) {
+    const [agent] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+      .limit(1);
+    if (!agent) throw unprocessable("Tool profile agent binding target must belong to the same company");
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agent_config:update",
+      resource: { type: "agent", companyId, agentId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(`You cannot edit agent ${agentId}, so you cannot change ${denialContext}`);
+    }
+  }
+
   async function isToolConnectionManager(req: Request, companyId: string) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
@@ -2486,6 +2508,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const companyId = req.params.companyId as string;
       assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
+      if (req.body.targetType === "agent") {
+        await assertAgentConfigUpdate(
+          req,
+          companyId,
+          req.body.targetId,
+          "its tool profiles",
+        );
+      }
       try {
         const binding = await svc.bindProfile(existing.id, req.body, getActorInfo(req));
         await logActivity(db, {
@@ -2511,6 +2541,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
       const companyId = req.params.companyId as string;
       assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
+      if (req.body.targetType === "agent") {
+        await assertAgentConfigUpdate(
+          req,
+          companyId,
+          req.body.targetId,
+          "its tool profiles",
+        );
+      }
       const result = await svc.unbindProfile(existing.id, req.body);
       await logActivity(db, {
         companyId,

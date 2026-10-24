@@ -330,6 +330,14 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/routines/{id}/run"].post).toBeDefined();
   });
 
+  it("documents the tool profile unbind not-found response", () => {
+    const spec = buildOpenApiSpec() as any;
+    expect(
+      spec.paths["/api/companies/{companyId}/tools/profiles/{profileId}/unbind"]
+        .post.responses["404"],
+    ).toBeDefined();
+  });
+
   it("documents anonymous liveness separately from database readiness", () => {
     const spec = buildOpenApiSpec() as any;
     for (const method of ["get", "head"]) {

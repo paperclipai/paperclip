@@ -48,21 +48,29 @@ API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/tools/profiles`.
 - `PATCH /api/tool-profiles/{profileId}`.
+- `POST /api/companies/{companyId}/tools/profiles/{profileId}/bind`.
+- `POST /api/companies/{companyId}/tools/profiles/{profileId}/unbind`.
 
-Agent access: `restricted` — Board management REST; agent receives effective tool
-assignment.
+Agent access: `restricted` — Board management REST; agent-target bind and unbind
+require `agent_config:update` (`agents:configure`) on the target agent, and agents
+receive effective tool assignment.
 
-Policy: Named gateway/profile administration and credentials are board tools:admin;
-agent sessions/tool use use separate scoped authority.
+Policy: Named gateway/profile administration and credentials are board tools:admin.
+Agent-target bind and unbind also require `agent_config:update` (`agents:configure`)
+on an agent in the profile company. Agent sessions/tool use use separate scoped
+authority.
 
-Evidence: `source-only` — [implementation](../../server/src/routes/tool-gateway.ts#L353)
-at the reviewed commit above.
+Evidence: `verified` — [authorization](../../server/src/routes/tool-access.ts) and
+[route-level regression](../../server/src/__tests__/tool-access-service.test.ts);
+the focused test used real PostgreSQL routes, not a live agent execution.
 
-Verification: `not-run` — assert the documented agent denial with an owned test fixture;
-verify any listed agent request/result path separately. A delegated operation needs its
-own policy and access review.
+Verification: `passed` — an Operator with only `tasks:assign` receives 403 for
+agent-target bind and unbind without changing saved bindings. An Operator with
+`agents:configure` can bind and unbind, and a cross-company agent target returns 422.
+No live agent execution was run.
 
-Gaps: Agent access to tools does not permit profile editing.
+Gaps: Agent access to tools does not permit profile editing. Focused route-level
+coverage does not qualify a live agent identity path.
 
 Backend evidence: [profile entry validation](../../server/src/__tests__/tool-profile-entry-validation.test.ts)
 covers company-scoped selector references and bounded reads for a large immutable
