@@ -4,14 +4,14 @@ import { resolveCodexLocalCliPolicy } from "../index.js";
 
 describe("buildCodexExecArgs", () => {
   it.each([
-    { config: { extraArgs: ["--sandbox", "read-only"] }, bypass: false, args: ["exec", "--json", "--sandbox", "read-only", "-"] },
-    { config: { args: ["-c", "approval_policy=on-request"] }, bypass: false, args: ["exec", "--json", "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true", "-c", "approval_policy=on-request", "-"] },
-    { config: { extraArgs: [], args: ["--profile", "restricted"] }, bypass: false, args: ["exec", "--json", "--profile", "restricted", "-"] },
-    { config: { extraArgs: [0, null], args: ["--sandbox", "read-only"] }, bypass: false, args: ["exec", "--json", "--sandbox", "read-only", "-"] },
+    { config: { extraArgs: ["--sandbox", "read-only"] }, bypass: false, args: ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"] },
+    { config: { args: ["-c", "approval_policy=on-request"] }, bypass: false, args: ["exec", "--json", "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true", "--skip-git-repo-check", "-c", "approval_policy=on-request", "-"] },
+    { config: { extraArgs: [], args: ["--profile", "restricted"] }, bypass: false, args: ["exec", "--json", "--skip-git-repo-check", "--profile", "restricted", "-"] },
+    { config: { extraArgs: [0, null], args: ["--sandbox", "read-only"] }, bypass: false, args: ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-"] },
     { config: { extraArgs: ["--color", "never"], args: ["--sandbox", "read-only"] }, bypass: true, args: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--color", "never", "-"] },
     { config: { dangerouslyBypassApprovalsAndSandbox: true, extraArgs: ["--sandbox", "read-only"] }, bypass: true, args: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--sandbox", "read-only", "-"] },
     { config: { dangerouslyBypassSandbox: true, args: ["--sandbox", "read-only"] }, bypass: true, args: ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "--sandbox", "read-only", "-"] },
-    { config: { dangerouslyBypassApprovalsAndSandbox: false, dangerouslyBypassSandbox: true, extraArgs: ["--color", "never"] }, bypass: false, args: ["exec", "--json", "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true", "--color", "never", "-"] },
+    { config: { dangerouslyBypassApprovalsAndSandbox: false, dangerouslyBypassSandbox: true, extraArgs: ["--color", "never"] }, bypass: false, args: ["exec", "--json", "-c", 'sandbox_mode="workspace-write"', "-c", "sandbox_workspace_write.network_access=true", "--skip-git-repo-check", "--color", "never", "-"] },
   ])("keeps the browser policy and exact execution arguments consistent for $config", ({ config, bypass, args }) => {
     expect(resolveCodexLocalCliPolicy(config).bypass).toBe(bypass);
     expect(buildCodexExecArgs(config).args).toEqual(args);
@@ -274,7 +274,7 @@ describe("buildCodexExecArgs", () => {
     const { args } = buildCodexExecArgs({ extraArgs });
     expect(args).not.toContain('sandbox_mode="workspace-write"');
     expect(args).not.toContain("sandbox_workspace_write.network_access=true");
-    expect(args).toEqual(["exec", "--json", ...extraArgs, "-"]);
+    expect(args).toEqual(["exec", "--json", "--skip-git-repo-check", ...extraArgs, "-"]);
   });
 
   it("preserves an explicit network denial after defaults", () => {
@@ -291,6 +291,22 @@ describe("buildCodexExecArgs", () => {
   it("preserves the existing explicit bypass configuration", () => {
     const { args } = buildCodexExecArgs({ dangerouslyBypassApprovalsAndSandbox: true });
     expect(args).toEqual(["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-"]);
+  });
+
+  it.each([null, "existing-session"])("skips the Codex git repository check for sandboxed session %s", (resumeSessionId) => {
+    const { args } = buildCodexExecArgs({ dangerouslyBypassApprovalsAndSandbox: false }, { resumeSessionId });
+    expect(args).toContain('sandbox_mode="workspace-write"');
+    expect(args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
+    const end = resumeSessionId ? args.indexOf("resume") : args.length - 1;
+    expect(args.indexOf("--skip-git-repo-check")).toBeLessThan(end);
+  });
+
+  it("does not add a second --skip-git-repo-check to a sandboxed run whose extraArgs carry it", () => {
+    const { args } = buildCodexExecArgs({
+      dangerouslyBypassApprovalsAndSandbox: false,
+      extraArgs: ["--skip-git-repo-check"],
+    });
+    expect(args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
   });
 
 });
