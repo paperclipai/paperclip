@@ -8,6 +8,8 @@ import { unprocessable } from '../errors.js';
 import { buildGitAuthInvocation } from './git-credentials.js';
 import { MAX_REPOSITORY_BYTES, MAX_REPOSITORY_FILES } from './skill-repository-package.js';
 
+const GIT_NULL_DEVICE = '/dev/null';
+
 export type GitSkillTreeEntry = { path: string; type: string; mode: string; sha: string; size?: number };
 export interface GitSkillSnapshot {
   commitSha: string;
@@ -56,8 +58,8 @@ function gitEnvironment(token: string) {
   return {
     PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, TMPDIR: process.env.TMPDIR,
     ...authorization,
-    LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: os.devNull,
-    GIT_CONFIG_GLOBAL: os.devNull, GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_NO_REPLACE_OBJECTS: '1',
+    LANG: 'C', LC_ALL: 'C', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_SYSTEM: GIT_NULL_DEVICE,
+    GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE, GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_NO_REPLACE_OBJECTS: '1',
   };
 }
 
@@ -76,7 +78,7 @@ async function directoryBytes(directory: string): Promise<number> {
 async function runGit(directory: string, args: string[], token: string, options: GitSkillSnapshotOptions & { download?: boolean; maxOutput?: number; input?: string } = {}): Promise<Buffer> {
   options.signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['-c', `core.hooksPath=${os.devNull}`, '-c', 'init.templateDir=', '-c', 'protocol.allow=never',
+    const child = spawn('git', ['-c', `core.hooksPath=${GIT_NULL_DEVICE}`, '-c', 'init.templateDir=', '-c', 'protocol.allow=never',
       '-c', 'protocol.https.allow=always', '-c', 'http.followRedirects=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args],
     { cwd: directory, env: gitEnvironment(token), stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     const chunks: Buffer[] = [];
