@@ -140,9 +140,11 @@ its distinct digest and fails recovery; an unchanged body does not require
 restoring its plaintext into the checkpoint.
 
 PostgreSQL JSONB cannot represent NUL (U+0000), which can occur in command
-output such as Vite virtual-module paths. The run-event payload column uses a
-lossless storage codec for these events: the JSONB projection renders NUL as
-the literal `\u0000`, and the reserved `$paperclipRunEventJsonV1` field contains
+output such as Vite virtual-module paths. It also rejects an unpaired UTF-16
+surrogate, which text cut inside an emoji contains. The run-event payload column
+uses a lossless storage codec for these events: the JSONB projection renders NUL
+as the literal `\u0000` and an unpaired surrogate as its literal escape, such as
+`\ud83d`, and the reserved `$paperclipRunEventJsonV1` field contains
 the original serialized JSON as a doubly escaped string. Ordinary payloads
 retain their existing representation. Drizzle reads restore the exact stored
 payload before replay, hash validation, redaction, or API presentation. SQL

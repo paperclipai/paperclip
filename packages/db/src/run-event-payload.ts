@@ -2,20 +2,29 @@ import { customType } from "drizzle-orm/pg-core";
 
 // Reserved only in the on-disk representation, never in a decoded event.
 const originalJsonKey = "$paperclipRunEventJsonV1";
+const unpairedSurrogatePattern = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const unpairedSurrogatesPattern = new RegExp(unpairedSurrogatePattern.source, "g");
+const escapedSurrogatePattern = /\\ud[89a-f]/;
 
 /** Keep JSONB routing fields queryable while retaining JSON strings containing NUL. */
 export function encodeRunEventPayload(payload: Record<string, unknown>): string {
   const originalJson = JSON.stringify(payload);
-  if (!originalJson.includes("\\u0000") && !originalJson.includes(originalJsonKey)) {
+  if (
+    !originalJson.includes("\\u0000")
+    && !escapedSurrogatePattern.test(originalJson)
+    && !originalJson.includes(originalJsonKey)
+  ) {
     return originalJson;
   }
 
   const original = JSON.parse(originalJson) as Record<string, unknown>;
   let needsEncoding = Object.hasOwn(original, originalJsonKey);
   function projectString(value: string): string {
-    if (!value.includes("\u0000")) return value;
+    if (!value.includes("\u0000") && !unpairedSurrogatePattern.test(value)) return value;
     needsEncoding = true;
-    return value.replaceAll("\u0000", "\\u0000");
+    return value
+      .replaceAll("\u0000", "\\u0000")
+      .replace(unpairedSurrogatesPattern, (unit) => `\\u${unit.charCodeAt(0).toString(16)}`);
   }
   function project(value: unknown): unknown {
     if (typeof value === "string") return projectString(value);
