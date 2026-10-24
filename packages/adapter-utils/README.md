@@ -43,6 +43,13 @@ helpers in [`src/ssh.ts`](./src/ssh.ts):
 calls for adapters that want a per-run remote workspace and an automatic
 `restoreWorkspace()` finally hook.
 
+Nested worktrees under `.paperclip/worktrees` and `.claude/worktrees` are left
+out of the upload and the restore. A caller that captures its own baseline for
+`restoreWorkspaceFromSshExecution` must put
+`resolveNestedWorktreeExcludes(...)` (from `src/exclude-patterns.ts`) in the
+baseline's `exclude` list, or the restore would treat the local worktrees as
+deleted on the remote. Pass `nestedWorktreeDirs` to replace the default list.
+
 The invariant is pinned by the `no-remote-git contract` case in
 [`src/ssh-fixture.test.ts`](./src/ssh-fixture.test.ts), which asserts that a
 remote-only commit propagates to the local worktree through the
