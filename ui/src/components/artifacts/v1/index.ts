@@ -1,7 +1,7 @@
 export * from "./kinds";
 export * from "./when";
 export * from "./geometry";
-export { ArtifactPrint, fitPrint, useImageAspect, type PrintSize } from "./ArtifactPrint";
+export { ArtifactPrint, fitPrint, useImageAspect, usePreviewFailure, type PrintSize } from "./ArtifactPrint";
 export { IconSheet, PreviewSheet } from "./ArtifactSheet";
 export { ArtifactFront } from "./ArtifactFront";
 export { ArtifactStack } from "./ArtifactStack";
