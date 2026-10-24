@@ -1133,5 +1133,29 @@ describe("grok_local execute", () => {
       expect(prompts[1]).toContain("comment-first");
       expect(prompts[1]).toContain("comment-scope");
     });
+
+    it("forwards the run cancellation signal to the staged restore (TOG-25014)", async () => {
+      delete process.env.XAI_API_KEY;
+      mocks.state.isRemote = true;
+      await seedHostGrokAuth("{}");
+      const restoreWorkspace = vi.fn(async () => {});
+      runProcessMock.mockImplementation(async (_run, _target, _command, _args, options) => {
+        options.onProcessStopped();
+        return makeSuccessfulRunResult();
+      });
+      prepareRuntimeMock.mockImplementationOnce(async () => ({
+        workspaceRemoteDir: "/remote/workspace",
+        assetDirs: { home: "/remote/workspace/.paperclip-runtime/grok/home" },
+        restoreWorkspace,
+      }));
+      const ctx = await makeCtx("run-restore-signal", await makeTempRoot());
+      const controller = new AbortController();
+      ctx.signal = controller.signal;
+
+      await execute(ctx);
+
+      expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+      expect(restoreWorkspace).toHaveBeenCalledWith(expect.any(Function), controller.signal);
+    });
   });
 });

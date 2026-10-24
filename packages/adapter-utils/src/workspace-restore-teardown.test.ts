@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createWorkspaceRestoreTeardown } from "./workspace-restore-teardown.js";
 import { withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep } from "./workspace-restore-diagnostics.js";
+import { workspaceRestoreCancelledError } from "./workspace-restore-merge.js";
 
 // One row per adapter's two message strings, taken verbatim from
 // claude-local, codex-local, and gemini-local. The factory's contract must
@@ -49,6 +50,24 @@ describe.each(ADAPTER_MESSAGE_PAIRS)("createWorkspaceRestoreTeardown ($adapter)"
     expect(second).toEqual({ ok: false, code: "restore_failed", diagnostic: {
       phase: "asset", step: "asset_restore", errorCode: "unknown", exitCode: 1,
     } });
+  });
+
+  it("forwards the signal passed at call time over the one captured at construction", async () => {
+    // The ACP engine caches the step with the staged runtime and reuses it on
+    // a compatible resume, so the construction-time signal belongs to the
+    // first run. Stopping a later run must stop its own restore.
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const first = new AbortController();
+    const second = new AbortController();
+    const teardown = createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace: async (_progress, signal) => { seen.push(signal); } },
+      onLog: async () => {}, startMessage, failurePrefix,
+      signal: first.signal,
+    });
+    await teardown(second.signal);
+    await teardown();
+    expect(seen[0]).toBe(second.signal);
+    expect(seen[1]).toBe(first.signal);
   });
 
   it("logs the start message to stdout and returns ok on a clean restore", async () => {
@@ -101,5 +120,54 @@ describe.each(ADAPTER_MESSAGE_PAIRS)("createWorkspaceRestoreTeardown ($adapter)"
       expect(line.chunk).not.toContain(secretHostPath);
       expect(line.chunk).not.toContain(thrown.message);
     }
+  });
+});
+
+describe("createWorkspaceRestoreTeardown signal forwarding (TOG-25014)", () => {
+  const startMessage = "[paperclip] Restoring workspace changes from the sandbox.\n";
+
+  it("forwards the run signal to the staged restore", async () => {
+    const restoreWorkspace = vi.fn(async () => {});
+    const controller = new AbortController();
+    const teardown = createWorkspaceRestoreTeardown({
+      stagedRuntime: { restoreWorkspace },
+      onLog: async () => {},
+      startMessage,
+      failurePrefix: "[paperclip] Test teardown workspace restore failed",
+      signal: controller.signal,
+    });
+
+    const outcome = await teardown();
+
+    expect(outcome).toEqual({ ok: true });
+    expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspace).toHaveBeenCalledWith(expect.any(Function), controller.signal);
+  });
+
+  it("reports a cancelled staged restore as a skip on stdout, not a failure", async () => {
+    const logLines: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    const controller = new AbortController();
+    controller.abort(new Error("test stop"));
+    const teardown = createWorkspaceRestoreTeardown({
+      stagedRuntime: {
+        restoreWorkspace: async () => {
+          throw workspaceRestoreCancelledError();
+        },
+      },
+      onLog: async (stream, chunk) => {
+        logLines.push({ stream, chunk });
+      },
+      startMessage,
+      failurePrefix: "[paperclip] Test teardown workspace restore failed",
+      signal: controller.signal,
+    });
+
+    const outcome = await teardown();
+
+    expect(outcome).toEqual({ ok: false, code: "restore_failed" });
+    expect(logLines).toEqual([
+      { stream: "stdout", chunk: startMessage },
+      { stream: "stdout", chunk: "[paperclip] Skipping workspace restore: run was cancelled.\n" },
+    ]);
   });
 });

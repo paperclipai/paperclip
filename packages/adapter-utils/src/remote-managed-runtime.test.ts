@@ -349,4 +349,23 @@ describe("remote managed runtime", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("forwards the run signal from restoreWorkspace to the SSH restore (TOG-25014)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-restore-signal-"));
+    cleanupDirs.push(root);
+    await writeFile(path.join(root, "file.txt"), "data\n", "utf8");
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "signal", adapterKey: "test", workspaceLocalDir: root,
+    });
+    const controller = new AbortController();
+
+    await prepared.restoreWorkspace(() => {}, controller.signal);
+
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
 });

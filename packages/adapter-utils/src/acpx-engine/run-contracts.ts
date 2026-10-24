@@ -19,6 +19,7 @@ import type {
   PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+import type { WorkspaceRestoreTeardownStep } from "../workspace-restore-teardown.js";
 
 // ---------------------------------------------------------------------------
 // Resource identity
@@ -99,7 +100,7 @@ export interface ManagedHomeResource {
    * rejects — so the run coordinator can surface a failed restore on the run
    * record without changing the run's exit code or status.
    */
-  readonly teardown: () => Promise<WorkspaceRestoreOutcome>;
+  readonly teardown: WorkspaceRestoreTeardownStep;
   /** The env keys the seam mutated on this run. */
   readonly envDelta: Record<string, string>;
 }

@@ -38,6 +38,7 @@ import {
   directorySnapshotSha256,
   classifyWorkspaceRestoreFailure,
   disposeDirectorySnapshot,
+  isWorkspaceRestoreCancelled,
   selectDirectorySnapshot,
   mergeDirectoryWithBaseline,
   type DirectorySnapshot,
@@ -57,6 +58,7 @@ import {
   type SyncOperationTask,
 } from "./sync-operation-schedule.js";
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
+import { cleanupStagingDirInBackground } from "./staging-cleanup.js";
 import {
   recordWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnostics, withWorkspaceRestoreStep,
   type WorkspaceRestoreDiagnostic,
@@ -332,8 +334,10 @@ const WORKSPACE_RESTORE_RETRY_DELAYS_MS = [2_000, 5_000] as const;
 /**
  * Retry a copy-back attempt only while it has written nothing into the host
  * workspace. The baseline stays valid until then, so a fresh attempt is the
- * same merge. Never retry an unsafe archive or a permission failure, and never
- * retry once the merge has started writing host files.
+ * same merge. Never retry an unsafe archive or a permission failure, never
+ * retry operator cancellation (the run is stopping; a retry would only delay
+ * terminalization), and never retry once the merge has started writing host
+ * files.
  */
 async function retryWorkspaceRestoreBeforeHostWrite(
   delaysMs: readonly number[],
@@ -345,6 +349,9 @@ async function retryWorkspaceRestoreBeforeHostWrite(
       await attempt(() => { hostWriteStarted = true; });
       return;
     } catch (error) {
+      // A cancelled error classifies as restore_failed below, so it must be
+      // excluded explicitly: retrying a stop is never correct.
+      if (isWorkspaceRestoreCancelled(error)) throw error;
       const code = classifyWorkspaceRestoreFailure(error);
       const retryable = code === "restore_failed" || code === "restore_lock_timeout";
       if (hostWriteStarted || !retryable || retry >= delaysMs.length) throw error;
@@ -624,7 +631,7 @@ export interface PreparedSandboxManagedRuntime {
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot(): Promise<void>;
-  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink, signal?: AbortSignal | null): Promise<void>;
 }
 
 export type WorkspaceInboundMode =
@@ -802,12 +809,19 @@ export function sandboxExecutionSessionMatches(saved: unknown, current: SandboxR
   );
 }
 
-async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): Promise<T> {
+async function withTempDir<T>(
+  prefix: string,
+  fn: (dir: string) => Promise<T>,
+  options: { signal?: AbortSignal | null } = {},
+): Promise<T> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   try {
     return await fn(dir);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    // A cancelled run must not wait on a multi-GB recursive delete: hand it to
+    // the tracked background cleanup so Stop returns promptly.
+    if (options.signal?.aborted) cleanupStagingDirInBackground(dir);
+    else await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -1920,9 +1934,10 @@ export async function prepareSandboxManagedRuntime(input: {
         ? { baseline: baselineSnapshot, gitSnapshot, ...(!gitSnapshot && repositories.length ? { repositories } : {}) }
         : null,
     cleanupWorkspaceSnapshot,
-    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+    restoreWorkspace: async (onProgress?: RuntimeProgressSink, signal?: AbortSignal | null) => {
       try {
       const restoreSink = onProgress ?? input.onProgress;
+      const restoreSignal = signal ?? null;
 
       // Build the ordered outbound restore task list. Each task runs one
       // restore from start to end: the workspace restore, or one asset restore.
@@ -1981,7 +1996,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 onRuntimeProgress: input.onRuntimeProgress,
                 workspaceRestoreRetryDelaysMs: input.workspaceRestoreRetryDelaysMs,
               });
-              await nested.restoreWorkspace(restoreSink);
+              await nested.restoreWorkspace(restoreSink, restoreSignal);
             }
             await retryWorkspaceRestoreBeforeHostWrite(
               input.workspaceRestoreRetryDelaysMs ?? WORKSPACE_RESTORE_RETRY_DELAYS_MS,
@@ -2209,6 +2224,7 @@ export async function prepareSandboxManagedRuntime(input: {
                       sourceDir: extractedDir,
                       ...(checkpointSnapshot ? { snapshots: { source: checkpointSnapshot } } : {}),
                       targetDir: input.workspaceLocalDir,
+                      signal: restoreSignal,
                       // Runs under the merge lock, before the first host write.
                       beforeApply: async () => {
                         markHostWriteStarted();
@@ -2237,7 +2253,7 @@ export async function prepareSandboxManagedRuntime(input: {
                   await withWorkspaceRestoreStep("git_ref_cleanup", () => deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef! }));
                 }
               }
-            }));
+            }, { signal: restoreSignal }));
           }), restoreSink, (diagnostic) => { outboundDiagnostics[0] = diagnostic; }),
         );
       }

@@ -247,6 +247,7 @@ async function prepareCodexRemoteManagedHome(
         ? "[paperclip] Restoring workspace changes from the sandbox.\n"
         : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
       failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+      signal: input.signal ?? null,
     }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
