@@ -72,7 +72,11 @@ export function assertInstanceAdmin(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
-export function assertCompanyAccess(req: Request, companyId: string) {
+function assertCompanyAccessForMethod(
+  req: Request,
+  companyId: string,
+  viewerRead: boolean,
+) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
@@ -92,7 +96,7 @@ export function assertCompanyAccess(req: Request, companyId: string) {
     }
     const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
     const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
-    if (!isSafeMethod && membership.membershipRole === "viewer") {
+    if (!viewerRead && !isSafeMethod && membership.membershipRole === "viewer") {
       throwOrShadowResponsibleUserCompanyAccessDeny(
         req,
         companyId,
@@ -108,16 +112,28 @@ export function assertCompanyAccess(req: Request, companyId: string) {
     }
     const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
     const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
-    if (!isSafeMethod && !req.actor.isInstanceAdmin && Array.isArray(req.actor.memberships)) {
+    if (
+      (!isSafeMethod || viewerRead) &&
+      !req.actor.isInstanceAdmin &&
+      Array.isArray(req.actor.memberships)
+    ) {
       const membership = req.actor.memberships.find((item) => item.companyId === companyId);
       if (!membership || membership.status !== "active") {
         throw forbidden("User does not have active company access");
       }
-      if (membership.membershipRole === "viewer") {
+      if (!viewerRead && membership.membershipRole === "viewer") {
         throw forbidden("Viewer access is read-only");
       }
     }
   }
+}
+
+export function assertCompanyAccess(req: Request, companyId: string) {
+  assertCompanyAccessForMethod(req, companyId, false);
+}
+
+export function assertCompanyReadAccess(req: Request, companyId: string) {
+  assertCompanyAccessForMethod(req, companyId, true);
 }
 
 /**
