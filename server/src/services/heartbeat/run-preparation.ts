@@ -88,7 +88,7 @@ import {
   secretService,
   type MissingRuntimeBinding,
 } from "../secrets.js";
-import { createToolGatewayService } from "../tool-gateway.js";
+import { createToolGatewayService, HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS } from "../tool-gateway.js";
 import { toolAccessService } from "../tool-access.js";
 import {
   buildDocumentReviewContext,
@@ -1239,7 +1239,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       clientLabel: `${input.agent.name} heartbeat run`,
       ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
       allowedActions: ["tools/list", "tools/call"],
-      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+      expiresAt: new Date(Date.now() + HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS),
     },
     actor: { agentId: input.agent.id },
   });
@@ -1548,7 +1548,7 @@ export async function createManagedMcpRunConfig(input: {
   if (gateways.length === 0) return null;
 
   const service = createToolGatewayService(input.db);
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS);
   const managedGateways: ManagedMcpGatewayRunConfig["gateways"] = [];
   for (const gateway of gateways) {
     const token = await service.createNamedGatewayToken({

@@ -28,7 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
-import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { createToolGatewayService, HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS, ToolGatewayHttpError } from "../services/tool-gateway.js";
 
 import { toolAccessService } from "../services/tool-access.js";
 
@@ -166,8 +166,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     for (const token of tokens) {
       expect(token.subjectType).toBe("heartbeat_run");
       expect(token.subjectId).toMatch(/^[0-9a-f-]{36}$/);
-      expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + 59 * 60 * 1000);
-      expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
+      expect(token.expiresAt!.getTime()).toBeGreaterThanOrEqual(before + HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS - 60 * 1000);
+      expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + HEARTBEAT_RUN_TOKEN_IDLE_WINDOW_MS + 60 * 1000);
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
 
