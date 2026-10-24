@@ -1,6 +1,7 @@
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -9,10 +10,12 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   agents,
+  authUsers,
   companies,
+  companyMemberships,
   completionContracts,
   environmentLeases,
   environments,
@@ -23,6 +26,7 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunResults,
+  nativeRunnerCheckpoints,
 } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -31,6 +35,11 @@ import {
   createRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary,
   parseNativeExecutionInput,
+  DurablePrpControlPlane,
+  decodeDurablePrpCheckpoint,
+  readRunnerdArtifactBinding,
+  type RunnerProcessHandle,
+  type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -51,7 +60,12 @@ import { createRunnerTestTlsTunnel, dockerCommandRunner } from "../../__tests__/
 import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-home.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
-import { closeIdleWarmNativeSessionsForRestart, executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
+import { closeIdleWarmNativeSessionsForRestart, detachNativeSessionsForRestart, executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
+import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
+import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
+import { HttpError } from "../../errors.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.js", async () => {
@@ -64,6 +78,7 @@ vi.mock("../../sentry.js", async () => {
 
 import {
   claimNativeRestartRecoveries,
+  currentNativeControllerIdentity,
   type NativeControllerIdentity,
 } from "./native-restart-recovery.js";
 
@@ -303,8 +318,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     };
   }
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
-    const hardRestart = scenario !== "warm";
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+    const hardRestart = !["warm", "same-server"].includes(scenario);
     const container = process.env.PAPERCLIP_TEST_RUNNER_CONTAINER!;
     const tunnel = await createRunnerTestTlsTunnel({ port: Number(process.env.PAPERCLIP_TEST_RUNNER_PORT),
       key: process.env.PAPERCLIP_TEST_RUNNER_TLS_KEY!, cert: process.env.NODE_EXTRA_CA_CERTS! });
@@ -369,6 +384,52 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     let controller: ReturnType<typeof spawn> | undefined;
     try {
       const firstOptions = { ...options, execution, runnerExecutionTarget: target };
+      const executeFirst = async () => {
+        if (scenario !== "same-server") return executePaperclipNativeSession(firstOptions);
+        await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: {
+          ...fixture.preparedProfile, nativeExecutionInput: execution,
+          nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+            descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+            workspaceId: randomUUID(), leaseId: target.leaseId, providerLeaseId: container, remoteCwd },
+        } }).where(eq(heartbeatRuns.id, fixture.runId));
+        let detach: ReturnType<typeof detachNativeSessionsForRestart> | undefined;
+        await expect(executePaperclipNativeSession({ ...firstOptions, onLog: async (stream, text) => {
+          await options.onLog(stream, text);
+          if (!detach && text.includes('"eventType":"turn.started"')) {
+            detach = detachNativeSessionsForRestart([fixture.runId]);
+          }
+        } })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+        expect(await detach).toMatchObject({ detachedRunIds: [fixture.runId] });
+        const checkpoints = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "sessions");
+        let staleCaches = 0;
+        for (const name of await readdir(checkpoints)) {
+          if (!name.endsWith(".json")) continue;
+          const path = resolve(checkpoints, name);
+          const cached = JSON.parse(await readFile(path, "utf8"));
+          if (cached.snapshot?.identity?.runId !== fixture.runId) continue;
+          cached.snapshot.activeTurnId = null;
+          cached.snapshot.semanticResult = null;
+          cached.snapshot.terminal = null;
+          cached.snapshot.terminalTurns = [];
+          await writeFile(path, JSON.stringify(cached), { mode: 0o600 });
+          staleCaches++;
+        }
+        expect(staleCaches).toBe(1);
+        const priorProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
+        await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1) })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        const [claim] = await claimNativeRestartRecoveries({ db: fixture.db,
+          controller: await currentNativeControllerIdentity(), restartKind: "hard", runIds: [fixture.runId] });
+        if (!claim || claim.kind !== "reattach_remote_runner") {
+          throw new Error(`same-server claim missing: ${claim && "reason" in claim ? claim.reason : claim?.kind}`);
+        }
+        const result = await executePaperclipNativeSession({ ...firstOptions, leaseOwner: claim.leaseOwner, restartRecovery: claim });
+        const recoveredCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
+        expect(recoveredCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
+        const nextProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
+        expect(nextProcess.stdout).toBe(priorProcess.stdout);
+        return result;
+      };
       const first = hardRestart ? await new Promise<{ exitCode: number | null }>((resolveResult, reject) => {
         controller = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), resolve("server/src/__tests__/helpers/remote-warm-controller.test-worker.ts")],
           { stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env });
@@ -384,7 +445,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         });
         controller.send?.({ connectionString: temporary.connectionString, container, ingressUrl: `wss://127.0.0.1:${tunnel.port}`,
           options: { ...firstOptions, db: undefined, onLog: undefined, runnerExecutionTarget: { ...target, runner: undefined } } });
-      }) : await executePaperclipNativeSession(firstOptions);
+      }) : await executeFirst();
       expect(first.exitCode).toBe(0);
       await finalizeNativeRun({ db: fixture.db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       const snapshot = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
@@ -598,6 +659,213 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
+  it("recovers completed tool receipts, retries authorized reads, and preserves uncertain effects", async () => {
+    const fixture = await seedRun("TOOL-RECOVERY");
+    const binding = { companyId, issueId: fixture.issueId, agentId, runId: fixture.runId };
+    const call = { callId: "tool-call", operationId: "write_document", input: { idempotencyKey: "write-1", body: "saved" } };
+    const authority = new PaperclipRunnerToolAuthority(fixture.db, { ...binding, apiToolsEnabled: true });
+    const executeRead = vi.spyOn(authority, "execute").mockResolvedValue({ context: "current" });
+    const recover = (call: { callId: string; operationId: string; input: unknown }) =>
+      authority.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
+    await fixture.db.update(heartbeatRuns).set({ resultJson: { semanticToolReceipts: {
+      "write-1": { operationId: call.operationId, input: call.input, result: { revision: "revision-1" } },
+    } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    await expect(recover(call))
+      .resolves.toEqual({ result: { revision: "revision-1" } });
+    await expect(recover({ ...call, input: { ...call.input, body: "changed" } }))
+      .resolves.toBeNull();
+    await expect(recover({ ...call, operationId: "unknown_external_write" }))
+      .resolves.toBeNull();
+    expect(executeRead).not.toHaveBeenCalled();
+    await expect(recover({ ...call, operationId: "get_task_context" }))
+      .resolves.toEqual({ result: { context: "current" } });
+    expect(executeRead).toHaveBeenCalledTimes(1);
+    const apiRead = { callId: "api-read", operationId: "call_api", input: { operationId: "GET /api/agents/me" } };
+    await expect(recover(apiRead))
+      .resolves.toEqual({ result: { context: "current" } });
+    expect(executeRead).toHaveBeenCalledTimes(2);
+    await expect(recover({ ...apiRead, input: { operationId: "POST /api/issues/{id}/comments" } })).resolves.toBeNull();
+    await expect(recover({ ...apiRead, input: { operationId: "GET /unknown" } })).resolves.toBeNull();
+    expect(executeRead).toHaveBeenCalledTimes(2);
+    await fixture.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+    await expect(recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    await expect(recover(apiRead)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    expect(executeRead).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers bridge reads through current permissions and never replays an uncertain bridge mutation", async () => {
+    const fixture = await seedRun("BRIDGE-READ-RECOVERY");
+    const binding = { companyId, issueId: fixture.issueId, agentId, runId: fixture.runId };
+    const workspaceRoot = resolve(runtimeRoot, fixture.runId, "workspace");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(resolve(workspaceRoot, "note.txt"), "surviving workspace");
+    const [originalAgent] = await fixture.db.select().from(agents).where(eq(agents.id, agentId));
+    await fixture.db.update(agents).set({ adapterConfig: { ...originalAgent.adapterConfig, dotWorkspaceAccess: true } }).where(eq(agents.id, agentId));
+    const personId = randomUUID(), foreignPersonId = randomUUID(), foreignCompanyId = randomUUID();
+    await fixture.db.insert(companies).values({ id: foreignCompanyId, name: "Other recovery scope", issuePrefix: `F${foreignCompanyId.slice(0, 6)}` });
+    await fixture.db.insert(authUsers).values([personId, foreignPersonId].map(id => ({
+      id, name: id === personId ? "Visible person" : "Foreign person", email: `${id}@fixture.invalid`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date(),
+    })));
+    await fixture.db.insert(companyMemberships).values([
+      { companyId, principalType: "user", principalId: personId, status: "active", membershipRole: "member" },
+      { companyId: foreignCompanyId, principalType: "user", principalId: foreignPersonId, status: "active", membershipRole: "member" },
+    ]);
+    const assertBridgeAuthority = vi.fn(async () => {});
+    const authority = new PaperclipRunnerToolAuthority(fixture.db, { ...binding,
+      workspaceRoot, workspaceBridge: true, runtimeContext: nativeRuntimeContextFixture(), assertBridgeAuthority });
+    const read = (tool: string, args: unknown = {}) => authority.recover({ tool, callId: `saved-${tool}`, arguments: args });
+    try {
+      await expect(read("get_identity")).resolves.toMatchObject({ result: { agent: { id: agentId } } });
+      await expect(read("list_people")).resolves.toMatchObject({ result: [{ id: personId, name: "Visible person" }] });
+      await expect(read("list_assigned_skills")).resolves.toEqual({ result: [] });
+      await expect(read("read_assigned_skill", { skill: "no-longer-assigned" })).resolves.toMatchObject({ result: { outcome: "failed", code: "runner_skill_not_assigned" } });
+      await expect(read("workspace_list")).resolves.toMatchObject({ result: { entries: [{ name: "note.txt", kind: "file" }] } });
+      await expect(read("workspace_read", { path: "note.txt" })).resolves.toMatchObject({ result: { text: "surviving workspace" } });
+      await expect(read("workspace_read", { path: "deleted.txt" })).resolves.toMatchObject({ result: { outcome: "failed", code: "runner_bridge_file_not_found" } });
+      for (const tool of ["workspace_write", "workspace_run", "connection_request", "unknown_external_write"])
+        await expect(read(tool)).resolves.toBeNull();
+      await fixture.db.update(agents).set({ adapterConfig: originalAgent.adapterConfig }).where(eq(agents.id, agentId));
+      await expect(read("workspace_read", { path: "note.txt" })).rejects.toThrow("Dot workspace access was disabled");
+      const unavailable = new PaperclipRunnerToolAuthority(fixture.db, binding);
+      await expect(unavailable.recover({ tool: "read_assigned_skill", callId: "unadvertised", arguments: { skill: "missing" } }))
+        .rejects.toThrow("Tool is not available to this run");
+      assertBridgeAuthority.mockRejectedValueOnce(new Error("controller lease lost"));
+      await expect(read("get_identity")).rejects.toThrow("controller lease lost");
+      await fixture.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(read("list_people")).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    } finally {
+      await fixture.db.update(agents).set({ adapterConfig: originalAgent.adapterConfig }).where(eq(agents.id, agentId));
+    }
+  });
+
+  it("classifies every bridge tool and routes declared first-party reads through the normal executor", async () => {
+    expect([...RUNNER_BRIDGE_SCHEMAS.keys()].filter(name => !RUNNER_BRIDGE_READ_OPERATIONS.has(name)).sort())
+      .toEqual(["comment_on_task", "workspace_run", "workspace_write", "write_task_document"]);
+    const fixture = await seedRun("READ-CLASSIFICATION");
+    const authority = new PaperclipRunnerToolAuthority(fixture.db, { companyId, issueId: fixture.issueId, agentId, runId: fixture.runId });
+    const execute = vi.spyOn(authority, "execute").mockResolvedValue("current authorized result");
+    try {
+      for (const tool of [...RUNNER_BRIDGE_READ_OPERATIONS, "search_api", "get_workspace", "list_workspaces",
+        "list_project_repositories", "connections_search", "list_task_attachments", "read_task_attachment",
+        "read_current_wake_comments", "list_chat_attachments", "read_chat_attachment", "read_tool_result"]) {
+        const call = { tool, callId: `saved-${tool}`, arguments: {} };
+        await expect(authority.recover(call), tool).resolves.toEqual({ result: "current authorized result" });
+        expect(execute).toHaveBeenLastCalledWith(call);
+      }
+    } finally { execute.mockRestore(); }
+  });
+
+  it("recovers missing-document reads as tool errors while fencing lost authority and unknown failures", async () => {
+    const fixture = await seedRun("READ-RECOVERY");
+    const assertBridgeAuthority = vi.fn(async () => {});
+    const authority = new PaperclipRunnerToolAuthority(fixture.db, {
+      companyId, issueId: fixture.issueId, agentId, runId: fixture.runId,
+      apiToolsEnabled: true, assertBridgeAuthority,
+    });
+    const read = { tool: "read_document", callId: "missing-document", arguments: { key: "deleted" } };
+    await expect(authority.recover(read)).resolves.toEqual({ isError: true, result: {
+      success: false, contentItems: [{ type: "inputText", text: "paperclip_runner_document_not_found" }],
+    } });
+    await expect(authority.recover({ tool: "get_task_context", callId: "next-read", arguments: {} }))
+      .resolves.toMatchObject({ result: { activeTask: { id: fixture.issueId } } });
+
+    const execute = vi.spyOn(authority, "execute");
+    const apiRead = { tool: "call_api", callId: "missing-api-resource", arguments: { operationId: "GET /api/agents/me" } };
+    execute.mockRejectedValueOnce(new HttpError(404, "Resource disappeared"));
+    await expect(authority.recover(apiRead)).resolves.toMatchObject({ isError: true, result: { success: false } });
+    execute.mockRejectedValueOnce(new HttpError(403, "Authority revoked"));
+    await expect(authority.recover(apiRead)).rejects.toThrow("Authority revoked");
+    execute.mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(authority.recover(read)).rejects.toThrow("database unavailable");
+    execute.mockImplementationOnce(async () => {
+      await fixture.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      throw new Error("paperclip_runner_document_not_found");
+    });
+    await expect(authority.recover(read)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    execute.mockRestore();
+    assertBridgeAuthority.mockRejectedValueOnce(new Error("controller lease lost"));
+    await expect(authority.recover(read)).rejects.toThrow("controller lease lost");
+  });
+
+  it("restores encrypted controller authority from Postgres and fences a stale writer", async () => {
+    const fixture = await seedRun("DURABLE-CONTROLLER");
+    const root = resolve(runtimeRoot, fixture.runId);
+    const options = transportOptions(fixture, root);
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    await fixture.db.update(nativeRunFinalizations).set({
+      controllerBootId: successor.bootId, controllerGeneration: 1,
+      leaseOwner: "first-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(root, "control-plane"),
+      identity: options.prpIdentity, expectedRunnerVersion: "old-version", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId: successor.bootId, authority });
+    const token = authority.issueBootstrapTicket();
+    authority.queueCommand("session.snapshot", {}, "durable-command");
+    await authority.flushCheckpoint();
+    const saved = await loadNativeRunnerCheckpoint(fixture.db, binding);
+    expect(saved).toMatchObject({ runId: fixture.runId, runnerVersion: "old-version", predecessor: null });
+    const raw = await fixture.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, fixture.runId));
+    expect(raw.map(row => row.part).sort()).toEqual([...saved!.records.keys()].sort());
+    expect(JSON.stringify(raw)).not.toContain(token);
+    expect(JSON.stringify(raw)).not.toContain("durable-command");
+    await rm(root, { recursive: true, force: true });
+    expect((await restoreNativeRunnerCheckpoint(fixture.db, binding, root))?.records).toEqual(saved?.records);
+    const restored = new DurablePrpControlPlane({ stateDirectory: resolve(root, "control-plane"),
+      identity: options.prpIdentity, expectedRunnerVersion: saved!.runnerVersion, expectedRunnerDigest: saved!.runnerDigest });
+    expect(restored.getCommand("durable-command")).toMatchObject({ type: "session.snapshot" });
+    await restored.stop();
+    expect(await loadNativeRunnerCheckpoint(fixture.db, { ...binding, companyId: randomUUID() })).toBeNull();
+
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerGeneration: 2,
+      leaseOwner: "successor-controller" }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    authority.queueCommand("session.snapshot", {}, "stale-command");
+    await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(saved?.records);
+    await authority.stop();
+  });
+
+  it("applies checkpoint deltas in Postgres without rewriting authority and removes only evicted events", async () => {
+    const fixture = await seedRun("CHECKPOINT-DELTA");
+    const root = resolve(runtimeRoot, fixture.runId);
+    const options = transportOptions(fixture, root);
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      controllerGeneration: 1, leaseOwner: "delta-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(root, "control-plane"),
+      identity: options.prpIdentity, expectedRunnerVersion: "delta-test", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    const event = (sourceSeq: number) => ({ sourceSeq, sourceEventId: `control-${sourceSeq}`, eventType: "item.completed",
+      priority: 2 as const, envelope: { text: "output" }, deliveryCount: 1, logicalEffectCount: 1 as const });
+    try {
+      await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId: successor.bootId, authority });
+      const saved = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+      const records = new Map(saved.records);
+      const cursor = JSON.parse(records.get("cursor")!);
+      for (const seq of [1, 2]) records.set(`event:${seq}`, JSON.stringify(event(seq)));
+      records.set("cursor", JSON.stringify({ ...cursor, ackedSourceSeq: 2, eventCount: 2 }));
+      const write = nativeRunnerCheckpointWriter(fixture.db, { ...binding, authorityRunId: fixture.runId,
+        bootId: successor.bootId, generation: 1, leaseOwner: "delta-controller" });
+      await write(decodeDurablePrpCheckpoint(records));
+      const before = await fixture.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, fixture.runId));
+      records.delete("event:1");
+      records.set("event:3", JSON.stringify(event(3)));
+      records.set("cursor", JSON.stringify({ ...cursor, ackedSourceSeq: 3, eventCount: 2 }));
+      await write({ ...decodeDurablePrpCheckpoint(records), reset: false, removedRecords: ["event:1"],
+        changedRecords: new Map(["event:3", "cursor"].map(key => [key, records.get(key)!])) });
+      const after = await fixture.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, fixture.runId));
+      for (const part of ["header", "event:2"]) {
+        expect(after.find(row => row.part === part)).toEqual(before.find(row => row.part === part));
+      }
+      expect(after.map(row => row.part).sort()).toEqual(["cursor", "event:2", "event:3", "header"]);
+      const restored = await loadNativeRunnerCheckpoint(fixture.db, binding);
+      expect(JSON.parse(restored!.records.get("cursor")!).ackedSourceSeq).toBe(3);
+      expect(restored!.records.has("event:1")).toBe(false);
+    } finally {
+      await authority.stop();
+    }
+  });
+
   it.each([null, process.pid])("claims sandbox recovery without interpreting remote PID %s locally", async (remotePid) => {
     const fixture = await seedRun(`remote-${remotePid ?? "warm"}`);
     await fixture.db.update(heartbeatRuns).set({
@@ -628,6 +896,229 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(run?.status).toBe("running");
     expect(run?.processPid).toBe(remotePid);
   });
+
+  realProcessIt("keeps checkpoint SQL independent of streamed output volume with a real Postgres writer", async () => {
+    const samples: Array<{ chunks: number; checkpointWrites: number; transactions: number;
+      changedRows: number; checkpointBytes: number; walBytes: number; elapsedMs: number; idleSql: number;
+      streamSql: number; streamTransactions: number; streamChangedRows: number }> = [];
+    for (const chunks of [8, 512]) {
+      const fixture = await seedRun(`CHECKPOINT-COST-${chunks}`);
+      const root = resolve(runtimeRoot, fixture.runId);
+      const releaseOutput = resolve(root, "release-output");
+      const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+      const owner = { ...binding, authorityRunId: fixture.runId, bootId: successor.bootId,
+        generation: 1, leaseOwner: "cost-controller" };
+      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: owner.bootId,
+        controllerGeneration: 1, leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 120_000),
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      let authority!: DurablePrpControlPlane;
+      let measuring = false;
+      let transactions = 0, changedRows = 0, checkpointBytes = 0;
+      const statements: string[] = [];
+      const priorDebug = fixture.db.$client.options.debug;
+      // Capture statements only, never SQL parameters (encrypted state or secrets).
+      fixture.db.$client.options.debug = (_connection, query) => { if (measuring) statements.push(query); };
+      const write = nativeRunnerCheckpointWriter(fixture.db, owner);
+      const transport = createRunnerdCodexTransport({ ...transportOptions(fixture, root),
+        codexArgs: ["--state-file", resolve(root, "provider.json"), "--linger-after-turn-start",
+          "--held-output", "--held-output-count", String(chunks), "--held-output-release-file", releaseOutput],
+        controlPlaneRegistration: async core => {
+          authority = core;
+          core.setCheckpointPersistence(async checkpoint => {
+            if (measuring) {
+              transactions++;
+              changedRows += checkpoint.changedRecords.size;
+              checkpointBytes += [...checkpoint.changedRecords.values()].reduce((sum, value) => sum + Buffer.byteLength(value), 0);
+              expect([...checkpoint.changedRecords.values()].join("\n")).not.toContain("still computing");
+            }
+            await write(checkpoint);
+          });
+          return registerRunnerPrpAuthority({ ...binding, authority: core });
+        },
+      });
+      try {
+        await transport.transport.request("thread/start", { cwd: root, dynamicTools: [] });
+        await authority.flushCheckpoint();
+        const [walStart] = await fixture.db.execute(sql`select pg_current_wal_insert_lsn()::text as lsn`);
+        const started = performance.now();
+        measuring = true;
+        await transport.transport.request("turn/start", { input: [{ type: "text", text: "Produce the scripted stream." }] });
+        await waitForCondition("settled control setup before releasing text", () =>
+          authority.store.state.commands.every(command => command.status === "completed")
+          && authority.store.state.committedEvents.some(event => event.eventType === "turn.started"));
+        await authority.flushCheckpoint();
+        const beforeStream = { sql: statements.length, transactions, changedRows };
+        await writeFile(releaseOutput, "release\n", { flag: "wx" });
+        await waitForCondition(`the final scripted text chunk of ${chunks}`, () => authority.store.state.committedEvents
+          .some(event => event.eventType === "item.delta" && JSON.stringify(event.envelope).includes(`still computing ${chunks - 1} `)), 60_000)
+          .catch(error => { console.info("checkpoint-cost-stream-diagnostic", JSON.stringify({ chunks,
+            cursor: authority.store.state.ackedSourceSeq,
+            receivedTextEvents: authority.store.state.committedEvents.filter(event => event.eventType === "item.delta").length })); throw error; });
+        await authority.flushCheckpoint();
+        measuring = false;
+        const elapsedMs = performance.now() - started;
+        const [walEnd] = await fixture.db.execute(sql`select pg_wal_lsn_diff(pg_current_wal_insert_lsn(), ${String(walStart.lsn)}::pg_lsn)::text as bytes`);
+        const checkpointWrites = statements.filter(query => /^\s*(insert|update|delete)\b/i.test(query)
+          && query.includes("native_runner_checkpoints")).length;
+        expect(checkpointWrites).toBeGreaterThan(0); // The collector must see real control writes.
+        const snapshot = { chunks, checkpointWrites, transactions, changedRows, checkpointBytes,
+          walBytes: Number(walEnd.bytes), elapsedMs, idleSql: 0,
+          streamSql: statements.length - beforeStream.sql,
+          streamTransactions: transactions - beforeStream.transactions,
+          streamChangedRows: changedRows - beforeStream.changedRows };
+        // Setup control messages may coalesce differently. The released text-only
+        // interval must add exactly zero work, independent of that scheduling.
+        expect(snapshot).toMatchObject({ streamSql: 0, streamTransactions: 0, streamChangedRows: 0 });
+        statements.length = 0;
+        measuring = true;
+        await new Promise(done => setTimeout(done, 100));
+        await authority.flushCheckpoint();
+        snapshot.idleSql = statements.length;
+        expect(statements).toEqual([]);
+        // Positive calibration: an actual new control operation must trip the zero-write oracle.
+        authority.queueCommand("session.snapshot", {}, `cost-positive-control-${chunks}`);
+        await authority.flushCheckpoint();
+        expect(statements.some(query => /insert into "native_runner_checkpoints"/i.test(query))).toBe(true);
+        measuring = false;
+        samples.push(snapshot);
+      } finally {
+        measuring = false;
+        fixture.db.$client.options.debug = priorDebug;
+        await transport.transport.close();
+      }
+    }
+    const report = { schema: "paperclip.checkpoint-cost/v1", samples,
+      scope: "isolated Postgres; control operations included; WAL is diagnostic; no production capacity claim" };
+    if (process.env.PAPERCLIP_TEST_CHECKPOINT_COST_REPORT) await writeFile(process.env.PAPERCLIP_TEST_CHECKPOINT_COST_REPORT,
+      `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    // Both stream sizes were checked independently; total setup counts remain
+    // diagnostic because control-message batching is scheduling-dependent.
+    console.info("native-checkpoint-cost", JSON.stringify(report));
+  }, 120_000);
+
+  realProcessIt.each([false, true])("adopts the same runner from Postgres after losing the controller filesystem (prepared task: %s)", async preparedTask => {
+    const fixture = await seedRun(`EMPTY-CONTROLLER-DISK-${preparedTask}`);
+    const controllerRoot = resolve(runtimeRoot, `${fixture.runId}-controller`);
+    const sandboxRoot = resolve(runtimeRoot, `${fixture.runId}-sandbox`);
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    const outageMs = Number(process.env.PAPERCLIP_TEST_CONTROLLER_OUTAGE_MS ?? 1000);
+    if (!Number.isFinite(outageMs) || outageMs < 0 || outageMs > 300_000) throw new Error("Invalid controller outage duration");
+    await mkdir(sandboxRoot, { recursive: true });
+    await mkdir(resolve(sandboxRoot, "filesystem/codex-home"), { recursive: true });
+    let bootId = randomUUID();
+    const taskLeaseId = randomUUID();
+    if (preparedTask) {
+      const [environment] = await fixture.db.insert(environments).values({ name: "Surviving plugin task", driver: "plugin", status: "active", config: {} }).returning();
+      await fixture.db.insert(environmentLeases).values({ id: taskLeaseId, companyId, environmentId: environment.id,
+        heartbeatRunId: fixture.runId, issueId: fixture.issueId, status: "active", leasePolicy: "ephemeral",
+        provider: "plugin", providerLeaseId: "saved-task", metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true } });
+    }
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: bootId,
+      controllerGeneration: 1, controllerPid: process.pid, controllerProcessStartedAt: new Date(),
+      leaseOwner: "original-controller", leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const options = {
+      ...transportOptions(fixture, controllerRoot),
+      ...(preparedTask ? { prpIdentity: { ...transportOptions(fixture, controllerRoot).prpIdentity, environmentLeaseId: taskLeaseId } } : {}),
+      runnerStateDirectory: resolve(sandboxRoot, "runner"),
+      runnerFilesystemRoot: resolve(sandboxRoot, "filesystem"),
+      runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
+      codexArgs: ["--state-file", resolve(sandboxRoot, "provider.json"),
+        "--call-log", resolve(sandboxRoot, "calls.log"), "--linger-after-turn-start", "--held-output"],
+      controlPlaneRegistration: async (authority: DurablePrpControlPlane) => {
+        await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId, authority });
+        return registerRunnerPrpAuthority({ ...binding, authority });
+      },
+    };
+    const prepareLaunch = vi.fn(async (requirements: RunnerProviderLaunchRequirements) => ({
+      configurationId: "provider-owned-configuration", requirementsDigest: runnerLaunchRequirementsDigest(requirements),
+      provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: options.codexArgs },
+        root: sandboxRoot, cwd: sandboxRoot, codexHome: resolve(sandboxRoot, "filesystem/codex-home"),
+        codexCommand: fakeCodexAppServer, providerNodeCommand: process.execPath, opencodeProxyPath: "", acpxSidecarPath: "" }),
+    }));
+    const first = createRunnerdCodexTransport({ ...options, ...(preparedTask ? {
+      prepareLaunch, runnerArtifact: readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary()),
+      runnerProcessLauncher: (spec: RunnerProcessLaunchSpec): RunnerProcessHandle => {
+        const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: { ...process.env, ...spec.environment },
+          detached: process.platform !== "win32", stdio: "ignore" });
+        return { child, processGroupId: child.pid ?? null, completion: new Promise((resolveExit, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+        }) };
+      },
+    } : {}) });
+    let adopted: ReturnType<typeof createRunnerdCodexTransport> | undefined;
+    let runnerPid: number | null = null;
+    try {
+      const thread = (await first.transport.request("thread/start", { cwd: sandboxRoot, dynamicTools: [] })).thread as Record<string, unknown>;
+      const turn = (await first.transport.request("turn/start", { input: [{ type: "text", text: "Keep computing while the controller is offline." }] })).turn as Record<string, unknown>;
+      runnerPid = first.evidence().runnerPid;
+      const providerPid = first.evidence().providerPid;
+      if (!runnerPid || !providerPid) throw new Error("Runner/provider process identity missing");
+      const startedAt = await readProcessStartedAt(runnerPid);
+      if (!startedAt) throw new Error("Runner start identity missing");
+      await waitForCondition("streaming ACK advances without a recovery checkpoint", async () => {
+        const runner = JSON.parse(await readFile(resolve(sandboxRoot, "runner/runner-state.json"), "utf8"));
+        const checkpoint = await loadNativeRunnerCheckpoint(fixture.db, binding);
+        const cursor = checkpoint && JSON.parse(checkpoint.records.get("cursor")!);
+        return cursor && runner.ackedSourceSeq >= cursor.ackedSourceSeq + 64;
+      });
+      const beforeRestart = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+      expect([...beforeRestart.records.entries()].filter(([key]) => key.startsWith("event:"))
+        .some(([, value]) => JSON.parse(value).eventType === "item.delta")).toBe(false);
+      await fixture.db.update(heartbeatRuns).set({ processPid: runnerPid, processStartedAt: new Date(startedAt),
+        runnerProfileJson: { ...fixture.preparedProfile,
+          ...(!preparedTask ? { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+            descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+            workspaceId: "workspace", leaseId: "lease", providerLeaseId: "sandbox", remoteCwd: sandboxRoot } } : {}),
+          sessionCheckpoint: { identity: { ...binding, agentId, sessionId: fixture.native.normalizedSessionId },
+            providerSessionId: thread.id, process: { providerPid } },
+        },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+      await first.detachControllerForRestart();
+      await rm(controllerRoot, { recursive: true, force: true });
+      expect(existsSync(controllerRoot)).toBe(false);
+      await new Promise(resolveOutage => setTimeout(resolveOutage, outageMs));
+      expect(processAlive(runnerPid)).toBe(true);
+      expect(processAlive(providerPid)).toBe(true);
+      await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1) })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      bootId = randomUUID();
+      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: { ...successor, bootId },
+        restartKind: "hard", runIds: [fixture.runId] });
+      expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: 0, controllerGeneration: 2 });
+      if (preparedTask) expect(claim).toMatchObject({ remote: { kind: "plugin_task", leaseId: taskLeaseId } });
+      const checkpoint = await restoreNativeRunnerCheckpoint(fixture.db, binding, controllerRoot);
+      if (!checkpoint) throw new Error("Missing durable authority");
+      const duplicateLauncher = vi.fn(() => { throw new Error("duplicate runner spawn attempted"); });
+      prepareLaunch.mockClear();
+      adopted = createRunnerdCodexTransport({ ...options,
+        ...(preparedTask ? { prepareLaunch } : {}),
+        runnerBinary: resolve(controllerRoot, "new-release-does-not-contain-old-runner"),
+        runnerArtifact: { version: checkpoint.runnerVersion, digest: checkpoint.runnerDigest },
+        resumeDynamicTools: [], runnerProcessLauncher: duplicateLauncher,
+        adoptExistingRunner: { pid: preparedTask ? null : runnerPid, processGroupId: preparedTask ? null : first.evidence().runnerProcessGroupId,
+          startedAt: preparedTask ? null : startedAt, isAlive: () => processAlive(runnerPid) },
+      });
+      await expect(adopted.transport.request("thread/read", {})).resolves.toMatchObject({
+        thread: { id: thread.id, turns: [{ id: turn.id, status: "inProgress" }] },
+      });
+      await adopted.transport.request("turn/steer", { input: [{ type: "text", text: "Continue the same turn." }],
+        expectedTurnId: turn.id, correlationId: "after-empty-disk-restart" });
+      expect(adopted.evidence().runnerPid).toBe(preparedTask ? null : runnerPid);
+      expect(adopted.evidence().providerPid).toBe(providerPid);
+      expect(await readProcessStartedAt(runnerPid)).toBe(startedAt);
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      expect(prepareLaunch).not.toHaveBeenCalled();
+      const calls = await readFile(resolve(sandboxRoot, "calls.log"), "utf8");
+      expect(calls.match(/^turn\/start$/gm)).toHaveLength(1);
+      expect(calls.match(/^turn\/steer$/gm)).toHaveLength(1);
+    } finally {
+      await adopted?.transport.close().catch(() => undefined);
+      await first.transport.close().catch(() => undefined);
+      await stopOwnedProcessGroup(runnerPid, sandboxRoot).catch(() => undefined);
+    }
+  }, 345_000);
 
   realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
     const fixture = await seedRun("LIVE");

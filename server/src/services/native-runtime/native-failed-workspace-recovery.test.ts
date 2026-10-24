@@ -298,7 +298,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (kind === "generation") restartRecovery.controllerGeneration += 1;
     if (kind === "attempt") restartRecovery.providerAttempt += 1;
     if (kind === "run") restartRecovery.runId = randomUUID();
-    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner") restartRecovery.remote.remoteCwd = "/other";
+    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner" && restartRecovery.remote.kind !== "plugin_task") restartRecovery.remote.remoteCwd = "/other";
     if (kind === "expired") await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (kind === "released") await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     await expect(preserveNativeFailedWorkspace(db, await readRun(f.runId), { allowPreterminal: true, restartRecovery }))

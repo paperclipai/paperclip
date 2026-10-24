@@ -209,6 +209,24 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
       expect(saved.metadata?.runnerTaskDispatched).toBe(true);
       expect(JSON.stringify(saved.metadata)).not.toMatch(/synthetic-account-key|synthetic-launch-key|synthetic-bootstrap-ticket|synthetic-fixture/);
+      const acquisitionBefore = acquisition;
+      const callsBefore = calls.length;
+      const recovered = await environmentRunOrchestrator(db, { environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workers }) }).acquireForRun({
+        companyId, selectedEnvironmentId: environmentId, localEnvironmentId: randomUUID(), agentId,
+        issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+        executionWorkspaceSettings: null, adapterType: "paperclip_runner",
+        reattachRemoteLease: { kind: "plugin_task", leaseId: saved.id },
+      });
+      expect(recovered.lease.id).toBe(saved.id);
+      const adopted = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+        adoptExistingRunner: identity });
+      const adoptedRegistration = await adopted.registration({} as never, runId);
+      adoptedRegistration.activate(); await adoptedRegistration.ready();
+      await adoptedRegistration.release("detach");
+      expect(acquisition).toBe(acquisitionBefore);
+      expect(calls.slice(callsBefore).some(op => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
+      expect(executionStopped).toBe(false);
+      close.mockClear();
       await expect(runtime.task({ companyId: randomUUID(), leaseId: acquired.lease.id, operation: { kind: "stop" } })).rejects.toThrow("lease unavailable");
       const before = calls.filter(value => value.kind === "submit").length;
       await expect(runtime.task({ companyId, leaseId: acquired.lease.id, operation: { ...submit!, projectIds: [randomUUID()] } as never })).rejects.toThrow("project unavailable");

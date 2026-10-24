@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import type {
   DurablePrpControlPlane,
@@ -7,7 +8,7 @@ import type {
 } from "../vendor/paperclip-runner/index.js";
 
 const DEFAULT_STARTUP_DEADLINE_MS = 60_000;
-const DEFAULT_RECOVERY_GRACE_MS = 120_000;
+const DEFAULT_RECOVERY_GRACE_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS;
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const RECONNECT_DELAYS_MS = [250, 500, 1_000, 2_000, 5_000] as const;
 

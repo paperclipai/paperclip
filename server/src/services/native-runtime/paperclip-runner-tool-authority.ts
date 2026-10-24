@@ -9,7 +9,7 @@ import { skillAccessService } from "../skill-access.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
 import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
-import { RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
+import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { assertCanManageIssueMonitor, eligibleIssueMonitorWait, prepareIssueMonitorUpdate, setTaskMonitorSchema, summarizeIssueMonitor } from "../issue-monitors.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
@@ -58,7 +58,7 @@ import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
 import { runnerApiCatalog, searchRunnerApi } from "./runner-api-catalog.js";
-import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
+import { executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -84,7 +84,7 @@ import {
   projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -142,6 +142,25 @@ export const MUSE_NATIVE_OPERATIONS = new Set([
 const NATIVE_REVIEW_READ_TOOLS = new Set([
   "get_task_context", "get_task_history", "list_documents", "read_document", "list_document_revisions",
 ]);
+
+// The owning catalogs classify first-party reads. Recovery still calls execute(),
+// which rechecks the current tool advertisement, run, permissions and file scope.
+// External connector annotations never authorize replay of an uncertain effect.
+const RECOVERABLE_READ_OPERATIONS = new Set([
+  ...CAPABILITY_CANONICAL_OPERATIONS.filter(tool => IMPLEMENTED_OPERATIONS.has(tool.operationId) && tool.sideEffectClass === "read")
+    .map(tool => tool.operationId),
+  ...RUNNER_BRIDGE_READ_OPERATIONS,
+  ...Object.keys(TASK_ATTACHMENT_SCHEMAS),
+  READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
+  READ_TOOL_RESULT, "connections_search",
+]);
+const RECOVERABLE_READ_ERRORS = new Set([
+  "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
+  "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
+]);
+const readOnlyApiMethod = (method: string) => ["GET", "HEAD", "OPTIONS"].includes(method);
+const toolCallKey = (callId: string) => createHash("sha256").update(callId).digest("hex");
+const toolInputDigest = (value: unknown) => createHash("sha256").update(canonicalJson(value)).digest("hex");
 
 type NativeIssueDocument = NonNullable<Awaited<ReturnType<ReturnType<typeof documentService>["getIssueDocumentByKey"]>>>;
 type NativeDocumentContent = { id: string | null; documentId: string; body: string; changeSummary?: string | null };
@@ -238,6 +257,46 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+function apiToolResult(value: unknown) {
+  const { operationId, ...response } = record(value);
+  return { ...response, apiOperationId: operationId };
+}
+
+const TASK_API_PATHS: Readonly<Record<string, readonly [string, string]>> = {
+  get_task: ["GET", "/api/issues/{id}"],
+  comment_on_task: ["POST", "/api/issues/{id}/comments"],
+  list_task_documents: ["GET", "/api/issues/{id}/documents"],
+  read_task_document: ["GET", "/api/issues/{id}/documents/{key}"],
+  write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"],
+};
+
+function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
+  const [method, path] = TASK_API_PATHS[tool]!;
+  const operation = runnerApiCatalog().find(operation => operation.method === method && operation.path === path);
+  if (!operation) throw new Error("runner_task_api_operation_unavailable");
+  const body = tool === "comment_on_task" ? { body: input.body } : tool === "write_task_document"
+    ? { title: input.title, format: "markdown", body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
+  return { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) };
+}
+
+function hireAgentApiRequest(input: Record<string, unknown>, binding: Pick<Binding, "companyId" | "agentId" | "issueId">): RunnerApiCall {
+  const body: Record<string, unknown> = {
+    name: requiredString(input.name), adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
+    reportsTo: binding.agentId, sourceIssueId: binding.issueId,
+  };
+  if (input.role !== undefined) body.role = input.role;
+  if (input.title !== undefined) body.title = input.title;
+  if (input.capabilities !== undefined) body.capabilities = input.capabilities;
+  if (typeof input.instructions === "string" && input.instructions.trim()) {
+    body.instructionsBundle = { entryFile: "AGENTS.md", files: { "AGENTS.md": input.instructions } };
+  }
+  return { operationId: "POST /api/companies/{companyId}/agent-hires", pathParams: { companyId: binding.companyId }, body };
+}
+
+function hireAgentResult(value: unknown, provider: unknown) {
+  return { ...apiToolResult(value), ...(provider === "openai_dot" ? { setupRequired: "This creates a separate Paperclip Dot agent. Its operator must pair a separate OpenAI Dot before it can run. The existing Dot binding and workspace permission are never inherited." } : {}) };
+}
+
 export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
   close() { this.#taskAttachmentCache.close(); }
@@ -331,6 +390,87 @@ export class PaperclipRunnerToolAuthority {
     return this.binding.museRuntime ? all.filter(definition => MUSE_NATIVE_OPERATIONS.has(String(definition.name))) : all;
   }
 
+  async recover(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]): Promise<{ result: unknown; isError?: boolean } | null> {
+    await this.#assertToolScope(call.tool);
+    if (!this.binding.museRuntime) await this.binding.assertBridgeAuthority?.();
+    const context = await this.#boundContext();
+    const { run } = context;
+    if (RECOVERABLE_READ_OPERATIONS.has(call.tool)) return this.#recoverRead(call);
+    const input = record(call.arguments);
+    const key = typeof input.idempotencyKey === "string" ? input.idempotencyKey : null;
+    const receipt = key ? record(record(run.resultJson?.semanticToolReceipts)[key]) : {};
+    if (receipt.operationId === call.tool && canonicalJson(receipt.input) === canonicalJson(call.arguments)
+      && Object.hasOwn(receipt, "result")) return { result: receipt.result };
+
+    const callKey = toolCallKey(call.callId);
+    if (call.tool === "call_api" || call.tool === "hire_agent" || Object.hasOwn(TASK_API_PATHS, call.tool)) {
+      if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled)) return null;
+      let request = call.arguments;
+      if (Object.hasOwn(TASK_API_PATHS, call.tool)) {
+        if (!this.definitions().some(definition => definition.name === call.tool)) return null;
+        const parsed = RUNNER_BRIDGE_SCHEMAS.get(call.tool)!.safeParse(call.arguments);
+        if (!parsed.success) return null;
+        request = taskBridgeApiRequest(call.tool, parsed.data as Record<string, any>);
+      } else if (call.tool === "hire_agent") request = hireAgentApiRequest(input, this.binding);
+      let validated: ReturnType<typeof validateRunnerApiCall>;
+      try {
+        validated = validateRunnerApiCall(request, {
+          ...this.binding, issueIdentifier: context.issue.identifier, workMode: context.issue.workMode,
+        });
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 404) return null;
+        throw error;
+      }
+      const { input: apiInput, operation } = validated;
+      if (readOnlyApiMethod(operation.method)) return this.#recoverRead(call);
+      const api = record(record(run.resultJson?.apiToolReceipts)[callKey]);
+      if (api.state !== "completed" || api.digest !== toolInputDigest(apiInput)) return null;
+      const result = await this.#apiReceiptResult(api);
+      if (result === undefined || record(result).outcome === "unknown") return null;
+      return { result: call.tool === "hire_agent" ? hireAgentResult(result, context.actor.adapterConfig?.provider) : apiToolResult(result) };
+    }
+    if (call.tool === "workspace_write" || call.tool === "workspace_run") {
+      const bridge = record(record(run.resultJson?.bridgeToolReceipts)[callKey]);
+      if (bridge.state === "completed" && bridge.tool === call.tool
+        && bridge.digest === toolInputDigest({ tool: call.tool, arguments: call.arguments })
+        && Object.hasOwn(bridge, "result")) return { result: bridge.result };
+    }
+    return null;
+  }
+
+  async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
+    try {
+      return { result: await this.execute(call) };
+    } catch (error) {
+      // A known read failure is a tool outcome, not a failed transport. Keep
+      // authorization, uncertain effects, and unexpected storage errors fatal.
+      if (!(error instanceof Error && (RECOVERABLE_READ_ERRORS.has(error.message)
+        || (error instanceof HttpError && [400, 404, 422].includes(error.status))))) throw error;
+      await this.binding.assertBridgeAuthority?.();
+      await this.#boundContext();
+      return { isError: true, result: {
+        success: false, contentItems: [{ type: "inputText", text: error.message }],
+      } };
+    }
+  }
+
+  async #apiReceiptResult(receipt: { encryptedResult?: unknown; result?: unknown }): Promise<unknown> {
+    if (!receipt.encryptedResult) return receipt.result;
+    const text = await getSecretProvider("local_encrypted").resolveVersion({ material: record(receipt.encryptedResult), externalRef: null });
+    return JSON.parse(text);
+  }
+
+  async #assertToolScope(tool: string): Promise<void> {
+    if (this.binding.museRuntime) {
+      await this.binding.assertBridgeAuthority?.();
+      if (!MUSE_NATIVE_OPERATIONS.has(tool)) throw forbidden("This operation is outside the Muse first-party runtime profile");
+    }
+    if (this.binding.firstPartyOnly && (EXTERNAL_WORKSPACE_OPERATIONS.has(tool) || tool.startsWith("workspace_"))) throw forbidden("Paperclip workspace access is unavailable to this Grok Bot session.");
+    if (this.binding.nativeReview && tool !== "resolve_review" && !NATIVE_REVIEW_READ_TOOLS.has(tool)) {
+      throw forbidden("This review run may only inspect the assigned task and resolve its review.");
+    }
+  }
+
   async execute(call: {
     tool: string;
     callId: string;
@@ -362,17 +502,8 @@ export class PaperclipRunnerToolAuthority {
         beforeAccept: async tx => { await this.#lockAuthorizedMutationContext(tx); },
       });
     }
-    if (this.binding.museRuntime) {
-      await this.binding.assertBridgeAuthority?.();
-      if (!MUSE_NATIVE_OPERATIONS.has(call.tool)) throw forbidden("This operation is outside the Muse first-party runtime profile");
-    }
-    if (this.binding.firstPartyOnly && (EXTERNAL_WORKSPACE_OPERATIONS.has(call.tool) || call.tool.startsWith("workspace_"))) throw forbidden("Paperclip workspace access is unavailable to this Grok Bot session.");
-    if (this.binding.nativeReview) {
-      if (call.tool === "resolve_review") return this.#resolveReview(call.arguments);
-      if (!NATIVE_REVIEW_READ_TOOLS.has(call.tool)) {
-        throw forbidden("This review run may only inspect the assigned task and resolve its review.");
-      }
-    }
+    await this.#assertToolScope(call.tool);
+    if (this.binding.nativeReview && call.tool === "resolve_review") return this.#resolveReview(call.arguments);
     if (Object.hasOwn(TASK_ATTACHMENT_SCHEMAS, call.tool)) {
       const authorize = async () => {
         const current = await this.#boundContext();
@@ -430,14 +561,7 @@ export class PaperclipRunnerToolAuthority {
         if (call.tool === "list_assigned_skills") return runtimeContext.skills.map(skill => ({ key: skill.key, name: skill.runtimeName, versionId: skill.versionId, digest: skill.bundle.digest }));
         return settleRunnerBridgeRead(() => readAssignedSkill(runtimeContext, input));
       }
-      const paths: Record<string, [string, string]> = { get_task: ["GET", "/api/issues/{id}"], comment_on_task: ["POST", "/api/issues/{id}/comments"],
-        list_task_documents: ["GET", "/api/issues/{id}/documents"], read_task_document: ["GET", "/api/issues/{id}/documents/{key}"], write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"] };
-      const [method, path] = paths[call.tool]!;
-      const operation = runnerApiCatalog().find(operation => operation.method === method && operation.path === path);
-      if (!operation) throw new Error("runner_task_api_operation_unavailable");
-      const body = call.tool === "comment_on_task" ? { body: input.body } : call.tool === "write_task_document" ? { title: input.title, format: "markdown", body: input.body, baseRevisionId: input.baseRevisionId } : undefined;
-      const { operationId, ...response } = record(await this.#callApi(call.callId, { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) }));
-      return { ...response, apiOperationId: operationId };
+      return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
     }
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
@@ -627,35 +751,13 @@ export class PaperclipRunnerToolAuthority {
       }
       case "search_api": return searchRunnerApi(call.arguments);
       case "hire_agent": {
-        const body: Record<string, unknown> = {
-          name: requiredString(input.name),
-          adapterType: "paperclip_runner",
-          inheritRuntimeFrom: "caller",
-          reportsTo: this.binding.agentId,
-          sourceIssueId: this.binding.issueId,
-        };
-        if (input.role !== undefined) body.role = input.role;
-        if (input.title !== undefined) body.title = input.title;
-        if (input.capabilities !== undefined) body.capabilities = input.capabilities;
-        if (typeof input.instructions === "string" && input.instructions.trim()) {
-          body.instructionsBundle = {
-            entryFile: "AGENTS.md",
-            files: { "AGENTS.md": input.instructions },
-          };
-        }
-        const { operationId, ...response } = record(await this.#callApi(call.callId, {
-          operationId: "POST /api/companies/{companyId}/agent-hires",
-          pathParams: { companyId: this.binding.companyId },
-          body,
-        }));
-        return { ...response, apiOperationId: operationId, ...(context.actor.adapterConfig?.provider === "openai_dot" ? { setupRequired: "This creates a separate Paperclip Dot agent. Its operator must pair a separate OpenAI Dot before it can run. The existing Dot binding and workspace permission are never inherited." } : {}) };
+        return hireAgentResult(await this.#callApi(call.callId, hireAgentApiRequest(input, this.binding)), context.actor.adapterConfig?.provider);
       }
       case "call_api": {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;
         // exposing it as operationId makes the runner reject a valid response.
-        const { operationId, ...response } = record(await this.#callApi(call.callId, call.arguments));
-        return { ...response, apiOperationId: operationId };
+        return apiToolResult(await this.#callApi(call.callId, call.arguments));
       }
       case "get_task_context": {
         const monitorCheckAt = !this.binding.nativeReview && context.issue.workMode === "standard" &&
@@ -805,8 +907,8 @@ export class PaperclipRunnerToolAuthority {
 
   async #bridgeMutation(call: { tool: string; callId: string; arguments: unknown }, execute: () => Promise<unknown>) {
     if (!call.callId || call.callId.length > 500) throw badRequest("Use a stable bounded call ID");
-    const key = createHash("sha256").update(call.callId).digest("hex");
-    const digest = createHash("sha256").update(canonicalJson({ tool: call.tool, arguments: call.arguments })).digest("hex");
+    const key = toolCallKey(call.callId);
+    const digest = toolInputDigest({ tool: call.tool, arguments: call.arguments });
     const prior = await this.db.transaction(async tx => {
       const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
       const resultJson = record(context.run.resultJson), receipts = record(resultJson.bridgeToolReceipts);
@@ -896,36 +998,27 @@ export class PaperclipRunnerToolAuthority {
       await this.#assertDotApiFileAccess(operation.path, input);
       return result;
     };
-    if (["GET", "HEAD", "OPTIONS"].includes(operation.method)) return execute();
+    if (readOnlyApiMethod(operation.method)) return execute();
     if (!callId || callId.length > 500) throw badRequest("A bounded runner call id is required");
     const provider = sensitiveResponse ? getSecretProvider("local_encrypted") : null;
     if (provider) await provider.createSecret({ value: "runner-api-receipt-key-check" });
     // Reserve durably before HTTP dispatch, without holding a DB lock over an
     // HTTP route that itself needs DB locks. A crash leaves an explicit unknown
     // outcome rather than replaying a possibly committed external mutation.
-    const key = createHash("sha256").update(callId).digest("hex");
-    const digest = createHash("sha256").update(canonicalJson(input)).digest("hex");
+    const key = toolCallKey(callId);
+    const digest = toolInputDigest(input);
     const prior = await this.db.transaction(async (tx) => {
       const locked = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
       const resultJson = record(locked.run.resultJson);
       const receipts = record(resultJson.apiToolReceipts);
       const inherited = await priorRecoveryApiReceipt(tx as unknown as Db, { companyId: this.binding.companyId,
         issueId: this.binding.issueId, runId: this.binding.runId, operationId: operation.operationId, digest });
-      if (inherited) {
-        if (inherited.encryptedResult) {
-          const text = await getSecretProvider("local_encrypted").resolveVersion({ material: record(inherited.encryptedResult), externalRef: null });
-          return { result: JSON.parse(text) as unknown };
-        }
-        return { result: inherited.result };
-      }
+      if (inherited) return { result: await this.#apiReceiptResult(inherited) };
       const existing = record(receipts[key]);
       if (receipts[key]) {
         if (existing.digest !== digest) throw badRequest("API call id was reused with different arguments");
-        if (existing.encryptedResult) {
-          const text = await getSecretProvider("local_encrypted").resolveVersion({ material: record(existing.encryptedResult), externalRef: null });
-          return { result: JSON.parse(text) as unknown };
-        }
-        return { result: existing.result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
+        const result = await this.#apiReceiptResult(existing);
+        return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
       }
       if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };

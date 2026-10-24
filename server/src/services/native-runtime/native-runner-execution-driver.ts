@@ -5,6 +5,8 @@ import type { RunnerExecutionDriver } from "../../vendor/paperclip-runner/index.
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import type { Db } from "@paperclipai/db";
+import { registerNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 
 type ConnectionRegistration = NonNullable<RunnerExecutionDriver["controlPlaneRegistration"]>;
 type RunnerIdentity = Parameters<ConnectionRegistration>[1];
@@ -21,6 +23,7 @@ export interface NativeRunnerExecutionDriverInput {
   processStarted?: Promise<void>;
   processIdentityReady?: Promise<void>;
   beforeConnect?: (identity?: RunnerIdentity) => Promise<void>;
+  controllerPersistence?: { db: Db; bootId: string; authorityRunId?: string; onFailure?: (runId: string, leaseOwner: string) => Promise<void> };
   checkpoint?: Awaited<ReturnType<ConnectionRegistration>>["checkpoint"];
   process?: Omit<RunnerExecutionDriver, "controlPlaneRegistration">;
   trace?: NativeRunTrace;
@@ -67,6 +70,12 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
     ...input.process,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
       await input.beforeConnect?.(attachmentIdentity);
+      if (input.controllerPersistence && input.binding.issueId) {
+        await registerNativeRunnerCheckpoint({ ...input.controllerPersistence, authority,
+          authorityRunId: attachmentIdentity?.runId ?? input.controllerPersistence.authorityRunId,
+          binding: { companyId: input.binding.companyId, issueId: input.binding.issueId,
+            runId: attachmentIdentity?.runId ?? input.binding.runId } });
+      }
       return measureNativeRunnerSpan(
         input.trace,
         "runner.transport.connect",

@@ -11135,6 +11135,43 @@ describe("runnerd provider runtime wiring", () => {
     } finally { resume.mockRestore(); }
   });
 
+  it.each(["verified", "wrong-state", "wrong-lease"] as const)("reattaches a surviving plugin task through its owner: %s", async mode => {
+    const current = scopedNativeExecution(`plugin-live-${mode}`);
+    const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
+      runnerInstanceId: "plugin-runner", environmentLeaseId: "same-task-lease", turnId: "admitted-turn", itemId: "admitted-item" };
+    const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+    const task = vi.fn(async (operation: any) => {
+      environmentTaskOperationSchema.parse(operation);
+      if (operation.kind === "status") return { kind: "status", taskId: "same-task", phase: "running", executionStopped: false };
+      if (operation.kind === "read_state") return { kind: "state", taskId: "same-task", state: {
+        ...durableRunnerState(identity, "ready"), ...(mode === "wrong-state" ? { itemId: "other" } : {}),
+      } };
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "same-task",
+        runner: { version: "new-artifact", digest: `sha256:${"b".repeat(64)}` } };
+    });
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
+      runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".",
+        leaseId: mode === "wrong-lease" ? "replacement-task" : identity.environmentLeaseId, runnerTask: task },
+      controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-artifact", digest: `sha256:${"a".repeat(64)}` } },
+      restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "controller", controllerGeneration: 2,
+        providerAttempt: 1, restartKind: "hard", recoveryRequestId: null, remote: { kind: "plugin_task", leaseId: identity.environmentLeaseId } } });
+    if (mode !== "verified") {
+      await expect(backend).rejects.toThrow(mode === "wrong-state" ? "adoption identity mismatch" : "recovery_lease_mismatch");
+      expect(state.createBackend).not.toHaveBeenCalled();
+      return;
+    }
+    await backend;
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0];
+    expect(options).toMatchObject({ prpIdentity: identity, adoptExistingRunner: { pid: null, startedAt: null },
+      runnerArtifact: { version: "admitted-artifact" } });
+    expect(options).toMatchObject({ runnerReconnectGraceMs: 420_000 });
+    expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
+  });
+
   it.each(["codex", "opencode", "acpx"] as const)("uses a task-only %s driver without exposing Core paths or transferring the agent home", async (kind) => {
     const taskExecution = { ...execution, provider: kind === "codex" ? execution.provider
       : kind === "opencode" ? { kind, model: "openai/test", permissionMode: "deny" }
