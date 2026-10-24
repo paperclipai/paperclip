@@ -83,6 +83,13 @@ export type DeferredWakeCandidate = {
   wakeReason: string | null;
   /** Exact failed-chat retry authority revalidated by the transaction-bound adapter. */
   authorizedFailedChatRetry?: boolean;
+  /**
+   * True when run dispatch would start this wake's run only for an agent that
+   * owns the issue: its context carries no interaction, non-assignee
+   * workspace-busy, source-scoped recovery or native review bypass. Missing
+   * means unknown, and the drain then never treats the wake as stale.
+   */
+  requiresIssueOwnership?: boolean;
 };
 
 export type PromoteDeferredWakeInput = {
