@@ -405,6 +405,10 @@ async function promoteDeferredWake(
         issueId: reopened.id,
         identifier: reopened.identifier,
         reopenedFrom: currentIssue.status,
+        wakeupRequestId: workingCandidate.id,
+        requestedByActorType: workingCandidate.requestedByActorType,
+        requestedByActorId: workingCandidate.requestedByActorId,
+        commentIds: workingCandidate.deferredCommentIds,
       });
       currentIssue = reopened;
     }
