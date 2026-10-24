@@ -245,6 +245,10 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
   const layout = useMemo(() => layoutForest(orgTree ?? []), [orgTree]);
   const allNodes = useMemo(() => flattenLayout(layout), [layout]);
   const edges = useMemo(() => collectEdges(layout), [layout]);
+  const layoutIdentity = useMemo(
+    () => JSON.stringify(allNodes.map(({ id, x, y }) => [id, x, y])),
+    [allNodes],
+  );
 
   // Compute SVG bounds
   const bounds = useMemo(() => {
@@ -283,11 +287,11 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
     };
   }, []);
 
-  // Center the chart on first load
+  // Re-fit when the company or graph changes, not on status-only refreshes.
   const hasInitialized = useRef(false);
   useEffect(() => {
     hasInitialized.current = false;
-  }, [orgTree]);
+  }, [selectedCompanyId, layoutIdentity]);
 
   useEffect(() => {
     if (hasInitialized.current || allNodes.length === 0 || !containerRef.current) return;
