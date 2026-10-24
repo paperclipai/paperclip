@@ -4,9 +4,19 @@ import type { RunnerApiIo } from "./runner-api-client.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 export const READ_TOOL_RESULT = "read_tool_result";
-// PRP permits ~510 KiB per command after encryption framing. Measure encoded
-// result bytes and leave the remaining ~22 KiB for the command and tool identity.
+// Keep nested provider-wrapper output at 500 KB, leaving headroom under the
+// runner's 768 KiB result limit for call identity and transport framing.
 export const RUNNER_TOOL_RESULT_MAX_BYTES = 500_000;
+
+function serializeRunnerToolResultJsonForWire(json: string): string {
+  return JSON.stringify({ success: true, contentItems: [{ type: "inputText", text: json }] });
+}
+
+/** Serialize the exact provider-facing content wrapper used for tool results. */
+export function serializeRunnerToolResultForWire(result: unknown): string | undefined {
+  const text = JSON.stringify(result);
+  return text === undefined ? undefined : serializeRunnerToolResultJsonForWire(text);
+}
 export const readToolResultSchema = z.object({
   artifactId: z.string().uuid(),
   offsetBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -33,7 +43,7 @@ export async function captureRunnerToolResult(
   let settle: Awaited<ReturnType<NonNullable<RunnerApiIo["reserveResponseCapture"]>>> | undefined;
   try {
     const json = JSON.stringify(result);
-    if (json === undefined || Buffer.byteLength(json) <= RUNNER_TOOL_RESULT_MAX_BYTES) return result;
+    if (json === undefined || Buffer.byteLength(serializeRunnerToolResultJsonForWire(json)) <= RUNNER_TOOL_RESULT_MAX_BYTES) return result;
     if (Buffer.byteLength(json) > RUNNER_API_RESPONSE_MAX_BYTES) throw new Error("App-tool result exceeds the capture limit");
     const bytes = Buffer.from(json);
     settle = await io.reserveResponseCapture?.();
@@ -52,7 +62,7 @@ export async function captureRunnerToolResult(
   }
 }
 
-/** Fit the encoded receipt, including JSON escaping, without discarding text. */
+/** Fit the provider-facing serialized receipt, including nested JSON escaping, without discarding text. */
 export function fitRunnerToolResultPage(response: {
   data?: unknown;
   responseText?: { offsetBytes: number; nextOffsetBytes: number | null; totalBytes: number };
@@ -63,7 +73,7 @@ export function fitRunnerToolResultPage(response: {
   if (typeof data !== "string" || !cursor) return response;
   // Keep the continuation before the potentially long provider text.
   const whole = { ...metadata, data };
-  if (Buffer.byteLength(JSON.stringify(whole)) <= RUNNER_TOOL_RESULT_MAX_BYTES) return whole;
+  if (Buffer.byteLength(serializeRunnerToolResultForWire(whole) ?? "") <= RUNNER_TOOL_RESULT_MAX_BYTES) return whole;
   const bytes = Buffer.from(data);
   const page = (end: number) => {
     while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
@@ -77,11 +87,11 @@ export function fitRunnerToolResultPage(response: {
   let low = 0, high = bytes.length;
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(JSON.stringify(page(middle))) <= RUNNER_TOOL_RESULT_MAX_BYTES) low = middle;
+    if (Buffer.byteLength(serializeRunnerToolResultForWire(page(middle)) ?? "") <= RUNNER_TOOL_RESULT_MAX_BYTES) low = middle;
     else high = middle - 1;
   }
   const result = page(low);
-  if (!result.data.length || Buffer.byteLength(JSON.stringify(result)) > RUNNER_TOOL_RESULT_MAX_BYTES) {
+  if (!result.data.length || Buffer.byteLength(serializeRunnerToolResultForWire(result) ?? "") > RUNNER_TOOL_RESULT_MAX_BYTES) {
     throw new Error("Saved tool result page cannot fit its delivery limit");
   }
   return result;

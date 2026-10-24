@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
-import { captureRunnerToolResult, fitRunnerToolResultPage, RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
+import { captureRunnerToolResult, fitRunnerToolResultPage, RUNNER_TOOL_RESULT_MAX_BYTES, serializeRunnerToolResultForWire } from "./runner-tool-results.js";
 
 describe("assigned tool result capture", () => {
   it("leaves small governed results inline without storage admission", async () => {
@@ -11,25 +11,40 @@ describe("assigned tool result capture", () => {
     expect(io.saveResponse).not.toHaveBeenCalled();
   });
 
-  it("delivers a 480 KB result inline without extra page reads", async () => {
+  it("keeps a result inline when its provider wrapper fits the wire budget", async () => {
     const result = { content: "x".repeat(480_000) };
     const io = { reserveResponseCapture: vi.fn(async () => async () => {}),
       saveResponse: vi.fn(async () => ({ artifactId: "saved" })) };
+    expect(Buffer.byteLength(serializeRunnerToolResultForWire(result)!)).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
     expect(await captureRunnerToolResult(result, io)).toBe(result);
     expect(io.saveResponse).not.toHaveBeenCalled();
   });
 
-  it.each([500_000, 500_001])("captures only results above the encoded budget (%s bytes)", async byteSize => {
-    const result = { content: "x".repeat(byteSize - Buffer.byteLength(JSON.stringify({ content: "" }))) };
+  it("captures results whose provider wrapper would exceed the wire budget after JSON escaping", async () => {
+    const result = { content: "\\".repeat(200_000) };
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(RUNNER_TOOL_RESULT_MAX_BYTES);
+    expect(Buffer.byteLength(serializeRunnerToolResultForWire(result)!)).toBeGreaterThan(RUNNER_TOOL_RESULT_MAX_BYTES);
     const saveResponse = vi.fn(async (bytes: Buffer) => ({ artifactId: "saved", byteSize: bytes.length }));
     const response = await captureRunnerToolResult(result, {
       reserveResponseCapture: async () => async () => {}, saveResponse,
     });
-    if (byteSize === 500_000) {
+    expect(response).toMatchObject({ artifact: { byteSize: Buffer.byteLength(JSON.stringify(result)) } });
+    expect(saveResponse.mock.calls[0]![0].toString("utf8")).toBe(JSON.stringify(result));
+  });
+
+  it.each([RUNNER_TOOL_RESULT_MAX_BYTES, RUNNER_TOOL_RESULT_MAX_BYTES + 1])("captures only results above the wire budget (%s bytes)", async wireBytes => {
+    const base = Buffer.byteLength(serializeRunnerToolResultForWire({ content: "" })!);
+    const result = { content: "x".repeat(wireBytes - base) };
+    expect(Buffer.byteLength(serializeRunnerToolResultForWire(result)!)).toBe(wireBytes);
+    const saveResponse = vi.fn(async (bytes: Buffer) => ({ artifactId: "saved", byteSize: bytes.length }));
+    const response = await captureRunnerToolResult(result, {
+      reserveResponseCapture: async () => async () => {}, saveResponse,
+    });
+    if (wireBytes === RUNNER_TOOL_RESULT_MAX_BYTES) {
       expect(response).toBe(result);
       expect(saveResponse).not.toHaveBeenCalled();
     } else {
-      expect(response).toMatchObject({ artifact: { byteSize } });
+      expect(response).toMatchObject({ artifact: { byteSize: Buffer.byteLength(JSON.stringify(result)) } });
       expect(saveResponse.mock.calls[0]![0].toString("utf8")).toBe(JSON.stringify(result));
     }
   });
@@ -47,7 +62,7 @@ describe("assigned tool result capture", () => {
       const response = fitRunnerToolResultPage({ ok: true,
         responseText: { offsetBytes, nextOffsetBytes: end < bytes.length ? end : null, totalBytes: bytes.length },
         data: bytes.subarray(offsetBytes, end).toString("utf8") });
-      const encoded = Buffer.byteLength(JSON.stringify(response));
+      const encoded = Buffer.byteLength(serializeRunnerToolResultForWire(response)!);
       expect(encoded).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
       if (response.responseText!.nextOffsetBytes !== null) expect(encoded).toBeGreaterThan(499_980);
       restored += response.data;

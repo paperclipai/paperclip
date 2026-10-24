@@ -81,13 +81,14 @@ const generalServerWithoutChatOrNativeRunnerGroupName = "general-server-without-
 const generalChatGroupName = "general-chat";
 const generalServerNativeRunnerGroupName = "general-server-native-runner";
 const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
-// The first suite rebuilds the Runner release binaries with cargo in beforeAll.
-// Inside the PR workflow's plain server shards, which carry no Rust cache,
-// that build was a ~4m30s cold compile of every third-party crate on each run
-// (277s of a 291s shard vitest step, actions run 35246999382, 2026-09-17).
+// Keep suites that exercise the native Runner in an isolated serial invocation.
+// The first suite rebuilds Runner release binaries with cargo in beforeAll;
+// other suites use the real runnerd process and should not compete with the
+// ordinary parallel server files.
 const nativeRunnerSuites = [
   "server/src/services/native-runtime/plugin-runner-probe.test.ts",
   "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
+  "server/src/services/native-runtime/runner-tool-results-prp.integration.test.ts",
   "server/src/__tests__/dot-runner.test.ts",
   // These process cases otherwise skip in server shards without Runner binaries.
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts",
@@ -152,6 +153,40 @@ const serializedServerVitestArgs = [
   "--maxWorkers=1",
 ];
 const sourceOnlyVitestArgs = ["--exclude", "**/dist/**"];
+const nativeRunnerSuiteSet = new Set(nativeRunnerSuites);
+
+function planGeneralServerShardInvocations(shardFiles, sharedDatabase = Boolean(process.env.PAPERCLIP_TEST_DATABASE_URL)) {
+  const normalFiles = shardFiles.filter((file) => !nativeRunnerSuiteSet.has(file));
+  const nativeFiles = shardFiles.filter((file) => nativeRunnerSuiteSet.has(file));
+  const invocations = [];
+  if (normalFiles.length > 0) {
+    invocations.push({
+      kind: "normal",
+      files: normalFiles,
+      args: [
+        "--project",
+        "@paperclipai/server",
+        ...(sharedDatabase
+          ? serializedServerVitestArgs
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
+        ...normalFiles,
+      ],
+    });
+  }
+  if (nativeFiles.length > 0) {
+    invocations.push({
+      kind: "native-runner",
+      files: nativeFiles,
+      args: [
+        "--project",
+        "@paperclipai/server",
+        ...serializedServerVitestArgs,
+        ...nativeFiles,
+      ],
+    });
+  }
+  return invocations;
+}
 
 function walk(dir) {
   const entries = readdirSync(dir);
@@ -511,21 +546,13 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
       if (shardFiles.length === 0) {
         return;
       }
-
-      await runVitest(
-        [
-          "--project",
-          "@paperclipai/server",
-          // Files have separate fork processes and isolated homes/configs.
-          // Keep each file's cases serial; overlap only two independent files.
-          // An explicit shared test database cannot be isolated this way.
-          ...(process.env.PAPERCLIP_TEST_DATABASE_URL
-            ? serializedServerVitestArgs
-            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=2"]),
-          ...shardFiles,
-        ],
-        `${groupName} shard ${shardIndex + 1}/${shardCount}`,
-      );
+      const invocations = planGeneralServerShardInvocations(shardFiles);
+      for (const invocation of invocations) {
+        await runVitest(
+          invocation.args,
+          `${groupName} ${invocation.kind} shard ${shardIndex + 1}/${shardCount}`,
+        );
+      }
       return;
     }
 
@@ -620,6 +647,26 @@ if (options.dryRun) {
     options.mode === serializedModeName
       ? selectSerializedSuites(routeTests, options.shardIndex, options.shardCount)
       : routeTests;
+  const selectedGeneralServerSuites =
+    options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
+      ? nativeRunnerSuites
+      : options.mode === generalModeName &&
+          generalServerGroups.includes(options.group) &&
+          options.shardCount !== null
+        ? selectGeneralServerShard(
+            generalServerTestFiles.filter((file) => !excludedServerSuites(options.group).includes(file)),
+            options.shardIndex,
+            options.shardCount,
+            generalServerShardDurations,
+          )
+        : null;
+  const generalServerShardInvocations =
+    options.mode === generalModeName &&
+    generalServerGroups.includes(options.group) &&
+    options.shardCount !== null &&
+    options.shardCount > 1
+      ? planGeneralServerShardInvocations(selectedGeneralServerSuites ?? [])
+      : null;
   // The inventory exceeds pipe buffers; flush it before the immediate exit.
   writeFileSync(1,
     JSON.stringify(
@@ -632,19 +679,8 @@ if (options.dryRun) {
         serializedSuiteCount: routeTests.length,
         selectedSerializedSuites: serializedSuites.map((routeTest) => routeTest.repoPath),
         generalServerSuiteCount: generalServerTestFiles.length,
-        selectedGeneralServerSuites:
-          options.mode === generalModeName && options.group === generalServerNativeRunnerGroupName
-            ? nativeRunnerSuites
-            : options.mode === generalModeName &&
-                generalServerGroups.includes(options.group) &&
-                options.shardCount !== null
-              ? selectGeneralServerShard(
-                  generalServerTestFiles.filter((file) => !excludedServerSuites(options.group).includes(file)),
-                  options.shardIndex,
-                  options.shardCount,
-                  generalServerShardDurations,
-                )
-              : null,
+        selectedGeneralServerSuites,
+        generalServerShardInvocations,
         chatVitestShards: options.group === generalChatGroupName
           ? chatShardWorkers(options.shardIndex, options.shardCount) : null,
         workspaceProjects:
