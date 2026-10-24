@@ -18,5 +18,10 @@ Core fields:
 - headers (object, optional): request headers
 - payloadTemplate (object, optional): JSON payload template
 - timeoutSec (number, optional): request timeout in seconds
+- timeoutMs (number, optional): request timeout in milliseconds; takes precedence over timeoutSec
+- runAttestation (boolean, optional): sign a receiver-scoped, 120-second Ed25519
+  run attestation in x-paperclip-run-attestation. Requires an HTTPS URL, an
+  issue-scoped run, and PAPERCLIP_HTTP_RUN_ATTESTATION_KEY_FILE on the server.
+  The receiver must pin the public key and reject replayed jti values.
 `,
 };
