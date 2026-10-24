@@ -180,6 +180,29 @@ describe("worker performAction context", () => {
         },
         companyId: null,
       });
+
+      await expect(callWorker("performAction", {
+        key: "inspect",
+        companyId: "authorized-company",
+        params: { companyId: "plugin-owned-company" },
+        actorContext: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+      })).resolves.toEqual({
+        paramsCompanyId: "plugin-owned-company",
+        actor: {
+          type: "user",
+          userId: "user-1",
+          agentId: null,
+          runId: null,
+          companyId: "authorized-company",
+        },
+        companyId: "authorized-company",
+      });
     } finally {
       worker.stop();
       hostReadline.close();
@@ -212,7 +235,7 @@ describe("worker invocation scope propagation", () => {
             });
           }
           const company = await ctx.companies.get(String(params.requestedCompanyId));
-          return { label: params.label, company };
+          return { label: params.label, company, hasCompanyId: Object.hasOwn(params, "companyId") };
         });
       },
     });
@@ -318,6 +341,7 @@ describe("worker invocation scope propagation", () => {
       await expect(companyBRequest).resolves.toEqual({
         label: "b",
         company: { id: "company-b" },
+        hasCompanyId: false,
       });
       await companyAExpectation;
 
@@ -1221,7 +1245,7 @@ describe("Durable lifecycle inbox RPC", () => {
     });
     try {
       await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
-      expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
+      expect((await call("getData", { key: "drain", companyId: "company-a", params: { companyId: "company-a" } }) as { result: unknown }).result).toEqual([event]);
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
