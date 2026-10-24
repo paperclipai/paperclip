@@ -425,6 +425,9 @@ When a committed Codex terminal reports `serverOverloaded`, the task displays
 the model capacity error and **Model at capacity** on its scheduled retry card.
 Automatic retries wait one and two minutes, then stop. Use
 **Tasks → Model capacity retry** in Storybook to inspect the waiting state.
+For local Codex usage-limit messages with a dated reset, the adapter records
+the future reset in the server's local time zone. Invalid dates use the
+existing retry fallback.
 Claude Code uses model-specific effort levels; Haiku has no effort slider.
 Grok uses its adapter's reasoning levels, including for its default model.
 Kimi shows effort only when its agent uses the CLI engine, including with its
