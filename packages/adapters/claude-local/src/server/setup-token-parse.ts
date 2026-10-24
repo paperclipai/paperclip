@@ -516,3 +516,105 @@ export function parseSetupTokenCredential(text: string): string | null {
   if (!FULL_TOKEN_RE.test(token)) return null;
   return token;
 }
+
+const CSI_AT_RE = /^\x1b\[([0-?]*)([ -/]*)([@-~])/;
+const CHARSET_AT_RE = /^\x1b[()*+][\x20-\x7e]/;
+
+const MAX_RENDER_ROWS = 2048;
+
+const MAX_RENDER_COLS = 1024;
+
+export function renderTerminalScreen(text: string): string {
+  const rows: string[][] = [[]];
+  let row = 0;
+  let col = 0;
+  let saved = { row: 0, col: 0 };
+  const ensureRow = (r: number) => {
+    while (rows.length <= r && rows.length < MAX_RENDER_ROWS) rows.push([]);
+  };
+  const moveTo = (r: number, c: number) => {
+    row = Math.max(0, Math.min(r, MAX_RENDER_ROWS - 1));
+    col = Math.max(0, Math.min(c, MAX_RENDER_COLS - 1));
+    ensureRow(row);
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\x1b") {
+      const rest = text.slice(i, i + 256);
+      const csi = CSI_AT_RE.exec(rest);
+      if (csi) {
+        i += csi[0].length;
+        const [, rawParams, intermediates, final] = csi;
+        if (intermediates || /^[<=>?]/.test(rawParams)) continue;
+        const params = rawParams.split(";").map((value) => Number.parseInt(value, 10));
+        const n = Number.isFinite(params[0]) && params[0] > 0 ? params[0] : 1;
+        switch (final) {
+          case "A": moveTo(row - n, col); break;
+          case "B": moveTo(row + n, col); break;
+          case "C": moveTo(row, col + n); break;
+          case "D": moveTo(row, col - n); break;
+          case "E": moveTo(row + n, 0); break;
+          case "F": moveTo(row - n, 0); break;
+          case "G": moveTo(row, n - 1); break;
+          case "H":
+          case "f": {
+            const c = Number.isFinite(params[1]) && params[1] > 0 ? params[1] : 1;
+            moveTo(n - 1, c - 1);
+            break;
+          }
+          case "K": {
+            const mode = Number.isFinite(params[0]) ? params[0] : 0;
+            const line = rows[row];
+            if (mode === 0) line.length = Math.min(line.length, col);
+            else if (mode === 1) for (let c = 0; c <= col && c < line.length; c += 1) line[c] = " ";
+            else line.length = 0;
+            break;
+          }
+          case "J": {
+            const mode = Number.isFinite(params[0]) ? params[0] : 0;
+            if (mode === 0) {
+              rows[row].length = Math.min(rows[row].length, col);
+              rows.length = row + 1;
+            } else if (mode === 2 || mode === 3) {
+              for (const line of rows) line.length = 0;
+            }
+            break;
+          }
+          case "s": saved = { row, col }; break;
+          case "u": moveTo(saved.row, saved.col); break;
+          default: break;
+        }
+        continue;
+      }
+      if (text[i + 1] === "]") {
+        const bell = text.indexOf("\x07", i + 2);
+        const st = text.indexOf("\x1b\\", i + 2);
+        const ends = [bell === -1 ? -1 : bell + 1, st === -1 ? -1 : st + 2].filter((end) => end !== -1);
+        i = ends.length > 0 ? Math.min(...ends) : text.length;
+        continue;
+      }
+      const charset = CHARSET_AT_RE.exec(rest);
+      if (charset) { i += charset[0].length; continue; }
+      const next = text[i + 1];
+      if (next === "7") saved = { row, col };
+      else if (next === "8") moveTo(saved.row, saved.col);
+      i += next === undefined ? 1 : 2;
+      continue;
+    }
+    i += 1;
+    if (ch === "\r") { col = 0; continue; }
+    if (ch === "\n") { moveTo(row + 1, 0); continue; }
+    if (ch === "\b") { moveTo(row, col - 1); continue; }
+    if (ch === "\t") { moveTo(row, (Math.floor(col / 8) + 1) * 8); continue; }
+    if (ch < " " || ch === "\x7f") continue;
+    if (col < MAX_RENDER_COLS) {
+      const line = rows[row];
+      while (line.length < col) line.push(" ");
+      line[col] = ch;
+      col += 1;
+    }
+  }
+  return rows.map((line) => line.join("").trimEnd()).join("\n");
+}
