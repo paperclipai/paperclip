@@ -1,10 +1,32 @@
 // @vitest-environment jsdom
 
+import type { DragStartEvent, DragEndEvent } from "@dnd-kit/core";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { READABLE_TEXT_DARK } from "../lib/color-contrast";
 import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+
+const dragCallbacks = vi.hoisted(() => ({
+  start: undefined as ((event: DragStartEvent) => void) | undefined,
+  end: undefined as ((event: DragEndEvent) => void) | undefined,
+}));
+
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/core")>();
+  return {
+    ...actual,
+    DndContext: (props: React.ComponentProps<typeof actual.DndContext>) => {
+      dragCallbacks.start = props.onDragStart;
+      dragCallbacks.end = props.onDragEnd;
+      return <actual.DndContext {...props} />;
+    },
+    DragOverlay: ({ children }: { children?: React.ReactNode }) => (
+      <div data-testid="drag-overlay">{children}</div>
+    ),
+  };
+});
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -118,6 +140,69 @@ describe("KanbanBoard", () => {
       }
     }
     document.body.innerHTML = "";
+  });
+
+  it.each([false, true])("renders all colored labels below the title (compact: %s)", (compactCards) => {
+    const issue = createIssue(1, "todo");
+    issue.labels = ["Ação", "Revisão", "Uma etiqueta muito longa sem perder seu nome completo"].map((name, i) => ({
+      id: `label-${i}`, companyId: issue.companyId, name, color: READABLE_TEXT_DARK,
+      createdAt: issue.createdAt, updatedAt: issue.updatedAt,
+    }));
+    const { container } = renderBoard({ issues: [issue], compactCards });
+    const group = container.querySelector('[aria-label="Task labels"]')!;
+    expect(group).not.toBeNull();
+    const link = group.closest("a")!;
+    expect(link.getAttribute("href")).toBe("/issues/PAP-1");
+    const title = link.querySelector("p")!;
+    expect(title.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(group.classList.contains("flex-wrap")).toBe(true);
+    for (const label of issue.labels) {
+      const badge = group.querySelector<HTMLElement>(`[title="${label.name}"]`)!;
+      expect(badge.textContent).toBe(label.name);
+      const expected = document.createElement("span");
+      expected.style.borderColor = label.color;
+      expected.style.backgroundColor = `${label.color}1f`;
+      expect(badge.style.borderColor).toBe(expected.style.borderColor);
+      expect(badge.style.backgroundColor).toBe(expected.style.backgroundColor);
+      expect(badge.classList.contains("max-w-full")).toBe(true);
+    }
+  });
+
+  it.each([false, true])("hides labels and refreshes task data (overflow fades: %s)", (showOverflowFades) => {
+    const issue = createIssue(1, "todo");
+    issue.labels = [{ id: "label-1", companyId: issue.companyId, name: "Original", color: READABLE_TEXT_DARK,
+      createdAt: issue.createdAt, updatedAt: issue.updatedAt }];
+    const { container, render } = renderBoard({ issues: [issue], showLabels: false, showOverflowFades });
+    expect(container.querySelector('[aria-label="Task labels"]')).toBeNull();
+    render({ issues: [issue], showLabels: true, showOverflowFades });
+    expect(container.textContent).toContain("Original");
+    render({ issues: [{ ...issue, labels: [{ ...issue.labels[0], name: "Atualizada" }] }], showOverflowFades });
+    expect(container.textContent).toContain("Atualizada");
+    expect(container.textContent).not.toContain("Original");
+  });
+
+  it("does not reserve label space for tasks without labels", () => {
+    const { container, render } = renderBoard({ issues: [createIssue(1, "todo")] });
+    expect(container.querySelector('[aria-label="Task labels"]')).toBeNull();
+    render({ issues: [{ ...createIssue(1, "todo"), labels: undefined }] });
+    expect(container.querySelector('[aria-label="Task labels"]')).toBeNull();
+  });
+
+  it.each([false, true])("keeps label visibility in the drag overlay (showLabels: %s)", (showLabels) => {
+    const issue = createIssue(1, "todo");
+    issue.labels = [{ id: "label-1", companyId: issue.companyId, name: "Revisão", color: READABLE_TEXT_DARK,
+      createdAt: issue.createdAt, updatedAt: issue.updatedAt }];
+    const onUpdateIssue = vi.fn();
+    const { container } = renderBoard({ issues: [issue], showLabels, onUpdateIssue });
+    act(() => { dragCallbacks.start?.({ active: { id: issue.id } } as DragStartEvent); });
+    const overlay = container.querySelector('[data-testid="drag-overlay"]')!;
+    expect(overlay.textContent).toContain(issue.title);
+    expect(overlay.querySelector('[aria-label="Task labels"]') !== null).toBe(showLabels);
+    act(() => {
+      dragCallbacks.end?.({ active: { id: issue.id }, over: { id: "in_progress" } } as DragEndEvent);
+    });
+    expect(onUpdateIssue).toHaveBeenCalledExactlyOnceWith(issue.id, { status: "in_progress" });
+    expect(overlay.textContent).toBe("");
   });
 
   it("limits visible cards and reveals more cards per column", () => {

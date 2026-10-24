@@ -27,6 +27,7 @@ import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import { cn } from "../lib/utils";
+import { pickTextColorForPillBg } from "../lib/color-contrast";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { HorizontalScrollViewport } from "./HorizontalScrollViewport";
@@ -153,6 +154,7 @@ interface KanbanBoardProps {
   agents?: Agent[];
   liveIssueIds?: Set<string>;
   compactCards?: boolean;
+  showLabels?: boolean;
   collapsedStatuses?: string[];
   initialVisibleCount?: number;
   revealIncrement?: number;
@@ -170,6 +172,7 @@ function KanbanColumn({
   liveIssueIds,
   subtreeLiveCounts,
   compactCards = false,
+  showLabels = true,
   collapsed = false,
   visibleCount,
   revealIncrement,
@@ -181,6 +184,7 @@ function KanbanColumn({
   liveIssueIds?: Set<string>;
   subtreeLiveCounts?: ReadonlyMap<string, number>;
   compactCards?: boolean;
+  showLabels?: boolean;
   collapsed?: boolean;
   visibleCount: number;
   revealIncrement: number;
@@ -247,6 +251,7 @@ function KanbanColumn({
               isLive={liveIssueIds?.has(issue.id)}
               subtreeLiveCount={subtreeLiveCounts?.get(issue.id) ?? 0}
               compact={compactCards}
+              showLabels={showLabels}
               className={tone.card}
             />
           ))}
@@ -279,6 +284,7 @@ function KanbanCard({
   subtreeLiveCount = 0,
   isOverlay,
   compact = false,
+  showLabels = true,
   className,
 }: {
   issue: Issue;
@@ -287,6 +293,7 @@ function KanbanCard({
   subtreeLiveCount?: number;
   isOverlay?: boolean;
   compact?: boolean;
+  showLabels?: boolean;
   className?: string;
 }) {
   const {
@@ -297,6 +304,8 @@ function KanbanCard({
     transition,
     isDragging,
   } = useSortable({ id: issue.id, data: { issue } });
+
+  const labels = issue.labels ?? [];
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -365,6 +374,25 @@ function KanbanCard({
           )}
         </div>
         <p className={`${compact ? "mb-1.5 text-xs" : "mb-2 text-sm"} leading-snug line-clamp-2`}>{issue.title}</p>
+        {showLabels && labels.length > 0 && (
+          <div className="mb-2 flex min-w-0 flex-wrap gap-1" role="group" aria-label="Task labels">
+            {labels.map((label) => (
+              <Badge
+                key={label.id}
+                variant="outline"
+                className="min-w-0 max-w-full px-1.5 py-0 text-(length:--text-nano)"
+                style={{
+                  borderColor: label.color,
+                  color: pickTextColorForPillBg(label.color, 0.12),
+                  backgroundColor: `${label.color}1f`,
+                }}
+                title={label.name}
+              >
+                <span className="truncate">{label.name}</span>
+              </Badge>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2 min-w-0">
           {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
           {SHOW_TASK_PRIORITY_UI && <PriorityIcon priority={issue.priority} />}
@@ -391,6 +419,7 @@ export function KanbanBoard({
   agents,
   liveIssueIds,
   compactCards = false,
+  showLabels = true,
   collapsedStatuses = [],
   initialVisibleCount = KANBAN_COLUMN_INITIAL_VISIBLE_LIMIT,
   revealIncrement = KANBAN_COLUMN_REVEAL_INCREMENT,
@@ -468,6 +497,7 @@ export function KanbanBoard({
       liveIssueIds={liveIssueIds}
       subtreeLiveCounts={subtreeLiveCounts}
       compactCards={compactCards}
+      showLabels={showLabels}
       // Compact mode also collapses empty lanes to labeled rails.
       collapsed={collapsedStatusSet.has(status) || (collapsedStatusSet.size > 0 && columnIssues[status].length === 0)}
       visibleCount={visibleCountByStatus[status] ?? initialVisibleCount}
@@ -493,7 +523,7 @@ export function KanbanBoard({
         : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />
+          <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} showLabels={showLabels} />
         ) : null}
       </DragOverlay>
     </DndContext>

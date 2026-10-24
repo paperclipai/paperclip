@@ -72,7 +72,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { CircleDot, Plus, ArrowUpDown, Layers, Check, ChevronRight, List, ListTree, User, Search, CircleSlash2, ChevronsDownUp, PanelTopClose, RotateCcw, ListCollapse,
-  SquareKanban,
+  SquareKanban, Tags,
 } from "lucide-react";
 import {
   KanbanBoard,
@@ -160,6 +160,7 @@ export type IssueViewState = IssueFilterState & {
   nestingEnabled: boolean;
   collapsedGroups: string[];
   collapsedParents: string[];
+  boardShowLabels: boolean;
   boardCardDensity: BoardCardDensity;
   boardColdLaneMode: BoardColdLaneMode;
   boardColumnPageSize: BoardColumnPageSize;
@@ -174,6 +175,7 @@ const defaultViewState: IssueViewState = {
   nestingEnabled: true,
   collapsedGroups: [],
   collapsedParents: [],
+  boardShowLabels: true,
   boardCardDensity: "auto",
   boardColdLaneMode: "expanded",
   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
@@ -203,6 +205,7 @@ function getViewState(key: string): IssueViewState {
         ...parsed,
         ...normalizeIssueFilterState(parsed),
         workspaces: [],
+        boardShowLabels: parsed.boardShowLabels !== false,
         boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
         boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
         boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
@@ -1202,7 +1205,8 @@ export function IssuesList({
     [boardHighVolume, viewState.boardColdLaneMode],
   );
   const boardDensityCustomized =
-    viewState.boardCardDensity !== "auto"
+    !viewState.boardShowLabels
+    || viewState.boardCardDensity !== "auto"
     || viewState.boardColdLaneMode !== "auto"
     || viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE;
 
@@ -1740,6 +1744,19 @@ export function IssuesList({
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
+                className={cn("h-8 shrink-0 gap-1.5 px-2", viewState.boardShowLabels && "bg-accent")}
+                aria-label="Show labels"
+                title="Show labels"
+                aria-pressed={viewState.boardShowLabels}
+                onClick={() => updateView({ boardShowLabels: !viewState.boardShowLabels })}
+              >
+                <Tags className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="hidden sm:inline">Show labels</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
                 onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
@@ -1800,6 +1817,7 @@ export function IssuesList({
                 size="icon"
                 className="h-8 w-8 shrink-0"
                 onClick={() => updateView({
+                  boardShowLabels: true,
                   boardCardDensity: "auto",
                   boardColdLaneMode: "expanded",
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
@@ -1952,6 +1970,7 @@ export function IssuesList({
           agents={agents}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
+          showLabels={viewState.boardShowLabels}
           collapsedStatuses={boardCollapsedStatuses}
           initialVisibleCount={viewState.boardColumnPageSize}
           revealIncrement={viewState.boardColumnPageSize}
