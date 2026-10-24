@@ -791,6 +791,62 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
   });
 
+  it.each([
+    "projectId",
+    "parentId",
+    "parentIssueId",
+    "workspaceId",
+    "executionWorkspaceId",
+    "descendantOf",
+    "labelId",
+    "participantAgentId",
+  ])("returns 422 instead of a DB error for malformed %s filters", async (param) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", [param]: "d", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
+  });
+
+  it.each([
+    "projectId",
+    "parentId",
+    "parentIssueId",
+    "workspaceId",
+    "executionWorkspaceId",
+    "descendantOf",
+    "labelId",
+    "participantAgentId",
+  ])("returns 422 from issues/count for malformed %s filters", async (param) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues/count`)
+      .query({ attention: "blocked", [param]: "d" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({ error: `${param} must be a UUID` });
+  });
+
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();

@@ -3190,6 +3190,42 @@ function decrementIssueListActorClientInflight(actorClientKey: string) {
   else issueListActorClientInflight.set(actorClientKey, next);
 }
 
+const ISSUE_LIST_UUID_QUERY_PARAMS = [
+  "participantAgentId",
+  "projectId",
+  "workspaceId",
+  "executionWorkspaceId",
+  "parentId",
+  "parentIssueId",
+  "descendantOf",
+  "createdFromIssueId",
+  "labelId",
+] as const;
+
+type IssueListUuidQueryParam = (typeof ISSUE_LIST_UUID_QUERY_PARAMS)[number];
+
+function parseIssueListUuidQueryParams(
+  query: Record<string, unknown>,
+):
+  | { ok: true; values: Partial<Record<IssueListUuidQueryParam, string>> }
+  | { ok: false; error: string } {
+  const values: Partial<Record<IssueListUuidQueryParam, string>> = {};
+  for (const name of ISSUE_LIST_UUID_QUERY_PARAMS) {
+    const raw = query[name];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string") {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    if (!isUuidLike(trimmed)) {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    values[name] = trimmed;
+  }
+  return { ok: true, values };
+}
+
 async function coordinateIssueListGet(input: {
   req: Request;
   companyId: string;
@@ -8445,6 +8481,12 @@ export function issueRoutes(
       });
       return;
     }
+    const uuidQuery = parseIssueListUuidQueryParams(req.query);
+    if (!uuidQuery.ok) {
+      res.status(422).json({ error: uuidQuery.error });
+      return;
+    }
+    const uuidFilters = uuidQuery.values;
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
@@ -8452,20 +8494,18 @@ export function issueRoutes(
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: uuidFilters.projectId,
+      workspaceId: uuidFilters.workspaceId,
+      executionWorkspaceId: uuidFilters.executionWorkspaceId,
+      parentId: uuidFilters.parentId ?? uuidFilters.parentIssueId,
+      descendantOf: uuidFilters.descendantOf,
+      createdFromIssueId: uuidFilters.createdFromIssueId,
+      labelId: uuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -8686,22 +8726,27 @@ export function issueRoutes(
       return;
     }
 
+    const countUuidQuery = parseIssueListUuidQueryParams(req.query);
+    if (!countUuidQuery.ok) {
+      res.status(422).json({ error: countUuidQuery.error });
+      return;
+    }
+    const countUuidFilters = countUuidQuery.values;
+
     const blockedCountFilters = {
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: countUuidFilters.projectId,
+      workspaceId: countUuidFilters.workspaceId,
+      executionWorkspaceId: countUuidFilters.executionWorkspaceId,
+      parentId: countUuidFilters.parentId ?? countUuidFilters.parentIssueId,
+      descendantOf: countUuidFilters.descendantOf,
+      createdFromIssueId: countUuidFilters.createdFromIssueId,
+      labelId: countUuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
