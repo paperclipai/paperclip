@@ -97,6 +97,9 @@ jobs:
       - name: Validate Node version policy
         run: pnpm check:node-version
 
+      - name: Test Node version policy checker
+        run: node "$CI_NODE_TEST" ./scripts/check-node-version-policy.test.mjs
+
       - name: Reject git push in adapter/runtime code
         run: node ./scripts/check-no-git-push.mjs
 
