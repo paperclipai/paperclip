@@ -54,6 +54,10 @@ type TerminalState = {
 type ExecutionState = {
   runId: string;
   outputChunks: string[];
+  segments: string[];
+  openText: string;
+  emittedUpTo: number;
+  lastSeq: number;
   lastEventName: string | null;
   terminal: TerminalState | null;
   resolveTerminal: (state: TerminalState) => void;
@@ -523,6 +527,10 @@ function createExecutionState(runId: string): ExecutionState {
   return {
     runId,
     outputChunks: [],
+    segments: [],
+    openText: "",
+    emittedUpTo: 0,
+    lastSeq: -1,
     lastEventName: null,
     terminal: null,
     resolveTerminal,
@@ -555,6 +563,50 @@ function extractOutput(value: unknown): string | null {
   return nested ? extractOutput(nested) : null;
 }
 
+const DELTA_PARAGRAPH_FLUSH_CHARS = 2_000;
+const SUMMARY_MAX_CHARS = 8_000;
+
+async function emitCoalescedText(
+  ctx: AdapterExecutionContext,
+  state: ExecutionState,
+  eventName: string,
+  text: string,
+  redactText: TextRedactor,
+): Promise<void> {
+  if (!text.trim()) return;
+  const payload = eventName === "message.delta" ? { delta: redactText(text) } : { text: redactText(text) };
+  await ctx.onLog(
+    "stdout",
+    `[hermes-gateway:event] run=${state.runId} event=${eventName} data=${JSON.stringify(payload)}\n`,
+  );
+}
+
+async function emitPendingDelta(ctx: AdapterExecutionContext, state: ExecutionState, redactText: TextRedactor): Promise<void> {
+  const pending = state.openText.slice(state.emittedUpTo);
+  state.emittedUpTo = state.openText.length;
+  await emitCoalescedText(ctx, state, "message.delta", pending, redactText);
+}
+
+async function closeSegment(ctx: AdapterExecutionContext, state: ExecutionState, redactText: TextRedactor): Promise<void> {
+  await emitPendingDelta(ctx, state, redactText);
+  const text = state.openText.trim();
+  if (text) state.segments.push(text);
+  state.openText = "";
+  state.emittedUpTo = 0;
+}
+
+async function appendDelta(ctx: AdapterExecutionContext, state: ExecutionState, delta: string, redactText: TextRedactor): Promise<void> {
+  state.openText += delta;
+  const boundary = state.openText.lastIndexOf("\n\n");
+  if (boundary >= state.emittedUpTo) {
+    const chunk = state.openText.slice(state.emittedUpTo, boundary + 2);
+    state.emittedUpTo = boundary + 2;
+    await emitCoalescedText(ctx, state, "message.delta", chunk, redactText);
+  } else if (state.openText.length - state.emittedUpTo >= DELTA_PARAGRAPH_FLUSH_CHARS) {
+    await emitPendingDelta(ctx, state, redactText);
+  }
+}
+
 async function handleEvent(
   ctx: AdapterExecutionContext,
   state: ExecutionState,
@@ -564,17 +616,45 @@ async function handleEvent(
   const parsed = parseJsonData(frame.data);
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
+  // The gateway replays its event backlog on SSE reconnect; skip frames already handled.
+  const seq = typeof record?.seq === "number" ? record.seq : null;
+  if (seq !== null) {
+    if (seq <= state.lastSeq) return;
+    state.lastSeq = seq;
+  }
   state.lastEventName = eventName;
-  await ctx.onLog(
-    "stdout",
-    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
-  );
-
-  const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
-  if (eventName === "message.delta" && delta) {
-    const sanitizedDelta = redactText(delta);
-    state.outputChunks.push(sanitizedDelta);
-    await ctx.onLog("stdout", sanitizedDelta);
+  if (eventName === "message.delta") {
+    const rawDelta =
+      typeof record?.delta === "string" && record.delta.length > 0
+        ? record.delta
+        : typeof record?.text_delta === "string" && record.text_delta.length > 0
+          ? record.text_delta
+          : null;
+    if (rawDelta !== null) {
+      state.outputChunks.push(redactText(rawDelta));
+      await appendDelta(ctx, state, rawDelta, redactText);
+    }
+    return;
+  }
+  await emitPendingDelta(ctx, state, redactText);
+  if (eventName === "message.interim") {
+    const text = nonEmpty(record?.text);
+    await closeSegment(ctx, state, redactText);
+    if (text && record?.already_streamed !== true) {
+      state.segments.push(text);
+      await emitCoalescedText(ctx, state, "message.interim", text, redactText);
+    } else {
+      await ctx.onLog(
+        "stdout",
+        `[hermes-gateway:event] run=${state.runId} event=message.interim data=${stringifyForLog({ already_streamed: true })}\n`,
+      );
+    }
+  } else {
+    if (eventName?.startsWith("tool.")) await closeSegment(ctx, state, redactText);
+    await ctx.onLog(
+      "stdout",
+      `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
+    );
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -651,7 +731,7 @@ async function consumeEvents(input: {
     try {
       const response = await fetch(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.state.runId)}/events`), {
         method: "GET",
-        headers: input.headers,
+        headers: input.state.lastSeq >= 0 ? { ...input.headers, "Last-Event-ID": String(input.state.lastSeq) } : input.headers,
         signal: input.signal,
       });
       if (!response.ok) {
@@ -743,15 +823,20 @@ function terminalResultCode(status: string): { exitCode: number; signal: string 
 export function mapFinalResultForTest(input: {
   terminal: TerminalState;
   outputChunks: string[];
+  segments?: string[];
   sessionKey: string | null;
   strategy: SessionKeyStrategy;
   redactText?: TextRedactor;
 }): AdapterExecutionResult {
   const redactText = input.redactText ?? sanitizeSensitiveText;
   const payload = input.terminal.payload ?? {};
-  const output = redactText(
-    input.terminal.output ?? extractOutput(payload) ?? input.outputChunks.join("").trim(),
-  );
+  const terminalOutput = redactText(input.terminal.output ?? extractOutput(payload) ?? "").trim();
+  const accumulated = redactText(
+    input.segments?.length ? input.segments.join("\n\n") : (input.outputChunks ?? []).join(""),
+  ).trim();
+  const useAccumulated = accumulated.length > terminalOutput.length;
+  const output = useAccumulated ? accumulated : terminalOutput;
+  const summarySource = terminalOutput || output;
   const sessionId = extractSessionId(payload) ?? input.sessionKey;
   const sessionDisplayId = sessionId ? redactText(sessionId) : null;
   const mapped = terminalResultCode(input.terminal.status);
@@ -770,7 +855,14 @@ export function mapFinalResultForTest(input: {
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
-    ...(output ? { summary: output.slice(0, 2_000) } : {}),
+    ...(summarySource
+      ? {
+          summary:
+            summarySource.length > SUMMARY_MAX_CHARS
+              ? `${summarySource.slice(0, SUMMARY_MAX_CHARS - 1)}\u2026`
+              : summarySource,
+        }
+      : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
       hermesRunId: input.terminal.runId,
@@ -784,6 +876,7 @@ export function mapFinalResultForTest(input: {
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",
+      output_source: useAccumulated ? "accumulated" : "terminal",
       usage: usage ?? null,
       cost_usd: costUsd,
     },
@@ -1068,9 +1161,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
+  await closeSegment(ctx, state, redactText);
   return mapFinalResultForTest({
     terminal: outcome,
     outputChunks: state.outputChunks,
+    segments: state.segments,
     sessionKey,
     strategy,
     redactText,
