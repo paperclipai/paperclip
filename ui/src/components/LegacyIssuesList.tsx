@@ -485,6 +485,7 @@ interface IssuesListProps {
   issueBadgeById?: Map<string, string>;
   onLoadMoreIssues?: () => void;
   onSearchChange?: (search: string) => void;
+  onStatusFilterChange?: (status: string) => void;
   onUpdateIssue: (id: string, data: Record<string, unknown>) => void;
 }
 
@@ -696,6 +697,7 @@ export function IssuesList({
   issueBadgeById,
   onLoadMoreIssues,
   onSearchChange,
+  onStatusFilterChange,
   onUpdateIssue,
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -755,6 +757,10 @@ export function IssuesList({
   const [viewState, setViewState] = useState<IssueViewState>(() =>
     getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
   );
+  const statusFilter = [...viewState.statuses].sort().join(",");
+  useEffect(() => {
+    onStatusFilterChange?.(statusFilter);
+  }, [onStatusFilterChange, statusFilter]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
