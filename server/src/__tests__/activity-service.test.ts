@@ -325,6 +325,60 @@ describeEmbeddedPostgres("activity service", () => {
     expect(runs[0]).not.toHaveProperty("contextSnapshot");
   });
 
+  it("lists issue runs from the run binding and from activity links, once each", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const siblingIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Issue", status: "in_progress", priority: "medium" },
+      { id: siblingIssueId, companyId, title: "Sibling", status: "in_progress", priority: "medium" },
+    ]);
+
+    const boundRunId = randomUUID();
+    const boundAndLoggedRunId = randomUUID();
+    const loggedOnlyRunId = randomUUID();
+    const siblingRunId = randomUUID();
+    const otherEntityRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: boundRunId, companyId, agentId, issueId, status: "succeeded", createdAt: new Date("2026-04-10T00:00:00.000Z") },
+      { id: boundAndLoggedRunId, companyId, agentId, issueId, status: "succeeded", createdAt: new Date("2026-04-10T00:01:00.000Z") },
+      { id: loggedOnlyRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-04-10T00:02:00.000Z") },
+      { id: siblingRunId, companyId, agentId, issueId: siblingIssueId, status: "succeeded", createdAt: new Date("2026-04-10T00:03:00.000Z") },
+      { id: otherEntityRunId, companyId, agentId, status: "succeeded", createdAt: new Date("2026-04-10T00:04:00.000Z") },
+    ]);
+    await db.insert(activityLog).values([
+      { companyId, runId: boundAndLoggedRunId, actorType: "agent", actorId: agentId, agentId, action: "issue.updated", entityType: "issue", entityId: issueId, details: {} },
+      { companyId, runId: boundAndLoggedRunId, actorType: "agent", actorId: agentId, agentId, action: "issue.comment_added", entityType: "issue", entityId: issueId, details: {} },
+      { companyId, runId: loggedOnlyRunId, actorType: "agent", actorId: agentId, agentId, action: "issue.checked_out", entityType: "issue", entityId: issueId, details: {} },
+      { companyId, runId: siblingRunId, actorType: "agent", actorId: agentId, agentId, action: "issue.updated", entityType: "issue", entityId: siblingIssueId, details: {} },
+      { companyId, runId: otherEntityRunId, actorType: "agent", actorId: agentId, agentId, action: "agent.updated", entityType: "agent", entityId: issueId, details: {} },
+      { companyId, runId: null, actorType: "user", actorId: "board", action: "issue.updated", entityType: "issue", entityId: issueId, details: {} },
+    ]);
+
+    const runs = await activityService(db).runsForIssue(companyId, issueId);
+
+    expect(runs.map((run) => run.runId)).toEqual([loggedOnlyRunId, boundAndLoggedRunId, boundRunId]);
+  });
+
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
