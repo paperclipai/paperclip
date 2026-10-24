@@ -65,6 +65,52 @@ describe("chat provider inventory", () => {
       (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[1]?.[0],
     );
     expect(secondUrl).toContain("cursor=next");
+    expect(secondUrl).toContain("https://slack.com/api/users.conversations");
+  });
+
+  it("keeps Slack channels that omit is_member, as users.conversations does", async () => {
+    const fetch = vi.fn(async () =>
+      response({
+        ok: true,
+        channels: [{ id: "C1", name: "fleet-health" }],
+        response_metadata: { next_cursor: "" },
+      }),
+    ) as unknown as typeof globalThis.fetch;
+    const result = await listSlackBotChannels({ botToken: "xoxb-secret", fetch });
+    expect(result.resources).toEqual([
+      expect.objectContaining({ providerResourceId: "C1", label: "#fleet-health" }),
+    ]);
+  });
+
+  it("waits for Slack's Retry-After on a 429 and then succeeds", async () => {
+    const rateLimited = new Response("", {
+      status: 429,
+      headers: { "retry-after": "7" },
+    });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(rateLimited)
+      .mockResolvedValueOnce(
+        response({ ok: true, channels: [], response_metadata: { next_cursor: "" } }),
+      ) as unknown as typeof globalThis.fetch;
+    const wait = vi.fn(async () => undefined);
+    const result = await listSlackBotChannels({ botToken: "xoxb-secret", fetch, wait });
+    expect(result.resources).toEqual([]);
+    expect(wait).toHaveBeenCalledWith(7000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps the Slack rate-limit wait and gives up after three attempts", async () => {
+    const fetch = vi.fn(async () =>
+      new Response("{}", { status: 429, headers: { "retry-after": "600" } }),
+    ) as unknown as typeof globalThis.fetch;
+    const wait = vi.fn(async () => undefined);
+    await expect(
+      listSlackBotChannels({ botToken: "xoxb-secret", fetch, wait }),
+    ).rejects.toThrow("Slack inventory failed: 429");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(wait).toHaveBeenCalledTimes(2);
+    expect(wait).toHaveBeenCalledWith(20_000);
   });
 
   it("resolves one newly joined Slack channel without exposing the bot token", async () => {
