@@ -710,6 +710,7 @@ export const toolGatewaySessions = pgTable(
     uniqueIndex("tool_gateway_sessions_token_hash_uq").on(table.tokenHash),
     index("tool_gateway_sessions_company_agent_idx").on(table.companyId, table.agentId),
     index("tool_gateway_sessions_company_expires_idx").on(table.companyId, table.expiresAt),
+    index("tool_gateway_sessions_expiry_idx").on(table.expiresAt),
     index("tool_gateway_sessions_run_idx").on(table.companyId, table.runId),
     index("tool_gateway_sessions_issue_idx").on(table.companyId, table.issueId),
     index("tool_gateway_sessions_gateway_idx").on(table.companyId, table.gatewayId),

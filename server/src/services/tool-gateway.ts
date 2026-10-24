@@ -9020,44 +9020,47 @@ export function createToolGatewayService(
       const token = generateNamedGatewayToken(tokenId);
       const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
       const now = new Date();
-      const [row] = await db
-        .insert(toolMcpGatewayTokens)
-        .values({
-          id: tokenId,
-          companyId: input.companyId,
-          gatewayId: input.gatewayId,
-          name: input.body.name,
-          tokenHash: hashGatewayToken(token),
-          tokenPrefix,
-          subjectType: input.body.subjectType ?? "gateway_client",
-          subjectId: input.body.subjectId ?? null,
-          clientLabel: input.body.clientLabel,
-          ownerNote: input.body.ownerNote,
-          allowedActions: input.body.allowedActions ?? [
-            "tools/list",
-            "tools/call",
-            "resources/list",
-            "resources/read",
-            "prompts/list",
-            "prompts/get",
-          ],
-          expiresAt: input.body.expiresAt ?? null,
-          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-          expiryOverrideByAgentId:
-            input.actor?.agentId && input.body.expiryOverrideReason
-              ? input.actor.agentId
-              : null,
-          expiryOverrideByUserId:
-            input.actor?.userId && input.body.expiryOverrideReason
-              ? input.actor.userId
-              : null,
-          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      const [row] = await db.transaction(async tx => {
+        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        return tx
+          .insert(toolMcpGatewayTokens)
+          .values({
+            id: tokenId,
+            companyId: input.companyId,
+            gatewayId: input.gatewayId,
+            name: input.body.name,
+            tokenHash: hashGatewayToken(token),
+            tokenPrefix,
+            subjectType: input.body.subjectType ?? "gateway_client",
+            subjectId: input.body.subjectId ?? null,
+            clientLabel: input.body.clientLabel,
+            ownerNote: input.body.ownerNote,
+            allowedActions: input.body.allowedActions ?? [
+              "tools/list",
+              "tools/call",
+              "resources/list",
+              "resources/read",
+              "prompts/list",
+              "prompts/get",
+            ],
+            expiresAt: input.body.expiresAt ?? null,
+            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+            expiryOverrideByAgentId:
+              input.actor?.agentId && input.body.expiryOverrideReason
+                ? input.actor.agentId
+                : null,
+            expiryOverrideByUserId:
+              input.actor?.userId && input.body.expiryOverrideReason
+                ? input.actor.userId
+                : null,
+            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      });
       return { ...toGatewayToken(row), token };
     },
 
@@ -9174,18 +9177,21 @@ export function createToolGatewayService(
         expiresAt: new Date(now.getTime() + sessionTtlMs(input.ttlMs)),
       };
 
-      await db.insert(toolGatewaySessions).values({
-        id: session.id,
-        companyId: session.companyId,
-        agentId: input.agentId,
-        runId: input.runId,
-        issueId: session.issueId,
-        projectId: session.projectId,
-        tokenHash: hashGatewayToken(token),
-        expiresAt: session.expiresAt,
-        createdAt: session.createdAt,
-        updatedAt: session.createdAt,
-      } as any);
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        await tx.insert(toolGatewaySessions).values({
+          id: session.id,
+          companyId: session.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: session.issueId,
+          projectId: session.projectId,
+          tokenHash: hashGatewayToken(token),
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt,
+          updatedAt: session.createdAt,
+        } as any);
+      });
 
       await writeAudit({
         session,
@@ -11597,6 +11603,20 @@ export function createToolGatewayService(
         },
       });
       return { ...sessionView, revokedAt: session!.revokedAt ?? now };
+    },
+
+    async nextCredentialExpiryAt(): Promise<number | null> {
+      const [row] = await db.execute<{ at: string | Date | null }>(sql`
+        select min(expires_at) as at from (
+          (select ${toolMcpGatewayTokens.expiresAt} as expires_at from ${toolMcpGatewayTokens}
+            where ${toolMcpGatewayTokens.expiresAt} is not null
+            order by ${toolMcpGatewayTokens.expiresAt} limit 1)
+          union all
+          (select ${toolGatewaySessions.expiresAt} as expires_at from ${toolGatewaySessions}
+            order by ${toolGatewaySessions.expiresAt} limit 1)
+        ) expiries
+      `);
+      return row?.at == null ? null : new Date(row.at).getTime();
     },
 
     async cleanupExpiredSessions(input: { now?: Date } = {}) {

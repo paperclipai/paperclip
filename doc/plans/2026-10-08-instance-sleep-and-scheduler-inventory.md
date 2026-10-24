@@ -649,8 +649,10 @@ Longer polling intervals alone do not complete an item.
 
 - [ ] **JOB-21 — Secret proposals and expired action tokens (partially migrated).**
   Secret-proposal expiry now uses transaction signals and saved expiry deadlines;
-  see [the lifecycle contract](../idle-secret-proposal-expiry.md). Tool review
-  recovery and gateway token cleanup still use **30s** queries. Change: enforce expiry synchronously on use and
+  see [the lifecycle contract](../idle-secret-proposal-expiry.md). Gateway token
+  and session expiry now also uses saved deadlines and producer signals; see
+  [its lifecycle contract](../idle-gateway-credential-expiry.md). Tool review
+  recovery still uses **30s** queries. Change: enforce expiry synchronously on use and
   register required scrub/cleanup deadlines. **Complete when:** idle cleanup
   does not extend authorization or secret-retention periods. Sources:
   [secret-proposals.ts](../../server/src/services/secret-proposals.ts),

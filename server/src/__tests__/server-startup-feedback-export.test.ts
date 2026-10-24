@@ -68,6 +68,7 @@ const {
       toolGateway: {
         sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
         cleanupExpiredSessions: vi.fn(async () => ({ deletedCount: 0 })),
+        nextCredentialExpiryAt: vi.fn(async () => null),
       },
       toolActionDeliveries: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
     },
