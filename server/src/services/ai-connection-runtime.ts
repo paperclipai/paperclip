@@ -89,7 +89,17 @@ export async function assertManagedAiProjectAuth(
     ...(Array.isArray(config.extraArgs) ? config.extraArgs : []),
     ...(Array.isArray(config.args) ? config.args : []),
   ];
+  const isCodexProviderOverride =
+    provider === "openai" &&
+    extraArgs.some(
+      (arg) =>
+        typeof arg === "string" &&
+        /^(--oss|--local-provider|--profile)(=|$)|^-p(=|[a-zA-Z0-9_-]|$)/.test(
+          arg,
+        ),
+    );
   if (
+    isCodexProviderOverride ||
     extraArgs.some(
       (arg) =>
         typeof arg === "string" &&

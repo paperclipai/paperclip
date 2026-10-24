@@ -1600,6 +1600,29 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(execute).not.toHaveBeenCalled();
     } finally { execute.mockRestore(); }
   });
+  it("rejects Codex provider flags in managed AI connection auth guard", async () => {
+    for (const flag of [
+      "--oss",
+      "--oss=true",
+      "--local-provider",
+      "--local-provider=ollama",
+      "--profile",
+      "--profile=work",
+      "-p",
+      "-p=work",
+      "-pwork",
+    ]) {
+      await expect(assertManagedAiProjectAuth({ extraArgs: [flag] }, "openai")).rejects.toThrow(
+        "Remove authentication/configuration overrides before selecting a managed AI connection",
+      );
+      await expect(assertManagedAiProjectAuth({ args: [flag] }, "openai")).rejects.toThrow(
+        "Remove authentication/configuration overrides before selecting a managed AI connection",
+      );
+    }
+
+    await expect(assertManagedAiProjectAuth({ extraArgs: ["-p"] }, "anthropic")).resolves.toBeUndefined();
+    await expect(assertManagedAiProjectAuth({ args: ["-p"] }, "anthropic")).resolves.toBeUndefined();
+  });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");
