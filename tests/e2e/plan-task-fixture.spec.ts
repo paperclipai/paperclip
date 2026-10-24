@@ -7,6 +7,8 @@ test("planning fixture creates the exact assignment through the current composer
   expect(companyResponse.ok()).toBe(true);
   const company = await companyResponse.json();
   try {
+    // These composer-only fixtures must not be scanned by background recovery.
+    expect((await request.patch(`/api/companies/${company.id}`, { data: { status: "paused" } })).ok()).toBe(true);
     let lead: { id: string; name: string } | undefined;
     for (const name of ["A Different Owner", "Planning Fixture Lead"]) {
       const response = await request.post(`/api/companies/${company.id}/agents`, { data: {
@@ -37,6 +39,8 @@ test("everyday fixture preserves prompt, selected project and assignee without p
   expect(companyResponse.ok()).toBe(true);
   const company = await companyResponse.json();
   try {
+    // These composer-only fixtures must not be scanned by background recovery.
+    expect((await request.patch(`/api/companies/${company.id}`, { data: { status: "paused" } })).ok()).toBe(true);
     let lead: { id: string; name: string } | undefined;
     for (const name of ["A Different Owner", "Everyday Fixture Lead"]) {
       const response = await request.post(`/api/companies/${company.id}/agents`, { data: {
