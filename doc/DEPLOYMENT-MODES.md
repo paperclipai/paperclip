@@ -171,6 +171,32 @@ When running `authenticated` mode, if the only instance admin is `local-board`, 
   - promotes current signed-in user to `instance_admin`
   - demotes `local-board` admin role
   - ensures active owner membership for the claiming user across existing companies
+  - transfers the `local-board` company default, task responsibility and human
+    assignments, routines (including saved revision responsibility), personal
+    secret ownership, and connection/application ownership to the claiming user
+  - transfers user connection grants when the claimant has no grant for that
+    connection, preserving grant status and revocation; existing personal grants
+    and secrets take precedence
+
+If a transferred active grant references a legacy secret that conflicts with an
+existing personal secret, the grant requires reconnection instead of advertising
+access to a secret it cannot use.
+
+The ownership transfer commits with the admin claim and writes a company activity
+entry. Historical authors and admitted run identities retain their original
+attribution. New routine executions use the transferred responsible person.
+Existing chats also transfer to the claimant. If the claimant already has a chat
+with the same agent, that personal chat remains current. The legacy chat retains
+its messages and original task link as a private task accessible to the claimant
+and assigned agent.
+
+On authenticated startup, older incomplete claims are repaired when there is
+exactly one non-local administrator, with an existing user account and active
+owner membership in each repaired company. This repair is idempotent and does
+not run in `local_trusted` mode. Multiple administrators or missing owner membership
+leave ownership unchanged; choose the responsible person explicitly in company
+settings and update affected routines/tasks in those cases. Revoked credentials
+remain revoked and may still need reconnection.
 
 This prevents lockout when a user migrates from long-running local trusted usage to authenticated mode.
 

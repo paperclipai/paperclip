@@ -30,6 +30,15 @@ uses human/client auth.
 Policy: Company access plus action-specific grants; instance administration requires a
 board administrator.
 
+The signed-in board claim also transfers legacy `local-board` operational
+ownership. Startup repair requires a sole non-local administrator with an existing
+user account and active owner membership in the repaired company. It preserves
+existing personal credentials and historical run identities; agent credentials
+cannot initiate a board claim. See [claim implementation](../../server/src/board-claim.ts)
+and [ownership migration](../../server/src/local-board-ownership.ts).
+Conflicting legacy chat history becomes a private task with explicit claimant
+and assigned-agent access; it does not become company-visible history.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/access.ts#L3018) at
 the reviewed commit above.
 

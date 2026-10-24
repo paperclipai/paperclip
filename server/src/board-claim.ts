@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { ensureHumanRoleDefaultGrants } from "./services/principal-access-compatibility.js";
+import { LOCAL_BOARD_USER_ID, transferLocalBoardOwnership } from "./local-board-ownership.js";
 
-const LOCAL_BOARD_USER_ID = "local-board";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
 
 type ChallengeStatus = "available" | "claimed" | "expired" | "invalid";
@@ -58,6 +58,23 @@ export async function initializeBoardClaimChallenge(
   const onlyLocalBoardAdmin = admins.length === 1 && admins[0]?.userId === LOCAL_BOARD_USER_ID;
   if (!onlyLocalBoardAdmin) {
     activeChallenge = null;
+    if (admins.length === 1 && admins[0]?.userId !== LOCAL_BOARD_USER_ID) {
+      const userId = admins[0]!.userId;
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`lock table ${instanceUserRoles} in share row exclusive mode`);
+        const currentAdmins = await tx.select({ userId: instanceUserRoles.userId })
+          .from(instanceUserRoles).where(eq(instanceUserRoles.role, "instance_admin"));
+        if (currentAdmins.length !== 1 || currentAdmins[0]?.userId !== userId) return;
+        const ownedCompanies = await tx.select({ companyId: companyMemberships.companyId })
+          .from(companyMemberships).innerJoin(authUsers, eq(authUsers.id, companyMemberships.principalId)).where(and(
+            eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId),
+            eq(companyMemberships.status, "active"), eq(companyMemberships.membershipRole, "owner"),
+          ));
+        for (const { companyId } of ownedCompanies) {
+          await transferLocalBoardOwnership(tx, companyId, userId);
+        }
+      });
+    }
     return;
   }
 
@@ -88,21 +105,18 @@ export async function claimBoardOwnership(
   opts: { token: string; code: string | undefined; userId: string },
 ): Promise<{ status: ChallengeStatus; claimedByUserId?: string }> {
   const status = getChallengeStatus(opts.token, opts.code);
+  if (status === "claimed" && activeChallenge?.claimedByUserId) {
+    return { status, claimedByUserId: activeChallenge.claimedByUserId };
+  }
   if (status !== "available") return { status };
+  if (opts.userId === LOCAL_BOARD_USER_ID) return { status: "invalid" };
 
-  const claimedCompanyIds: string[] = [];
-  await db.transaction(async (tx) => {
-    const existingTargetAdmin = await tx
-      .select({ id: instanceUserRoles.id })
-      .from(instanceUserRoles)
-      .where(and(eq(instanceUserRoles.userId, opts.userId), eq(instanceUserRoles.role, "instance_admin")))
-      .then((rows) => rows[0] ?? null);
-    if (!existingTargetAdmin) {
-      await tx.insert(instanceUserRoles).values({
-        userId: opts.userId,
-        role: "instance_admin",
-      });
-    }
+  const claimed = await db.transaction(async (tx) => {
+    await tx.execute(sql`lock table ${instanceUserRoles} in share row exclusive mode`);
+    const admins = await tx.select({ userId: instanceUserRoles.userId })
+      .from(instanceUserRoles).where(eq(instanceUserRoles.role, "instance_admin"));
+    if (admins.length !== 1 || admins[0]?.userId !== LOCAL_BOARD_USER_ID) return false;
+    await tx.insert(instanceUserRoles).values({ userId: opts.userId, role: "instance_admin" });
 
     await tx
       .delete(instanceUserRoles)
@@ -110,9 +124,8 @@ export async function claimBoardOwnership(
 
     const allCompanies = await tx.select({ id: companies.id }).from(companies);
     for (const company of allCompanies) {
-      claimedCompanyIds.push(company.id);
       const existing = await tx
-        .select({ id: companyMemberships.id, status: companyMemberships.status })
+        .select({ id: companyMemberships.id, status: companyMemberships.status, membershipRole: companyMemberships.membershipRole })
         .from(companyMemberships)
         .where(
           and(
@@ -131,26 +144,23 @@ export async function claimBoardOwnership(
           status: "active",
           membershipRole: "owner",
         });
-        continue;
-      }
-
-      if (existing.status !== "active") {
+      } else if (existing.status !== "active" || existing.membershipRole !== "owner") {
         await tx
           .update(companyMemberships)
           .set({ status: "active", membershipRole: "owner", updatedAt: new Date() })
           .where(eq(companyMemberships.id, existing.id));
       }
+      await transferLocalBoardOwnership(tx, company.id, opts.userId);
+      await ensureHumanRoleDefaultGrants(tx as unknown as Db, {
+        companyId: company.id,
+        principalId: opts.userId,
+        membershipRole: "owner",
+        grantedByUserId: opts.userId,
+      });
     }
+    return true;
   });
-
-  for (const companyId of claimedCompanyIds) {
-    await ensureHumanRoleDefaultGrants(db, {
-      companyId,
-      principalId: opts.userId,
-      membershipRole: "owner",
-      grantedByUserId: opts.userId,
-    });
-  }
+  if (!claimed) return { status: "invalid" };
 
   if (activeChallenge && activeChallenge.token === opts.token) {
     activeChallenge.claimedAt = new Date();

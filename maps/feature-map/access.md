@@ -25,6 +25,11 @@ Agent access: [companion](../agent-access-map/access.md).
 ### `login`
 
 Open `/auth`; first-owner bootstrap uses `/board-claim/:token` when configured.
+Claiming an existing local-trusted instance transfers its work and connection
+ownership to the signed-in operator. Authenticated startup repairs older claims
+only for a sole administrator with active company owner membership.
+Chats transfer too. If a personal chat already exists for the agent, its legacy
+history remains available through the original private task link.
 
 ### `invite-members`
 
@@ -44,6 +49,9 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). For 
 ### `login`
 
 Automated: [auth UI](../../ui/src/pages/Auth.test.tsx) and [session routes](../../server/src/__tests__/auth-session-route.test.ts) cover their respective layers.
+The [ownership migration regression](../../server/src/__tests__/local-board-ownership.test.ts)
+uses PostgreSQL to check transferred task/routine/connection ownership, credential
+preservation, idempotence, and ambiguous-owner exclusions.
 
 Manual: Sign in, reload a company deep link, sign out, and revisit it. Confirm the browser requests authentication rather than showing cached company data. Test an invalid claim separately on disposable state.
 
