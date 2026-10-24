@@ -1117,6 +1117,11 @@ Slack callback diagnostics tolerate HTTP between a TLS proxy and Paperclip when 
 port, and path still match. A changed authority or path remains stale. This comparison only affects
 health display; it does not trust forwarded headers or alter Slack signature verification.
 
+Chat routes return `400` when a path ID is not a UUID, for example `Chat endpoint ID must be a UUID`.
+The board access check runs before these UUID checks. The publication status route keeps its combined
+ID check, which runs before board access. An unknown chat endpoint UUID still returns `404`; a
+company-scoped route returns `403` when the user has no access to the requested company.
+
 
 ## Docker Quickstart (No local Node install)
 

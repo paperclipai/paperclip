@@ -921,6 +921,12 @@ describe("openapi routes", () => {
         `${method.toUpperCase()} ${routePath} preserves the non-member 404 boundary`,
       ).toBeDefined();
     }
+    for (const [method, routePath] of operations) {
+      expect(
+        spec.paths[routePath][method].responses["400"],
+        `${method.toUpperCase()} ${routePath} documents the malformed-id 400`,
+      ).toBeDefined();
+    }
 
     expect(
       spec.paths["/api/chat-webhooks/{publicId}/{provider}"],
