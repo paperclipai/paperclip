@@ -391,6 +391,13 @@ See `doc/project-repositories.md` for the API and UI contract.
 
 ## 7.6 `issues` (core task entity)
 
+Board column badges show the total number of matching, readable tasks, independently
+of the card page limit. The count endpoint applies the same visibility, company,
+creation, search, and filter conditions as the list endpoint, without pagination.
+Loading or failed counts must not turn a capped page into an exact total. When
+client-only filters prevent an exact count, capped columns show a lower bound
+with a `+` suffix. Card rendering and incremental reveal remain bounded. Both supported board implementations (streamlined and legacy) use the same count and lower-bound rules.
+
 Task creation accepts an omitted or blank title when the description contains a prompt.
 The server stores the first 120 characters of its whitespace-normalized prompt as
 a provisional title and sets `title_needs_generation`. The assigned agent receives
@@ -1956,6 +1963,7 @@ agents continue independent work without repeating the deferred request.
 - state transition guards (agent, issue, approval)
 - budget enforcement rules
 - adapter invocation/cancel semantics
+- PR workflow secret guards reject GitHub Actions `secrets` expressions (including dot, bracket, and whole-context access) and Honeycomb key references while permitting ordinary secret-related test filenames.
 
 ## 17.2 Integration Tests
 
@@ -2590,3 +2598,7 @@ Company-managed [Prompt Injection Prevention](prompt-injection-prevention.md)
 optionally classifies existing tool-result boundaries through a shared OpenRouter
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
+
+### Legacy execution cleanup and deferred handoffs
+
+After a terminal legacy execution finishes releasing its controller and environment resources, queue recovery must reconsider deferred wakes for the same company and issue, including a wake for the next signoff participant. Recovery uses the existing issue-lock release and admission path; it must preserve current assignment, pause/Stop, budget, cleanup and company-isolation checks. A terminal status alone does not authorize successor execution before cleanup.

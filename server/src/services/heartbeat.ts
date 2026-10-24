@@ -3904,16 +3904,9 @@ export function heartbeatService(
           logger.error({ err, runId: run.id }, "failed to settle explicit continuation after cleanup");
         });
       }
-      if (latestRun?.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(latestRun.status)) {
-        const [pending] = await db.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-          eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"),
-          sql`${agentWakeupRequests.payload}->>'issueId' = ${String(latestRun.contextSnapshot?.issueId)}`,
-        )).limit(1);
-        if (pending) await (pending.payload?.queuedCommentInterrupt
-          ? resumeQueuedCommentInterrupt(run.companyId, pending.id)
-          : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
-          logger.error({ err, runId: run.id }, "failed to promote legacy comment queue after cleanup");
+      if (latestRun) {
+        await heartbeatQueue.resumeDeferredIssueWakesAfterCleanup(latestRun).catch(err => {
+          logger.error({ err, runId: run.id }, "failed to promote deferred issue wakes after cleanup");
         });
       }
       if (

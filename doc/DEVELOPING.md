@@ -3333,3 +3333,7 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+### CLI integration startup budget
+
+The company import/export integration fixture shares one 60-second setup budget across database setup, cold CLI imports, doctor checks and server readiness. Readiness polling uses the remaining setup deadline with a five-second reserve and bounded individual HTTP probes. A bound listener is not readiness: `/api/health` must succeed. Test and CI timeouts are unchanged.

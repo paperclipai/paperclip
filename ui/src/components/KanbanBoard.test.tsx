@@ -106,6 +106,26 @@ function renderBoard(
 }
 
 describe("KanbanBoard", () => {
+  it.each([false, true])("shows the full total with overflow fades=%s", (showOverflowFades) => {
+    const { container } = renderBoard({
+      issues: createIssues(200, "done"),
+      columnCounts: { done: 258 },
+      showOverflowFades,
+      initialVisibleCount: 10,
+    });
+    expect(container.textContent).toContain("Showing 10 of 258");
+    expect(container.querySelectorAll("a")).toHaveLength(10);
+  });
+
+  it("keeps a capped local count explicit when the total is unavailable", () => {
+    const { container } = renderBoard({
+      issues: createIssues(200, "done"),
+      cappedStatuses: ["done"],
+      collapsedStatuses: ["done"],
+    });
+    expect(container.querySelector('[title="Done: 200+"]')).not.toBeNull();
+  });
+
   beforeEach(() => {
     document.body.innerHTML = "";
   });
