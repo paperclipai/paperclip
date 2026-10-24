@@ -331,6 +331,15 @@ function preserveInvalidatedSnapshotProofs(replacement: SQL): SQL {
     else coalesce(${replacement}, '{}'::jsonb) || jsonb_build_object(${SANDBOX_PLATFORM_PROBE_METADATA_KEY}::text, ${proofs}) end`;
 }
 
+/** A capped environment had no free slot when the run tried to take its lease. */
+export class EnvironmentCapacityExhaustedError extends Error {
+  code = "environment_capacity_exhausted" as const;
+  constructor(readonly environmentId: string) {
+    super(`Environment ${environmentId} has no free run slot`);
+    this.name = "EnvironmentCapacityExhaustedError";
+  }
+}
+
 export function environmentService(db: Db) {
   /**
    * Idempotently ensure THE Paperclip-managed sandbox environment for this
@@ -1459,6 +1468,13 @@ export function environmentService(db: Db) {
        * member. All other callers keep the plain, non-transactional insert.
        */
       assertCompanyBinding?: boolean;
+      /**
+       * Run-slot cap from the environment's `capacity.maxConcurrentRuns`. The
+       * environment row is locked while active leases are counted, so two runs
+       * cannot both take the last slot; an exhausted cap throws
+       * EnvironmentCapacityExhaustedError and creates no lease.
+       */
+      maxConcurrentRuns?: number;
     }): Promise<EnvironmentLease> => {
       const now = new Date();
       const values = {
@@ -1502,8 +1518,26 @@ export function environmentService(db: Db) {
       const row =
         input.assertCompanyBinding ||
         input.replacesReusableLeaseId ||
-        input.reusesReusableLeaseId
+        input.reusesReusableLeaseId ||
+        input.maxConcurrentRuns !== undefined
           ? await db.transaction(async (tx) => {
+              if (input.maxConcurrentRuns !== undefined) {
+                await tx
+                  .select({ id: environments.id })
+                  .from(environments)
+                  .where(eq(environments.id, input.environmentId))
+                  .for("update");
+                const active = await tx
+                  .select({ count: sql<number>`count(*)::int` })
+                  .from(environmentLeases)
+                  .where(and(
+                    eq(environmentLeases.environmentId, input.environmentId),
+                    eq(environmentLeases.status, "active"),
+                  ));
+                if (countFromRows(active) >= input.maxConcurrentRuns) {
+                  throw new EnvironmentCapacityExhaustedError(input.environmentId);
+                }
+              }
               if (input.assertCompanyBinding) {
                 // Lock the environment row first. Managed reconciliation locks the
                 // same sandbox environment rows with `for update` before it writes a

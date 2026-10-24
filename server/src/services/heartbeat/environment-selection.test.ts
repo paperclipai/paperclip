@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, createDb, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import { environmentService } from "../environments.js";
+import { EnvironmentCapacityExhaustedError, environmentService } from "../environments.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
@@ -260,5 +260,58 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
       expect(result.nativeChatWorkspaceScope?.projectId).toBe(project.id);
       expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].executionWorkspaceId).toBeNull();
     }
+  });
+
+  describe("agent environment overflow", () => {
+    async function overflowFixture() {
+      const { input, issue } = await fixture();
+      const local = await environmentService(db).ensureLocalEnvironment(input.agent.companyId);
+      await db.update(environments).set({ config: { capacity: { maxConcurrentRuns: 1 } } }).where(eq(environments.id, local.id));
+      const [remote] = await db.insert(environments).values({ name: `Overflow host ${randomUUID()}`, driver: "ssh", status: "active",
+        config: { host: "overflow.invalid", port: 22, username: "agent", remoteWorkspacePath: "/srv/work" } }).returning();
+      input.agent.defaultEnvironmentId = local.id;
+      input.agent.runtimeConfig = { fallbackEnvironmentIds: [remote.id] };
+      const lease = (environmentId: string, values: Partial<typeof environmentLeases.$inferInsert> = {}) =>
+        db.insert(environmentLeases).values({ companyId: input.agent.companyId, environmentId, status: "active", ...values });
+      return { input, issue, local, remote, lease };
+    }
+
+    it("overflows only while the agent default is full", async () => {
+      const { input, local, remote, lease } = await overflowFixture();
+      expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentId).toBe(local.id);
+      await lease(local.id);
+      expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentId).toBe(remote.id);
+    });
+
+    it("does not overflow placements that do not come from the agent default", async () => {
+      const { input, local, lease } = await overflowFixture();
+      await lease(local.id);
+      input.agent.defaultEnvironmentId = null;
+      expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentId).toBe(local.id);
+    });
+
+    it("defers while every candidate is full and admits once a slot frees", async () => {
+      const { input, local, remote, lease } = await overflowFixture();
+      await db.update(environments).set({ config: { ...remote.config, capacity: { maxConcurrentRuns: 1 } } }).where(eq(environments.id, remote.id));
+      await lease(local.id);
+      const [held] = await lease(remote.id).returning();
+      await expect(selectHeartbeatEnvironment(db, input)).rejects.toMatchObject({ name: "WorkspaceBusyDeferral", capacityEnvironmentId: local.id });
+      await db.update(environmentLeases).set({ status: "released" }).where(eq(environmentLeases.id, held!.id));
+      expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentId).toBe(remote.id);
+    });
+
+    it("lets only one concurrent run lease take the last slot", async () => {
+      const { input, local } = await overflowFixture();
+      const take = () => environmentService(db).acquireLease({ companyId: input.agent.companyId, environmentId: local.id, maxConcurrentRuns: 1 });
+      const results = await Promise.allSettled([take(), take()]);
+      expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+      expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: expect.any(EnvironmentCapacityExhaustedError) });
+    });
+
+    it("returns an issue session to the host that last ran it", async () => {
+      const { input, issue, remote, lease } = await overflowFixture();
+      await lease(remote.id, { status: "released", issueId: issue.id, metadata: { agentId: input.agent.id } });
+      expect((await selectHeartbeatEnvironment(db, input)).selectedEnvironmentId).toBe(remote.id);
+    });
   });
 });

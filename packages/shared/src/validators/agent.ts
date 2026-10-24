@@ -73,6 +73,8 @@ export const agentRuntimeConfigSchema = z.object({
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
+  /** Ordered environments tried after the agent default when it lacks capacity. */
+  fallbackEnvironmentIds: z.array(z.string().guid()).max(8).optional(),
 }).catchall(z.unknown()).superRefine((value, ctx) => {
   if (Object.prototype.hasOwnProperty.call(value, "modelProfiles")) {
     ctx.addIssue({

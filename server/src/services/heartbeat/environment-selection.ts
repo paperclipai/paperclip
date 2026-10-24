@@ -29,9 +29,10 @@ import type { executionWorkspaceService } from "../execution-workspaces.js";
 import type { instanceSettingsService } from "../instance-settings.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
-import { WorkspaceBusyDeferral, type createHeartbeatRetries } from "./retries.js";
+import { WorkspaceBusyDeferral, environmentCapacityDeferral, type createHeartbeatRetries } from "./retries.js";
 import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
+import { environmentOverflowDeps, selectOverflowEnvironmentId } from "./environment-overflow.js";
 
 type Issue = typeof issues.$inferSelect;
 
@@ -40,7 +41,7 @@ export interface HeartbeatEnvironmentSelectionInput {
   run: Pick<typeof heartbeatRuns.$inferSelect,
     "id" | "runtimeMode" | "runnerProfileJson" | "scheduledRetryReason" | "scheduledRetryAttempt">;
   agent: Pick<typeof agents.$inferSelect,
-    "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
+    "id" | "companyId" | "adapterType" | "adapterConfig" | "runtimeConfig" | "defaultEnvironmentId">;
   task: {
     freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
     issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
@@ -209,6 +210,26 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const executionForcedToKubernetes =
     isExecutionForcedToKubernetes(executionPolicy);
   let selectedEnvironmentId = environmentResolution.environmentId;
+  // Overflow applies only to the agent's own default; issue and platform
+  // placements are explicit and never fall back to another host.
+  const fallbackEnvironmentIds = parseObject(agent.runtimeConfig).fallbackEnvironmentIds;
+  if (environmentResolution.source === "agent" && !managedSandboxOnly && !executionForcedToKubernetes &&
+      Array.isArray(fallbackEnvironmentIds) && fallbackEnvironmentIds.length > 0) {
+    const admitted = await selectOverflowEnvironmentId({
+      primaryEnvironmentId: selectedEnvironmentId,
+      fallbackEnvironmentIds: fallbackEnvironmentIds.filter((id): id is string => typeof id === "string"),
+    }, environmentOverflowDeps(db, {
+      companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId,
+      getEnvironment: async (id) => id === localEnvironment.id ? localEnvironment : await environmentsSvc.getById(id),
+    }));
+    // Every candidate is full or refused admission: wait like a busy workspace.
+    if (!admitted) {
+      throw environmentCapacityDeferral({
+        run, environmentId: selectedEnvironmentId, wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+      });
+    }
+    selectedEnvironmentId = admitted;
+  }
   if (executionForcedToKubernetes) {
     let kubernetesEnvironment =
       await environmentsSvc.findKubernetesEnvironment(agent.companyId);

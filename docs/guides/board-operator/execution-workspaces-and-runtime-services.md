@@ -145,6 +145,21 @@ Code state moves between runs through the local execution-workspace cwd alone â€
 
 The invariant is enforced by the "no-remote-git contract" case in `packages/adapter-utils/src/ssh-fixture.test.ts`, which asserts a remote-only commit reaches the local worktree with no remote configured at any point.
 
+## Environment overflow
+
+An agent can name ordered fallbacks in `runtimeConfig.fallbackEnvironmentIds`. They apply only when the run's
+environment comes from the agent's own `defaultEnvironmentId`; issue, instance and platform placements never fall back.
+
+- A local or SSH environment may declare `config.capacity.maxConcurrentRuns` (counted from its active leases across
+  the instance) and `config.capacity.admissionCommand`, an argv run on the Paperclip host before selection. Exit 0
+  admits; a nonzero exit, spawn error or 10-second timeout refuses. The probe reserves nothing.
+- Candidates are tried in order: the default, then each fallback. Missing, archived and non-host environments are skipped.
+  When none admits, the run stays on the default and waits there as before.
+- An environment that already hosted the same run or the agent's issue session is tried first, so provider sessions
+  resume on their host. If it no longer admits, the next host starts a fresh session.
+- Fallback selection is disabled under managed-sandbox-only and forced Kubernetes execution. The admission command
+  runs with the same host trust as local adapter commands.
+
 ## Current implementation guarantees
 
 With the current implementation:
