@@ -3525,7 +3525,7 @@ describe("TaskChatThread composer alignment", () => {
 
     const dock = container
       .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
+      ?.closest('[data-testid="task-chat-composer-dock"]') as HTMLElement | null;
 
     expect(dock?.className).toContain("w-full");
     expect(dock?.className).toContain("max-w-(--tc-shell-max-w)");
@@ -4309,26 +4309,22 @@ describe("TaskChatThread Paperclip Runner queue", () => {
   });
 });
 
-describe("TaskChatThread mobile composer dock (PAP-495)", () => {
-  it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
+describe("TaskChatThread mobile composer dock", () => {
+  it("scrolls messages independently of the composer on mobile", () => {
     sidebarState.isMobile = true;
 
     renderThread({
-      comments: [],
+      comments: createLongThreadComments(),
       onAdd: async () => {},
       draftKey: "task-chat-draft:issue-mobile",
     });
 
-    const dock = container
-      .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
-
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    const scroller = container.querySelector('[data-testid="task-chat-scroller"]');
     expect(dock).not.toBeNull();
-    // Bottom offset comes from --tc-composer-bottom (Layout raises it to the nav
-    // height while the nav is on screen) — NOT the raw safe-area dock, which is
-    // what let the nav occlude the action row before PAP-495.
-    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
-    expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
+    expect(scroller).not.toBeNull();
+    expect(scroller?.textContent).toContain("Thread message 1");
+    expect(scroller?.contains(dock)).toBe(false);
   });
 });
 

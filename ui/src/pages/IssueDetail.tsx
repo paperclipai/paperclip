@@ -7780,11 +7780,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
           className={
             taskChatShellEnabled
-              ? isMobile
-                ? // Mobile shell scrolls the DOCUMENT (main is overflow-visible,
-                  // auto height) — the thread renders in normal flow (PAP-360).
-                  "flex w-full flex-col gap-6"
-                : // Fill main exactly so the outer page never scrolls — the
+              ? // Fill main exactly so the outer page never scrolls — the
                   // thread's own viewport is the only scroll surface.
                   // Keep status banners close to the transcript. A full section
                   // gap here shortens the pinned message viewport enough to
@@ -8071,9 +8067,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onValueChange={setDetailTab}
             className={
               taskChatShellEnabled
-                ? isMobile
-                  ? undefined
-                  : "min-h-0 flex-1"
+                ? "min-h-0 flex-1"
                 : "space-y-3"
             }
           >
@@ -8113,8 +8107,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 taskChatShellEnabled
                   ? isMobile
                     ? streamlinedTaskDetailEnabled
-                      ? undefined
-                      : "-mx-4"
+                      ? "flex min-h-0 flex-1 flex-col"
+                      : "-mx-4 flex min-h-0 flex-1 flex-col"
                     : streamlinedTaskDetailEnabled
                       ? "flex min-h-0 flex-col"
                       : "-mx-4 -mt-4 md:-mx-6 md:-mt-6 flex min-h-0 flex-col"

@@ -56,8 +56,12 @@ title sizes remain larger.
 
 The bottom navigation responds to accumulated scrolling, ignoring small
 reversals and Safari's edge bounce. It glides out and eases back in with shared
-motion tokens; the task composer follows the same motion. Keep page padding
-stable while the navigation moves, and honor reduced-motion preferences.
+motion tokens. Keep page padding stable while the navigation moves, and honor
+reduced-motion preferences.
+
+Mobile task conversations size their shell to the visible viewport, with one
+message scroller and a normal flex footer for the composer. Navigation stays at
+the layout viewport bottom, behind the keyboard.
 
 Task conversations reveal their initial comments, interaction cards, plan, and
 relevant run history together after positioning the latest message. Keep the

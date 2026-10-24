@@ -109,7 +109,6 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
@@ -3027,25 +3026,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={!historyPending || historyWaitExpired}>
-        <TaskChatWindowScroll
-          contentKey={isMobile ? autoFollowContentKey : 0}
-          enabled={isMobile && historyRevealed}
-        />
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >
           <div
             className={cn(
-              "flex flex-col",
-              !isMobile && "min-h-0 flex-1",
+              "flex min-h-0 flex-1 flex-col",
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
           >
             <div
               className={cn(
-                "relative flex flex-col",
-                (!isMobile || !historyRevealed) && "min-h-0 flex-1",
+                "relative flex min-h-0 flex-1 flex-col",
               )}
               aria-busy={!historyRevealed}
             >
@@ -3080,8 +3073,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <div
                 data-testid="task-chat-history-content"
                 className={cn(
-                  "flex flex-col",
-                  !isMobile && "min-h-0 flex-1",
+                  "flex min-h-0 flex-1 flex-col",
                   !historyRevealed && "invisible",
                 )}
                 inert={!historyRevealed}
@@ -3090,9 +3082,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <>
                     {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
                       <div
-                        className={
-                          isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
-                        }
+                        className="min-h-0 flex-1 overflow-y-auto"
                       >
                         {threadHeaderWithBlockers ? (
                           <div
@@ -3228,7 +3218,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         }
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
-                        scroll={!isMobile}
                       />
                     )}
                   </>
