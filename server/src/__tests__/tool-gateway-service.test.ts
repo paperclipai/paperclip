@@ -1143,7 +1143,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       parameters: { target: "tampered" },
     });
     expect(result.status).toBe("completed");
-    expect((result.result as { result?: { data?: { target?: string } } }).result?.data?.target).toBe("repo");
+    expect((result.result as { data?: { target?: string } }).data?.target).toBe("repo");
   });
 
   it.each([
