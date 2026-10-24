@@ -12,6 +12,7 @@ const INSTRUCTIONS = "Synthetic governance marker: request approval before gover
 
 interface Invocation {
   args: string[];
+  stdinPrompt: string | null;
   systemPrompt: string | null;
   runId: string;
 }
@@ -31,8 +32,10 @@ describe("Hermes managed instruction delivery (real capture process)", () => {
     await fs.writeFile(command, `#!${process.execPath}
 const fs = require("node:fs");
 const args = process.argv.slice(2);
+const stdinPrompt = args.includes("--query-file") ? fs.readFileSync(0, "utf8") : null;
 fs.appendFileSync(process.env.CAPTURE_PATH, JSON.stringify({
   args,
+  stdinPrompt,
   systemPrompt: process.env.HERMES_EPHEMERAL_SYSTEM_PROMPT ?? null,
   runId: process.env.PAPERCLIP_RUN_ID,
 }) + "\\n");
@@ -87,8 +90,30 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
   }
 
   function query(invocation: Invocation): string {
-    return invocation.args[invocation.args.indexOf("-q") + 1];
+    return invocation.stdinPrompt ?? invocation.args[invocation.args.indexOf("-q") + 1];
   }
+
+  it("passes a large UTF-8 wake prompt through stdin without truncation", async () => {
+    const largeBody = `Begin ☕\n${"slab direction ☕\n".repeat(6000)}End of direction.`;
+    const ctx = context();
+    ctx.context.paperclipWake = {
+      reason: "issue_commented",
+      issue: { id: "task-synthetic", title: "Synthetic task", status: "in_progress" },
+      comments: [{ id: "comment-synthetic", body: largeBody }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+
+    const result = await execute(ctx);
+    const [invocation] = await invocations();
+
+    expect(result.exitCode).toBe(0);
+    expect(invocation.args).toContain("--query-file");
+    expect(invocation.args).not.toContain("-q");
+    expect(invocation.args[invocation.args.indexOf("--query-file") + 1]).toBe("-");
+    expect(query(invocation)).toContain(largeBody);
+    expect(query(invocation)).toContain("run-fresh");
+  });
 
   it.each([false, true])("keeps instructions out of fresh and resumed user turns (conversation=%s)", async (conversationMode) => {
     const fresh = context();
