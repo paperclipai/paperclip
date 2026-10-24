@@ -53,7 +53,13 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
+import {
+  classifyOpenCodeFailure,
+  isOpenCodeApiError,
+  isOpenCodeUnknownSessionError,
+  parseOpenCodeJsonl,
+  createOpenCodeJsonlParser,
+} from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -90,6 +96,15 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
 const REMOTE_OPENCODE_MODELS_PROBE_SANDBOX_TIMEOUT_SEC = 120;
+
+// In-run retries only cover transient transport/provider blips. Quota walls
+// are classified separately and go straight to the durable recovery path.
+const API_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
+const MAX_API_RETRIES = API_RETRY_DELAYS_MS.length;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   runId: string;
@@ -764,6 +779,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderrLine ||
         `OpenCode exited with code ${synthesizedExitCode ?? -1}`;
       const modelId = model || null;
+      const failureClassification =
+        (synthesizedExitCode ?? 0) !== 0 || parsedError
+          ? classifyOpenCodeFailure(parsedError || attempt.proc.stdout, attempt.rawStderr)
+          : null;
 
       return {
         exitCode: synthesizedExitCode,
@@ -775,8 +794,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
         // A lost duplex control channel surfaces the typed `duplex_channel_lost`
-        // code; every other result carries no code here.
-        errorCode: attempt.proc.errorCode ?? null,
+        // code; every other result carries the classification of its provider
+        // failure (or no code when the failure is not retryable).
+        errorCode: attempt.proc.errorCode ?? failureClassification?.errorCode ?? null,
+        errorFamily: failureClassification?.errorFamily ?? null,
         usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
@@ -791,6 +812,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterExecutionTimeout,
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(failureClassification
+            ? { errorFamily: failureClassification.errorFamily }
+            : {}),
         },
         summary: attempt.parsed.summary,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
@@ -798,13 +822,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     try {
-      const initial = await runAttempt(sessionId);
+      let attempt = await runAttempt(sessionId);
+      let retries = 0;
+
+      while (
+        retries < MAX_API_RETRIES &&
+        !attempt.proc.timedOut &&
+        !attempt.proc.signal &&
+        ((attempt.proc.exitCode ?? 0) !== 0 || Boolean(attempt.parsed.errorMessage)) &&
+        isOpenCodeApiError(attempt.parsed.errorMessage || attempt.proc.stdout, attempt.rawStderr)
+      ) {
+        const delayMs = API_RETRY_DELAYS_MS[retries]!;
+        await onLog(
+          "stdout",
+          `[paperclip] OpenCode API error (attempt ${retries + 1}/${MAX_API_RETRIES}); retrying in ${delayMs / 1000}s...\n`,
+        );
+        await sleep(delayMs);
+        retries++;
+        attempt = await runAttempt(sessionId);
+      }
+
       const initialFailed =
-        !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+        !attempt.proc.timedOut && ((attempt.proc.exitCode ?? 0) !== 0 || Boolean(attempt.parsed.errorMessage));
       if (
         sessionId &&
+        retries === 0 &&
         initialFailed &&
-        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+        isOpenCodeUnknownSessionError(attempt.proc.stdout, attempt.rawStderr)
       ) {
         await onLog(
           "stdout",
@@ -814,7 +858,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return toResult(retry, true);
       }
 
-      return toResult(initial);
+      return toResult(attempt);
     } finally {
       try {
         await providerStop.collectBeforeRestore();
