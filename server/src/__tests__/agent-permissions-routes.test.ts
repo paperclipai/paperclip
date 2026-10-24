@@ -2160,7 +2160,7 @@ describe("agent permission routes", () => {
     expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
       touchedByUserId: "board-user",
       inboxArchivedByUserId: "board-user",
-      status: "backlog,todo,in_progress,in_review,blocked,done",
+      status: "backlog,todo,in_progress,in_review,ready_for_qa,blocked,done",
       limit: 500,
     });
   });
