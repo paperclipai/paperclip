@@ -5392,6 +5392,7 @@ describe("IssueDetail", () => {
 
     async function renderWithPendingTreeControl() {
       mockSidebarState.isMobile = isMobile;
+      queryClient.setQueryDefaults(["issues", "tree-control-state"], { retryDelay: 0 });
       mockIssuesApi.get.mockResolvedValue(createIssue());
       let resolve!: (value: Awaited<ReturnType<typeof issuesApi.getTreeControlState>>) => void;
       let reject!: (reason: Error) => void;
@@ -5446,6 +5447,25 @@ describe("IssueDetail", () => {
         expect(composerProps().composerDisabledReason).toBe(
           "Couldn’t check whether this task is paused. Refresh to try again.",
         );
+      });
+    });
+
+    it("keeps the composer enabled when a refetch fails after a successful response", async () => {
+      const response = await renderWithPendingTreeControl();
+      response.resolve({ activePauseHold: null });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("success");
+      });
+
+      mockIssuesApi.getTreeControlState.mockClear().mockRejectedValue(new Error("502 Bad Gateway"));
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: treeControlKey });
+      });
+      await waitForAssertion(() => {
+        expect(queryClient.getQueryState(treeControlKey)?.status).toBe("error");
+        expect(mockIssuesApi.getTreeControlState).toHaveBeenCalledTimes(3);
+        expect(composerProps().composerDisabledReason).toBeNull();
+        expect(composerProps().composerPause).toBeNull();
       });
     });
 
