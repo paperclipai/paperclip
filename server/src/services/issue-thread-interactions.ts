@@ -1,3 +1,4 @@
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { historicalQuestionCondition } from "./issue-question-context.js";
@@ -1083,6 +1084,7 @@ async function resolveLinkedToolActionRequests(
   },
 ) {
   if (interaction.kind !== "request_confirmation") return;
+  await notifyToolReviewChange(db);
   await db
     .update(toolActionRequests)
     .set({

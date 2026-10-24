@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentWakeupRequests,
@@ -54,7 +54,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerToolReviewExpiryWork } from "../services/tool-review-expiry-work.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_REVIEW_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const testToolActionSigningSecret = "test-tool-action-signing-secret";
 type ToolGatewayServiceOptions = NonNullable<Parameters<typeof createToolGatewayService>[1]>;
@@ -203,13 +209,22 @@ function runSessionInput(company: IdRef, agent: IdRef, run: IdRef): Parameters<R
 describeEmbeddedPostgres("tool gateway service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let stopExpiryWorker: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
-    db = createDb(tempDb.connectionString);
+    if (!externalDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-gateway-");
+    db = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+      maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0,
+    });
+    await clearFixtures();
   }, 20_000);
 
   afterEach(async () => {
+    await stopExpiryWorker?.(); stopExpiryWorker = undefined;
+    await clearFixtures();
+  });
+
+  async function clearFixtures() {
     vi.unstubAllEnvs();
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
@@ -232,10 +247,185 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
-  });
+  }
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
+  });
+
+  describe("pending review expiry worker", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let gateway: ReturnType<typeof createToolGatewayService>;
+    let fixture: Awaited<ReturnType<typeof createRunFixture>>;
+    let draining: boolean;
+    const errors: unknown[] = [];
+
+    beforeEach(async () => {
+      await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+      fixture = await createRunFixture(db);
+      await db.insert(toolPolicies).values(reviewNotePolicyRow(fixture.company));
+      gateway = createTestToolGatewayService(db);
+      draining = false; errors.length = 0;
+      stopExpiryWorker = stopWorker;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    });
+    async function stopWorker() {
+      await coordinator?.stop(); coordinator = undefined;
+      vi.useRealTimers(); vi.restoreAllMocks();
+      await db.execute(sql`drop trigger if exists sleep_review_fail on tool_invocations`);
+      await db.execute(sql`drop function if exists sleep_review_fail()`);
+      expect(errors).toEqual([]);
+    }
+    async function start() {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await registerToolReviewExpiryWork(coordinator, gateway, () => !draining).ready;
+    }
+    async function settle(ms = 60_000) {
+      await vi.advanceTimersByTimeAsync(ms);
+      if (!draining) await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
+    }
+    async function quiet() {
+      await settle(); expect(coordinator!.nextWakeAt()).toBeNull();
+      const selects = vi.spyOn(db, "select"), executes = vi.spyOn(db, "execute");
+      await settle(60 * 60_000);
+      expect(selects).not.toHaveBeenCalled(); expect(executes).not.toHaveBeenCalled();
+      selects.mockRestore(); executes.mockRestore();
+    }
+    async function request(service = gateway, source = db) {
+      const session = await service.createSession(runSessionInput(fixture.company, fixture.agent, fixture.run));
+      const noteId = randomUUID();
+      await expect(service.executeTool({ sessionToken: session.token, tool: "mcp-remote-fixture:update_note",
+        parameters: { noteId, body: "Awaiting a human" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const rows = await source.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, fixture.company.id));
+      expect(rows).toHaveLength(1);
+      return rows[0];
+    }
+    async function expectExpired(id: string, invocationId: string) {
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, id)))[0].status).toBe("expired");
+      expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocationId)))[0])
+        .toMatchObject({ status: "failed", errorCode: "action_expired" });
+      expect(await db.select().from(toolCallEvents).where(eq(toolCallEvents.reasonCode, "approved_action_executed"))).toEqual([]);
+    }
+
+    it("is quiet when configured idle, wakes on signing, expires the review and card, then stays quiet with history", async () => {
+      await start(); await quiet();
+      const pending = await request();
+      await settle(); expect(coordinator!.nextWakeAt()).toBe(pending.expiresAt!.getTime());
+      const reads = vi.spyOn(db, "select");
+      await settle(5 * 60_000); expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      await settle(60 * 60_000);
+      await expectExpired(pending.id, pending.invocationId);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, pending.interactionId!)))[0].status).toBe("expired");
+      await quiet();
+    });
+
+    it.each(["approved", "rejected"] as const)("disarms when a human resolves the last review as %s", async decision => {
+      await start(); const pending = await request(); await settle();
+      await commitToolActionReview(db, { companyId: fixture.company.id, actionRequestId: pending.id,
+        decision, actor: { userId: "reviewer" } });
+      await quiet();
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe(decision);
+    });
+
+    it.each([false, true])("observes outer transaction settlement (rollback %s)", async rollback => {
+      await start(); await quiet();
+      let release!: () => void, staged!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { staged = resolve; });
+      const aborted = new Error("rollback fixture");
+      const writing = db.transaction(async tx => {
+        const scoped = tx as unknown as typeof db;
+        await request(createTestToolGatewayService(scoped), scoped);
+        staged(); await gate;
+        if (rollback) throw aborted;
+      }).catch(error => { if (error !== aborted) throw error; });
+      await Promise.race([ready, writing]);
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(await db.select().from(toolActionRequests)).toEqual([]);
+      } finally { release(); }
+      await writing; await settle();
+      if (rollback) await quiet();
+      else {
+        expect(coordinator!.nextWakeAt()).toBe(await gateway.nextActionReviewExpiryAt());
+        await settle(60 * 60_000); await quiet();
+      }
+    });
+
+    it("reconstructs saved expiry on restart", async () => {
+      const pending = await request();
+      await start(); await settle();
+      expect(coordinator!.nextWakeAt()).toBe(pending.expiresAt!.getTime());
+      await coordinator!.stop(); coordinator = undefined;
+      await settle(60 * 60_000);
+      await start(); await settle();
+      await expectExpired(pending.id, pending.invocationId); await quiet();
+    });
+
+    it("retains the first write through drain and enforces approval expiry before cleanup resumes", async () => {
+      await start(); await quiet(); draining = true;
+      const pending = await request(); await settle();
+      const reads = vi.spyOn(db, "select");
+      await settle(2 * 60 * 60_000); expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      await expect(commitToolActionReview(db, { companyId: fixture.company.id, actionRequestId: pending.id,
+        decision: "approved", actor: { userId: "reviewer" } })).rejects.toThrow("This review has expired");
+      draining = false; await settle();
+      await expectExpired(pending.id, pending.invocationId); await quiet();
+    });
+
+    it("preserves a signing write arriving during an empty deadline read", async () => {
+      let release!: () => void, reading!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { reading = resolve; });
+      const actual = gateway.nextActionReviewExpiryAt.bind(gateway);
+      vi.spyOn(gateway, "nextActionReviewExpiryAt").mockImplementationOnce(async () => {
+        const deadline = await actual(); reading(); await gate; return deadline;
+      });
+      const starting = start(); await ready;
+      let pending: Awaited<ReturnType<typeof request>>;
+      try { pending = await request(); } finally { release(); }
+      await starting; await settle();
+      expect(coordinator!.nextWakeAt()).toBe(pending!.expiresAt!.getTime());
+    });
+
+    it("leaves unsigned requests without a saved expiry alone", async () => {
+      const pending = await request();
+      await db.update(toolActionRequests).set({ expiresAt: null, signedArguments: null })
+        .where(eq(toolActionRequests.id, pending.id));
+      await start(); await quiet();
+      expect((await db.select().from(toolActionRequests))[0].status).toBe("pending");
+    });
+
+    it("expires all overdue pages without replaying approved or interrupted actions", async () => {
+      const pending = await request();
+      const past = new Date(Date.now() - 1000);
+      await db.update(toolActionRequests).set({ expiresAt: past }).where(eq(toolActionRequests.id, pending.id));
+      await db.insert(toolActionRequests).values(Array.from({ length: 101 }, () => ({
+        ...pending, id: randomUUID(), interactionId: null, expiresAt: past,
+      })));
+      await start(); await quiet();
+      const rows = await db.select().from(toolActionRequests);
+      expect(rows).toHaveLength(102);
+      expect(rows.every(row => row.status === "expired")).toBe(true);
+    });
+
+    it("rolls expiry back when invocation settlement fails, then retries the complete transition", async () => {
+      const pending = await request(); await start(); await settle();
+      await db.execute(sql`create function sleep_review_fail() returns trigger language plpgsql as $$
+        begin raise exception 'expiry settlement fixture failure'; end $$`);
+      await db.execute(sql`create trigger sleep_review_fail before update on tool_invocations
+        for each row when (new.error_code = 'action_expired') execute function sleep_review_fail()`);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      expect((await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, pending.id)))[0].status).toBe("pending");
+      expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, pending.invocationId)))[0].status).toBe("awaiting_approval");
+      await db.execute(sql`drop trigger sleep_review_fail on tool_invocations`);
+      expect(errors.every(error => (error as { cause?: Error }).cause?.message === "expiry settlement fixture failure")).toBe(true);
+      errors.length = 0;
+      await settle(); await expectExpired(pending.id, pending.invocationId); await quiet();
+    });
   });
 
   it("gates write tools with an action request and executes only stored reviewed arguments once", async () => {

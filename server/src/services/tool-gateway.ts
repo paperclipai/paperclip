@@ -1,3 +1,5 @@
+import { toolReviewExpiryService } from "./tool-review-expiry.js";
+import { writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
@@ -2507,7 +2509,7 @@ export function createToolGatewayService(
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
-      await db
+      await writeToolReviewChange(db, tx => tx
         .update(toolActionRequests)
         .set({
           status: "cancelled",
@@ -2519,7 +2521,7 @@ export function createToolGatewayService(
             eq(toolActionRequests.id, actionRequest.id),
             eq(toolActionRequests.status, "pending"),
           ),
-        );
+        ));
       if (error instanceof ToolActionSigningSecretMissingError) {
         await db
           .update(toolInvocations)
@@ -2666,7 +2668,7 @@ export function createToolGatewayService(
     // an expired row. When the guard matches no row, the row is already resolved.
     // Do not emit an approval card for a dead row; throw a retriable conflict so
     // the retry finds the live request or creates a fresh, signable one.
-    const signedRows = await db
+    const signedRows = await writeToolReviewChange(db, tx => tx
       .update(toolActionRequests)
       .set({
         interactionId: interaction.id,
@@ -2684,7 +2686,7 @@ export function createToolGatewayService(
           eq(toolActionRequests.status, "pending"),
         ),
       )
-      .returning({ id: toolActionRequests.id });
+      .returning({ id: toolActionRequests.id }));
     if (signedRows.length === 0) {
       await db
         .update(toolInvocations)
@@ -8496,7 +8498,7 @@ export function createToolGatewayService(
       pendingRequest.expiresAt.getTime() <= Date.now();
     if (pendingUnsigned || pendingExpired) {
       const now = new Date();
-      await db
+      await writeToolReviewChange(db, tx => tx
         .update(toolActionRequests)
         .set({ status: "expired", resolvedAt: now, updatedAt: now })
         .where(
@@ -8504,7 +8506,7 @@ export function createToolGatewayService(
             eq(toolActionRequests.id, match.actionRequest.id),
             eq(toolActionRequests.status, "pending"),
           ),
-        );
+        ));
       await db
         .update(toolInvocations)
         .set({
@@ -8706,6 +8708,11 @@ export function createToolGatewayService(
         : null,
     };
   }
+
+  const reviewExpiry = toolReviewExpiryService(db, async expired => {
+    void emitConnectionInvoked(db, expired.invocationId);
+    await reflectToolActionInteractionLifecycle(expired);
+  });
 
   return {
     async recordRuntimeMcpDeliveryDiagnostic(input: {
@@ -9505,6 +9512,7 @@ export function createToolGatewayService(
             },
           );
         }
+        const pendingActionRequest = recorded.actionRequest;
         const canonicalArguments = canonicalToolArguments(requestedParameters);
         const canonicalArgumentsHash = toolRequestIdentityHash(requestedParameters, options.toolActionSigningSecret);
         const approvalSnapshot = await connectedRemoteApprovalSnapshot(
@@ -9525,7 +9533,7 @@ export function createToolGatewayService(
             signingSecret: options.toolActionSigningSecret,
           });
         } catch (error) {
-          await db
+          await writeToolReviewChange(db, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -9534,10 +9542,10 @@ export function createToolGatewayService(
             })
             .where(
               and(
-                eq(toolActionRequests.id, recorded.actionRequest.id),
+                eq(toolActionRequests.id, pendingActionRequest.id),
                 eq(toolActionRequests.status, "pending"),
               ),
-            );
+            ));
           if (error instanceof ToolActionSigningSecretMissingError) {
             await db
               .update(toolInvocations)
@@ -9566,7 +9574,7 @@ export function createToolGatewayService(
           tool,
           argumentsSummary: argumentValidation.summary,
         });
-        await db
+        await writeToolReviewChange(db, tx => tx
           .update(toolActionRequests)
           .set({
             canonicalArgumentsHash,
@@ -9576,7 +9584,7 @@ export function createToolGatewayService(
             expiresAt: new Date(Date.now() + 60 * 60 * 1000),
             updatedAt: new Date(),
           })
-          .where(eq(toolActionRequests.id, recorded.actionRequest.id));
+          .where(eq(toolActionRequests.id, pendingActionRequest.id)));
         await writeToolCallEvent({
           invocationId,
           actionRequestId: recorded.actionRequest.id,
@@ -9719,7 +9727,10 @@ export function createToolGatewayService(
       return buildTestCallStatus(actionRequest, invocation);
     },
 
-    async sweepActionReviews() {
+    sweepExpiredActionReviews: reviewExpiry.sweep,
+    nextActionReviewExpiryAt: reviewExpiry.next,
+
+    async sweepActionReviews(input: { includeExpiry?: boolean } = {}) {
       // A process may stop between persisting a provider outcome and updating the
       // feed projection. Reconcile from authoritative rows before delivering it.
       const unreflected = await db
@@ -9757,7 +9768,7 @@ export function createToolGatewayService(
       const now = new Date();
       const staleAt = new Date(now.getTime() - 10 * 60_000);
       let cursor: string | undefined;
-      let scanned = 0;
+      let scanned = input.includeExpiry === false ? 0 : (await reviewExpiry.sweep(now)).scanned;
       for (;;) {
         const rows = await db
           .select()
@@ -9765,10 +9776,6 @@ export function createToolGatewayService(
           .where(
             and(
               or(
-                and(
-                  eq(toolActionRequests.status, "pending"),
-                  lte(toolActionRequests.expiresAt, now),
-                ),
                 eq(toolActionRequests.status, "approved"),
                 and(
                   eq(toolActionRequests.status, "executing"),
@@ -9794,15 +9801,9 @@ export function createToolGatewayService(
             );
             continue;
           }
-          const status = row.status === "pending" ? "expired" : "failed";
-          const errorCode =
-            status === "failed"
-              ? "tool_execution_outcome_unknown"
-              : "action_expired";
-          const errorMessage =
-            status === "failed"
-              ? "Execution was interrupted; the external outcome is unknown. Inspect the provider before retrying."
-              : "The approval request expired before a decision.";
+          const status = "failed";
+          const errorCode = "tool_execution_outcome_unknown";
+          const errorMessage = "Execution was interrupted; the external outcome is unknown. Inspect the provider before retrying.";
           const [changed] = await db
             .update(toolActionRequests)
             .set({ status, resolvedAt: now, updatedAt: now })
@@ -9942,7 +9943,7 @@ export function createToolGatewayService(
       }
       if (!signedPayload) {
         if (actionRequest.status === "pending") {
-          await db
+          await writeToolReviewChange(db, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -9954,7 +9955,7 @@ export function createToolGatewayService(
                 eq(toolActionRequests.id, actionRequest.id),
                 eq(toolActionRequests.status, "pending"),
               ),
-            );
+            ));
         }
         await reflectToolActionInteractionLifecycle({
           actionRequestId: actionRequest.id,
@@ -10511,7 +10512,7 @@ export function createToolGatewayService(
           actionRequest.expiresAt.getTime() <= Date.now()
         ) {
           const expiredAt = new Date();
-          const [expired] = await db
+          const [expired] = await writeToolReviewChange(db, tx => tx
             .update(toolActionRequests)
             .set({
               status: "expired",
@@ -10524,7 +10525,7 @@ export function createToolGatewayService(
                 inArray(toolActionRequests.status, ["pending", "approved"]),
               ),
             )
-            .returning({ id: toolActionRequests.id });
+            .returning({ id: toolActionRequests.id }));
           if (expired) {
             await reflectToolActionInteractionLifecycle({
               actionRequestId: expired.id,
@@ -10559,7 +10560,7 @@ export function createToolGatewayService(
             interaction?.kind === "request_confirmation" &&
             interaction.status === "accepted"
           ) {
-            const [approved] = await db
+            const [approved] = await writeToolReviewChange(db, tx => tx
               .update(toolActionRequests)
               .set({
                 status: "approved",
@@ -10577,7 +10578,7 @@ export function createToolGatewayService(
                   eq(toolActionRequests.status, "pending"),
                 ),
               )
-              .returning();
+              .returning());
             if (!approved) {
               throw new ToolGatewayHttpError(
                 409,

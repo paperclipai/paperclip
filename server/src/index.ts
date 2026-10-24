@@ -1,3 +1,4 @@
+import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work.js";
 import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
 import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
@@ -1436,7 +1437,15 @@ async function startServerWithDatabaseTeardown(
       }));
   };
 
-  await timeStartupRecovery("tool_reviews", () => app.locals.toolGateway.sweepActionReviews()).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
+  await timeStartupRecovery("tool_reviews", async () => {
+    if (config.heartbeatSchedulerEnabled) {
+      await registerToolReviewExpiryWork(deliveryWork, app.locals.toolGateway,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+    } else {
+      await app.locals.toolGateway.sweepExpiredActionReviews();
+    }
+    return app.locals.toolGateway.sweepActionReviews({ includeExpiry: false });
+  }).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
   await timeStartupRecovery("gateway_sessions", () => config.heartbeatSchedulerEnabled
     ? registerGatewayCredentialExpiryWork(deliveryWork, app.locals.toolGateway,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
@@ -1860,7 +1869,7 @@ async function startServerWithDatabaseTeardown(
             logger.error({ err }, "periodic tool connection health sweep failed");
           }));
 
-        trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
+        trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews({ includeExpiry: false }).catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
 
         if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {

@@ -67,6 +67,8 @@ const {
       },
       toolGateway: {
         sweepActionReviews: vi.fn(async () => ({ scanned: 0 })),
+        sweepExpiredActionReviews: vi.fn(async () => ({ scanned: 0 })),
+        nextActionReviewExpiryAt: vi.fn(async () => null),
         cleanupExpiredSessions: vi.fn(async () => ({ deletedCount: 0 })),
         nextCredentialExpiryAt: vi.fn(async () => null),
       },

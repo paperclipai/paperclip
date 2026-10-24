@@ -2640,6 +2640,13 @@
       "when": 1792861534317,
       "tag": "0378_mean_scream",
       "breakpoints": true
+    },
+    {
+      "idx": 379,
+      "version": "7",
+      "when": 1792861791949,
+      "tag": "0379_narrow_the_executioner",
+      "breakpoints": true
     }
   ]
 }

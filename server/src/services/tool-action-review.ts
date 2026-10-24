@@ -1,3 +1,4 @@
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import {
@@ -140,6 +141,7 @@ export async function commitToolActionReview(
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
+    await notifyToolReviewChange(tx);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
