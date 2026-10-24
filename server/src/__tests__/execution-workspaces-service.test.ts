@@ -2403,6 +2403,101 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     ]));
   });
 
+  describe("shared workspace session over an existing non-git directory", () => {
+    async function seedNonGitSharedSession(metadata: Record<string, unknown>) {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const executionWorkspaceId = randomUUID();
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-shared-"));
+      await fs.writeFile(path.join(directory, "notes.txt"), "operator files\n", "utf8");
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "PAP",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Workspaces",
+        status: "in_progress",
+        executionWorkspacePolicy: { enabled: true },
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Legacy shared session",
+        status: "active",
+        providerType: "local_fs",
+        cwd: directory,
+        metadata,
+      });
+      return { executionWorkspaceId, directory };
+    }
+
+    it("allows a records-only archive when git status cannot be inspected", async () => {
+      const { executionWorkspaceId, directory } = await seedNonGitSharedSession({ createdByRuntime: false });
+      try {
+        const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+        expect(readiness).toMatchObject({
+          state: "ready_with_warnings",
+          isSharedWorkspace: true,
+          blockingReasons: [],
+          plannedActions: [expect.objectContaining({ kind: "archive_record" })],
+        });
+        expect(readiness?.plannedActions).toHaveLength(1);
+        expect(readiness?.warnings).toEqual(expect.arrayContaining([
+          expect.stringContaining(`Could not inspect git status for "${directory}"`),
+          "This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.",
+        ]));
+        await expect(fs.readFile(path.join(directory, "notes.txt"), "utf8")).resolves.toBe("operator files\n");
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("still blocks when the close would run a teardown command", async () => {
+      const { executionWorkspaceId, directory } = await seedNonGitSharedSession({
+        config: { teardownCommand: "bash ./scripts/teardown.sh" },
+      });
+      try {
+        const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+        expect(readiness).toMatchObject({
+          state: "blocked",
+          isDestructiveCloseAllowed: false,
+          blockingReasons: [
+            "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+          ],
+        });
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it("still blocks when the runtime created the directory", async () => {
+      const { executionWorkspaceId, directory } = await seedNonGitSharedSession({ createdByRuntime: true });
+      try {
+        const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+
+        expect(readiness).toMatchObject({
+          state: "blocked",
+          isDestructiveCloseAllowed: false,
+          blockingReasons: [
+            "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+          ],
+        });
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("clears matching environment selections transactionally without touching other workspaces", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
