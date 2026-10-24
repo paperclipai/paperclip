@@ -565,16 +565,19 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  const delta = asString(record?.delta, "") || asString(record?.text_delta, "");
+  const sanitizedDelta = eventName === "message.delta" && delta ? redactText(delta) : null;
+  const redacted = redactForLog(parsed, [], 0, redactText);
+  const eventData = sanitizedDelta !== null
+    ? JSON.stringify({ delta: sanitizedDelta })
+    : stringifyForLog(redacted, 8_000);
   await ctx.onLog(
     "stdout",
-    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
+    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${eventData}\n`,
   );
 
-  const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
-  if (eventName === "message.delta" && delta) {
-    const sanitizedDelta = redactText(delta);
+  if (sanitizedDelta !== null) {
     state.outputChunks.push(sanitizedDelta);
-    await ctx.onLog("stdout", sanitizedDelta);
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
