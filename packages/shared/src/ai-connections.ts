@@ -227,6 +227,26 @@ export const createAiConnectionSchema = z
   });
 export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
+/** Pre-save model discovery for a routing endpoint. The API key is used for the
+ * probe request only and is never persisted by this operation. */
+export const aiRoutingModelsProbeSchema = z
+  .object({
+    routing: aiProviderRoutingSchema,
+    apiKey: z.string().trim().min(1).max(32768).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.routing.auth === "none") {
+      if (v.apiKey) ctx.addIssue({ code: "custom", message: "Provide only the selected authentication method." });
+      return;
+    }
+    if (!v.apiKey) ctx.addIssue({ code: "custom", message: "Enter the API key before fetching models." });
+  });
+export type AiRoutingModelsProbe = z.infer<typeof aiRoutingModelsProbeSchema>;
+export interface AiRoutingModelsProbeResult {
+  models: Array<{ id: string; label?: string }>;
+}
+
 export const aiConnectionLoginIntentSchema = z
   .object({
     provider: z.enum(["anthropic", "openai", "xai"]),

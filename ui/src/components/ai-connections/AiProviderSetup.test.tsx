@@ -10,7 +10,7 @@ import { aiProviderSetupPreset } from "@paperclipai/shared";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 
 let credentialProps: ComponentProps<typeof AiConnectionCredentialStep> | undefined;
-vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { create: vi.fn(async () => ({ connectionId: "connection", grantId: "grant" })), list: vi.fn(async () => ({ currentUserId: "owner", connections: [], canManageConnections: true })) } }));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { create: vi.fn(async () => ({ connectionId: "connection", grantId: "grant" })), list: vi.fn(async () => ({ currentUserId: "owner", connections: [], canManageConnections: true })), probeRoutingModels: vi.fn(async () => ({ models: [{ id: "qwen3-coder:30b" }, { id: "llama3.2:latest" }] })) } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: vi.fn(async () => []) } }));
 vi.mock("./AiConnectionCredentialStep", () => ({ AiConnectionCredentialStep: (props: ComponentProps<typeof AiConnectionCredentialStep>) => { credentialProps = props; return <div>Existing credential flow</div>; } }));
 
@@ -124,6 +124,37 @@ it("allows an ordinary member to save a personal gateway before the agent exists
 });
 
 
+it("drops a probe reply that arrives after the endpoint URL changed", async () => {
+  let resolveProbe: ((value: { models: Array<{ id: string }> }) => void) | undefined;
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockImplementationOnce(
+    () => new Promise((resolve) => { resolveProbe = resolve; }),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><AiProviderSetup companyId="company" initialProvider="local" initialProtocol="chat" onCancel={() => {}} onComplete={() => {}} /></TooltipProvider></QueryClientProvider>));
+    await expandAccessDefaults(container);
+    await act(async () => setInputValue(container.querySelector('input[aria-label="Provider URL"]')!, "http://localhost:11434/v1"));
+    await act(async () => setInputValue(container.querySelector('input[aria-label="API key"]')!, "fixture-key"));
+    await act(async () => (Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Fetch models") as HTMLButtonElement).click());
+    await act(async () => setInputValue(container.querySelector('input[aria-label="Provider URL"]')!, "http://localhost:11500/v1"));
+    await act(async () => resolveProbe!({ models: [{ id: "qwen3-coder:30b" }] }));
+    await vi.waitFor(() => expect(fetchModelsSettled(container)).toBe(true));
+    expect((container.querySelector('input[aria-label="Model IDs"]') as HTMLInputElement).value).toBe("");
+  } finally {
+    await act(async () => root.unmount()); container.remove(); client.clear();
+  }
+});
+
+/** The status line only renders once the mutation has settled, success or error. */
+function fetchModelsSettled(container: HTMLElement): boolean {
+  return Boolean(container.querySelector('[role="status"]')) || Boolean(container.querySelector('[role="alert"]'));
+}
+
 it.each(["google", "openai", "anthropic", "xai"] as const)("allows an ordinary member to connect a personal %s account before an agent exists", async provider => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: false, connections: [] });
@@ -136,5 +167,65 @@ it.each(["google", "openai", "anthropic", "xai"] as const)("allows an ordinary m
     expect(credentialProps).toMatchObject({ provider, ownership: "personal", allAgents: false, agentIds: [], disabled: false });
   } finally {
     await act(async () => root.unmount()); client.clear();
+  }
+});
+
+async function setInputValue(input: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+async function expandAccessDefaults(container: HTMLElement) {
+  const change = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Change")!;
+  await act(async () => change.click());
+}
+
+it("fills the model list from the endpoint before the local connection is saved", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><AiProviderSetup companyId="company" initialProvider="local" initialProtocol="chat" onCancel={() => {}} onComplete={() => {}} /></TooltipProvider></QueryClientProvider>));
+    await expandAccessDefaults(container);
+    await act(async () => setInputValue(container.querySelector('input[aria-label="Provider URL"]')!, "http://localhost:11434/v1"));
+    await act(async () => setInputValue(container.querySelector('input[aria-label="API key"]')!, "fixture-key"));
+    const fetchButton = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Fetch models") as HTMLButtonElement;
+    expect(fetchButton.disabled).toBe(false);
+    await act(async () => fetchButton.click());
+    expect(aiConnectionsApi.probeRoutingModels).toHaveBeenCalledWith("company", {
+      routing: expect.objectContaining({ kind: "local", protocol: "chat", auth: "bearer", baseUrl: "http://localhost:11434/v1" }),
+      apiKey: "fixture-key",
+    });
+    expect((container.querySelector('input[aria-label="Model IDs"]') as HTMLInputElement).value).toBe("qwen3-coder:30b, llama3.2:latest");
+    expect(container.textContent).toContain("Found 2 models.");
+  } finally {
+    await act(async () => root.unmount()); container.remove(); client.clear();
+  }
+});
+
+it("disables fetching until the local endpoint URL is present and surfaces probe failures", async () => {
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockRejectedValueOnce(new Error("The endpoint rejected the credentials."));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider><AiProviderSetup companyId="company" initialProvider="local" initialProtocol="chat" onCancel={() => {}} onComplete={() => {}} /></TooltipProvider></QueryClientProvider>));
+    await expandAccessDefaults(container);
+    await act(async () => setInputValue(container.querySelector('input[aria-label="API key"]')!, "fixture-key"));
+    const fetchButton = () => Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Fetch models") as HTMLButtonElement;
+    expect(fetchButton().disabled).toBe(true);
+    await act(async () => setInputValue(container.querySelector('input[aria-label="Provider URL"]')!, "http://localhost:11434/v1"));
+    expect(fetchButton().disabled).toBe(false);
+    await act(async () => fetchButton().click());
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("The endpoint rejected the credentials."));
+    expect((container.querySelector('input[aria-label="Model IDs"]') as HTMLInputElement).value).toBe("");
+  } finally {
+    await act(async () => root.unmount()); container.remove(); client.clear();
   }
 });

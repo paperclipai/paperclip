@@ -1,4 +1,5 @@
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
+import { probeAiRoutingModels } from "../services/ai-routing-models-probe.js";
 export { validateAiApiKey } from "../services/ai-api-key-test.js";
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
@@ -16,6 +17,7 @@ import {
 import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
+  aiRoutingModelsProbeSchema,
   localAiConnectionSchema,
   localAiLoginStartSchema,
   browserCodeSchema,
@@ -181,6 +183,21 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     if (req.actor.source !== "local_implicit")
       throw forbidden("Only the local operator can connect this machine's CLI account.");
   }
+  router.post("/companies/:companyId/ai-connections/probe-models", validate(aiRoutingModelsProbeSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const input = aiRoutingModelsProbeSchema.parse(req.body);
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const membership = req.actor.memberships?.find(
+      (m) => m.companyId === companyId && m.status === "active",
+    );
+    if (membership?.membershipRole === "viewer")
+      throw forbidden("Viewers cannot create AI connections");
+    const isLocalOperator =
+      req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ models: await probeAiRoutingModels(input.routing, input.apiKey ?? "", { isLocalOperator }) });
+  });
   router.post("/companies/:companyId/ai-connections/local/attempts", validate(localAiLoginStartSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const { restart, ...intent } = localAiLoginStartSchema.parse(req.body);

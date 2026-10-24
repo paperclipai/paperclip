@@ -613,7 +613,16 @@ OpenClaw Gateway, Hermes Gateway, Claude Managed, AWS AgentCore, Process, HTTP,
 and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
-catalog discovery for custom gateways are not part of this implementation.
+catalog discovery in the agent model picker for custom gateways are not part of
+this implementation. Connection setup does offer a **Fetch models** probe for
+custom gateway, local endpoint, and OpenRouter connections. The probe calls the
+configured endpoint's OpenAI-compatible model list (`GET {base URL}/models`)
+with the entered credential. It fills the connection's model ID field. Results
+are deduplicated, sorted, and capped at the routing schema's model limit. The
+read stops when the response passes 1 MiB. Local endpoint discovery runs on the
+Paperclip server's loopback, so only the local operator can use it. Gateway
+targets must resolve to public addresses. Bedrock has no compatible model list;
+enter its model IDs manually.
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
@@ -642,7 +651,10 @@ harness bypasses outgoing proxies for loopback broker/MCP calls. This bounds key
 from shell tools reading the configuration; it is not an OS isolation boundary
 against a process debugger running as the runner user.
 
-Only fixed official provider endpoints receive control-plane key checks. Custom
+Only fixed official provider endpoints receive control-plane key checks. The
+setup-time **Fetch models** probe is the one exception. It sends the entered key
+only to that connection's configured endpoint, to list models. It never stores
+the key outside the normal connection save. Custom
 endpoints and Bedrock are exercised by the selected harness in the selected
 execution environment, through **Run test**. Saving a custom connection records
 configuration; it is not proof that the model can respond. HTTPS is required for

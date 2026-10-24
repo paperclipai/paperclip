@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
 import {
   aiProviderRoutingSchema,
+  aiRoutingModelsProbeSchema,
   createAiConnectionSchema,
   type AiProvider,
   type AiProviderRouting,
@@ -170,26 +171,26 @@ export function AiProviderSetup({
       ...result,
     });
   };
+  const buildRouting = () =>
+    reconnect?.routing ??
+    aiProviderRoutingSchema.parse({
+      kind: provider,
+      protocol: provider === "bedrock" ? "bedrock" : protocol,
+      auth: provider === "openrouter" ? "bearer" : auth,
+      ...(provider === "bedrock"
+        ? { region }
+        : provider === "gateway" || provider === "local"
+          ? { baseUrl }
+          : {}),
+      models: models
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .map((id) => ({ id })),
+    });
   const save = useMutation({
-    mutationFn: () => {
-      const routing =
-        reconnect?.routing ??
-        aiProviderRoutingSchema.parse({
-          kind: provider,
-          protocol: provider === "bedrock" ? "bedrock" : protocol,
-          auth: provider === "openrouter" ? "bearer" : auth,
-          ...(provider === "bedrock"
-            ? { region }
-            : provider === "gateway" || provider === "local"
-              ? { baseUrl }
-              : {}),
-          models: models
-            .split(",")
-            .map((id) => id.trim())
-            .filter(Boolean)
-            .map((id) => ({ id })),
-        });
-      return aiConnectionsApi.create(
+    mutationFn: () =>
+      aiConnectionsApi.create(
         companyId,
         createAiConnectionSchema.parse({
           provider: nativeProvider,
@@ -199,14 +200,38 @@ export function AiProviderSetup({
           allAgents,
           agentIds: [...agentIds],
           connectionId: reconnect?.id,
-          routing,
+          routing: buildRouting(),
           ...(auth !== "none" ? { apiKey } : {}),
         }),
-      );
-    },
+      ),
     onSuccess: complete,
     onSettled: () => {
       setApiKey("");
+    },
+  });
+  const modelsProbeSupported =
+    !reconnect && (provider === "openrouter" || provider === "gateway" || provider === "local");
+  const modelsProbeReady =
+    modelsProbeSupported &&
+    (provider !== "gateway" && provider !== "local" || baseUrl.trim().length > 0) &&
+    (auth === "none" || apiKey.trim().length > 0);
+  /** Identity of the inputs a probe was started with; stale replies are dropped when it changes. */
+  const probeInputs = () => `${provider}|${protocol}|${auth}|${baseUrl.trim()}|${apiKey.trim()}`;
+  const fetchModels = useMutation({
+    mutationFn: async () => {
+      const inputs = probeInputs();
+      const result = await aiConnectionsApi.probeRoutingModels(
+        companyId,
+        aiRoutingModelsProbeSchema.parse({
+          routing: buildRouting(),
+          ...(auth !== "none" ? { apiKey } : {}),
+        }),
+      );
+      return { result, inputs };
+    },
+    onSuccess: ({ result, inputs }) => {
+      if (inputs !== probeInputs()) return;
+      setModels(result.models.map((m) => m.id).join(", "));
     },
   });
   const choices = (advancedOnly: boolean) => (
@@ -238,19 +263,50 @@ export function AiProviderSetup({
     />
   );
   const modelSettings = (
-    <label className="block space-y-2 text-xs text-muted-foreground">
-      Model IDs (comma separated)
-      <Input
-        aria-label="Model IDs"
-        value={models}
-        onChange={(e) => setModels(e.target.value)}
-        disabled={Boolean(reconnect)}
-      />
-      <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
-      </span>
-    </label>
+    <div className="space-y-3">
+      <label className="block space-y-2 text-xs text-muted-foreground">
+        Model IDs (comma separated)
+        <Input
+          aria-label="Model IDs"
+          value={models}
+          onChange={(e) => setModels(e.target.value)}
+          disabled={Boolean(reconnect)}
+        />
+        <span className="block">
+          Use the provider’s model ID or your gateway’s alias. You can
+          also enter one on the agent.
+        </span>
+      </label>
+      {modelsProbeSupported && (
+        <div className="space-y-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => fetchModels.mutate()}
+            disabled={!modelsProbeReady || fetchModels.isPending || save.isPending}
+          >
+            {fetchModels.isPending ? "Fetching…" : "Fetch models"}
+          </Button>
+          {fetchModels.isSuccess && fetchModels.data && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {fetchModels.data.result.models.length === 0
+                ? "The endpoint returned no models."
+                : `Found ${fetchModels.data.result.models.length} model${fetchModels.data.result.models.length === 1 ? "" : "s"}.`}
+            </p>
+          )}
+          {fetchModels.isError && (
+            <p role="alert" className="text-xs text-destructive">
+              {fetchModels.error instanceof Error && fetchModels.error.name === "ZodError"
+                ? "Check the URL, API format, and authentication fields."
+                : fetchModels.error instanceof Error
+                  ? fetchModels.error.message
+                  : "Could not fetch models."}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
   const accessDefaults = !reconnect ? (
     <ConnectionAccessDefaults

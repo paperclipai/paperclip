@@ -13,6 +13,7 @@ import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
   createAiConnectionSchema,
+  aiRoutingModelsProbeSchema,
   updateDecisionModelSchema,
   updatePromptInjectionPreventionSchema,
   updateAgentObservabilitySchema,
@@ -1410,6 +1411,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   ...browserUseOperations.map(([method, path]) => `${method.toUpperCase()} ${path}`),
   "GET /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections",
+  "POST /api/companies/{companyId}/ai-connections/probe-models",
   "POST /api/companies/{companyId}/ai-connections/local",
   "POST /api/companies/{companyId}/ai-connections/local/attempts",
   "POST /api/companies/{companyId}/ai-connections/local/check",
@@ -11095,6 +11097,15 @@ registerCurrentRoute({
   summary: "Validate and connect an AI API key, or reconnect its existing grant",
   body: createAiConnectionSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/probe-models",
+  tags: ["ai-connections"],
+  summary: "List model IDs from a local or gateway endpoint before the connection is saved",
+  body: aiRoutingModelsProbeSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 registerCurrentRoute({
