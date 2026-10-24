@@ -1,8 +1,8 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
-import { open as openFile } from "node:fs/promises";
+import { open as openFile, rename as renameFile, statfs as statfsFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
 import postgres from "postgres";
@@ -29,6 +29,31 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Free-space preflight multiplier applied to the live database size.
+   * Defaults to 3 (env: PAPERCLIP_BACKUP_FREE_SPACE_MULTIPLIER).
+   */
+  minFreeSpaceMultiplier?: number;
+  /**
+   * Absolute free-space floor in bytes. Defaults to 1 GiB
+   * (env: PAPERCLIP_BACKUP_MIN_FREE_BYTES). Set a larger host policy value
+   * (for example 15 GiB) on hosts that share the disk with other workloads.
+   */
+  minFreeBytes?: number;
+  /**
+   * Maximum compressed archive size in bytes. The dump is aborted cleanly when
+   * it is exceeded. Defaults to 8 GiB (env: PAPERCLIP_BACKUP_MAX_BYTES).
+   */
+  maxOutputBytes?: number;
+  /**
+   * Maximum wall-clock duration in seconds. The dump is aborted cleanly when it
+   * is exceeded. Defaults to 3600 (env: PAPERCLIP_BACKUP_MAX_SECONDS).
+   */
+  maxDurationSeconds?: number;
+  /** Test seam for free-space probes. */
+  freeSpaceBytes?: (directory: string) => Promise<number | null>;
+  /** Test seam for the guard poll interval. Defaults to 5000 ms. */
+  guardCheckIntervalMs?: number;
   /** Optional durability gate. A rejected archive must not prune history. */
   verifyBeforePrune?: (backupFile: string) => Promise<void>;
 };
@@ -74,6 +99,22 @@ const DEFAULT_BACKUP_WRITE_BUFFER_BYTES = 1024 * 1024;
 const BACKUP_DATA_CURSOR_ROWS = 100;
 const BACKUP_CLI_STDERR_BYTES = 64 * 1024;
 const BACKUP_BREAKPOINT_DETECT_BYTES = 64 * 1024;
+const DEFAULT_BACKUP_FREE_SPACE_MULTIPLIER = 3;
+const DEFAULT_BACKUP_MIN_FREE_BYTES = 1024 * 1024 * 1024; // 1 GiB host safety floor
+const DEFAULT_BACKUP_MAX_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB compressed
+const DEFAULT_BACKUP_MAX_SECONDS = 60 * 60; // 1 hour
+const BACKUP_GUARD_CHECK_INTERVAL_MS = 5_000;
+const BACKUP_VERIFY_TAIL_BYTES = 8 * 1024;
+const PG_DUMP_COMPLETION_MARKER = "-- PostgreSQL database dump complete";
+const PAPERCLIP_COMPLETION_MARKER = "-- Paperclip database backup complete";
+
+/** A guard failure (space, size, or time) must never trigger a retry/fallback. */
+export class BackupGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BackupGuardError";
+  }
+}
 
 const STATEMENT_BREAKPOINT = "-- paperclip statement breakpoint 69f6f3f1-42fd-46a6-bf17-d1d85f8f3900";
 
@@ -321,10 +362,232 @@ async function waitForChildExit(child: ReturnType<typeof spawn>, label: string):
   }
 }
 
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GiB`;
+}
+
+function readPositiveEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readNonNegativeEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+async function defaultFreeSpaceBytes(directory: string): Promise<number | null> {
+  try {
+    const stat = await statfsFile(directory, { bigint: true });
+    return Number(stat.bavail * stat.bsize);
+  } catch {
+    return null;
+  }
+}
+
+type BackupGuardConfig = {
+  minFreeSpaceMultiplier: number;
+  minFreeBytes: number;
+  maxOutputBytes: number;
+  maxDurationSeconds: number;
+  guardCheckIntervalMs: number;
+  freeSpaceBytes: (directory: string) => Promise<number | null>;
+};
+
+function resolveBackupGuardConfig(opts: RunDatabaseBackupOptions): BackupGuardConfig {
+  return {
+    minFreeSpaceMultiplier: opts.minFreeSpaceMultiplier
+      ?? readPositiveEnv("PAPERCLIP_BACKUP_FREE_SPACE_MULTIPLIER", DEFAULT_BACKUP_FREE_SPACE_MULTIPLIER),
+    minFreeBytes: opts.minFreeBytes
+      ?? readNonNegativeEnv("PAPERCLIP_BACKUP_MIN_FREE_BYTES", DEFAULT_BACKUP_MIN_FREE_BYTES),
+    maxOutputBytes: opts.maxOutputBytes
+      ?? readPositiveEnv("PAPERCLIP_BACKUP_MAX_BYTES", DEFAULT_BACKUP_MAX_BYTES),
+    maxDurationSeconds: opts.maxDurationSeconds
+      ?? readPositiveEnv("PAPERCLIP_BACKUP_MAX_SECONDS", DEFAULT_BACKUP_MAX_SECONDS),
+    guardCheckIntervalMs: Math.max(1, Math.trunc(opts.guardCheckIntervalMs ?? BACKUP_GUARD_CHECK_INTERVAL_MS)),
+    freeSpaceBytes: opts.freeSpaceBytes ?? defaultFreeSpaceBytes,
+  };
+}
+
+async function assertBackupHasFreeSpace(
+  sql: ReturnType<typeof postgres>,
+  backupDir: string,
+  guard: BackupGuardConfig,
+): Promise<void> {
+  const rows = await sql<{ bytes: number }[]>`
+    SELECT pg_database_size(current_database())::float8 AS bytes
+  `;
+  const databaseBytes = Math.max(0, Math.trunc(Number(rows[0]?.bytes ?? 0)));
+  const freeBytes = await guard.freeSpaceBytes(backupDir);
+  if (freeBytes === null) {
+    throw new BackupGuardError(
+      `Refusing to start backup: cannot determine free space in ${backupDir}. `,
+    );
+  }
+  const requiredBytes = Math.max(
+    Math.ceil(databaseBytes * guard.minFreeSpaceMultiplier),
+    guard.minFreeBytes,
+  );
+  if (freeBytes < requiredBytes) {
+    const floor = guard.minFreeBytes > 0 ? `, floor ${formatByteCount(guard.minFreeBytes)}` : "";
+    throw new BackupGuardError(
+      `Refusing to start backup: ${formatByteCount(freeBytes)} free in ${backupDir} is below the required `
+        + `${formatByteCount(requiredBytes)} (${guard.minFreeSpaceMultiplier}x database size `
+        + `${formatByteCount(databaseBytes)}${floor}). Free disk space before you retry.`,
+    );
+  }
+}
+
+function isDiskSpaceError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const record = error as Record<string, unknown>;
+  if (record.code === "ENOSPC") return true;
+  return /ENOSPC|no space left on device/i.test(typeof record.message === "string" ? record.message : "");
+}
+
+type BackupWatchdog = {
+  check(): void;
+  stop(): void;
+};
+
+/**
+ * One bounded watchdog for both engines. It aborts the dump when the archive
+ * grows past its limit, when the wall-clock budget runs out, or when the host
+ * runs out of free space. The dump is published only after a clean stop.
+ */
+function createBackupWatchdog(opts: {
+  partialFile: string;
+  guard: BackupGuardConfig;
+  onAbort: (reason: BackupGuardError) => void;
+}): BackupWatchdog {
+  const startedAtMs = Date.now();
+  let abortReason: BackupGuardError | null = null;
+  let checking = false;
+
+  const abort = (reason: BackupGuardError) => {
+    if (abortReason) return;
+    abortReason = reason;
+    try {
+      opts.onAbort(reason);
+    } catch {
+      // The caller still observes the abort reason through check().
+    }
+  };
+
+  const timeoutError = (elapsedSeconds: number) => new BackupGuardError(
+    `Database backup aborted after ${Math.round(elapsedSeconds)}s `
+      + `(limit ${opts.guard.maxDurationSeconds}s).`,
+  );
+  const sizeError = (archiveBytes: number) => new BackupGuardError(
+    `Database backup aborted: archive reached ${formatByteCount(archiveBytes)} `
+      + `(limit ${formatByteCount(opts.guard.maxOutputBytes)}).`,
+  );
+
+  const inspectSynchronousBounds = () => {
+    const elapsedSeconds = (Date.now() - startedAtMs) / 1000;
+    if (elapsedSeconds > opts.guard.maxDurationSeconds) {
+      const reason = timeoutError(elapsedSeconds);
+      abort(reason);
+      throw reason;
+    }
+    let archiveBytes = 0;
+    try {
+      archiveBytes = statSync(opts.partialFile).size;
+    } catch {
+      // The archive does not exist yet.
+    }
+    if (archiveBytes > opts.guard.maxOutputBytes) {
+      const reason = sizeError(archiveBytes);
+      abort(reason);
+      throw reason;
+    }
+  };
+
+  const inspect = async () => {
+    if (abortReason || checking) return;
+    checking = true;
+    try {
+      inspectSynchronousBounds();
+      const freeBytes = await opts.guard.freeSpaceBytes(dirname(opts.partialFile));
+      if (freeBytes !== null && freeBytes < opts.guard.minFreeBytes) {
+        abort(new BackupGuardError(
+          `Database backup aborted: only ${formatByteCount(freeBytes)} free `
+            + `(floor ${formatByteCount(opts.guard.minFreeBytes)}).`,
+        ));
+      }
+    } catch {
+      // A synchronous bound already recorded the abort reason.
+    } finally {
+      checking = false;
+    }
+  };
+
+  const timer = setInterval(() => {
+    void inspect();
+  }, opts.guard.guardCheckIntervalMs);
+  timer.unref?.();
+
+  return {
+    check() {
+      if (abortReason) throw abortReason;
+      inspectSynchronousBounds();
+    },
+    stop() {
+      clearInterval(timer);
+    },
+  };
+}
+
+/**
+ * Verify the compressed archive end to end: gzip must decompress without an
+ * error (this also validates the CRC) and the final SQL must carry a completion
+ * trailer. A killed or truncated dump never reaches the published filename.
+ */
+async function verifyBackupArchive(partialFile: string): Promise<void> {
+  const raw = createReadStream(partialFile);
+  const gunzip = createGunzip();
+  let tail = "";
+  try {
+    for await (const chunk of raw.pipe(gunzip)) {
+      tail += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+      if (tail.length > BACKUP_VERIFY_TAIL_BYTES) {
+        tail = tail.slice(-BACKUP_VERIFY_TAIL_BYTES);
+      }
+    }
+  } catch (error) {
+    throw new Error(
+      `Backup archive verification failed for ${basename(partialFile)}: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    raw.destroy();
+    gunzip.destroy();
+  }
+  if (!tail.includes(PG_DUMP_COMPLETION_MARKER) && !tail.includes(PAPERCLIP_COMPLETION_MARKER)) {
+    throw new Error(
+      `Backup archive verification failed for ${basename(partialFile)}: completion trailer is missing`,
+    );
+  }
+}
+
+async function publishBackupArchive(partialFile: string, backupFile: string): Promise<void> {
+  await verifyBackupArchive(partialFile);
+  await renameFile(partialFile, backupFile);
+}
+
 async function runPgDumpBackup(opts: {
   connectionString: string;
-  backupFile: string;
+  partialFile: string;
   connectTimeout: number;
+  guard: BackupGuardConfig;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -350,10 +613,42 @@ async function runPgDumpBackup(opts: {
     throw new Error("pg_dump did not expose stdout");
   }
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  let guardError: BackupGuardError | null = null;
+  const watchdog = createBackupWatchdog({
+    partialFile: opts.partialFile,
+    guard: opts.guard,
+    onAbort: (reason) => {
+      guardError = reason;
+      if (!child.killed) {
+        child.kill("SIGTERM");
+        const forceKill = setTimeout(() => {
+          if (!child.killed) child.kill("SIGKILL");
+        }, 5_000);
+        forceKill.unref?.();
+      }
+    },
+  });
+
+  const archiveWrite = pipeline(
+    child.stdout,
+    createGzip(),
+    createWriteStream(opts.partialFile),
+  );
+  // Observe the rejection immediately: an abort destroys the stream pair and
+  // the rejection must not surface as an unhandled rejection.
+  archiveWrite.catch(() => {});
+
+  try {
+    await Promise.all([archiveWrite, waitForChildExit(child, pgDumpBin)]);
+  } catch (error) {
+    child.kill("SIGKILL");
+    await archiveWrite.catch(() => {});
+    throw guardError ?? error;
+  } finally {
+    watchdog.stop();
+  }
+
+  if (guardError) throw guardError;
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -446,23 +741,27 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   }
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
-  const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
+type BufferedTextWriter = {
+  emit(line: string): void;
+  drain(): Promise<void>;
+  writeRaw(chunk: string | Buffer): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+};
+
+function createBufferedTextWriter(opts: {
+  writeChunk: (chunk: string | Buffer) => Promise<void>;
+  finish: () => Promise<void>;
+  abort: () => Promise<void>;
+  label: string;
+  maxBufferedBytes?: number;
+}): BufferedTextWriter {
+  const flushThreshold = Math.max(1, Math.trunc(opts.maxBufferedBytes ?? DEFAULT_BACKUP_WRITE_BUFFER_BYTES));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
   let firstChunk = true;
   let closed = false;
   let pendingWrite = Promise.resolve();
-
-  const writeChunk = async (chunk: string | Buffer): Promise<void> => {
-    const file = await filePromise;
-    if (typeof chunk === "string") {
-      await file.write(chunk, null, "utf8");
-    } else {
-      await file.write(chunk);
-    }
-  };
 
   const flushBufferedLines = () => {
     if (bufferedLines.length === 0) return;
@@ -472,13 +771,13 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
     const chunkBody = linesToWrite.join("\n");
     const chunk = firstChunk ? chunkBody : `\n${chunkBody}`;
     firstChunk = false;
-    pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+    pendingWrite = pendingWrite.then(() => opts.writeChunk(chunk));
   };
 
   return {
     emit(line: string) {
       if (closed) {
-        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+        throw new Error(`Cannot write to closed backup output: ${opts.label}`);
       }
       bufferedLines.push(line);
       bufferedBytes += Buffer.byteLength(line, "utf8") + 1;
@@ -488,18 +787,18 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
     },
     async drain() {
       if (closed) {
-        throw new Error(`Cannot drain closed backup file: ${filePath}`);
+        throw new Error(`Cannot drain closed backup output: ${opts.label}`);
       }
       flushBufferedLines();
       await pendingWrite;
     },
     async writeRaw(chunk: string | Buffer) {
       if (closed) {
-        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+        throw new Error(`Cannot write to closed backup output: ${opts.label}`);
       }
       flushBufferedLines();
       firstChunk = false;
-      pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+      pendingWrite = pendingWrite.then(() => opts.writeChunk(chunk));
       await pendingWrite;
     },
     async close() {
@@ -507,8 +806,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       closed = true;
       flushBufferedLines();
       await pendingWrite;
-      const file = await filePromise;
-      await file.close();
+      await opts.finish();
     },
     async abort() {
       if (closed) return;
@@ -516,6 +814,30 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedLines = [];
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
+      await opts.abort().catch(() => {});
+    },
+  };
+}
+
+/** File-backed writer used by tests and by callers that need a plain SQL file. */
+export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+  const filePromise = openFile(filePath, "w");
+  return createBufferedTextWriter({
+    label: filePath,
+    maxBufferedBytes,
+    writeChunk: async (chunk) => {
+      const file = await filePromise;
+      if (typeof chunk === "string") {
+        await file.write(chunk, null, "utf8");
+      } else {
+        await file.write(chunk);
+      }
+    },
+    finish: async () => {
+      const file = await filePromise;
+      await file.close();
+    },
+    abort: async () => {
       await filePromise.then((file) => file.close()).catch(() => {});
       if (existsSync(filePath)) {
         try {
@@ -525,7 +847,35 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
         }
       }
     },
-  };
+  });
+}
+
+/** Streaming writer: SQL is gzipped as it is produced; no plain .sql file exists. */
+function createBufferedGzipWriter(
+  gzipStream: ReturnType<typeof createGzip>,
+  label: string,
+  maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES,
+): BufferedTextWriter {
+  return createBufferedTextWriter({
+    label,
+    maxBufferedBytes,
+    writeChunk: (chunk) => new Promise<void>((resolve, reject) => {
+      gzipStream.write(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    }),
+    finish: () => new Promise<void>((resolve, reject) => {
+      gzipStream.once("error", reject);
+      gzipStream.end(() => {
+        gzipStream.off("error", reject);
+        resolve();
+      });
+    }),
+    abort: async () => {
+      gzipStream.destroy();
+    },
+  });
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
@@ -548,25 +898,39 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   // Initial and final sleep checks can run within the same second. A failed
   // second checkpoint must never overwrite the first verified recovery point.
   const checkpointSuffix = opts.verifyBeforePrune ? `-${randomUUID()}` : "";
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql`);
-  const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}${checkpointSuffix}.sql.gz`);
+  // Never write directly to the published filename. A killed dump leaves only
+  // a .partial file, which retention can identify without inspecting contents.
+  const partialFile = `${backupFile}.partial`;
+  const guard = resolveBackupGuardConfig(opts);
+  let writer: BufferedTextWriter | null = null;
+  let gzipPipeline: Promise<void> | null = null;
+  let watchdog: BackupWatchdog | null = null;
 
   try {
+    await sql`SELECT 1`;
+    await assertBackupHasFreeSpace(sql, opts.backupDir, guard);
+
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
-      await sql`SELECT 1`;
       let dumped = false;
       try {
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          partialFile,
           connectTimeout,
+          guard,
         });
+        await publishBackupArchive(partialFile, backupFile);
         dumped = true;
       } catch (error) {
-        if (existsSync(backupFile)) {
-          try { unlinkSync(backupFile); } catch { /* ignore */ }
+        if (existsSync(partialFile)) {
+          try { unlinkSync(partialFile); } catch { /* ignore */ }
+        }
+        // A guard abort or a full disk must never trigger the slower JavaScript
+        // retry: the correct action is to stop and keep the host responsive.
+        if (error instanceof BackupGuardError || isDiskSpaceError(error)) {
+          throw error;
         }
         if (backupEngine === "pg_dump") {
           throw error;
@@ -576,10 +940,6 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         sqlClosed = false;
       }
       if (dumped) {
-        // Only an engine failure can select the JavaScript fallback. Once
-        // pg_dump succeeds, archive verification or persistence failures
-        // must retain their original error and must not reuse a closed writer.
-        await writer.abort();
         const sizeBytes = statSync(backupFile).size;
         await opts.verifyBeforePrune?.(backupFile);
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -589,7 +949,29 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     await sql`SELECT 1`;
 
-    const emit = (line: string) => writer.emit(line);
+    // JavaScript fallback: compress while producing SQL. The old path wrote a
+    // full plain .sql file first, which is what consumed 16.6 GB in 3 minutes.
+    const gzipStream = createGzip();
+    gzipPipeline = pipeline(gzipStream, createWriteStream(partialFile));
+    // Observe the rejection immediately so an abort does not surface as an
+    // unhandled rejection before the backup catch block awaits it.
+    gzipPipeline.catch(() => {});
+    const jsWriter = createBufferedGzipWriter(gzipStream, partialFile);
+    writer = jsWriter;
+    const jsWatchdog = createBackupWatchdog({
+      partialFile,
+      guard,
+      onAbort: () => {
+        gzipStream.destroy();
+      },
+    });
+    watchdog = jsWatchdog;
+    const checkGuard = () => jsWatchdog.check();
+
+    const emit = (line: string) => {
+      checkGuard();
+      jsWriter.emit(line);
+    };
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -971,23 +1353,25 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const colNames = cols.map((c) => `"${c.column_name}"`).join(", ");
 
       emit(`-- Data for: ${schema_name}.${tablename} (${count[0]!.n} rows)`);
+      checkGuard();
 
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
       if (effectiveBackupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
+        await jsWriter.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+            checkGuard();
+            await jsWriter.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
           await copySql.end();
         }
-        await writer.writeRaw("\\.\n");
+        await jsWriter.writeRaw("\\.\n");
         emitStatementBoundary();
         emit("");
         continue;
@@ -998,13 +1382,14 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
+        checkGuard();
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
           );
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames})${overrideIdentity ? " OVERRIDING SYSTEM VALUE" : ""} VALUES (${values.join(", ")});`);
         }
-        await writer.drain();
+        await jsWriter.drain();
       }
       emit("");
     }
@@ -1056,14 +1441,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     emitStatement("COMMIT;");
     emit("");
+    emit(PAPERCLIP_COMPLETION_MARKER);
 
-    await writer.close();
-
-    // Compress the SQL file with gzip
-    const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
+    await jsWriter.close();
+    await gzipPipeline;
+    jsWatchdog.stop();
+    await publishBackupArchive(partialFile, backupFile);
 
     const sizeBytes = statSync(backupFile).size;
     await opts.verifyBeforePrune?.(backupFile);
@@ -1075,12 +1458,16 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       prunedCount,
     };
   } catch (error) {
-    await writer.abort();
+    await writer?.abort();
+    if (gzipPipeline) {
+      await gzipPipeline.catch(() => {});
+    }
+    watchdog?.stop();
+    if (existsSync(partialFile)) {
+      try { unlinkSync(partialFile); } catch { /* ignore */ }
+    }
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
-    }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {
