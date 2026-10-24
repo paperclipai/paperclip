@@ -119,3 +119,44 @@ describe("http adapter execute", () => {
     expect(result.errorMessage).toContain("timed out after 1ms");
   });
 });
+
+describe("http adapter x-paperclip-run-id header", () => {
+  function makeCtx(runId: string, headers?: Record<string, string>) {
+    return {
+      runId,
+      agent: { id: "agent-1", companyId: "company-1", name: "Agent", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/webhook", ...(headers ? { headers } : {}) },
+      context: {},
+      onLog: async () => {},
+    };
+  }
+
+  async function sentHeaders(ctx: ReturnType<typeof makeCtx>) {
+    guardedFetchMock.mockResolvedValue(new Response(null, { status: 204 }));
+    await execute(ctx);
+    const [, init] = guardedFetchMock.mock.calls[0] as [string, RequestInit];
+    return new Headers(init.headers);
+  }
+
+  it("injects the run id", async () => {
+    expect((await sentHeaders(makeCtx("run-abc-456"))).get("x-paperclip-run-id")).toBe("run-abc-456");
+  });
+
+  it("sends an empty run id as an empty header rather than omitting it", async () => {
+    expect((await sentHeaders(makeCtx(""))).get("x-paperclip-run-id")).toBe("");
+  });
+
+  it("does not let configured headers override the run id", async () => {
+    const sent = await sentHeaders(makeCtx("run-real-id", { "x-paperclip-run-id": "spoofed-id" }));
+    expect(sent.get("x-paperclip-run-id")).toBe("run-real-id");
+  });
+
+  it("drops a configured run id header regardless of case and keeps other headers", async () => {
+    const sent = await sentHeaders(
+      makeCtx("run-real-id", { "X-Paperclip-Run-Id": "spoofed-id", "x-other": "kept" }),
+    );
+    expect(sent.get("x-paperclip-run-id")).toBe("run-real-id");
+    expect(sent.get("x-other")).toBe("kept");
+  });
+});
