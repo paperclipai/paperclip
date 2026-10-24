@@ -1286,6 +1286,16 @@ If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs f
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
 
+For `pi_local`, **Test your agent** uses the same `PAPERCLIP_PI_PROVIDERS`
+configuration as an agent run. It prepares a temporary `models.json` for local
+model discovery and the hello probe, or stages that configuration in a remote
+execution target. Each remote probe uses its own disposable configuration
+directory. The test removes its temporary local and remote configuration when
+it finishes, including after an upload or probe failure, and preserves the
+operator's static `PI_CODING_AGENT_DIR` profile and working directory.
+If remote cleanup fails, the result keeps the completed probe checks and adds
+a warning with the temporary directory to remove in that environment.
+
 ### Filesystem access boundary (2026-10-20)
 
 Filesystem isolation belongs to the OS, execution environment, and storage layout.
