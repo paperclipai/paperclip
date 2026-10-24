@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runBoundedShutdownStep,
 } from "./shutdown.js";
 
 function deferred<T = void>() {
@@ -336,6 +338,133 @@ describe("drainRunExecutionFinalizersForShutdown", () => {
         expect.objectContaining({ timeoutMs: 250 }),
         expect.stringContaining("timed out"),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("runBoundedShutdownStep", () => {
+  it("returns the step value and logs its duration", async () => {
+    const log = stubLogger();
+    await expect(runBoundedShutdownStep({
+      step: "delivery_work_stop",
+      signal: "SIGTERM",
+      timeoutMs: 1_000,
+      run: async () => "stopped",
+      log,
+    })).resolves.toMatchObject({ outcome: "completed", value: "stopped" });
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ step: "delivery_work_stop", signal: "SIGTERM", durationMs: expect.any(Number) }),
+      "shutdown step completed",
+    );
+  });
+
+  it("stops waiting for a step that outlives its bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const pending = runBoundedShutdownStep({
+        step: "scheduler_idle",
+        signal: "SIGTERM",
+        timeoutMs: 250,
+        run: () => new Promise<void>(() => undefined),
+        log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ step: "scheduler_idle", timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs a step that rejects and does not reject the shutdown", async () => {
+    const log = stubLogger();
+    const error = new Error("skill sync stop failed");
+    await expect(runBoundedShutdownStep({
+      step: "skill_source_sync_stop",
+      signal: "SIGINT",
+      timeoutMs: 1_000,
+      run: async () => { throw error; },
+      log,
+    })).resolves.toMatchObject({ outcome: "failed", error });
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ step: "skill_source_sync_stop", err: error }),
+      expect.stringContaining("failed"),
+    );
+  });
+
+  it("contains a step that throws synchronously", async () => {
+    const result = await runBoundedShutdownStep({
+      step: "systemd_notify",
+      signal: "SIGTERM",
+      timeoutMs: 1_000,
+      run: () => { throw new Error("spawn failed"); },
+      log: stubLogger(),
+    });
+    expect(result.outcome).toBe("failed");
+  });
+});
+
+describe("createPreDrainShutdownBudget", () => {
+  it("gives each step only the time that is left in the shared budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 1_000, log });
+      const first = budget.run("skill_source_sync_stop", () =>
+        new Promise<void>((resolve) => setTimeout(resolve, 700)));
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(first).resolves.toMatchObject({ outcome: "completed" });
+
+      const second = budget.run("scheduler_idle", () => new Promise<void>(() => undefined));
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(second).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ step: "scheduler_idle", timeoutMs: 300 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reaches the run drain within the budget when every pre-drain step hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 1_000, log: stubLogger() });
+      const hang = () => new Promise<void>(() => undefined);
+      const drain = vi.fn(async () => ({ interrupted: 1 }));
+      const shutdown = (async () => {
+        await budget.run("skill_source_sync_stop", hang);
+        await budget.run("delivery_work_stop", hang);
+        await coordinateHeartbeatSchedulerShutdown({
+          signal: "SIGTERM",
+          prepareHotRestartShutdown: async () => {
+            const preparation = await budget.run("hot_restart_prepare", () =>
+              new Promise<{ skipDrain: boolean }>(() => undefined));
+            if (preparation.outcome === "completed") return preparation.value;
+            throw new Error("hot-restart shutdown preparation timed out");
+          },
+          waitForHeartbeatSchedulerIdle: async () => {
+            await budget.run("scheduler_idle", hang);
+          },
+        });
+        return drain();
+      })();
+
+      const startedAt = Date.now();
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Steps that start at the deadline get a zero bound. Timers clamp zero
+      // to one millisecond, so the clock can move a few milliseconds more.
+      await vi.runAllTimersAsync();
+      await expect(shutdown).resolves.toEqual({ interrupted: 1 });
+      expect(drain).toHaveBeenCalledOnce();
+      expect(Date.now() - startedAt).toBeLessThan(1_010);
     } finally {
       vi.useRealTimers();
     }

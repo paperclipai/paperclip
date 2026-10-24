@@ -154,9 +154,11 @@ import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent
 import {
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runBoundedShutdownStep,
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
@@ -2081,7 +2083,13 @@ async function startServerWithDatabaseTeardown(
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
-    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+    const shutdownStartedAt = Date.now();
+    logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
+    // Every step before the run drain shares one bounded budget, so a slow
+    // step cannot hold the drain until the platform sends SIGKILL.
+    const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
+    await preDrain.run("systemd_notify", () =>
+      systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;
     clearInterval(skillVersionRetentionInterval);
     clearTimeout(skillVersionRetentionStartup);
@@ -2089,10 +2097,10 @@ async function startServerWithDatabaseTeardown(
     clearInterval(nativeHarnessBackupExpirationInterval);
     clearTimeout(nativeHarnessBackupExpirationStartup);
     clearTimeout(nativeHarnessBackupExpirationContinuation);
-    await skillVersionRetention.dispose();
-    await skillSourceSync.stop();
+    await preDrain.run("skill_version_retention_dispose", () => skillVersionRetention.dispose());
+    await preDrain.run("skill_source_sync_stop", () => skillSourceSync.stop());
     unsubscribeChatCompletions();
-    await deliveryWork.stop();
+    await preDrain.run("delivery_work_stop", () => deliveryWork.stop());
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
     if (heartbeatSchedulerInterval) {
@@ -2100,10 +2108,23 @@ async function startServerWithDatabaseTeardown(
       heartbeatSchedulerInterval = null;
     }
 
+    const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
-      prepareHotRestartShutdown,
-      waitForHeartbeatSchedulerIdle,
+      // A preparation that times out falls back to the graceful drain, the
+      // same as a preparation that fails.
+      prepareHotRestartShutdown: prepareHotRestart
+        ? async (preparationSignal) => {
+          const preparation = await preDrain.run("hot_restart_prepare", () =>
+            prepareHotRestart(preparationSignal));
+          if (preparation.outcome === "completed") return preparation.value;
+          if (preparation.outcome === "failed") throw preparation.error;
+          throw new Error("hot-restart shutdown preparation timed out");
+        }
+        : null,
+      waitForHeartbeatSchedulerIdle: async () => {
+        await preDrain.run("scheduler_idle", waitForHeartbeatSchedulerIdle);
+      },
     });
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
@@ -2119,16 +2140,18 @@ async function startServerWithDatabaseTeardown(
       );
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
-      await telemetryClient.flush();
-    }
-
     if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
+      const drainStartedAt = Date.now();
+      logger.info(
+        { signal, sinceSignalMs: drainStartedAt - shutdownStartedAt },
+        "starting graceful heartbeat run drain",
+      );
       try {
         const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
-        logger.info({ signal, drain }, "graceful heartbeat run drain complete");
+        logger.info(
+          { signal, drain, durationMs: Date.now() - drainStartedAt },
+          "graceful heartbeat run drain complete",
+        );
       } catch (err) {
         logger.error({ err, signal }, "graceful heartbeat run drain failed");
       }
@@ -2139,6 +2162,20 @@ async function startServerWithDatabaseTeardown(
         signal,
         drain: drainHeartbeatExecutionFinalizers,
         timeoutMs: 30_000,
+        log: logger,
+      });
+    }
+
+    // The telemetry flush protects no run, so it runs after the drain and has
+    // its own bound.
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await runBoundedShutdownStep({
+        step: "telemetry_flush",
+        signal,
+        timeoutMs: 5_000,
+        run: () => telemetryClient.flush(),
         log: logger,
       });
     }
