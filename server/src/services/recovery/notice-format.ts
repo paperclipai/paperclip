@@ -9,6 +9,14 @@ export function metadataText(value: unknown, fallback = "unknown") {
   return resolved.length > 2000 ? `${resolved.slice(0, 1997)}...` : resolved;
 }
 
+export function boundedMetadataTitle(value: unknown, maxLength: number, fallback = "unknown") {
+  const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
+  const resolved = text.length > 0 ? text : fallback;
+  if (resolved.length <= maxLength) return resolved;
+  if (maxLength <= 3) return resolved.slice(0, maxLength);
+  return `${resolved.slice(0, maxLength - 3)}...`;
+}
+
 export function keyValueRow(label: string, value: unknown): NoticeMetadataRow {
   return { type: "key_value", label, value: metadataText(value) };
 }
@@ -23,7 +31,7 @@ export function issueLinkRow(
     label,
     issueId: issue.id,
     identifier: issue.identifier,
-    title: issue.title,
+    title: boundedMetadataTitle(issue.title, 240),
   };
 }
 
@@ -37,7 +45,7 @@ export function runLinkRow(
     label,
     runId: run.id,
     ...(run.agentId ? { agentId: run.agentId } : {}),
-    title: run.status,
+    title: boundedMetadataTitle(run.status, 160),
   };
 }
 
@@ -46,12 +54,13 @@ export function agentLinkRow(
   agent: { id: string; name: string | null } | null | undefined,
 ): NoticeMetadataRow {
   if (!agent) return keyValueRow(label, "unknown");
+  const name = typeof agent.name === "string" ? agent.name.trim() : "";
   return {
     type: "agent_link",
     label,
     agentId: agent.id,
     // Issue-comment metadata constrains link names to 160 characters.
-    name: agent.name?.slice(0, 160) ?? null,
+    name: name.length > 0 ? boundedMetadataTitle(name, 160) : null,
   };
 }
 
