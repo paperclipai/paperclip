@@ -11,7 +11,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { MODEL_PREFIX_PROVIDER_HINTS, VALID_PROVIDERS } from "../shared/constants.js";
+import {
+  HERMES_PROVIDER_ID_REGEX,
+  MODEL_PREFIX_PROVIDER_HINTS,
+  VALID_PROVIDERS,
+} from "../shared/constants.js";
 
 export interface DetectedModel {
   /** Model name from config (e.g. "gpt-5.4", "anthropic/claude-sonnet-4") */
@@ -160,8 +164,10 @@ export function resolveProvider(options: {
     model,
   } = options;
 
-  // 1. Explicit provider from adapterConfig — user override, always wins
-  if (explicitProvider && (VALID_PROVIDERS as readonly string[]).includes(explicitProvider)) {
+  // 1. Explicit provider from adapterConfig — user override, always wins.
+  //    Not limited to VALID_PROVIDERS: Hermes also accepts newer built-ins and
+  //    named custom providers (custom:<name>) and validates them itself.
+  if (explicitProvider && HERMES_PROVIDER_ID_REGEX.test(explicitProvider)) {
     return { provider: explicitProvider, resolvedFrom: "adapterConfig" };
   }
 

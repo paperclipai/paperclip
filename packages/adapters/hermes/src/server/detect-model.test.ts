@@ -90,6 +90,40 @@ test("resolveProvider still infers from the requested model when Hermes config i
   });
 });
 
+test("resolveProvider honors an explicit named custom provider even when Hermes config is for a different model", () => {
+  expect(resolveProvider({
+    explicitProvider: "custom:spark-local",
+    detectedProvider: "anthropic",
+    detectedModel: "claude-sonnet-4",
+    model: "spark2.5",
+  })).toEqual({
+    provider: "custom:spark-local",
+    resolvedFrom: "adapterConfig",
+  });
+});
+
+test("resolveProvider honors explicit Hermes built-in providers outside the suggested list", () => {
+  expect(resolveProvider({
+    explicitProvider: "deepseek",
+    model: "deepseek-v4-pro",
+  })).toEqual({
+    provider: "deepseek",
+    resolvedFrom: "adapterConfig",
+  });
+});
+
+test("resolveProvider ignores malformed explicit providers instead of passing them as CLI args", () => {
+  for (const explicitProvider of ["--yolo", "custom: spark", "custom:"]) {
+    expect(resolveProvider({
+      explicitProvider,
+      model: "claude-sonnet-4",
+    })).toEqual({
+      provider: "anthropic",
+      resolvedFrom: "modelInference",
+    });
+  }
+});
+
 async function withHermesHomeConfig(
   configLines: string[],
   fn: () => Promise<void>,

@@ -28,8 +28,13 @@ export const DEFAULT_GRACE_SEC = 10;
 export const DEFAULT_MODEL = "auto";
 
 /**
- * Valid --provider choices for the hermes CLI.
- * Must stay in sync with `hermes chat --help`.
+ * Well-known --provider values for the hermes CLI, offered as suggestions in
+ * the UI and trusted when read back from ~/.hermes/config.yaml.
+ *
+ * This is not an exhaustive allowlist: `hermes chat --provider` has no fixed
+ * choices and also accepts user-defined providers from the `providers:`
+ * section of config.yaml (addressed as `custom:<name>`), validating the value
+ * at runtime. See HERMES_PROVIDER_ID_REGEX for what an explicit override may be.
  */
 export const VALID_PROVIDERS = [
   "auto",
@@ -46,6 +51,13 @@ export const VALID_PROVIDERS = [
   "minimax-cn",
   "kilocode",
 ] as const;
+
+/**
+ * Shape of a provider id that can be passed to `hermes --provider`: a built-in
+ * slug (e.g. "deepseek") or a named custom provider (e.g. "custom:local-vllm").
+ * Rejects whitespace and leading dashes so the value can never be read as a flag.
+ */
+export const HERMES_PROVIDER_ID_REGEX = /^[a-z0-9][a-z0-9._-]*(?::[a-z0-9][a-z0-9._-]*)?$/i;
 
 /**
  * Model-name prefix → provider hint mapping.

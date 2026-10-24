@@ -221,9 +221,22 @@ Create issues in Paperclip and assign them to your Hermes agent. On each heartbe
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `model` | string | `anthropic/claude-sonnet-4` | Model in `provider/model` format |
-| `provider` | string | *(auto-detected)* | API provider: `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `minimax-cn` |
+| `provider` | string | *(auto-detected)* | Any Hermes provider id, e.g. `auto`, `openrouter`, `nous`, `openai-codex`, `zai`, `kimi-coding`, `minimax`, `deepseek`, or `custom:<name>` for a provider defined in `~/.hermes/config.yaml` (see below) |
 | `timeoutSec` | number | `300` | Execution timeout in seconds |
 | `graceSec` | number | `10` | Grace period before SIGKILL |
+
+#### Custom providers
+
+To run an agent against any OpenAI-compatible endpoint (a self-hosted vLLM/SGLang server, an internal gateway, a regional provider), define it under `providers:` in `~/.hermes/config.yaml`:
+
+```yaml
+providers:
+  spark-local:
+    base_url: http://localhost:30000/v1
+    key_env: SPARK_LOCAL_API_KEY
+```
+
+Then set `provider` to `custom:spark-local` and `model` to the served model name (here `spark2.5`). The adapter passes it to `hermes --provider` as-is, so the agent's model can differ from the default in `config.yaml`.
 
 ### Tools
 
