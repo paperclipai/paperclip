@@ -414,6 +414,7 @@ export function pluginManagedAgentService(
     const updated = await agentSvc.update(agent.id, {
       adapterConfig,
     }, {
+      allowPendingApprovalConfigUpdate: true,
       recordRevision: {
         source: `plugin:${optionsForRevisionSource()}:managed-agent-instructions`,
       },
