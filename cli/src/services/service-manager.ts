@@ -141,6 +141,14 @@ Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
 WorkingDirectory=%h
 Restart=always
 RestartSec=5
+# Signal only the server on a stop. The default control-group mode sends
+# SIGTERM to every process in the cgroup at once, including the embedded
+# PostgreSQL and the adapter children, so the server's graceful run drain
+# races the database teardown and loses the runs it is trying to record.
+# With mixed mode the server drains its runs (and stops the database itself)
+# while systemd keeps the children alive, then force-kills whatever is left
+# after TimeoutStopSec if the drain hangs.
+KillMode=mixed
 TimeoutStopSec=300
 
 [Install]

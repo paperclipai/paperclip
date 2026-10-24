@@ -266,6 +266,43 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(second.deps.appendRunEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("moves an existing pending transient successor into the shutdown lane", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const { retries } = boundRetries();
+    const scheduled = await retries.scheduleBoundedRetryForRun(run, agent, { now, random: () => 0 });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected retry");
+    const retryId = scheduled.run.id;
+
+    const [interrupted] = await db.update(heartbeatRuns)
+      .set({ status: "interrupted", errorCode: "server_shutdown_interrupted", error: "Stopped" })
+      .where(eq(heartbeatRuns.id, run.id))
+      .returning();
+    const retargeted = await retries.scheduleBoundedRetryForRun(interrupted, agent, {
+      now,
+      retryReason: "server_shutdown_retry",
+      wakeReason: "server_shutdown_retry",
+    });
+
+    expect(retargeted).toMatchObject({ outcome: "scheduled", reusedExisting: true, run: { id: retryId } });
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, run.id)));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({
+      id: retryId,
+      status: "scheduled_retry",
+      scheduledRetryReason: "server_shutdown_retry",
+      scheduledRetryAttempt: 1,
+    });
+    expect(successors[0].contextSnapshot).toMatchObject({
+      issueId: issue.id,
+      retryReason: "server_shutdown_retry",
+      wakeReason: "server_shutdown_retry",
+      executionRetryAccounting: expect.objectContaining({ failureRetries: 0, shutdownRetries: 1 }),
+    });
+    const [wakeup] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, retryId));
+    expect(wakeup).toMatchObject({ reason: "server_shutdown_retry" });
+  });
+
   it("promotes only due retries and publishes after commit", async () => {
     const { run } = await fixture();
     const { retries, deps } = boundRetries();

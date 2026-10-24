@@ -34,6 +34,10 @@ describe("service definition generation", () => {
     expect(unit).toContain('ExecStart="/home/alice/.local/bin/paperclipai" run --instance "team-a"');
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("TimeoutStopSec=300");
+    // Keep the embedded database and adapter children out of the initial
+    // SIGTERM so the server can drain in-flight runs against a live database.
+    expect(unit).toContain("KillMode=mixed");
+    expect(unit).not.toContain("KillMode=control-group");
     expect(unit).not.toContain("API_KEY");
   });
 

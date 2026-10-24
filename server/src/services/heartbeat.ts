@@ -74,6 +74,7 @@ import {
   createHeartbeatRecovery,
 } from "./heartbeat/recovery.js";
 import {
+  BOUNDED_SHUTDOWN_RETRY_MAX_ATTEMPTS,
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   isWorkspaceBusyDeferral,
   createHeartbeatRetries,
@@ -281,7 +282,12 @@ import {
   adapterExecutionControls,
   createAdapterExecutionControl,
 } from "./adapter-execution-control.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import {
+  executionFailureRetryCount,
+  executionRetryAttemptCount,
+  SERVER_SHUTDOWN_RETRY_REASON,
+  SERVER_SHUTDOWN_RETRY_WAKE_REASON,
+} from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -956,15 +962,29 @@ export function heartbeatService(
       if (!run) return null;
       const agent = await getAgent(run.agentId);
       if (!agent || agent.companyId !== run.companyId) return null;
-      const result = await scheduleBoundedRetryForRun(run, agent);
+      const shutdownInterrupted =
+        run.errorCode === "server_shutdown_interrupted";
+      const result = await scheduleBoundedRetryForRun(run, agent, {
+        ...(shutdownInterrupted
+          ? {
+              retryReason: SERVER_SHUTDOWN_RETRY_REASON,
+              wakeReason: SERVER_SHUTDOWN_RETRY_WAKE_REASON,
+            }
+          : {}),
+      });
       return result.outcome === "scheduled" ? result.run : null;
     },
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
     // or interrupted run that has already consumed every bounded transient
-    // attempt cannot be retried again through this lane.
+    // attempt cannot be retried again through this lane. A service-stop
+    // interruption has its own single-attempt lane, so it must not fall back
+    // into the failure budget when another stop interrupts that retry.
     transientRetryBudgetSpent: (run) =>
-      executionFailureRetryCount(run) >=
-      BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+      run.errorCode === "server_shutdown_interrupted"
+        ? executionRetryAttemptCount(run, SERVER_SHUTDOWN_RETRY_REASON) >=
+          BOUNDED_SHUTDOWN_RETRY_MAX_ATTEMPTS
+        : executionFailureRetryCount(run) >=
+          BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   });
   const runDispatch = createRunDispatch(db);
   const {
@@ -1006,6 +1026,8 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
+    captureShutdownSnapshot,
+    reconcileShutdownSnapshot,
   } = createHeartbeatRecovery(db, {
     pluginWorkerManager: options.pluginWorkerManager,
     enterShutdown: () => { shutdownInProgress = true; },
@@ -4067,6 +4089,8 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     sweepPendingCleanupLeases,
+    captureShutdownSnapshot,
+    reconcileShutdownSnapshot,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.
