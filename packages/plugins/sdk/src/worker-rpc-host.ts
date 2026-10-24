@@ -252,6 +252,8 @@ function canonicalize(value: unknown): string {
   return `{${entries.join(",")}}`;
 }
 
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([204, 205, 304]);
+
 export function isWorkerEntrypoint(entry: string, moduleUrl: string): boolean {
   const thisFile = realpathOrResolvedPath(fileURLToPath(moduleUrl));
   const entryPath = realpathOrResolvedPath(entry);
@@ -634,7 +636,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           });
 
           // Reconstruct a Response-like object from the serialized result
-          return new Response(result.body, {
+          return new Response(NULL_BODY_STATUSES.has(result.status) ? null : result.body ?? null, {
             status: result.status,
             statusText: result.statusText,
             headers: result.headers,
