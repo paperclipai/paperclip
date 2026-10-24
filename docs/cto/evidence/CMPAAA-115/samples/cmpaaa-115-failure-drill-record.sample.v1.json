@@ -1,0 +1,29 @@
+{
+  "sample_id": "TB-DRILL-0001",
+  "candidate_id": "cand-20260501-0001",
+  "run_id": "exp-run-20260501-0001",
+  "lineage_id": "lineage-exp-run-20260501-0001",
+  "traceback_request_id": "trace-20260501-0001",
+  "checked_at": "2026-05-01T01:00:00Z",
+  "traceback_status": "failed",
+  "missing_lineage_fields": [
+    "feature_snapshot_id"
+  ],
+  "root_cause_category": "lineage-field-missing",
+  "source_gate_decision_id": "dec-20260501-lg-0001",
+  "audit_evidence_refs": [
+    "lineage://lineage-exp-run-20260501-0001",
+    "run://exp-run-20260501-0001",
+    "traceback://trace-20260501-0001"
+  ],
+  "alert_id": "rksalrt-cmpaaa115-0001",
+  "alert_priority": "P1",
+  "alert_trigger_code": "LINEAGE_MISSING_RATE_BREACH",
+  "escalation_receiver": "risk-oncall",
+  "escalation_target_minutes": 30,
+  "escalation_sent_at": "2026-05-01T01:02:00Z",
+  "escalation_acknowledged_at": "2026-05-01T01:07:00Z",
+  "mitigation_started_at": "2026-05-01T01:12:00Z",
+  "resolved_at": "2026-05-01T01:24:00Z",
+  "handling_latency_minutes": 22
+}
