@@ -1,6 +1,5 @@
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
@@ -407,14 +406,34 @@ async function hasStatementBreakpoints(backupFile: string): Promise<boolean> {
   }
 }
 
+async function* readLineFeedDelimitedLines(stream: AsyncIterable<string | Buffer>): AsyncGenerator<string> {
+  let lineFragments: string[] = [];
+
+  for await (const chunk of stream) {
+    const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk;
+    let fragmentStart = 0;
+    let newlineIndex = text.indexOf("\n");
+    while (newlineIndex !== -1) {
+      lineFragments.push(text.slice(fragmentStart, newlineIndex));
+      yield lineFragments.join("");
+      lineFragments = [];
+      fragmentStart = newlineIndex + 1;
+      newlineIndex = text.indexOf("\n", fragmentStart);
+    }
+    if (fragmentStart < text.length) {
+      lineFragments.push(text.slice(fragmentStart));
+    }
+  }
+
+  if (lineFragments.length > 0) {
+    yield lineFragments.join("");
+  }
+}
+
 async function* readRestoreStatements(backupFile: string): AsyncGenerator<string> {
   const raw = createReadStream(backupFile);
   const stream = backupFile.endsWith(".gz") ? raw.pipe(createGunzip()) : raw;
   stream.setEncoding("utf8");
-  const reader = createInterface({
-    input: stream,
-    crlfDelay: Infinity,
-  });
   let statementLines: string[] = [];
 
   const flushStatement = () => {
@@ -424,8 +443,8 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   };
 
   try {
-    for await (const line of reader) {
-      if (line === STATEMENT_BREAKPOINT) {
+    for await (const line of readLineFeedDelimitedLines(stream)) {
+      if (line === STATEMENT_BREAKPOINT || line === `${STATEMENT_BREAKPOINT}\r`) {
         const statement = flushStatement();
         if (statement.length > 0) {
           yield statement;
@@ -440,7 +459,6 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
       yield trailingStatement;
     }
   } finally {
-    reader.close();
     stream.destroy();
     raw.destroy();
   }
