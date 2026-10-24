@@ -210,7 +210,7 @@ jobs:
 
       - name: Upload resolved target lockfile
         id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-target-pnpm-lock-${{ github.run_id }}-${{ github.run_attempt }}
           path: pnpm-lock.yaml
@@ -292,7 +292,7 @@ jobs:
           python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report --help | grep -q -- --public-viewer
 
       - name: Upload immutable campaign catalog
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-eval-catalog.json
@@ -390,7 +390,7 @@ jobs:
           sha256sum runner-protocol-build.tar.gz > runner-protocol-build.tar.gz.sha256
 
       - name: Upload immutable portable runner
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -401,7 +401,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload canonical viewer for publisher byte verification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-viewer-${{ github.run_id }}-${{ github.run_attempt }}
           path: packages/paperclip-runner/dist-issue-thread/
@@ -628,7 +628,7 @@ jobs:
 
       - name: Upload access-controlled cell attempt
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.cellId }}
           path: cell-output/
@@ -819,7 +819,7 @@ jobs:
 
       - name: Upload access-controlled canonical Evalbook and raw attempts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-eval-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-merged/
@@ -828,7 +828,7 @@ jobs:
 
       - name: Upload publisher-only sanitized Evalbook
         if: steps.public_report.outputs.ready == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-merged/public-report/
