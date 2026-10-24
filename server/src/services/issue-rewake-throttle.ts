@@ -125,6 +125,11 @@ export interface RecentIssueRunSample {
   finishedAt: Date | null;
 }
 
+/** The normal final response comment is not issue progress by itself. */
+export function isRoutineRunCompletionComment(details: Record<string, unknown> | null): boolean {
+  return details?.completionReply === true || details?.source === "run_presentation_resolver";
+}
+
 export interface IssueRewakeThrottleInput {
   now: Date;
   /** Terminal runs for the same (agent, issue), newest finish first. */
