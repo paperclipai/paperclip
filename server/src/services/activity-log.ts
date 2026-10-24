@@ -85,6 +85,21 @@ export async function redactActivityDetails(db: Db, details: Record<string, unkn
   return (await createActivityDetailsRedactor(db))(details);
 }
 
+function toWellFormedText(text: string) {
+  return text.replace(/[\ud800-\udfff]/gu, "\ufffd");
+}
+
+function toWellFormedValue<T>(value: T): T {
+  if (typeof value === "string") return toWellFormedText(value) as T;
+  if (Array.isArray(value)) return value.map(toWellFormedValue) as T;
+  if (typeof value !== "object" || value === null) return value;
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [toWellFormedText(key), toWellFormedValue(entry)]),
+  ) as T;
+}
+
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -163,7 +178,7 @@ export function publishActivity(publication: ActivityPublication) {
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
-  const redactedDetails = await redactActivityDetails(db, input.details ?? null);
+  const redactedDetails = toWellFormedValue(await redactActivityDetails(db, input.details ?? null));
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({
     companyId: input.companyId,
