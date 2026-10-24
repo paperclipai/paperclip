@@ -32,6 +32,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
@@ -244,21 +245,9 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 1: Look up the plugin
-    let plugin = null;
-    try {
-      plugin = await registry.getById(pluginId);
-    } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
-        throw error;
-      }
-    }
-    if (!plugin) {
-      plugin = await registry.getByKey(pluginId);
-    }
+    const plugin =
+      (isUuidLike(pluginId) ? await registry.getById(pluginId) : null)
+      ?? await registry.getByKey(pluginId);
 
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
