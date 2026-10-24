@@ -54,7 +54,7 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { firstCursorDiagnosticLine, parseCursorJsonl, createCursorJsonlParser, isCursorUnknownSessionError } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorJsonl, createCursorJsonlParser, parseCursorProcessOutput, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
@@ -640,7 +640,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: resolveCursorBiller(effectiveEnv, billingType, provider), billingType, model,
         complete: parsed.sawResult && hasCompleteAccounting,
       };
-    });
+    }, event => event.type === "result" || event.type === "step_finish", { trackLossWithoutSubscriber: true });
     let stdoutLineBuffer = "";
     const emitNormalizedStdoutLine = async (rawLine: string) => {
       const normalized = normalizeCursorStreamLine(rawLine);
@@ -689,7 +689,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return {
       proc,
-      parsed: parseCursorJsonl(proc.stdout),
+      parsed: parseCursorProcessOutput(proc),
+      accountingComplete: accountingLog.unreadRecords() === 0,
     };
   };
 
@@ -705,12 +706,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: string;
         errorCode?: string | null;
       };
-      parsed: ReturnType<typeof parseCursorJsonl>;
+      parsed: ReturnType<typeof parseCursorProcessOutput>;
+      accountingComplete: boolean;
     },
     clearSessionOnMissingSession = false,
   ): AdapterExecutionResult => {
     const hasCompleteAccounting = attempt.parsed.usageComplete || attempt.parsed.costUsd != null;
-    const usageComplete = hasCompleteAccounting && (attempt.parsed.sawResult || (attempt.parsed.sawLegacyStep
+    const usageComplete = attempt.accountingComplete && hasCompleteAccounting && (attempt.parsed.sawResult || (attempt.parsed.sawLegacyStep
       && attempt.proc.exitCode === 0 && !attempt.proc.signal && !attempt.proc.timedOut
       && !attempt.parsed.errorMessage));
     if (attempt.proc.timedOut) {

@@ -26,6 +26,16 @@ export type CodexAuthRefreshFailureClass =
   | "refresh_token_expired"
   | "refresh_token_invalidated";
 
+/** Codex terminal records that can carry usage accounting. The JSONL parser
+ * reads usage from `turn.completed`, `turn.failed`, and `error` alike, so
+ * damaged-accounting classification must cover all three. A redacted counter
+ * in any of them leaves the control parser with a zero it accepts as valid,
+ * and the final result would otherwise report understated usage as complete. */
+export function isCodexAccountingRecord(event: Record<string, unknown>): boolean {
+  const type = typeof event.type === "string" ? event.type : "";
+  return type === "turn.completed" || type === "turn.failed" || type === "error";
+}
+
 export function parseCodexJsonl(stdout: string) {
   return createCodexJsonlParser()(stdout);
 }
@@ -110,6 +120,20 @@ export function createCodexJsonlParser() {
       usageComplete,
     };
   };
+}
+
+export function parseCodexProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string; displayFallbackSafe?: boolean };
+}) {
+  const parsed = parseCodexJsonl(output.controlOutput?.stdout ?? output.stdout);
+  if (output.controlOutput?.displayFallbackSafe === true && !parsed.sawProtocolTerminalEvent) {
+    // A large protected string can shrink below the display cap after its raw
+    // opening left the control window. Only accept already-redacted display.
+    const display = parseCodexJsonl(output.stdout);
+    if (display.sawProtocolTerminalEvent) return display;
+  }
+  return parsed;
 }
 
 /**

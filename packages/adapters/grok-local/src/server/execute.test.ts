@@ -73,6 +73,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
 }));
 
 import { execute } from "./execute.js";
+import { createSecretEnvRedactionScanner, redactKnownSecretEnvValues } from "@paperclipai/adapter-utils/secret-env-redaction";
 import { resolveManagedGrokHomeDir } from "./grok-home.js";
 
 const tempRoots: string[] = [];
@@ -163,6 +164,33 @@ async function makeCtx(runId: string, cwd: string): Promise<AdapterExecutionCont
 }
 
 describe("grok_local execute", () => {
+  it.each([false, true].flatMap(timedOut => [false, true].map(collision => ({ timedOut, collision })) ))(
+    "keeps lost accounting incomplete ($timedOut, $collision)", async ({ timedOut, collision }) => {
+      const cwd = await makeTempRoot();
+      const ctx = await makeCtx("grok-accounting-loss", cwd);
+      ctx.config.env = { GROK_HOME: path.join(cwd, "home"), XAI_API_KEY: "fixture-key" };
+      const raw = JSON.stringify({ duration_ms: 123456, type: "end", stopReason: "EndTurn", total_cost_usd: 0.2,
+        usage: { input_tokens: collision ? 123456 : 17, output_tokens: 7, cache_read_input_tokens: 2 },
+      }) + "\n";
+      const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
+      control.append(raw);
+      const stdout = redactKnownSecretEnvValues(raw, ["123456"]);
+      runProcessMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const opts = args[4] as { onLog: (stream: "stdout", text: string) => Promise<void> };
+        await opts.onLog("stdout", stdout);
+        return { exitCode: 0, signal: null, timedOut, stdout, stderr: "", pid: 123,
+          startedAt: new Date().toISOString(), controlOutput: { stdout: control.snapshot(), stderr: "" } };
+      });
+      const result = await execute(ctx);
+      expect(result.timedOut).toBe(timedOut);
+      expect(result.usage).toMatchObject({ inputTokens: collision ? 0 : 17, outputTokens: 7, cachedInputTokens: 2 });
+      expect(result.costUsd).toBe(0.2);
+      // Undefined is the server's legacy complete default for this adapter.
+      expect(result.usageComplete !== false).toBe(!collision);
+      expect(stdout).not.toContain("123456");
+      expect(control.snapshot()).not.toContain("123456");
+    },
+  );
   it.each([false, true])("resumes a managed connection only when its isolated history exists (%s)", async present => {
     const root = await makeTempRoot();
     const ctx = await makeCtx("managed-resume", root);

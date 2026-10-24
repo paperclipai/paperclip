@@ -11,6 +11,10 @@ interface ParsedPiOutput {
     cachedInputTokens: number;
     costUsd: number | null;
   };
+  /** False when a parsed record showed a cost was missing or unparseable. */
+  costComplete: boolean;
+  /** Cost-bearing records parsed, priced or not. */
+  costRecords: number;
   finalMessage: string | null;
   toolCalls: Array<{ toolCallId: string; toolName: string; args: unknown; result: string | null; isError: boolean }>;
 }
@@ -18,6 +22,19 @@ interface ParsedPiOutput {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+const nonCostEvents = new Set([
+  "response", "extension_ui_request", "extension_ui_response", "extension_error",
+  "agent_start", "agent_end", "auto_retry_end", "turn_start", "message_update", "error",
+  "tool_execution_start", "tool_execution_end",
+]);
+
+/** The same cost-bearing envelopes used by parsing and lost-record accounting. */
+export function piCostUsage(event: Record<string, unknown>): Record<string, unknown> | null {
+  const type = asString(event.type, "");
+  if (nonCostEvents.has(type)) return null;
+  return asRecord(type === "turn_end" ? asRecord(event.message)?.usage : event.usage);
 }
 
 function extractTextContent(content: string | Array<{ type: string; text?: string }>): string {
@@ -48,10 +65,14 @@ export function createPiJsonlParser() {
     },
     finalMessage: null,
     toolCalls: [],
+    // Derived at return from missingCost; stays true on the accumulator.
+    costComplete: true,
+    costRecords: 0,
   };
 
   let missingCost = false;
   function addCost(value: unknown) {
+    result.costRecords++;
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) result.usage.costUsd = (result.usage.costUsd ?? 0) + value;
     else missingCost = true;
   }
@@ -129,7 +150,7 @@ export function createPiJsonlParser() {
           }
 
           // Extract usage and cost from assistant message
-          const usage = asRecord(message.usage);
+          const usage = piCostUsage(event);
           if (usage) {
             result.usage.inputTokens += asNumber(usage.input, 0) + asNumber(usage.cacheWrite, 0);
             result.usage.outputTokens += asNumber(usage.output, 0);
@@ -222,7 +243,7 @@ export function createPiJsonlParser() {
 
       // Usage tracking if available in the event (fallback for standalone usage events)
       if (eventType === "usage" || event.usage) {
-        const usage = asRecord(event.usage);
+        const usage = piCostUsage(event);
         if (usage) {
           // Support both Pi format (input/output/cacheRead) and generic format (inputTokens/outputTokens/cachedInputTokens)
           result.usage.inputTokens += asNumber(usage.inputTokens ?? usage.input, 0) + asNumber(usage.cacheWrite, 0);
@@ -231,14 +252,24 @@ export function createPiJsonlParser() {
 
           // Cost may be in usage.costUsd (direct) or usage.cost.total (Pi format)
           const cost = asRecord(usage.cost);
-          addCost(cost?.total ?? usage.costUsd);
+          // An explicit unavailable primary price is not permission to use a
+          // lower-priority fallback (control redaction uses null for unknown).
+          addCost(cost && Object.hasOwn(cost, "total") ? cost.total : usage.costUsd);
         }
       }
     }
 
     if (missingCost) result.usage.costUsd = null;
-    return { ...result, usage: { ...result.usage }, messages: [...result.messages], errors: [...result.errors], toolCalls: [...result.toolCalls] };
+    return { ...result, usage: { ...result.usage }, costComplete: !missingCost, messages: [...result.messages], errors: [...result.errors], toolCalls: [...result.toolCalls] };
   };
+}
+
+/** Parse sanitized control records without changing the display/log capture. */
+export function parsePiProcessOutput(output: {
+  stdout: string;
+  controlOutput?: { stdout: string; stderr: string };
+}): ParsedPiOutput {
+  return parsePiJsonl(output.controlOutput?.stdout ?? output.stdout);
 }
 
 export function isPiUnknownSessionError(stdout: string, stderr: string): boolean {

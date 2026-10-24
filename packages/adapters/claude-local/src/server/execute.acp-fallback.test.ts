@@ -61,6 +61,10 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createSecretEnvRedactionScanner, redactKnownSecretEnvValues } from "@paperclipai/adapter-utils/secret-env-redaction";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -92,6 +96,42 @@ describe("claude_local ACP startup fallback", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
+
+  it.each([false, true].flatMap(timedOut => [false, true].flatMap(checkpoints =>
+    [false, true].flatMap(collision => [false, true].map(modelLedger => ({ timedOut, checkpoints, collision, modelLedger }))))))(
+    "keeps lost accounting incomplete ($timedOut, $checkpoints, $collision, $modelLedger)", async ({ timedOut, checkpoints, collision, modelLedger }) => {
+      const cwd = await mkdtemp(path.join(tmpdir(), "claude-accounting-loss-"));
+      const input = collision ? 123456 : 17;
+      const raw = JSON.stringify({ duration_ms: 123456, type: "result", result: "done", total_cost_usd: 0.2,
+        ...(modelLedger
+          ? { modelUsage: { "claude-test": { inputTokens: input, outputTokens: 7, cacheReadInputTokens: 2, costUSD: 0.2 } } }
+          : { usage: { input_tokens: input, output_tokens: 7, cache_read_input_tokens: 2 } }),
+      }) + "\n";
+      const control = createSecretEnvRedactionScanner(["123456"], 4 * 1024 * 1024);
+      control.append(raw);
+      const stdout = redactKnownSecretEnvValues(raw, ["123456"]);
+      const onUsage = vi.fn(async () => {});
+      runAdapterExecutionTargetProcess.mockImplementationOnce((async (...args: unknown[]) => {
+        const opts = args[4] as { onLog: (stream: "stdout", text: string) => Promise<void> };
+        await opts.onLog("stdout", stdout);
+        return { exitCode: 0, signal: null, timedOut, stdout, stderr: "", pid: 123,
+          startedAt: new Date().toISOString(), controlOutput: { stdout: control.snapshot(), stderr: "" } };
+      }) as never);
+      try {
+        const result = await execute({ ...buildContext({ engine: "cli", cwd }),
+          ...(checkpoints ? { onUsage } : {}),
+        });
+        expect(result.timedOut).toBe(timedOut);
+        expect(result.usage).toMatchObject({ inputTokens: collision ? 0 : 17, outputTokens: 7, cachedInputTokens: 2 });
+        expect(result.costUsd).toBe(0.2);
+        expect(result.usageComplete).toBe(!collision);
+        expect(stdout).not.toContain("123456");
+        expect(control.snapshot()).not.toContain("123456");
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("does not start CLI after default ACP fails", async () => {
     const ctx = buildContext();

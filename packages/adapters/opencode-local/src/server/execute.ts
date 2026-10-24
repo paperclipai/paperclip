@@ -1,5 +1,6 @@
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { mergeAccountingCost, mergeAccountingUsage } from "@paperclipai/adapter-utils/accounting-merge";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
-import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
+import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser, parseOpenCodeProcessOutput } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
@@ -669,7 +670,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
           costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
           usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(accountingEnv, provider), billingType: apiKeyBillingType(provider, accountingEnv), model, complete: false };
-      });
+      }, event => event.type === "step_finish");
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
         // Keep a long sandbox run off the synchronous command HTTP request.
@@ -695,22 +696,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
-      const parsed = parseOpenCodeJsonl(proc.stdout);
-      if (hasAccounting) {
+      // Parse the redaction-aware control output when present.
+      const parsed = parseOpenCodeProcessOutput(proc);
+      // Unread records force reconciliation even when no readable record ran
+      // the consumer: a partial control suffix must not pose as a priced total.
+      if (hasAccounting || accountingLog.unreadRecords() > 0) {
         const retained = consumeAccounting("");
-        parsed.usage = retained.usage;
-        parsed.usageReported = retained.usageReported;
-        parsed.usageComplete = retained.usageComplete;
-        parsed.costUsd = retained.costUsd;
+        // Merge, never overwrite: a usage counter matching a secret value is
+        // unparseable in the redacted display stream (checkpoint totals stay
+        // zero) while the sanitized control record stays parseable. Either
+        // stream may also be the fuller one when capture is capped.
+        parsed.usage = mergeAccountingUsage(parsed.usage, retained.usage);
+        parsed.usageReported = parsed.usageReported || retained.usageReported;
+        // A valid captured suffix cannot erase invalid counters seen earlier.
+        // Include unread display records when comparing stream coverage.
+        parsed.usageComplete = retained.costRecords + accountingLog.unreadRecords() > parsed.costRecords
+          ? retained.usageComplete
+          : parsed.usageComplete || retained.usageComplete;
+        parsed.costUsd = mergeAccountingCost(
+          { costUsd: parsed.costUsd, costComplete: parsed.costComplete, costRecords: parsed.costRecords },
+          { costUsd: retained.costUsd, costComplete: retained.costComplete, costRecords: retained.costRecords },
+          accountingLog.unreadRecords(),
+        );
       }
-      return { proc, rawStderr: proc.stderr, parsed };
+      // Sanitized control may recover a price, but cannot recover secret-valued
+      // counters. Keep this separate from parser flags and priced-total fallback.
+      return { proc, rawStderr: proc.stderr, parsed, accountingComplete: accountingLog.unreadRecords() === 0 };
     };
 
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
-        parsed: ReturnType<typeof parseOpenCodeJsonl>;
+        accountingComplete: boolean;
+        parsed: ReturnType<typeof parseOpenCodeProcessOutput>;
       },
       clearSessionOnMissingSession = false,
     ): AdapterExecutionResult => {
@@ -769,7 +788,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: synthesizedExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
-        usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
+        usageComplete: attempt.accountingComplete && attempt.proc.exitCode === 0 && !attempt.proc.signal
           && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
         usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,

@@ -21,7 +21,7 @@ import {
   resolveAdapterExecutionTargetCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiJsonl } from "./parse.js";
+import { detectGeminiAuthRequired, detectGeminiQuotaExhausted, parseGeminiProcessOutput } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 import {
   resolveGeminiExecutionEngineForRun,
@@ -224,7 +224,7 @@ export async function testEnvironment(
           onLog: async () => { },
         },
       );
-      const parsed = parseGeminiJsonl(probe.stdout);
+      const parsed = parseGeminiProcessOutput(probe);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
       const authMeta = detectGeminiAuthRequired({
         parsed: parsed.resultEvent,
