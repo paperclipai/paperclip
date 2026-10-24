@@ -9,12 +9,12 @@ function normalizeHost(host: string | null | undefined): string | undefined {
 }
 
 export function isLoopbackHost(host: string | null | undefined): boolean {
-  const normalized = normalizeHost(host)?.toLowerCase();
+  const normalized = normalizeHost(host)?.toLowerCase().replace(/^\[|\]$/g, "");
   return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
 }
 
 export function isAllInterfacesHost(host: string | null | undefined): boolean {
-  const normalized = normalizeHost(host)?.toLowerCase();
+  const normalized = normalizeHost(host)?.toLowerCase().replace(/^\[|\]$/g, "");
   return normalized === "0.0.0.0" || normalized === "::";
 }
 
