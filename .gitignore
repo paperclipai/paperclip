@@ -13,6 +13,7 @@ ui/storybook/generated/
 ui/storybook/.storybook/preview.tsx
 maps/generated/
 .env
+.env.upgrade-sh
 *.tsbuildinfo
 drizzle/meta/
 .vite/
