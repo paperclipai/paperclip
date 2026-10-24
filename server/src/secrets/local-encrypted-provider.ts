@@ -262,7 +262,7 @@ export const localEncryptedProvider: SecretProviderModule = {
   descriptor() {
     return {
       id: "local_encrypted",
-      label: "Local encrypted (default)",
+      label: "Local encrypted",
       requiresExternalRef: false,
       supportsManagedValues: true,
       supportsExternalReferences: false,
