@@ -73,6 +73,7 @@ it.each([["codex", undefined], ["acpx", "claude"]])("routes %s/%s with only its 
       expect(config).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
       expect(config).toContain("requires_openai_auth = false");
       expect(config).toContain("shell_snapshot = false");
+      expect(config).toContain('web_search = "disabled"');
       expect(config).not.toContain(token);
       expect((await stat(join(env.CODEX_HOME!, "config.toml"))).mode & 0o777).toBe(0o600);
     }

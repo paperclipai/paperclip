@@ -70,6 +70,7 @@ export async function prepareEvalGatewayRuntime(
       environment.PAPERCLIP_AI_PROVIDER_KEY = token;
       await writeFile(join(codexHome, "config.toml"), [
         'model_provider = "paperclip_eval"',
+        'web_search = "disabled"',
         `model = ${JSON.stringify(request.model)}`,
         '[model_providers.paperclip_eval]',
         'name = "Paperclip eval controller"',

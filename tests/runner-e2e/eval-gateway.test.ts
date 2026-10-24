@@ -121,6 +121,29 @@ it.each([
   await expect(forwardEvalRequest({ ...f, payload, transport })).rejects.toThrow();
   expect(transport).not.toHaveBeenCalled(); expect(f.ledger.snapshot().requests).toHaveLength(0);
 });
+it("admits local function and custom tools inside a Codex namespace", async () => {
+  const f = await fixture();
+  const tools = [{ type: "namespace", name: "local", tools: [
+    { type: "function", name: "read_task", parameters: { type: "object" } },
+    { type: "custom", name: "apply_patch" },
+  ] }];
+  const transport = vi.fn<typeof fetch>(async (_url, init) => {
+    expect(JSON.parse(init!.body as string).tools).toEqual(tools);
+    return response();
+  });
+  const result = await forwardEvalRequest({ ...f, payload: { ...f.payload, tools }, transport });
+  expect(result.outcome).toBe("succeeded");
+  expect(transport).toHaveBeenCalledOnce();
+});
+it.each([
+  { type: "namespace", name: "local", tools: [{ type: "web_search" }] },
+  { type: "namespace", name: "local", tools: [{ type: "namespace", name: "nested", tools: [{ type: "web_search" }] }] },
+  { type: "namespace", name: "local" },
+])("rejects unqualified tools inside namespaces before reservation", async tool => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>();
+  await expect(forwardEvalRequest({ ...f, payload: { ...f.payload, tools: [tool] }, transport })).rejects.toThrow();
+  expect(transport).not.toHaveBeenCalled(); expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
 it("does not dispatch when the private pre-request receipt cannot be persisted", async () => {
   const f = await fixture(), transport = vi.fn<typeof fetch>();
   await expect(forwardEvalRequest({ ...f, persist: async () => { throw new Error("disk unavailable"); }, transport })).rejects.toThrow("disk unavailable");
