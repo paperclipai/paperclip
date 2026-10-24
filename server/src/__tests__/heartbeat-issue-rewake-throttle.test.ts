@@ -387,6 +387,53 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(wake).not.toBeNull();
   });
 
+  it("still throttles a loop where every run posts its own no-op comment and nothing else", async () => {
+    // This exercises the exact shape of a heartbeat protocol that always
+    // posts a status/confirmation comment, even when there is nothing to
+    // report. Each of the three runs below leaves only an
+    // `issue.comment_added` activity row attributed to itself — no status
+    // change, no work product, no other state. Before this fix, the real
+    // activity-log mapping in heartbeat.ts
+    // fed every one of those comment rows into `runIdsWithIssueProgress`,
+    // so the newest run always looked like it made progress and the
+    // no-progress streak could never reach the threshold — this test would
+    // have seen `wake` admitted (not null) on every call, forever.
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    // Each comment's createdAt is pinned a second before its own run's
+    // finishedAt (mirroring the existing "produced issue-visible progress"
+    // fixture above). Every one must land at or before the newest run's
+    // finishedAt, or the throttle's separate "new input since last run"
+    // check would admit the wake for an unrelated reason and this test would
+    // not actually exercise the comment-only cap at all.
+    const runsToSeed = [
+      { finishedSecondsAgo: 70 },
+      { finishedSecondsAgo: 40 },
+      { finishedSecondsAgo: 10 },
+    ];
+    for (const { finishedSecondsAgo } of runsToSeed) {
+      const runId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo });
+      await db.insert(activityLog).values({
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        agentId,
+        runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(Date.now() - (finishedSecondsAgo + 1) * 1000),
+      });
+    }
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.status).toBe("skipped");
+    expect(skipped?.reason).toBe("issue_rewake_throttled");
+  });
+
   it("does not count progress on another issue toward the current issue", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
     const otherIssueId = randomUUID();
