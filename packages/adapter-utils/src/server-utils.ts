@@ -3555,6 +3555,12 @@ function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
   return (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean);
 }
 
+function readPathEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform) {
+  if (platform !== "win32") return env.PATH ?? env.Path;
+  const key = Object.keys(env).sort().find((name) => name.toUpperCase() === "PATH");
+  return key === undefined ? undefined : env[key];
+}
+
 async function pathExists(candidate: string) {
   try {
     await fs.access(
@@ -3580,7 +3586,7 @@ async function resolveCommandPath(
     return (await pathExists(absolute)) ? absolute : null;
   }
 
-  const pathValue = env.PATH ?? env.Path ?? "";
+  const pathValue = readPathEnv(env) ?? "";
   const delimiter = process.platform === "win32" ? ";" : ":";
   const dirs = pathValue.split(delimiter).filter(Boolean);
   const exts = process.platform === "win32" ? windowsPathExts(env) : [""];
@@ -3720,9 +3726,11 @@ async function resolveSpawnTarget(
   return { command: executable, args };
 }
 
-export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
-  if (typeof env.Path === "string" && env.Path.length > 0) return env;
+export function ensurePathInEnv(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  if (platform === "win32" ? readPathEnv(env, platform) : env.PATH || env.Path) return env;
   return { ...env, PATH: defaultPathForPlatform() };
 }
 
@@ -4941,7 +4949,7 @@ export async function runChildProcess(
           runningProcesses.delete(runId);
           void target.cleanup?.();
           const errno = (err as NodeJS.ErrnoException).code;
-          const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
+          const pathValue = readPathEnv(mergedEnv) ?? "";
           const msg =
             errno === "ENOENT"
               ? `Failed to start command "${command}" in "${opts.cwd}". Verify adapter command, working directory, and PATH (${pathValue}).`
