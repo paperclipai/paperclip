@@ -157,12 +157,12 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
         let result: Record<string, unknown>;
         switch (method) {
           case "server/discover": result = { supportedVersions: ["2026-07-28"], capabilities: { tools: {}, ...(events ? { events: {} } : {}) } }; break;
-          case "tools/list": result = await listTools(); break;
+          case "tools/list": result = { ...await listTools(), ttlMs: 0, cacheScope: "private" }; break;
           case "tools/call": result = await callTool(CallToolRequestSchema.parse(envelope.data)); break;
           case "events/list":
             if (!events) { fail(-32601, "Events are unavailable."); return; }
             if (params.cursor != null) { fail(-32602, "Invalid event catalog cursor."); return; }
-            result = { events: events.definitions }; break;
+            result = { events: events.definitions, ttlMs: 0, cacheScope: "private" }; break;
           case "events/subscribe": {
             if (!events) { fail(-32601, "Events are unavailable."); return; }
             // The broker supplies its original access proof only for hosted subscriptions.
