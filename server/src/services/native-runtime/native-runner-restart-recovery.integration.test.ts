@@ -164,7 +164,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   let paperclipHome: string;
   let server: Server | null = null;
   let apiUrl: string;
-  let originalPaperclipHome: string | undefined;
+  const originalPaperclipHome = process.env.PAPERCLIP_HOME;
   let isolatedHome: ReturnType<typeof createIsolatedTestHome>;
 
   const companyId = randomUUID();
@@ -178,7 +178,6 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
     isolatedHome = createIsolatedTestHome();
     paperclipHome = isolatedHome.home;
-    originalPaperclipHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_HOME = paperclipHome;
     const controllerStartedAt = await readProcessStartedAt(process.pid);
     successor = {
@@ -222,9 +221,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
     await closeServer(server);
-    await temporary.cleanup();
-    await rm(runtimeRoot, { recursive: true, force: true });
-    isolatedHome.cleanup();
+    await temporary?.cleanup();
+    if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
+    isolatedHome?.cleanup();
     if (originalPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = originalPaperclipHome;
   });
