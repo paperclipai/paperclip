@@ -29,25 +29,42 @@ function resolveDbUrl(configPath?: string, explicitDbUrl?: string) {
   return null;
 }
 
-function resolveBaseUrl(configPath?: string, explicitBaseUrl?: string) {
-  if (explicitBaseUrl) return explicitBaseUrl.replace(/\/+$/, "");
+function normalizeBaseUrl(value: string) {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function normalizeServerBaseUrl(value: string) {
+  return normalizeBaseUrl(value).replace(/\/api$/, "");
+}
+
+function resolveBaseUrl(
+  config: ReturnType<typeof readConfig>,
+  explicitBaseUrl?: string,
+  fallbackBaseUrl?: string,
+) {
+  if (explicitBaseUrl?.trim()) return normalizeBaseUrl(explicitBaseUrl);
   const fromEnv =
     process.env.PAPERCLIP_PUBLIC_URL ??
     process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
     process.env.BETTER_AUTH_URL ??
     process.env.BETTER_AUTH_BASE_URL;
-  if (fromEnv?.trim()) return fromEnv.trim().replace(/\/+$/, "");
-  const config = readConfig(configPath);
+  if (fromEnv?.trim()) return normalizeBaseUrl(fromEnv);
   if (config?.auth.baseUrlMode === "explicit" && config.auth.publicBaseUrl) {
-    return config.auth.publicBaseUrl.replace(/\/+$/, "");
+    return normalizeBaseUrl(config.auth.publicBaseUrl);
   }
+  if (fallbackBaseUrl?.trim()) return normalizeServerBaseUrl(fallbackBaseUrl);
   const bind = config?.server.bind ?? inferBindModeFromHost(config?.server.host);
   const host =
     bind === "custom"
       ? config?.server.customBindHost ?? config?.server.host ?? "localhost"
       : config?.server.host ?? "localhost";
+  const isLanWildcard = bind === "lan" || host === "0.0.0.0" || host === "::";
+  const allowedHostname = config?.server.allowedHostnames.find((value) => value.trim().length > 0);
+  if (isLanWildcard && allowedHostname) {
+    return `http://${allowedHostname.trim()}:${config?.server.port ?? 3100}`;
+  }
   const port = config?.server.port ?? 3100;
-  const publicHost = host === "0.0.0.0" || bind === "lan" ? "localhost" : host;
+  const publicHost = host === "0.0.0.0" || host === "::" || bind === "lan" ? "localhost" : host;
   return `http://${publicHost}:${port}`;
 }
 
@@ -57,6 +74,8 @@ export async function bootstrapCeoInvite(opts: {
   expiresHours?: number;
   baseUrl?: string;
   dbUrl?: string;
+  fallbackBaseUrl?: string;
+  rotate?: boolean;
 }) {
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);
@@ -98,17 +117,31 @@ export async function bootstrapCeoInvite(opts: {
     }
 
     const now = new Date();
-    await db
-      .update(invites)
-      .set({ revokedAt: now, updatedAt: now })
-      .where(
-        and(
-          eq(invites.inviteType, "bootstrap_ceo"),
-          isNull(invites.revokedAt),
-          isNull(invites.acceptedAt),
-          gt(invites.expiresAt, now),
-        ),
-      );
+    const activeBootstrapInvite = and(
+      eq(invites.inviteType, "bootstrap_ceo"),
+      isNull(invites.revokedAt),
+      isNull(invites.acceptedAt),
+      gt(invites.expiresAt, now),
+    );
+    if (opts.rotate === false) {
+      const existingInvite = await db
+        .select({ id: invites.id })
+        .from(invites)
+        .where(activeBootstrapInvite)
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingInvite) {
+        p.log.info(
+          `Bootstrap CEO invite is already pending. Run ${pc.cyan("paperclipai auth bootstrap-ceo")} to rotate it and print a new invite URL.`,
+        );
+        return;
+      }
+    } else {
+      await db
+        .update(invites)
+        .set({ revokedAt: now, updatedAt: now })
+        .where(activeBootstrapInvite);
+    }
 
     const token = createInviteToken();
     const expiresHours = Math.max(1, Math.min(24 * 30, opts.expiresHours ?? 72));
@@ -124,9 +157,15 @@ export async function bootstrapCeoInvite(opts: {
       .returning()
       .then((rows) => rows[0]);
 
-    const baseUrl = resolveBaseUrl(configPath, opts.baseUrl);
+    const baseUrl = resolveBaseUrl(config, opts.baseUrl, opts.fallbackBaseUrl);
     const inviteUrl = `${baseUrl}/invite/${token}`;
     p.log.success("Created bootstrap CEO invite.");
+    if (process.env.PAPERCLIP_SERVICE_MANAGED === "1") {
+      p.log.message(
+        `Bootstrap pending: run ${pc.cyan("paperclipai auth bootstrap-ceo")} to get an invite URL.`,
+      );
+      return;
+    }
     p.log.message(`Invite URL: ${pc.cyan(inviteUrl)}`);
     p.log.message(`Expires: ${pc.dim(created.expiresAt.toISOString())}`);
   } catch (err) {
