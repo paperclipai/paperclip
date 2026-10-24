@@ -987,6 +987,56 @@ describe("startServer feedback export wiring", () => {
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
   });
 
+  it("continues startup recovery when task watchdog reconciliation fails", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    const failure = new Error("watchdog reconciliation unavailable");
+    heartbeatServiceMock.reconcileTaskWatchdogs.mockRejectedValueOnce(failure);
+
+    await expect(startServer()).resolves.toBeDefined();
+
+    expect(heartbeatServiceMock.scanSilentActiveRuns).toHaveBeenCalled();
+    expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalled();
+    expect(fakeServer.close).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      { err: failure }, "startup task-watchdog reconciliation failed; will retry on the next recovery sweep",
+    );
+  });
+
+  it("continues periodic recovery after a watchdog failure and retries on the next sweep", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      await settleStartupHousekeeping();
+      const failure = new Error("watchdog sweep unavailable");
+      heartbeatServiceMock.reconcileTaskWatchdogs.mockRejectedValueOnce(failure);
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.scanSilentActiveRuns).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+        { err: failure }, "periodic task-watchdog reconciliation failed; will retry on the next recovery sweep",
+      );
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.reconcileTaskWatchdogs).toHaveBeenCalledTimes(3);
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(3);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("closes the bound listener when native startup recovery fails", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,

@@ -493,6 +493,53 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
+  it("reopens a done user-assigned watchdog for a new stop fingerprint", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, { status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [first] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    await db.update(issues).set({
+      status: "done", assigneeAgentId: null, assigneeUserId: "watchdog-reviewer",
+    }).where(eq(issues.id, first!.watchdogIssueId!));
+    await service.reconcileTaskWatchdogs({ companyId });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, childId));
+
+    expect(await service.reconcileTaskWatchdogs({ companyId })).toMatchObject({ triggered: 1 });
+    const [reopened] = await db.select().from(issues).where(eq(issues.id, first!.watchdogIssueId!));
+    expect(reopened).toMatchObject({ status: "todo", assigneeAgentId: agentId, assigneeUserId: null });
+    expect(reopened!.originFingerprint).not.toBe(first!.lastObservedFingerprint);
+    expect(wakes).toHaveLength(2);
+  });
+
+  it.each(["batch", "ancestors"] as const)("isolates a failed watchdog and retries it on the next %s reconciliation", async (mode) => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const foreignAgentId = await seedAgent(otherCompanyId);
+    const sourceId = await seedIssue(companyId, { status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const broken = await seedWatchdog(companyId, childId, foreignAgentId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+    const reconcile = () => mode === "batch"
+      ? service.reconcileTaskWatchdogs({ companyId })
+      : service.reconcileForIssueAndAncestors(companyId, childId);
+
+    expect(await reconcile()).toMatchObject({ checked: 2, triggered: 1, failed: 1 });
+    expect(wakes).toHaveLength(1);
+    const [failed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, broken!.id));
+    expect(failed).toMatchObject({ status: "active", triggerCount: 0, lastReviewedFingerprint: null });
+
+    await db.update(issueWatchdogs).set({ watchdogAgentId: agentId }).where(eq(issueWatchdogs.id, broken!.id));
+    expect(await reconcile()).toMatchObject({ checked: 2, triggered: 1, failed: 0 });
+    expect(wakes).toHaveLength(2);
+    expect(wakes.every((wake) => wake.agentId === agentId)).toBe(true);
+  });
+
   it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_review" });

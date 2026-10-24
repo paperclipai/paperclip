@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
@@ -1360,6 +1361,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         ? await issuesSvc.update(fallback.id, {
           status: "todo",
           assigneeAgentId: input.watchdog.watchdogAgentId,
+          assigneeUserId: null,
           parentId: input.sourceIssue.id,
           projectId: input.sourceIssue.projectId,
           goalId: input.sourceIssue.goalId,
@@ -1580,6 +1582,22 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     };
   }
 
+  async function evaluateWatchdogSafely(row: IssueWatchdogRow, opts: { runId?: string | null }) {
+    try {
+      return await evaluateWatchdog(row, opts);
+    } catch (err) {
+      logger.error({
+        err,
+        companyId: row.companyId,
+        watchdogId: row.id,
+        issueId: row.issueId,
+        watchdogIssueId: row.watchdogIssueId,
+        runId: opts.runId ?? null,
+      }, "task-watchdog reconciliation failed");
+      return { state: "failed" as const };
+    }
+  }
+
   async function listActiveWatchdogsForCompany(companyId?: string | null) {
     return db
       .select()
@@ -1759,6 +1777,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       }
       const result = {
         checked: 0,
+        failed: 0,
         triggered: 0,
         live: 0,
         pendingFirstRun: 0,
@@ -1768,8 +1787,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
       for (const row of rows) {
         result.checked += 1;
-        const evaluated = await evaluateWatchdog(row, { runId: opts.runId ?? null });
-        if (evaluated.state === "triggered") {
+        const evaluated = await evaluateWatchdogSafely(row, { runId: opts.runId ?? null });
+        if (evaluated.state === "failed") {
+          result.failed += 1;
+        } else if (evaluated.state === "triggered") {
           result.triggered += 1;
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (
@@ -1797,6 +1818,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       const rows = await activeWatchdogsForIssueAndAncestors(companyId, issueId);
       const result = {
         checked: 0,
+        failed: 0,
         triggered: 0,
         pendingFirstRun: 0,
         skipped: 0,
@@ -1804,8 +1826,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       };
       for (const row of rows) {
         result.checked += 1;
-        const evaluated = await evaluateWatchdog(row, { runId: opts.runId ?? null });
-        if (evaluated.state === "triggered") {
+        const evaluated = await evaluateWatchdogSafely(row, { runId: opts.runId ?? null });
+        if (evaluated.state === "failed") {
+          result.failed += 1;
+        } else if (evaluated.state === "triggered") {
           result.triggered += 1;
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (evaluated.state === "pending_first_run") {

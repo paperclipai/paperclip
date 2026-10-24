@@ -717,6 +717,16 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+### Task watchdog recovery
+
+Task watchdog reconciliation isolates errors for each configured watchdog. A
+failed watchdog is logged with its company and issue IDs and counted in `failed`;
+other watchdogs still run. The configuration stays active for later reconciliation.
+Reopening a reusable review for the configured agent clears its prior user assignee.
+A sweep-level watchdog error is logged during startup or periodic recovery and
+does not prevent the remaining recovery steps. The existing recovery sweep reevaluates active watchdogs;
+this adds no timer and does not change native-run startup failure handling.
+
 ## Test Commands
 
 The [feature map](../maps/feature-map/README.md) is an optional reference for user

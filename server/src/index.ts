@@ -1717,8 +1717,11 @@ async function startServerWithDatabaseTeardown(
           );
         }
 
-        const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
-        if (taskWatchdogsReconciled.triggered > 0) {
+        const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs().catch((err) => {
+          logger.error({ err }, "startup task-watchdog reconciliation failed; will retry on the next recovery sweep");
+          return null;
+        });
+        if (taskWatchdogsReconciled && taskWatchdogsReconciled.triggered > 0) {
           logger.warn(
             { ...taskWatchdogsReconciled },
             "startup task-watchdog reconciliation triggered watchdog work",
@@ -1925,8 +1928,11 @@ async function startServerWithDatabaseTeardown(
               }
             })
             .then(async () => {
-              const reconciled = await heartbeat.reconcileTaskWatchdogs();
-              if (reconciled.triggered > 0) {
+              const reconciled = await heartbeat.reconcileTaskWatchdogs().catch((err) => {
+                logger.error({ err }, "periodic task-watchdog reconciliation failed; will retry on the next recovery sweep");
+                return null;
+              });
+              if (reconciled && reconciled.triggered > 0) {
                 logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
               }
             })
