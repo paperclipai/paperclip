@@ -19,6 +19,16 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH:-amd64} \
 # Add it when git workspace population lands.
 FROM ubuntu:22.04 AS base
 ARG NODE_VERSION
+ARG TARGETARCH
+# Node comes from the official release tarball, checked against the SHA-256
+# digests pinned here (taken from the release's GPG-signed SHASUMS256.txt)
+# before extraction. This replaces piping NodeSource's setup script into a
+# root shell, which ran whatever that URL served. NODE_FULL_VERSION must stay in
+# the NODE_VERSION major. To bump: update all three ARGs from
+# https://nodejs.org/dist/v<version>/SHASUMS256.txt after verifying its signature.
+ARG NODE_FULL_VERSION=24.22.1
+ARG NODE_SHA256_X64=eb6728e77c576a35162c122c45ccadf224d89ff00abc8dae46cc2897c6002d7c
+ARG NODE_SHA256_ARM64=33c37be234ba8bee041961047b19160f4d7d0f164e8e246f78bdd10feff148b3
 # ripgrep (rg): required on PATH so OpenCode's skill tooling uses the system
 # binary instead of trying to download a pinned build from github.com at run
 # time. A sandbox with locked-down egress makes that download hang ~127s then
@@ -28,8 +38,19 @@ ARG NODE_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git tini gnupg ripgrep \
     && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
+    && case "${NODE_FULL_VERSION}" in "${NODE_VERSION}".*) ;; \
+         *) echo "NODE_FULL_VERSION ${NODE_FULL_VERSION} is not in major ${NODE_VERSION}" >&2; exit 1 ;; esac \
+    && case "${TARGETARCH:-amd64}" in \
+         amd64) NODE_ARCH=x64; NODE_SHA256="${NODE_SHA256_X64}" ;; \
+         arm64) NODE_ARCH=arm64; NODE_SHA256="${NODE_SHA256_ARM64}" ;; \
+         *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1 ;; esac \
+    && curl -fsSL -o /tmp/node.tar.gz \
+         "https://nodejs.org/dist/v${NODE_FULL_VERSION}/node-v${NODE_FULL_VERSION}-linux-${NODE_ARCH}.tar.gz" \
+    && echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/node.tar.gz -C /usr/local --strip-components=1 --no-same-owner \
+         --exclude='*/CHANGELOG.md' --exclude='*/LICENSE' --exclude='*/README.md' \
+    && rm -f /tmp/node.tar.gz \
+    && node --version && npm --version \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 paperclip \
