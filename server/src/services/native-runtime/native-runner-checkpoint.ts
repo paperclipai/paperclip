@@ -70,7 +70,7 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: Owner) {
 
 const authorities = new WeakMap<DurablePrpControlPlane, Map<string, ReturnType<typeof nativeRunnerCheckpointWriter>>>();
 
-export function nativeRunnerCheckpointPersistence(db: Db, bootId: string, authorityRunId: string,
+export function nativeRunnerCheckpointPersistence(db: Db, bootId: string, authorityRunId: string | (() => string),
   detach: (runIds: readonly string[], leaseOwner?: string) => Promise<unknown>) {
   return { db, bootId, authorityRunId, onFailure: async (runId: string, leaseOwner: string) => {
     try { await detach([runId], leaseOwner); }
@@ -82,12 +82,21 @@ export function nativeRunnerCheckpointPersistence(db: Db, bootId: string, author
   } };
 }
 
+/** Attachment identity owns the stored records; current business authority owns
+ * the write lease. They differ when a completed warm session is recovered. */
+export function nativeRunnerCheckpointRegistration(input: Omit<Parameters<typeof registerNativeRunnerCheckpoint>[0], "authority">) {
+  return (authority: DurablePrpControlPlane, identity?: { runId: string }) => registerNativeRunnerCheckpoint({
+    ...input, authority, binding: { ...input.binding, runId: identity?.runId ?? input.binding.runId },
+  });
+}
+
 export async function registerNativeRunnerCheckpoint(input: {
   db: Db; binding: Binding; bootId: string; authority: DurablePrpControlPlane;
-  authorityRunId?: string;
+  authorityRunId?: string | (() => string);
   onFailure?: (runId: string, leaseOwner: string) => Promise<void>;
 }): Promise<void> {
-  const authorityRunId = input.authorityRunId ?? input.binding.runId;
+  const authorityRunId = typeof input.authorityRunId === "function"
+    ? input.authorityRunId() : input.authorityRunId ?? input.binding.runId;
   const [owner] = await input.db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, input.binding.companyId),
     eq(nativeRunFinalizations.issueId, input.binding.issueId),

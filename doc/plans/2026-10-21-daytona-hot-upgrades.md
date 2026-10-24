@@ -477,3 +477,17 @@ Startup wiring passed 39 tests. A parallel retention invocation hit the existing
 rerun passed. Logs: `/tmp/lean-final-idle-tests.log` and
 `/tmp/lean-startup-retention-tests.log`. Workspace typecheck/build passed after
 startup wiring; final-head validation is tracked in the PR.
+
+### Warm attachment ownership (2026-10-24)
+
+Checkpoint record identity follows the attached PRP run. Its write lease follows
+the currently admitted business run. These identities differ while a replacement
+controller adopts a completed warm session before attaching the next turn. Both
+plugin tasks and built-in drivers use the same registration helper, and a reused
+backend resolves current authority when it registers instead of capturing the
+previous run's lease. Losing that authority still fences subsequent writes.
+
+The recovery integration suite accepts `PAPERCLIP_TEST_DATABASE_URL` for an
+explicit disposable Postgres instance when native embedded Postgres is unavailable.
+It creates and removes a fresh database for each invocation; it does not reuse the
+URL's database as fixture storage. This option changes test setup only.

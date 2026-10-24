@@ -20,6 +20,8 @@ import {
   environmentLeases,
   environments,
   createDb,
+  applyPendingMigrations,
+  closeRegisteredClients,
   heartbeatRuns,
   heartbeatRunEvents,
   issueRecoveryActions,
@@ -27,6 +29,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   nativeRunnerCheckpoints,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -61,7 +64,7 @@ import { createIsolatedTestHome } from "../../__tests__/helpers/isolated-test-ho
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { waitForPendingRunFailureReports } from "../run-failure-report.js";
 import { closeIdleWarmNativeSessionsForRestart, detachNativeSessionsForRestart, executePaperclipNativeSession, NativeControllerDetachedForRestartError } from "./native-session-executor.js";
-import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointRegistration, nativeRunnerCheckpointWriter, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
@@ -96,7 +99,10 @@ const unregisteredPrompt = {
   digest: "b0cab3306694028624bbccbf40984a7aca7c809f77b29bfd959325a2af3f7a66",
 } as const;
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+// An explicitly supplied disposable database also permits qualification on hosts
+// where native Postgres cannot allocate semaphores. Never fall back silently.
+const testDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const embeddedPostgresSupport = testDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -172,9 +178,21 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
   let successor: NativeControllerIdentity;
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "native-runner-restart-recovery-",
-    );
+    if (testDatabaseUrl) {
+      const admin = createDb(testDatabaseUrl);
+      const databaseName = `recovery_${randomUUID().replaceAll("-", "")}`;
+      try { await admin.$client.unsafe(`create database "${databaseName}"`); }
+      finally { await admin.$client.end(); }
+      const url = new URL(testDatabaseUrl); url.pathname = `/${databaseName}`;
+      const connectionString = url.toString();
+      temporary = { connectionString, cleanup: async () => {
+        await closeRegisteredClients(connectionString);
+        const cleanupAdmin = createDb(testDatabaseUrl);
+        try { await cleanupAdmin.$client.unsafe(`drop database "${databaseName}"`); }
+        finally { await cleanupAdmin.$client.end(); }
+      } };
+      await applyPendingMigrations(connectionString);
+    } else temporary = await startEmbeddedPostgresTestDatabase("native-runner-restart-recovery-");
     runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
     isolatedHome = createIsolatedTestHome();
     paperclipHome = isolatedHome.home;
@@ -216,7 +234,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       runtimeConfig: {},
       permissions: {},
     });
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterAll(async () => {
     runnerPrpWebSocketInternals.resetForTests();
@@ -822,6 +840,59 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
     expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(saved?.records);
     await authority.stop();
+  });
+
+  it("fences plugin warm attachment checkpoints with the current run, including completed-session recovery", async () => {
+    const fixture = await seedRun("WARM-CHECKPOINT-CALLBACK");
+    const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+    const root = resolve(runtimeRoot, fixture.runId);
+    const identity = transportOptions(fixture, root).prpIdentity;
+    const artifact = { expectedRunnerVersion: "warm-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` };
+    const authority = new DurablePrpControlPlane({ ...artifact, stateDirectory: resolve(root, "control-plane"), identity });
+    let admittedRunId = fixture.runId;
+    // This is the production callback shared by plugin tasks and built-in drivers.
+    // Its closure survives the first run, just as the warm backend does.
+    const register = nativeRunnerCheckpointRegistration({ db: fixture.db, binding,
+      bootId: successor.bootId, authorityRunId: () => admittedRunId });
+    await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+      controllerGeneration: 1, leaseOwner: "first-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    try {
+      await register(authority, identity);
+      const saved = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+      const nextRunId = randomUUID();
+      await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, nativeIssueId: fixture.issueId,
+        nativeSessionId: identity.normalizedSessionId, runtimeMode: "native", status: "running", invocationSource: "manual" });
+      await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
+        phase: "observed", controllerBootId: successor.bootId, controllerGeneration: 1,
+        leaseOwner: "second-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000) });
+      await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
+      await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      admittedRunId = nextRunId;
+      const nextIdentity = { ...identity, runId: nextRunId, turnId: `turn-${nextRunId}`, itemId: `item-${nextRunId}` };
+      await register(authority, nextIdentity);
+      authority.rotateRunIdentity(nextIdentity);
+      authority.queueCommand("session.snapshot", {}, "second-warm-snapshot");
+      await authority.flushCheckpoint();
+      expect((await loadNativeRunnerCheckpoint(fixture.db, { ...binding, runId: nextRunId }))?.runId).toBe(nextRunId);
+      expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(saved.records);
+
+      // A replacement adopts the old settled identity before attaching the new
+      // run. Only the new run has a live controller lease at this point.
+      const recoveredRoot = resolve(runtimeRoot, `recovered-warm-${nextRunId}`);
+      saved.restoreSessionDirectory(recoveredRoot);
+      const recovered = new DurablePrpControlPlane({ ...artifact, stateDirectory: resolve(recoveredRoot, "control-plane"), identity });
+      try {
+        await register(recovered, identity);
+        recovered.queueCommand("session.snapshot", {}, "restored-warm-snapshot");
+        await recovered.flushCheckpoint();
+        expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records.has("command:1")).toBe(true);
+        await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: 2, leaseOwner: "replacement" })
+          .where(eq(nativeRunFinalizations.runId, nextRunId));
+        recovered.queueCommand("session.snapshot", {}, "stale-warm-snapshot");
+        await expect(recovered.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+      } finally { await recovered.stop(); }
+    } finally { await authority.stop(); }
   });
 
   it("applies checkpoint deltas in Postgres without rewriting authority and removes only evicted events", async () => {

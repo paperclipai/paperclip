@@ -81,7 +81,7 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { nativeRunnerCheckpointPersistence, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
 import type {
@@ -11964,11 +11964,15 @@ async function createRunnerdBackendWithinSessionClaim(
       codexTransportFactory: recovery => createRunnerdCodexTransport({ provider: provider.kind, stateDirectory: root,
         ...owner.driver, runnerArtifact: input.controllerPersistence?.runnerArtifact ?? description.runner,
         controlPlaneRegistration: input.controllerPersistence ? async (authority, identity, signal) => {
-          await registerNativeRunnerCheckpoint({
+          await nativeRunnerCheckpointRegistration({
             ...nativeRunnerCheckpointPersistence(input.db, input.controllerPersistence!.bootId,
-              input.execution.binding.runId, detachNativeSessionsForRestart),
-            authority, binding: input.execution.binding,
-          });
+              () => {
+                const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+                if (!current) throw new Error("native_session_tool_authority_unavailable");
+                return current.runId;
+              }, detachNativeSessionsForRestart),
+            binding: input.execution.binding,
+          })(authority, identity);
           return owner.driver.controlPlaneRegistration!(authority, identity, signal);
         } : owner.driver.controlPlaneRegistration,
         recoverSemanticToolInput: input.controllerPersistence ? call => {
@@ -13634,7 +13638,11 @@ async function createRunnerdBackendWithinSessionClaim(
           },
           target,
           controllerPersistence: input.controllerPersistence ? nativeRunnerCheckpointPersistence(
-            input.db, input.controllerPersistence.bootId, input.execution.binding.runId, detachNativeSessionsForRestart) : undefined,
+            input.db, input.controllerPersistence.bootId, () => {
+              const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+              if (!current) throw new Error("native_session_tool_authority_unavailable");
+              return current.runId;
+            }, detachNativeSessionsForRestart) : undefined,
           binding: input.remoteWarmRecovery
             ? { ...input.execution.binding, runId: input.remoteWarmRecovery.identity.runId }
             : input.execution.binding,
