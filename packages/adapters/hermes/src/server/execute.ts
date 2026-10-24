@@ -377,7 +377,15 @@ export async function execute(
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       await ctx.onLog("stderr", `[hermes] Cannot start without the required Paperclip-managed skills: ${reason}\n`);
-      throw err;
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        provider: cfgString(config.provider) || null,
+        model,
+        errorMessage: `Hermes cannot start: ${reason}`,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      };
     }
   }
 
