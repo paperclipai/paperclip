@@ -110,6 +110,8 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
       expect(query(invocation)).toContain(invocation.runId);
       expect(query(invocation)).toContain("company-synthetic");
       expect(invocation.systemPrompt).toContain("$PAPERCLIP_API_KEY");
+      expect(invocation.systemPrompt).toContain("-H @<(printf 'Authorization: Bearer %s' \"$PAPERCLIP_API_KEY\")");
+      expect(invocation.systemPrompt).not.toContain('-H "Authorization: Bearer $PAPERCLIP_API_KEY"');
       expect(invocation.systemPrompt).toContain('-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"');
       expect(invocation.systemPrompt).toContain("body=$(cat <<'MD'");
       expect(invocation.systemPrompt).toContain("--data-binary @-");

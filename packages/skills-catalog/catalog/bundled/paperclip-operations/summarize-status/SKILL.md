@@ -90,7 +90,7 @@ jq -n \
     model: $model
   }' |
 curl -sS -X PUT \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H @<(printf 'Authorization: Bearer %s' "$PAPERCLIP_API_KEY") \
   -H "Content-Type: application/json" \
   "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/summary-slots/project/header" \
   --data-binary @-
