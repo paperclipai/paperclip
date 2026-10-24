@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { inviteSignUpAuthOptions } from "./invite-sign-up-gate.js";
 import {
   workspaceLoginHandoffPlugin,
   type WorkspaceHandoffExpectedIdentity,
@@ -273,8 +274,10 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
-      disableSignUp: config.authDisableSignUp,
+      // `invite` keeps Better Auth's sign-up on and gates it below instead.
+      disableSignUp: config.authSignUpMode === "disabled",
     },
+    ...(config.authSignUpMode === "invite" ? inviteSignUpAuthOptions(db) : {}),
     rateLimit: buildBetterAuthRateLimitOptions({
       deploymentMode: config.deploymentMode,
       deploymentExposure: config.deploymentExposure,

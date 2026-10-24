@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AUTH_BASE_URL_MODES,
+  AUTH_SIGN_UP_MODES,
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
@@ -59,6 +60,12 @@ export const serverConfigSchema = z.object({
 export const authConfigSchema = z.object({
   baseUrlMode: z.enum(AUTH_BASE_URL_MODES).default("auto"),
   publicBaseUrl: z.string().url().optional(),
+  /**
+   * Sign-up mode. When set, it takes precedence over the legacy
+   * `disableSignUp` flag. When omitted, `disableSignUp: true` means
+   * `disabled` and anything else means `open`.
+   */
+  signUp: z.enum(AUTH_SIGN_UP_MODES).optional(),
   disableSignUp: z.boolean().default(false),
 }).passthrough();
 

@@ -29,6 +29,20 @@ describe("paperclip config schema", () => {
     expect(parsed.secrets.localEncrypted.keyFilePath).toBe("~/.paperclip/instances/default/secrets/master.key");
   });
 
+  it("accepts the auth sign-up modes and leaves the setting unset by default", () => {
+    const base = {
+      $meta: { version: 1, updatedAt: "2026-10-08T00:00:00.000Z", source: "configure" },
+      database: { mode: "embedded-postgres" },
+      logging: { mode: "file" },
+      server: {},
+    };
+    expect(paperclipConfigSchema.parse(base).auth.signUp).toBeUndefined();
+    for (const signUp of ["open", "invite", "disabled"]) {
+      expect(paperclipConfigSchema.parse({ ...base, auth: { signUp } }).auth.signUp).toBe(signUp);
+    }
+    expect(paperclipConfigSchema.safeParse({ ...base, auth: { signUp: "invites" } }).success).toBe(false);
+  });
+
   it("retains extension keys at the top level and every nested config boundary", () => {
     const parsed = paperclipConfigSchema.parse({
       $meta: {

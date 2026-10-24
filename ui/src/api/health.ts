@@ -1,4 +1,4 @@
-import type { ServerInfoSnapshot } from "@paperclipai/shared";
+import type { AuthSignUpMode, ServerInfoSnapshot } from "@paperclipai/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { ApiError } from "./client";
 import { ApiUnavailableError, readApiJson } from "./response";
@@ -36,6 +36,8 @@ export type HealthStatus = {
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
+  /** Who may create an account; present on `authenticated` instances. */
+  authSignUpMode?: AuthSignUpMode;
   /** The unclaimed Cloud app is ready; this response did not probe SQL. */
   warmStandby?: boolean;
   features?: {
