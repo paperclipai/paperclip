@@ -6,6 +6,32 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 
+type RunProcess = Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "processGroupId" | "processStartedAt">;
+
+function absent(pid: number) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
+/** The run's recorded local process or process group still exists; a PID reused by another process does not count. */
+async function localProcessAlive(run: RunProcess) {
+  let processAlive = Boolean(run.processPid && !absent(run.processPid));
+  let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
+  if (processAlive && run.processStartedAt) {
+    const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
+    if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
+      processAlive = false;
+      if (run.processGroupId === run.processPid) groupAlive = false;
+    }
+  }
+  return processAlive || groupAlive;
+}
+
+function isReleasedSshLease(lease: typeof environmentLeases.$inferSelect) {
+  return lease.provider === "ssh" && Boolean(lease.releasedAt) &&
+    ["released", "expired", "failed"].includes(lease.status) && lease.cleanupStatus !== "failed";
+}
+
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   if (!agentIds.length) return true;
@@ -22,10 +48,6 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   const abandoned = coordinators.filter(row => row.leaseOwner);
   if (abandoned.some(row => !row.leaseExpiresAt || row.leaseExpiresAt > now || row.resultId ||
       runs.find(run => run.id === row.runId)?.status !== "cancelled")) return false;
-  const absent = (pid: number) => {
-    try { process.kill(pid, 0); return false; }
-    catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-  };
   for (const coordinator of abandoned) {
     if (!coordinator.controllerPid || absent(coordinator.controllerPid)) continue;
     const observed = await readProcessStartedAt(coordinator.controllerPid).catch(() => null);
@@ -37,19 +59,14 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
-      if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt)) return false;
+      // The SSH driver writes no termination receipt (#16346). A released SSH lease whose run has no
+      // live local process keeps the proof that applied before receipts were required.
+      if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt) &&
+          !(runLeases.every(lease => hasRemoteTerminationReceipt(lease) || isReleasedSshLease(lease)) &&
+            !await localProcessAlive(run))) return false;
       continue;
     }
-    let processAlive = Boolean(run.processPid && !absent(run.processPid));
-    let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
-    if (processAlive && run.processStartedAt) {
-      const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
-        processAlive = false;
-        if (run.processGroupId === run.processPid) groupAlive = false;
-      }
-    }
-    if (processAlive || groupAlive) return false;
+    if (await localProcessAlive(run)) return false;
     if (run.status !== "cancelled" || !run.startedAt) continue;
     if (run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
         !await hasNativeLocalProcessStop(db, run.companyId, run.id) &&
