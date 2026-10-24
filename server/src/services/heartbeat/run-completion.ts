@@ -18,7 +18,10 @@ import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
-import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
+import {
+  getRememberedResponsibleUserDenialForRun,
+  normalizeResponsibleUserDenialCode,
+} from "../responsible-user-denial-run-outcomes.js";
 import { parseObject } from "../../adapters/utils.js";
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON, isChatOriginPublicationCandidate, isExternalChatPresentationContext, mergeHeartbeatRunResultJson, resolveHeartbeatRunResponse, type RunPresentationDecision } from "../heartbeat-run-summary.js";
 import { normalizeMaxTurnStopReason } from "../heartbeat-stop-metadata.js";
@@ -393,8 +396,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await processCancellation?.settled;
     let outcome: RunSessionOutcome;
     const latestRun = await getRun(run.id);
+    // The denial can be recorded only in memory when the durable write failed.
+    const recordedResponsibleUserDenialCode =
+      normalizeResponsibleUserDenialCode(latestRun?.errorCode) ??
+      getRememberedResponsibleUserDenialForRun(run.id);
     if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
       outcome = latestRun.status;
+    } else if (recordedResponsibleUserDenialCode) {
+      outcome = "failed";
     } else if (signal.aborted) {
       outcome = "cancelled";
     } else if (adapterResult.nativeFinalization) {
@@ -450,8 +459,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
                 (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
               currentUserRedactionOptions,
             );
-    const recordedResponsibleUserDenialCode =
-      normalizeResponsibleUserDenialCode(latestRun?.errorCode);
     const runErrorCode =
       outcome === "timed_out"
         ? "timeout"
@@ -1066,7 +1073,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
-      );
+      ) ?? getRememberedResponsibleUserDenialForRun(run.id);
     // The runtime resolution is scoped to the adapter try block. The
     // durable coordinator is also the stronger authority here: legacy
     // runs simply have no row, while native result-less exhaustion keeps
@@ -1319,7 +1326,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(runId).catch(() => null))?.errorCode,
-      );
+      ) ?? getRememberedResponsibleUserDenialForRun(runId);
     const nonRetryablePreflightCode =
       nonRetryablePreflightFailureCode(outerErr);
     const workspaceGitScanFailure = isWorkspaceGitScanError(outerErr) ? outerErr : null;

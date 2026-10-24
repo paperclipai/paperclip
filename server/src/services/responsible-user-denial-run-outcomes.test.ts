@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
+  clearRememberedResponsibleUserDenialForRun,
+  getRememberedResponsibleUserDenialForRun,
+  MAX_REMEMBERED_RESPONSIBLE_USER_DENIALS,
   normalizeResponsibleUserDenialCode,
   recordResponsibleUserDenialOnActiveRun,
+  rememberResponsibleUserDenialForRun,
 } from "./responsible-user-denial-run-outcomes.js";
 
 const publishLiveEventMock = vi.hoisted(() => vi.fn());
@@ -14,7 +18,7 @@ vi.mock("./live-events.js", () => ({
 function makeDbReturning(row: Record<string, unknown> | null) {
   const returning = vi.fn(() => Promise.resolve(row ? [row] : []));
   const where = vi.fn(() => ({ returning }));
-  const set = vi.fn(() => ({ where }));
+  const set = vi.fn((_patch: Record<string, unknown>) => ({ where }));
   const update = vi.fn(() => ({ set }));
   return {
     db: { update } as unknown as Db,
@@ -35,6 +39,43 @@ describe("responsible-user denial run outcomes", () => {
     );
     expect(normalizeResponsibleUserDenialCode("access_denied")).toBeNull();
     expect(normalizeResponsibleUserDenialCode(null)).toBeNull();
+  });
+
+  it("remembers a denial until the run finalizer clears it", () => {
+    const runId = "11111111-1111-4111-8111-111111111111";
+    expect(
+      rememberResponsibleUserDenialForRun(runId, "RESPONSIBLE_USER_UNAVAILABLE"),
+    ).toBe("RESPONSIBLE_USER_UNAVAILABLE");
+    expect(getRememberedResponsibleUserDenialForRun(runId)).toBe(
+      "RESPONSIBLE_USER_UNAVAILABLE",
+    );
+    expect(clearRememberedResponsibleUserDenialForRun(runId)).toBe(true);
+    expect(getRememberedResponsibleUserDenialForRun(runId)).toBeNull();
+  });
+
+  it("ignores a run id that is not a UUID", () => {
+    expect(
+      rememberResponsibleUserDenialForRun("not-a-run-id", "RESPONSIBLE_USER_UNAVAILABLE"),
+    ).toBeNull();
+    expect(getRememberedResponsibleUserDenialForRun("not-a-run-id")).toBeNull();
+  });
+
+  it("keeps the remembered denials bounded, evicting the oldest first", () => {
+    const runIdAt = (index: number) =>
+      `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+    const total = MAX_REMEMBERED_RESPONSIBLE_USER_DENIALS + 5;
+    for (let index = 0; index < total; index += 1) {
+      rememberResponsibleUserDenialForRun(runIdAt(index), "RESPONSIBLE_USER_UNAUTHORIZED");
+    }
+    for (let index = 0; index < 5; index += 1) {
+      expect(getRememberedResponsibleUserDenialForRun(runIdAt(index))).toBeNull();
+    }
+    expect(getRememberedResponsibleUserDenialForRun(runIdAt(total - 1))).toBe(
+      "RESPONSIBLE_USER_UNAUTHORIZED",
+    );
+    for (let index = 0; index < total; index += 1) {
+      clearRememberedResponsibleUserDenialForRun(runIdAt(index));
+    }
   });
 
   it("records the code on an active run and publishes the live status payload", async () => {
@@ -65,6 +106,9 @@ describe("responsible-user denial run outcomes", () => {
     expect(set).toHaveBeenCalledWith(expect.objectContaining({
       errorCode: "RESPONSIBLE_USER_UNAUTHORIZED",
     }));
+    const persistedPatch = set.mock.calls[0]?.[0];
+    expect(persistedPatch).not.toHaveProperty("status");
+    expect(persistedPatch).not.toHaveProperty("finishedAt");
     expect(publishLiveEventMock).toHaveBeenCalledWith({
       companyId: "company-1",
       type: "heartbeat.run.status",

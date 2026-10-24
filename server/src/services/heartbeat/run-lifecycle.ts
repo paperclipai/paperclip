@@ -10,6 +10,7 @@ import {
   DETACHED_PROCESS_ERROR_CODE,
 } from "./recovery.js";
 import { normalizeAgentNameKey } from "./retries.js";
+import { clearRememberedResponsibleUserDenialForRun } from "../responsible-user-denial-run-outcomes.js";
 import {
   type RunSessionOutcome,
   deriveTaskKeyWithHeartbeatFallback,
@@ -57,6 +58,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  isResponsibleUserDenialCode,
   type HeartbeatRunStatusPhase,
   type RequestConfirmationResult,
   type RunLivenessState,
@@ -1084,6 +1086,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .then((rows) => rows[0] ?? null));
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearRememberedResponsibleUserDenialForRun(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1208,6 +1213,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             }));
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearRememberedResponsibleUserDenialForRun(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1223,6 +1231,10 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+
+    if (current && isHeartbeatRunTerminalStatus(current.status)) {
+      clearRememberedResponsibleUserDenialForRun(current.id);
+    }
 
     return { run: current, updated: false as const };
   }
@@ -2577,7 +2589,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     // and queue nothing.
     if (
       run.errorCode != null &&
-      PRE_ADAPTER_SETUP_FAILURE_CODES.has(run.errorCode)
+      (PRE_ADAPTER_SETUP_FAILURE_CODES.has(run.errorCode) ||
+        isResponsibleUserDenialCode(run.errorCode))
     ) {
       if (run.issueCommentStatus !== "not_applicable") {
         await patchRunIssueCommentStatus(run.id, {
