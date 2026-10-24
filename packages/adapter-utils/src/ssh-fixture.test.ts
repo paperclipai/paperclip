@@ -1,5 +1,7 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +9,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
+  createSshCommandManagedRuntimeRunner,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   readSshEnvLabFixtureStatus,
@@ -19,6 +22,9 @@ import {
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { createCommandManagedSandboxCallbackBridgeQueueClient } from "./sandbox-callback-bridge.js";
+import { sandboxBridgeEnvelopeLimit } from "./sandbox-callback-bridge-body.js";
+import { startAdapterExecutionTargetPaperclipBridge } from "./execution-target.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 const UNREACHABLE_SSH_SPEC = {
@@ -281,6 +287,107 @@ describe("ssh env-lab fixture", () => {
 
     expect(result.stdout).toBe("hello over ssh stdin\n");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("reads binary attachment queue envelopes through SSH without a second base64 expansion", async () => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH attachment queue test");
+    if (!started) {
+      if (process.env.CI === "true" || process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB === "1") throw new Error(sshEnvLabUnsupportedReason ?? "SSH fixture did not start.");
+      return;
+    }
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    const smallClient = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner: createSshCommandManagedRuntimeRunner({ spec, maxBufferBytes: 1024 * 1024 }),
+      remoteCwd: started.workspaceDir,
+    });
+    const attachmentEnvelope = (size: number) => {
+      const multipart = Buffer.concat([
+        Buffer.from("--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"),
+        randomBytes(size),
+        Buffer.from("\r\n--boundary--\r\n"),
+      ]);
+      return JSON.stringify({
+        id: "upload", method: "POST", path: "/api/companies/co/issues/issue/attachments",
+        headers: { "content-type": "multipart/form-data; boundary=boundary" },
+        body: multipart.toString("base64"), bodyEncoding: "base64",
+      });
+    };
+
+    for (const kib of [250, 700]) {
+      const filePath = path.join(started.workspaceDir, `${kib}.json`);
+      const envelope = attachmentEnvelope(kib * 1024);
+      await writeFile(filePath, envelope);
+      expect(await smallClient.readTextFile(filePath, Buffer.byteLength(envelope))).toBe(envelope);
+    }
+
+    const maxBodyBytes = 10 * 1024 * 1024 + 64 * 1024;
+    const fullClient = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner: createSshCommandManagedRuntimeRunner({ spec, maxBufferBytes: sandboxBridgeEnvelopeLimit(maxBodyBytes) + 1 }),
+      remoteCwd: started.workspaceDir,
+    });
+    const filePath = path.join(started.workspaceDir, "max-attachment.json");
+    const envelope = attachmentEnvelope(10 * 1024 * 1024);
+    await writeFile(filePath, envelope);
+    expect(await fullClient.readTextFile(filePath, Buffer.byteLength(envelope))).toBe(envelope);
+    await expect(fullClient.readTextFile(filePath, Buffer.byteLength(envelope) - 1)).rejects.toThrow(/size limit/);
+  }, 60_000);
+
+  it("forwards attachment uploads across the SSH queue size boundary and recovers after rejection", async () => {
+    const rootDir = await createFixtureRootDir();
+    const started = await startSshEnvLabFixtureOrSkip(path.join(rootDir, "state.json"), "SSH attachment bridge test");
+    if (!started) {
+      if (process.env.CI === "true" || process.env.PAPERCLIP_ENABLE_DARWIN_SSH_ENV_LAB === "1") throw new Error(sshEnvLabUnsupportedReason ?? "SSH fixture did not start.");
+      return;
+    }
+    const prefix = Buffer.from("--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n");
+    const suffix = Buffer.from("\r\n--boundary--\r\n");
+    const received: Array<{ size: number; hash: string }> = [];
+    const api = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks);
+      const size = body.length - prefix.length - suffix.length;
+      if (size <= 10 * 1024 * 1024) received.push({ size, hash: createHash("sha256").update(body).digest("hex") });
+      res.writeHead(size <= 10 * 1024 * 1024 ? 201 : 413, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
+    const address = api.address();
+    if (!address || typeof address === "string") throw new Error("Expected a listening test API.");
+    const spec = { ...await buildSshEnvLabFixtureConfig(started), remoteCwd: started.workspaceDir };
+    let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+    try {
+      bridge = await startAdapterExecutionTargetPaperclipBridge({
+        runId: "ssh-attachment-test",
+        target: { kind: "remote", transport: "ssh", remoteCwd: started.workspaceDir, spec },
+        runtimeRootDir: path.join(started.workspaceDir, ".paperclip-runtime", "test"),
+        adapterKey: "codex",
+        hostApiToken: "test-run-token",
+        hostApiUrl: `http://127.0.0.1:${address.port}`,
+      });
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      for (const size of [250 * 1024, 700 * 1024, 10 * 1024 * 1024, 10 * 1024 * 1024 + 1, 250 * 1024]) {
+        const body = Buffer.concat([
+          prefix,
+          randomBytes(size),
+          suffix,
+        ]);
+        const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/companies/co/issues/issue/attachments`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`, "content-type": "multipart/form-data; boundary=boundary" },
+          body: new Uint8Array(body),
+        });
+        expect(response.status).toBe(size > 10 * 1024 * 1024 ? 413 : 201);
+        if (size <= 10 * 1024 * 1024) {
+          expect(received.at(-1)).toEqual({ size, hash: createHash("sha256").update(body).digest("hex") });
+        }
+      }
+      expect(received.map((item) => item.size)).toEqual([250, 700, 10240, 250].map((kib) => kib * 1024));
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => api.close(() => resolve()));
+    }
+  }, 90_000);
 
   it("does not treat an unrelated reused pid as the running fixture", async () => {
     const rootDir = await createFixtureRootDir();
