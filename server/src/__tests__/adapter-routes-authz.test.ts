@@ -44,6 +44,10 @@ const mocks = vi.hoisted(() => {
     reloadExternalAdapter: vi.fn(),
     getUiParserSource: vi.fn(),
     getOrExtractUiParserSource: vi.fn(),
+    pruneReloadDirsForType: vi.fn(),
+    withAdapterLock: vi.fn(async (_key: string, fn: () => Promise<unknown>) => fn()),
+    withAdapterLocks: vi.fn(async (_keys: string[], fn: () => Promise<unknown>) => fn()),
+    lockKeysForType: vi.fn((type: string) => [`type:${type}`]),
   };
 });
 
@@ -67,6 +71,10 @@ vi.mock("../adapters/plugin-loader.js", () => ({
   getUiParserSource: mocks.getUiParserSource,
   getOrExtractUiParserSource: mocks.getOrExtractUiParserSource,
   reloadExternalAdapter: mocks.reloadExternalAdapter,
+  pruneReloadDirsForType: mocks.pruneReloadDirsForType,
+  withAdapterLock: mocks.withAdapterLock,
+  withAdapterLocks: mocks.withAdapterLocks,
+  lockKeysForType: mocks.lockKeysForType,
 }));
 
 function registerRouteMocks() {
@@ -90,6 +98,10 @@ function registerRouteMocks() {
     getUiParserSource: mocks.getUiParserSource,
     getOrExtractUiParserSource: mocks.getOrExtractUiParserSource,
     reloadExternalAdapter: mocks.reloadExternalAdapter,
+    pruneReloadDirsForType: mocks.pruneReloadDirsForType,
+    withAdapterLock: mocks.withAdapterLock,
+    withAdapterLocks: mocks.withAdapterLocks,
+    lockKeysForType: mocks.lockKeysForType,
   }));
 }
 
