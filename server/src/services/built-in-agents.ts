@@ -215,6 +215,24 @@ const FALLBACK_SUMMARIZER_SKILL = [
   "",
 ].join("\n");
 
+const FALLBACK_JUDGE_INSTRUCTIONS = [
+  "# Judge",
+  "",
+  "You are Paperclip's built-in Judge agent.",
+  "Re-run the external criteria check read-only and post exactly one verdict comment per adjudication issue.",
+  "Judge only: never change the delivery issue, never edit files, skills, agent configuration, or any other agent's work.",
+  "",
+].join("\n");
+
+const FALLBACK_LEARNING_INSTRUCTIONS = [
+  "# Learning",
+  "",
+  "You are Paperclip's built-in Learning agent.",
+  "Extract durable lessons from delivery receipts and write them into a new version of the delivery methodology skill.",
+  "Propose only: open a request_confirmation for the human gate and never install, activate, or roll back a skill version yourself.",
+  "",
+].join("\n");
+
 const warnedBuiltInTextFallbacks = new Set<string>();
 const warnedBuiltInTextReadErrors = new Set<string>();
 
@@ -308,6 +326,10 @@ const SUMMARIZER_SKILL = readBuiltInTextWithFallback(
   FALLBACK_SUMMARIZER_SKILL,
 );
 
+const JUDGE_INSTRUCTIONS = readBuiltInText("judge/AGENTS.md", FALLBACK_JUDGE_INSTRUCTIONS);
+
+const LEARNING_INSTRUCTIONS = readBuiltInText("learning/AGENTS.md", FALLBACK_LEARNING_INSTRUCTIONS);
+
 const DEFINITIONS = validateBuiltInAgentDefinitions([
   {
     key: "briefs",
@@ -324,12 +346,25 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     key: "learning",
     displayName: "Learning Agent",
     featureKeys: ["learning"],
-    shortPurpose: "Maintains reusable company learning from completed work and recurring patterns.",
-    defaultInstructions:
-      "You are Paperclip's built-in Learning agent. Extract durable lessons from completed work, preserve useful patterns, and keep learning artifacts grounded in source context.",
+    shortPurpose:
+      "Turns external delivery receipts into reusable company learning and proposes new skill versions for human approval.",
+    defaultInstructions: LEARNING_INSTRUCTIONS,
     defaultRole: "general",
-    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
-    defaultBudgetMonthlyCents: 0,
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "pi_local", "process"],
+    defaultBudgetMonthlyCents: 5000,
+  },
+  {
+    key: "judge",
+    displayName: "Judge Agent",
+    featureKeys: ["judge"],
+    shortPurpose:
+      "Runs the external criteria check independently and records a machine verdict for a delivery receipt.",
+    defaultInstructions: JUDGE_INSTRUCTIONS,
+    defaultRole: "general",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "pi_local", "process"],
+    defaultBudgetMonthlyCents: 5000,
   },
   {
     key: "reflection-coach",
@@ -488,6 +523,7 @@ const AUTO_PROVISION_ON_COMPANY_CREATE_KEYS = new Set<string>([]);
 const ROOT_AGENT_DEFAULT_CHANGE_GRANTS: PermissionKey[] = ["agents:configure", "skills:create"];
 const BUILT_IN_AGENT_DEFAULT_GRANTS: Record<string, PermissionKey[]> = {
   "reflection-coach": ["agents:suggest-changes", "skills:suggest-changes"],
+  learning: ["agents:suggest-changes", "skills:suggest-changes"],
 };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
