@@ -5,6 +5,7 @@ import {
   createDispatchResolvedInteractionIfCurrent,
   createEvaluateScheduledRetryGate,
   createPromoteDueScheduledRetries,
+  createPromoteEarlyUpstreamRecoveryRetries,
   createPromoteScheduledRetry,
 } from "./application/use-cases.js";
 import type { RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
@@ -14,6 +15,10 @@ export {
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  TRANSIENT_FAILURE_RETRY_REASON,
+  BOUNDED_TRANSIENT_RETRY_DELAYS_MS,
+  PROVIDER_QUOTA_ERROR_CODE,
+  TRANSIENT_UPSTREAM_ERROR_CODES,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -40,7 +45,12 @@ export type {
   QueuedRunStalenessErrorCode,
   StalenessDecision,
   QueuedRunFacts,
+  UpstreamRecoveryEvidence,
+  UpstreamFailureEvidence,
+  EarlyUpstreamReprobeFacts,
+  EarlyUpstreamReprobeDecision,
 } from "./domain/policy.js";
+export { EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS } from "./domain/policy.js";
 export type {
   PostCommitEffect,
   PromoteScheduledRetryOutcome,
@@ -72,6 +82,11 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({
       reader: adapter,
       promoteScheduledRetry,
+      promoteEarlyUpstreamRecoveryRetries: createPromoteEarlyUpstreamRecoveryRetries({
+        reader: adapter,
+        writer: adapter,
+        promoteScheduledRetry,
+      }),
     }),
     cancelStaleQueuedRun: createCancelStaleQueuedRun({
       writer: adapter,

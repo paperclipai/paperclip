@@ -5,7 +5,11 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import {
+  createRunDispatch,
+  EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS,
+  type PostCommitEffect,
+} from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -63,6 +67,22 @@ function deferral() {
     projectWorkspaceId: "workspace", deferralAttempt: 0, wasIssueAssignee: true,
   });
 }
+
+describe("bounded transient retry backoff", () => {
+  // The early upstream re-probe treats only pins beyond this threshold as an
+  // inherited far-future reset hint. A jittered step landing past it would be
+  // mistaken for one and could be promoted before its due time.
+  it("never schedules a jittered step past the early re-probe's far-pin threshold", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    for (let attempt = 1; attempt <= extracted.BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length; attempt += 1) {
+      for (const sample of [0, 0.5, 1]) {
+        const schedule = extracted.computeBoundedTransientHeartbeatRetrySchedule(attempt, now, () => sample);
+        expect(schedule).not.toBeNull();
+        expect(schedule!.delayMs).toBeLessThanOrEqual(EARLY_UPSTREAM_REPROBE_MIN_REMAINING_PIN_MS);
+      }
+    }
+  });
+});
 
 describe("heartbeat retry module callbacks", () => {
   it("preserves legacy helper and error-class identity", () => {
