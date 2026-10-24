@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
@@ -602,6 +602,61 @@ describe("WorkspaceFileBrowser", () => {
       workspace: "auto",
       browseFolderPath: null,
       browseQuery: null,
+    });
+  });
+
+  it("settles equivalent browse reports from an inline parent callback", () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([createItem()])));
+    const reports = vi.fn();
+    function BrowserParent() {
+      const [browseState, setBrowseState] = useState<{ folderPath: string | null }>({ folderPath: "ui/src/components" });
+      return (
+        <WorkspaceFileBrowser
+          issueId="issue-1"
+          onOpen={vi.fn()}
+          initialFolderPath={browseState.folderPath}
+          onBrowseStateChange={(next) => {
+            reports(next);
+            if (reports.mock.calls.length > 5) throw new Error("Browse reports did not settle");
+            setBrowseState(next);
+          }}
+        />
+      );
+    }
+    const root = createRoot(container);
+    roots.push(root);
+    act(() => root.render(<BrowserParent />));
+
+    expect(reports).toHaveBeenCalledExactlyOnceWith({
+      q: null, folderPath: "ui/src/components", projectId: null, workspaceId: null,
+    });
+    expect(container.querySelector("input")).not.toBeNull();
+  });
+
+  it("reports folder changes to the latest callback without repeating unchanged state", () => {
+    useQueryMock.mockReturnValue(ok(availableResponse([createItem()])));
+    const first = vi.fn();
+    const latest = vi.fn();
+    const { root } = renderBrowser(vi.fn(), {
+      initialFolderPath: "ui/src/components",
+      onBrowseStateChange: first,
+    });
+    act(() => root.render(
+      <WorkspaceFileBrowser
+        issueId="issue-1"
+        onOpen={vi.fn()}
+        initialFolderPath="ui/src/components"
+        onBrowseStateChange={latest}
+      />,
+    ));
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(latest).not.toHaveBeenCalled();
+
+    const parentFolder = container.querySelector<HTMLButtonElement>('nav[aria-label="Current folder"] button[title="ui/src"]');
+    expect(parentFolder).not.toBeNull();
+    act(() => parentFolder?.click());
+    expect(latest).toHaveBeenCalledExactlyOnceWith({
+      q: null, folderPath: "ui/src", projectId: null, workspaceId: null,
     });
   });
 
