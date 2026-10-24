@@ -43,6 +43,18 @@ describe("resolveBundledPluginInstalls", () => {
     }]);
     expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("createos");
   });
+  it("resolves the optional boxd sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["boxd"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "boxd",
+      pluginKey: "paperclip.boxd-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/boxd"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("boxd");
+  });
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,

@@ -64,6 +64,11 @@ export interface BundledPluginCatalogEntry {
  */
 export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
   {
+    key: "boxd",
+    pluginKey: "paperclip.boxd-sandbox-provider",
+    relativePath: "sandbox-providers/boxd",
+  },
+  {
     key: "createos",
     pluginKey: "paperclip.createos-sandbox-provider",
     relativePath: "sandbox-providers/createos",
