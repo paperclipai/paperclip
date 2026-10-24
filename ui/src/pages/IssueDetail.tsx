@@ -105,6 +105,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
+  isOpeningChannelMessageQueue,
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
 } from "../lib/issue-queued-comment-queue";
@@ -2151,14 +2152,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       (!liveRuntimeRun && assigneeUsesPaperclipRunner)
         ? "paperclip_runner_v1"
         : "legacy";
-    return mergePendingIssueQueuedComments({
+    const queue = mergePendingIssueQueuedComments({
       issueId,
       authoritativeQueue: visibleAuthoritativeQueue,
       pendingComments,
       fallbackProtocol,
     });
+    return isOpeningChannelMessageQueue({ queue, runs: resolvedLinkedRuns, comments })
+      ? null
+      : queue;
   }, [
     authoritativeQueuedCommentQueue,
+    comments,
     commentsWithRunMeta,
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
@@ -2167,6 +2172,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     assigneeUsesPaperclipRunner,
     locallyQueuedCommentRunIds,
     queuedCommentQueueEnabled,
+    resolvedLinkedRuns,
   ]);
   const commentsForThread = useMemo(
     () =>

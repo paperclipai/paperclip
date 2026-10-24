@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { RunForIssue } from "../api/activity";
 import {
+  isOpeningChannelMessageQueue,
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
 } from "./issue-queued-comment-queue";
@@ -20,6 +22,68 @@ function comment(id: string, body: string) {
     updatedAt: now,
   };
 }
+
+describe("received opening channel messages", () => {
+  const opening = {
+    ...comment("opening", "Review this change"),
+    metadata: { version: 1 as const, sourceChannel: "slack" as const, sections: [] },
+  };
+  const run: RunForIssue = {
+    runId: "first-run", agentId: "agent-1", adapterType: "paperclip_runner",
+    invocationSource: "assignment", status: "queued", startedAt: null, finishedAt: null,
+    createdAt: "2026-09-04T12:00:01.000Z", contextIssueId: "issue-1",
+    wakeupRequestId: "opening-wake", wakeCommentIds: [opening.id],
+    usageJson: null, resultJson: null,
+  };
+  const queue = normalizeIssueQueuedCommentQueue({
+    issueId: "issue-1", queueId: "opening-wake", state: "queued",
+    entries: [{ comment: opening, position: 0, canEdit: true, canDiscard: true }],
+  }, "issue-1");
+
+  it("keeps the saved opener in history without consuming or changing the queue", () => {
+    const before = structuredClone(queue);
+    expect(isOpeningChannelMessageQueue({ queue, runs: [run], comments: [opening] })).toBe(true);
+    expect(queue).toEqual(before);
+  });
+
+  it("keeps a follow-up pending after an earlier turn", () => {
+    expect(isOpeningChannelMessageQueue({ queue, runs: [
+      { ...run, runId: "earlier", status: "succeeded", wakeupRequestId: "earlier-wake" }, run,
+    ], comments: [opening] })).toBe(false);
+  });
+
+  it("keeps a retry pending even when its predecessor is not loaded", () => {
+    expect(isOpeningChannelMessageQueue({ queue, runs: [{ ...run, retryOfRunId: "earlier" }], comments: [opening] })).toBe(false);
+  });
+
+  it("does not hide a queue before the saved comment or matching run arrives", () => {
+    expect(isOpeningChannelMessageQueue({ queue, runs: [run], comments: [] })).toBe(false);
+    expect(isOpeningChannelMessageQueue({ queue, runs: [], comments: [opening] })).toBe(false);
+    expect(isOpeningChannelMessageQueue({ queue, runs: [{ ...run, wakeupRequestId: "other-wake" }], comments: [opening] })).toBe(false);
+  });
+
+  it("keeps ordinary board messages pending until their run starts", () => {
+    expect(isOpeningChannelMessageQueue({ queue, runs: [run], comments: [{ ...opening, metadata: null }] })).toBe(false);
+  });
+
+  it("keeps deferred messages and explicit execution waits visible", () => {
+    expect(isOpeningChannelMessageQueue({ queue: { ...queue, state: "deferred" }, runs: [run], comments: [opening] })).toBe(false);
+    expect(isOpeningChannelMessageQueue({ queue: { ...queue, executionWait: { reason: "budget", message: "Budget exhausted" } }, runs: [run], comments: [opening] })).toBe(false);
+  });
+
+  it("keeps a coalesced batch in its editable queue", () => {
+    const followUp = comment("follow-up", "Also check this");
+    expect(isOpeningChannelMessageQueue({
+      queue: { ...queue, entries: [...queue.entries, { comment: followUp, position: 1, canEdit: true, canDiscard: true }] },
+      runs: [run], comments: [opening, followUp],
+    })).toBe(false);
+    expect(isOpeningChannelMessageQueue({ queue, runs: [{ ...run, wakeCommentIds: [opening.id, followUp.id] }], comments: [opening] })).toBe(false);
+  });
+
+  it("does not mistake a later coalesced channel comment for the opener", () => {
+    expect(isOpeningChannelMessageQueue({ queue, runs: [run], comments: [{ ...opening, createdAt: new Date("2026-09-04T12:00:02.000Z") }] })).toBe(false);
+  });
+});
 
 describe("normalizeIssueQueuedCommentQueue", () => {
   it("retains the immutable response and fresh-turn requirement", () => {

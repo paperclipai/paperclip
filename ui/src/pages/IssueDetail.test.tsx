@@ -4099,6 +4099,41 @@ describe("IssueDetail", () => {
     expect(props().queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual([waiting.id]);
   });
 
+  it("shows a received opening Slack message in history while its first run waits to start", async () => {
+    const opening = createIssueComment({
+      id: "opening-slack-message",
+      body: "Check the runner migration",
+      metadata: { version: 1, sourceChannel: "slack", sections: [] },
+      createdAt: new Date("2026-04-21T00:00:00.000Z"),
+    });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-queued" }));
+    mockIssuesApi.listComments.mockResolvedValue([opening]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      state: "queued", targetRunId: null,
+      entries: [{ comment: opening, position: 0, canEdit: true, canDiscard: true }],
+    }));
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: "run-queued", agentId: "agent-1", adapterType: "paperclip_runner",
+      invocationSource: "assignment", status: "queued", startedAt: null, finishedAt: null,
+      createdAt: "2026-04-21T00:00:01.000Z", wakeCommentIds: [opening.id],
+      wakeupRequestId: "wake-queue-1", contextIssueId: "issue-1",
+    }]);
+
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<IssueQueuedCommentQueue>(queryKeys.issues.queuedComments("issue-1"))?.entries.map(entry => entry.comment.id)).toEqual([opening.id]);
+    });
+    await flushReact();
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+      expect(props.queuedCommentQueue).toBeNull();
+      expect(props.comments.filter((comment: IssueComment) => comment.id === opening.id)).toHaveLength(1);
+      // Receiving a channel message does not mean the provider has consumed it.
+      expect(props.comments.find((comment: IssueComment) => comment.id === opening.id)?.consumedByRunId).toBeUndefined();
+      expect(props.linkedRuns).toEqual([expect.objectContaining({ status: "queued", startedAt: null })]);
+    });
+  });
+
   it("keeps an admitted message pending until its queued run starts", async () => {
     const queued = createIssueComment({ id: "not-started" });
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-queued" }));

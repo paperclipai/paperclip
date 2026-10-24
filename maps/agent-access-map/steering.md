@@ -32,6 +32,9 @@ cancellation require a board actor/user.
 Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
+The default task view can show a saved channel opener in history while its first
+assignment is queued. This is presentation only. The queue read still returns
+the pending input, and no consumption receipt or mutation authority is added.
 
 Accepted deferred requests remain pending while their recipient agent is paused.
 Resume uses the normal admission checks. This grants no new pause, resume, queue

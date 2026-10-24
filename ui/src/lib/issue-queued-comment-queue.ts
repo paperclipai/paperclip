@@ -5,6 +5,35 @@ import type {
   IssueQueuedCommentQueueState,
   IssueQueuedCommentSteeringDisposition,
 } from "@paperclipai/shared";
+import type { RunForIssue } from "../api/activity";
+
+/**
+ * A received channel opener belongs in history while its first assigned turn
+ * starts. This is presentation only: it is not a provider-consumption receipt.
+ * Keep follow-ups, retries, batches and explicit execution waits in the queue.
+ */
+export function isOpeningChannelMessageQueue(params: {
+  queue: IssueQueuedCommentQueue | null;
+  runs: readonly RunForIssue[];
+  comments: readonly IssueComment[];
+}): boolean {
+  const { queue, runs, comments } = params;
+  if (!queue?.queueId || queue.state !== "queued" || queue.targetRunId ||
+    queue.executionWait || queue.entries.length !== 1) return false;
+  const entry = queue.entries[0]!;
+  if (entry.source || entry.comment.deletedAt || entry.comment.authorAgentId) return false;
+  const received = comments.find(comment => comment.id === entry.comment.id);
+  if (!received?.metadata?.sourceChannel) return false;
+
+  const issueRuns = runs.filter(run => run.contextIssueId === queue.issueId);
+  if (issueRuns.length !== 1) return false;
+  const run = issueRuns[0]!;
+  const inputIds = run.wakeCommentIds ?? [run.wakeCommentId ?? run.contextCommentId];
+  return run.status === "queued" && !run.startedAt && !run.retryOfRunId &&
+    run.invocationSource === "assignment" && run.wakeupRequestId === queue.queueId &&
+    inputIds.length === 1 && inputIds[0] === received.id &&
+    new Date(received.createdAt).getTime() <= new Date(run.createdAt).getTime();
+}
 
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
