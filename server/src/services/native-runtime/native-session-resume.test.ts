@@ -1759,6 +1759,13 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
     },
     {
+      contract: "regressed conditional run-scoped readers",
+      // Deployed v17 threads were opened without read_current_wake_comments
+      // and read_chat_attachment on ordinary turns; resume cannot add them.
+      retainedFingerprint:
+        "sha256:dc495475fb6a4bd034c6dbb2bbe0cf52e7ffc1635838889dc5f7d7251273f119",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -1844,6 +1851,17 @@ describe("rebindNativeSessionCheckpoint", () => {
         executionTargetKind: "remote",
       }),
     ).not.toBeNull();
+    // Deployed v17 remote threads were opened without the run-scoped readers.
+    expect(
+      rebindNativeSessionCheckpoint({
+        previousRun: previousRun({
+          nativeToolContractFingerprint:
+            "sha256:96dde421aab01f847468d1a8f12863d32dfdb3038a9aca61e1e6bdc81022d5a1",
+        }),
+        currentExecution: execution(currentRunId),
+        executionTargetKind: "remote",
+      }),
+    ).toBeNull();
   });
 
 

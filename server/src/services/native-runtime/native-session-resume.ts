@@ -33,17 +33,17 @@ export function nativeToolContractFingerprintForTarget(
   return `sha256:${createHash("sha256")
     .update(
       JSON.stringify({
-        schema: "paperclip.native-tool-contract.v17",
+        schema: "paperclip.native-tool-contract.v18",
         executionTargetKind,
         advertisementPolicy: {
           // Direct provider threads retain declarations from thread/start.
           // Keep this explicit so changing a tool from conditional to stable
           // advertisement rotates checkpoints even when its schema is unchanged.
-          readCurrentWakeComments: "always_advertised_binding_gated.v1",
+          readCurrentWakeComments: "always_advertised_binding_gated.v2",
           historicalChatAttachments:
             "always_advertised_conversation_binding_gated.v1",
           registerDeliverable: "verified_local_or_remote_workspace.v2",
-          readChatAttachment: "always_advertised_run_scope_local_staging.v1",
+          readChatAttachment: "always_advertised_run_scope_local_staging.v2",
           structuredHumanInput:
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
           semanticCompletion: "finish_accessible_deliverable_evidence.v4",
