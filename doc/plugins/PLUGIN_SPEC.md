@@ -555,6 +555,11 @@ Returns:
 
 Runs after config changes and startup.
 
+Input includes:
+
+- the config to validate
+- `companyId` for the company whose config the host tests, so host calls such as `secrets.resolve` run in that company's scope
+
 Returns:
 
 - `ok`
