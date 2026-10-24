@@ -10,10 +10,12 @@ import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { build } from "esbuild";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 describe("live sidecar pending request snapshots", () => {
   it("attests current callback identities after the live status barrier without exposing forms", async () => {
@@ -86,13 +88,56 @@ import {
 
 const children = new Set<SidecarProcess>();
 
+// Starting the sidecar through tsx loads its whole TypeScript import graph (about 150 modules) through the tsx
+// loader in each new process: 1.4-1.6 s per spawning test on an idle 8-core machine, against about 0.5 s for the
+// same graph prebundled and run by node. Bundle it once per file. Each module keeps its own import.meta.url, so the
+// sidecar resolves provider assets and launchers from the source tree exactly as it does under tsx. The bundle
+// lives under the package's node_modules so its external packages resolve as they do from src/cli.
+let sidecarBundleDir: string | undefined;
+let sidecarBundle: string | undefined;
+
+beforeAll(async () => {
+  const cacheRoot = fileURLToPath(new URL("../../node_modules/.cache/", import.meta.url));
+  mkdirSync(cacheRoot, { recursive: true });
+  sidecarBundleDir = mkdtempSync(join(cacheRoot, "acpx-runtime-sidecar-test-"));
+  sidecarBundle = join(sidecarBundleDir, "acpx-runtime-sidecar.mjs");
+  await build({
+    entryPoints: [fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+    outfile: sidecarBundle,
+    bundle: true, platform: "node", format: "esm", packages: "external", logLevel: "error",
+    plugins: [{
+      name: "source-module-urls",
+      setup(builder) {
+        builder.onLoad({ filter: /\.ts$/ }, args => ({
+          contents: readFileSync(args.path, "utf8").replaceAll("import.meta.url", JSON.stringify(pathToFileURL(args.path).href)),
+          loader: "ts",
+        }));
+      },
+    }],
+  });
+  // A module that read the bundle's own URL would resolve its assets from node_modules/.cache instead.
+  if (readFileSync(sidecarBundle, "utf8").includes("import.meta.url")) {
+    throw new Error("The sidecar bundle reads its own module URL");
+  }
+}, 60_000);
+
+afterAll(() => {
+  if (sidecarBundleDir) rmSync(sidecarBundleDir, { recursive: true, force: true });
+});
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   await Promise.all([...children].map((child) => child.close()));
   children.clear();
 });
 
-describe("qualified ACPX runtime sidecar", () => {
+// Spawning tests start a real sidecar process, and some then wait for it to exit (close() gives it up to its own
+// kill timeout). Under tsx, "shuts down without using readline after stdin closes" timed out at the 5 s default on
+// loaded CI runners; the prebundled sidecar above removes most of that start cost. 30 s bounds a stuck sidecar
+// without failing a slow start on a loaded runner.
+const SIDECAR_TEST_TIMEOUT_MS = 30_000;
+
+describe("qualified ACPX runtime sidecar", { timeout: SIDECAR_TEST_TIMEOUT_MS }, () => {
   it("projects the actual sidecar terminal diagnostic block without authoritative accounting", () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("      try {", source.indexOf("      const usageAfter = await readSidecarHostStatusWithin(activeHost);"));
@@ -1267,9 +1312,10 @@ class SidecarProcess {
   #closed = false;
 
   constructor() {
+    if (!sidecarBundle) throw new Error("The sidecar bundle is not built");
     this.#child = spawn(
-      fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
-      [fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url))],
+      process.execPath,
+      [sidecarBundle],
       { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8" } },
     );
     let stdout = "";

@@ -1589,6 +1589,37 @@ it("reserves a bounded suspension window after close preparation", () => {
 });
 
 it.each([
+  { graceMs: 400, observed: false },
+  { graceMs: 2_000, observed: true },
+])("records the runner observation for the close diagnostic only when the first durable read lands inside the grace ($graceMs)", async ({ graceMs, observed }) => {
+  vi.useFakeTimers();
+  try {
+    const commands: { commandId: string; type: string; status: string }[] = [];
+    let lastSuspensionState: Record<string, unknown> | null = null;
+    const { closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(Date.now(), graceMs);
+    const result = runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+      commands: () => commands,
+      queueSuspend: (commandId) => commands.push({ commandId, type: "runner.suspend", status: "pending" }),
+      // A loaded event loop delays the first read of a dead runner's state.
+      readRunnerState: async () => {
+        await new Promise<void>(resolveRead => setTimeout(resolveRead, 500));
+        const state = { lifecycle: "ready" };
+        lastSuspensionState = state;
+        throw new Error("runner did not durably suspend before checkpoint");
+      },
+      runnerHasExited: async () => true,
+      pump: () => undefined,
+      deadline: closeDeadline,
+    });
+    await vi.advanceTimersByTimeAsync(graceMs);
+    await expect(result).resolves.toBe(false);
+    expect(lastSuspensionState !== null).toBe(observed);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each([
   { existingCommand: false, rejectLateRead: false },
   { existingCommand: false, rejectLateRead: true },
   { existingCommand: true, rejectLateRead: false },
@@ -8673,7 +8704,10 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
     codexCommand: fakeCodex,
     codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
     stateDirectory,
-    closeGraceMs: 400,
+    // The runner is dead, so close always spends the whole grace. The
+    // settlement diagnostic reuses the barrier's last durable read; 400 ms
+    // let a loaded CI event loop miss that read and report a null identity.
+    closeGraceMs: 2_000,
     onDiagnostic: (message) => diagnostics.push(message),
   });
   bundle.transport.setServerRequestHandler(async () => ({

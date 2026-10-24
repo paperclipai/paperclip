@@ -74,5 +74,9 @@ describe("prepared OpenCode context transport", () => {
     expect(submitted.map(body => body.variant)).toEqual(["paperclip-no-reasoning", "paperclip-default"]);
     expect(submitted.map(body => body.system)).toEqual(["Prepared agent instructions.", "Prepared agent instructions."]);
     await recovered!.session!.close({ reason: "prepared-test-recovery" });
-  });
+    // Two fake OpenCode server processes start in turn (the session, then its
+    // recovery), each a Node cold start plus a turn. About 0.55 s on an idle
+    // machine, but the 5 s default ran out on a loaded CI runner, where the
+    // sibling opencode-server-driver suite took 63 s for 54 tests.
+  }, 30_000);
 });

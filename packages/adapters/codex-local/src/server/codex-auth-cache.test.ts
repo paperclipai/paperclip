@@ -389,15 +389,19 @@ describe("codex auth cache store", () => {
         releaseFirstCaller = resolve;
       });
 
+      // Wait until the first caller holds the lock and is inside its callback
+      // before the second caller starts racing for the same lock. Acquiring
+      // the lock is file and database I/O, so a fixed delay is not enough on a
+      // loaded machine: the second caller could win the lock first.
+      const entered = deferredSignal();
       const firstCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
         events.push("first-enter");
+        entered.resolve();
         await firstCallerGate;
         events.push("first-exit");
         return "first";
       });
-      // Give the first caller a chance to acquire the lock and enter its
-      // callback before the second caller starts racing for the same lock.
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await entered.promise;
       const secondCall = withCodexAccountHomePromotionLock(env, "company-shared", async () => {
         events.push("second-enter");
         events.push("second-exit");
@@ -427,12 +431,14 @@ describe("codex auth cache store", () => {
         releaseCompanyA = resolve;
       });
 
+      const companyAEntered = deferredSignal();
       const companyACall = withCodexAccountHomePromotionLock(env, "company-a", async () => {
         events.push("a-enter");
+        companyAEntered.resolve();
         await companyAGate;
         events.push("a-exit");
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await companyAEntered.promise;
       const companyBCall = withCodexAccountHomePromotionLock(env, "company-b", async () => {
         events.push("b-enter");
         events.push("b-exit");
