@@ -12,8 +12,23 @@ export const CONVERSATION_ADAPTER_TYPES = [
   "pi_local", "grok_local", "kimi_local", "hermes_local",
 ] as const;
 
+// External adapter plugins that declare supportsConversationContinuation. The
+// adapter registry keeps this in step with registration, so installing or
+// removing a plugin takes effect without a restart.
+const externalConversationAdapterTypes = new Set<string>();
+
+export function setExternalConversationAdapter(adapterType: string, supported: boolean): void {
+  if (supported) externalConversationAdapterTypes.add(adapterType);
+  else externalConversationAdapterTypes.delete(adapterType);
+}
+
+/** Built-in conversation adapters plus registered external ones that opt in. */
+export function conversationAdapterTypes(): string[] {
+  return [...new Set<string>([...CONVERSATION_ADAPTER_TYPES, ...externalConversationAdapterTypes])];
+}
+
 export function isConversationAdapter(adapterType: string): boolean {
-  return (CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapterType);
+  return conversationAdapterTypes().includes(adapterType);
 }
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
@@ -30,14 +45,14 @@ export function claimedAdapterType(run: Pick<typeof heartbeatRuns.$inferSelect, 
 
 function conversationRunPredicate() {
   return or(
-    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES]),
+    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, conversationAdapterTypes()),
     sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
     sql`exists (
       select 1 from ${heartbeatRunEvents}
       where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
         and ${heartbeatRunEvents.eventType} = 'adapter.invoke'
-        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, conversationAdapterTypes())}
     )`,
   );
 }

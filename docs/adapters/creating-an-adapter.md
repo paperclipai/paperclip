@@ -213,6 +213,7 @@ Adapters can declare what "local" capabilities they support by setting optional 
 | `supportsInstructionsBundle` | `boolean` | `false` | Managed instructions bundle (AGENTS.md) — server-side resolution + UI editor |
 | `instructionsPathKey` | `string` | `"instructionsFilePath"` | The `adapterConfig` key that holds the instructions file path |
 | `requiresMaterializedRuntimeSkills` | `boolean` | `false` | Whether runtime skill entries must be written to disk before execution |
+| `supportsConversationContinuation` | `boolean` | `false` | The adapter resumes its provider conversation on the next wake, so a failed or interrupted run continues as a conversation turn instead of taking a no-replay recovery hold. Built-in local CLI adapters have this behaviour already; set it on an external adapter that resumes sessions the same way (for example one that wraps `opencode_local`) |
 
 These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
 

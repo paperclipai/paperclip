@@ -106,7 +106,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { runningProcesses } from "../adapters/index.ts";
+import { registerServerAdapter, runningProcesses, unregisterServerAdapter } from "../adapters/index.ts";
 import {
   resolveDefaultAgentWorkspaceDir,
   resolvePaperclipInstanceRoot,
@@ -2295,6 +2295,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run.status).toBe("failed");
     expect(run.resultJson?.conversationContinuation).toBeUndefined();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it.each([true, false])("treats a stopped run of an external adapter as a conversation only when it opts in: %s", async optedIn => {
+    const adapterType = "external_conversation_test";
+    registerServerAdapter({
+      type: adapterType,
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date(0).toISOString() }),
+      ...(optedIn ? { supportsConversationContinuation: true } : {}),
+    });
+    try {
+      const { runId, issueId, companyId } = await seedRunFixture({
+        adapterType, agentStatus: "idle", runStatus: "interrupted", runErrorCode: "server_shutdown_interrupted",
+      });
+      // Only the recorded adapter (dispatch profile and adapter.invoke event) identifies the
+      // conversation; no continuation policy is stored on the run.
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType } } }).where(eq(heartbeatRuns.id, runId));
+      const [hold] = await db.insert(issueRecoveryActions).values({
+        companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "active", ownerType: "board",
+        cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${runId}`,
+        evidence: { runId, automaticRecovery: { replay: "blocked" } }, nextAction: "Reconcile the stopped run.",
+      }).returning();
+      const blocker = await getExecutionBlocker(db, companyId, issueId);
+      if (optedIn) expect(blocker).toBeNull();
+      else expect(blocker).toMatchObject({ recoveryActionId: hold!.id, cause: "legacy_execution_requires_reconciliation" });
+    } finally {
+      unregisterServerAdapter(adapterType);
+    }
   });
 
   it.each([false, true])("waits for a live terminal predecessor before a new turn (historical hold: %s)", async withHold => {
