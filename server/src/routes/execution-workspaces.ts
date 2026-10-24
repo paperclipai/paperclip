@@ -11,6 +11,8 @@ import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
+  resolveRuntimeServiceStopTarget,
+  countRuntimeServicesActiveAfterStop,
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
@@ -42,6 +44,7 @@ import {
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
   listConfiguredRuntimeServiceEntries,
+  resolveRuntimeServiceCwdForControl,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -475,6 +478,35 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       companyId: existing.companyId,
       executionWorkspaceId: existing.id,
     });
+    const stopTarget = resolveRuntimeServiceStopTarget({
+      workspaceRuntime: effectiveRuntimeConfig,
+      runtimeServiceId: selectedRuntimeServiceId,
+      serviceIndex: selectedServiceIndex,
+      runtimeServices: existing.runtimeServices,
+      workspaceCwd,
+      // Resolve each service cwd with the same inputs the start below uses,
+      // matching the workspace that ensurePersistedExecutionWorkspaceAvailable
+      // realizes, without provisioning it.
+      resolveServiceCwd: (command, runtimeService) => resolveRuntimeServiceCwdForControl({
+        service: command.rawConfig,
+        runningPort: runtimeService.port ?? null,
+        workspace: {
+          cwd: workspaceCwd,
+          branchName: existing.branchName ?? null,
+          worktreePath: existing.strategyType === "git_worktree" ? (existing.providerRef ?? workspaceCwd) : null,
+          repoUrl: existing.repoUrl,
+          repoRef: existing.baseRef,
+        },
+        agent: {
+          id: actor.agentId ?? null,
+          name: actor.actorType === "user" ? "Board" : "Agent",
+          companyId: existing.companyId,
+        },
+        issue: existing.sourceIssueId
+          ? { id: existing.sourceIssueId, identifier: null, title: existing.name }
+          : null,
+      }),
+    });
     let runtimeServiceCount = existing.runtimeServices?.length ?? 0;
     let stdout = "";
     let stderr = "";
@@ -872,12 +904,14 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
             await reportRepairPhase(repairPhase, "failed");
             throw error;
           }
-        } else if (action === "stop" || action === "restart") {
+        } else if ((action === "stop" || action === "restart") && (stopTarget.scope === "all" || stopTarget.runtimeServiceId)) {
+          // A targeted stop or restart must leave the other services running.
+          // When the target has no running instance there is nothing to stop.
           await stopRuntimeServicesForExecutionWorkspace({
             db,
             executionWorkspaceId: existing.id,
             workspaceCwd,
-            runtimeServiceId: selectedRuntimeServiceId,
+            runtimeServiceId: stopTarget.scope === "one" ? stopTarget.runtimeServiceId : null,
           });
         }
 
@@ -926,7 +960,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           }
           runtimeServiceCount = startedServices.length;
         } else if (action !== "repair") {
-          runtimeServiceCount = selectedRuntimeServiceId ? Math.max(0, (existing.runtimeServices?.length ?? 1) - 1) : 0;
+          runtimeServiceCount = countRuntimeServicesActiveAfterStop(existing.runtimeServices, stopTarget);
         }
 
         const currentDesiredState: WorkspaceRuntimeDesiredState =
