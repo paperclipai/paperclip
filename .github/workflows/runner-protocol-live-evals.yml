@@ -325,7 +325,7 @@ jobs:
           version: 9.15.4
 
       - name: Download resolved target lockfile
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.target_lock.outputs.artifact_id }}
           path: ${{ runner.temp }}/runner-protocol-target-lock
@@ -470,7 +470,7 @@ jobs:
           node-version: 24
 
       - name: Download portable runner
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
@@ -712,13 +712,13 @@ jobs:
           cache: pnpm
 
       - name: Download immutable campaign catalog
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-eval-catalog-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-catalog
 
       - name: Download portable runner and viewer
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-build-${{ needs.authorize.outputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-build
@@ -726,7 +726,7 @@ jobs:
       - name: Download every access-controlled cell
         id: download_cells
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: downloaded-runner-protocol-evals
@@ -735,7 +735,7 @@ jobs:
       - name: Retry cell download after artifact transport failure
         if: steps.download_cells.outcome == 'failure'
         continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: runner-protocol-eval-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: downloaded-runner-protocol-evals
@@ -866,13 +866,13 @@ jobs:
           node-version: 24
 
       - name: Download only the sanitized canonical Evalbook
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-eval-public-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-public-report
 
       - name: Download the same-run canonical viewer for byte verification
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: runner-protocol-viewer-${{ github.run_id }}-${{ github.run_attempt }}
           path: runner-protocol-trusted-viewer

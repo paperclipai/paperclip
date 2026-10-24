@@ -186,7 +186,7 @@ jobs:
           node-version: 24
       - name: Install npm with trusted publishing support
         run: npm install --global npm@11.18.0 --ignore-scripts
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: preview-packages
           path: preview-packages
@@ -273,7 +273,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: preview-image
           path: preview-image
@@ -425,14 +425,14 @@ jobs:
 
       - name: Download exact-source release daemon receipts
         if: needs.release_runner_source.outputs.required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
@@ -564,7 +564,7 @@ jobs:
       # Default download scope is this workflow run, including job reruns.
       # A missing artifact fails instead of resolving a different dependency set.
       - name: Restore canary smoke lockfile
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: canary-smoke-lockfile-${{ github.sha }}
 
@@ -732,14 +732,14 @@ jobs:
 
       - name: Download exact-source release daemon receipts
         if: needs.release_runner_source.outputs.required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
@@ -1021,14 +1021,14 @@ jobs:
 
       - name: Download exact-source release daemon receipts
         if: needs.release_runner_source.outputs.required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
@@ -1412,14 +1412,14 @@ jobs:
 
       - name: Download exact-source release daemon receipts
         if: needs.release_runner_source.outputs.required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
@@ -1480,14 +1480,14 @@ jobs:
 
       - name: Download exact-source release daemon receipts
         if: needs.release_runner_source.outputs.required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.runner_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-runner-inputs
           merge-multiple: true
       - name: Download target-owned Linux provider-pack identities
         if: needs.release_runner_source.outputs.required == 'true' && needs.release_runner_binaries.outputs.provider_pack_artifact_prefix != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: ${{ needs.release_runner_binaries.outputs.provider_pack_artifact_prefix }}-*
           path: ${{ runner.temp }}/release-provider-pack-inputs
