@@ -1612,6 +1612,60 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       expect((await db.select().from(browserUseRuns).where(eq(browserUseRuns.id, run.id)))[0].result)
         .toMatchObject({ paperclipBudgetHold: { state: "settled", accountedCentsExact: "15.0000002" } });
     });
+    it("forwards an optional proxy exit country and rejects an invalid code", async () => {
+      const f = await fixture();
+      // "CH" has the wrong case and "zz" is unassigned; both stop here.
+      for (const proxyCountryCode of ["CH", "zz"])
+        await expect(
+          f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", {
+            task: "Read",
+            proxyCountryCode,
+          }),
+        ).rejects.toThrow();
+      const start = (await f.service.execute(
+        f.binding,
+        f.grant,
+        randomUUID(),
+        "browser_start",
+        { task: "Read", proxyCountryCode: "ch" },
+      )) as { sessionId: string };
+      f.ready();
+      f.complete();
+      await f.tick();
+      await f.service.execute(
+        f.binding,
+        f.grant,
+        randomUUID(),
+        "browser_continue",
+        {
+          sessionId: start.sessionId,
+          task: "Follow up",
+          proxyCountryCode: null,
+        },
+      );
+      const settings = f.request.mock.calls
+        .filter(([url, init]) => url.endsWith("/runs") && init.method === "POST")
+        .map(([, init]) => JSON.parse(String(init.body)).browserSettings);
+      expect(settings).toHaveLength(2);
+      expect(settings[0].proxyCountryCode).toBe("ch");
+      // null is the provider's documented way to disable the default proxy.
+      expect(settings[1].proxyCountryCode).toBeNull();
+      // A start without the field keeps the request body of earlier releases.
+      const plain = await fixture();
+      await plain.service.execute(
+        plain.binding,
+        plain.grant,
+        randomUUID(),
+        "browser_start",
+        { task: "Read" },
+      );
+      const [, init] = plain.request.mock.calls.find(
+        ([url, call]) => url.endsWith("/runs") && call.method === "POST",
+      )!;
+      expect(JSON.parse(String(init.body)).browserSettings).not.toHaveProperty(
+        "proxyCountryCode",
+      );
+    });
     it("caps paid work at the remaining hard budget and enforces reported spend", async () => {
       const f = await fixture();
       await budgetService(db).upsertPolicy(

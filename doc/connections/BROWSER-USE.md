@@ -27,7 +27,7 @@ Paperclip does not create or import profiles.
 
 | Action | Risk | Scope and behavior |
 | --- | --- | --- |
-| `browser_start` | Destructive-capable | Delegate a task; optional allowed profile and lower cost cap. |
+| `browser_start` | Destructive-capable | Delegate a task; optional allowed profile, lower cost cap and proxy exit country. |
 | `browser_status` | Read | Current run status, sanitized result, progress and recorded run cost. |
 | `browser_continue` | Destructive-capable | Start a new turn in an idle owned conversation. Busy sessions reject it. |
 | `browser_cancel` | Destructive-capable | Cancel hosted agent work; keep the browser for the idle window. |
@@ -40,6 +40,20 @@ task can change external systems. They use the normal Allowed / Ask first / Off
 policy, rate limits and signed approval path. A new action or schema change goes
 through the existing catalog review/quarantine configuration. Arbitrary HTTP
 endpoints, CDP, provider run IDs and browser IDs are not agent inputs.
+
+`browser_start` and `browser_continue` accept an optional `proxyCountryCode`,
+checked against the officially assigned lower-case ISO 3166-1 alpha-2 codes, so
+an unassigned pair such as `zz` is an input error rather than a provider call.
+An accepted code is forwarded unchanged as
+`browserSettings.proxyCountryCode`. The provider
+[enables a US residential proxy by default](https://docs.browser-use.com/cloud/browser/proxies)
+and documents residential exits in 195+ countries; `null` disables the proxy for
+a site that rejects proxy traffic. Like the other browser settings it
+applies when a browser is provisioned, so a continuation that reuses its existing
+browser keeps that browser's exit country. The agent cannot supply proxy
+credentials: `customProxy` is not an input, and credentials belong in a company
+secret. Without the parameter a country can only be requested inside the task
+text, which is a prompt for the model rather than a provider setting.
 
 Hosted execution requires a bound task and agent run. The Apps Test surface can
 use `browser_profiles`; paid starts there are rejected with task guidance. For a

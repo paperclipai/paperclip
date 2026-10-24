@@ -21,6 +21,7 @@ import {
 } from "@paperclipai/db";
 import {
   BROWSER_USE_IDLE_MS,
+  browserUseProxyCountryCodeSchema,
   type BrowserUseControl,
   type BrowserUseSettings,
   type BrowserUseViewportRequest,
@@ -69,6 +70,7 @@ const argsSchema = z
     sessionId: z.string().uuid().optional(),
     profileId: z.string().uuid().optional(),
     maxCostUsd: z.number().positive().finite().optional(),
+    proxyCountryCode: browserUseProxyCountryCodeSchema.nullable().optional(),
   })
   .strict();
 const terminalSessions = ["closed", "failed"];
@@ -580,6 +582,11 @@ export function browserUseService(
           // Live-verified v4 option; currently omitted from provider OpenAPI.
           allowResizing: true,
           ...(args.profileId ? { profileId: args.profileId } : {}),
+          // A provisioned browser keeps its exit country, so this only takes
+          // effect when the provider creates one for this request.
+          ...(args.proxyCountryCode === undefined
+            ? {}
+            : { proxyCountryCode: args.proxyCountryCode }),
         },
         ...(maxCostUsd === undefined ? {} : { maxCostUsd }),
       }, async () => {
