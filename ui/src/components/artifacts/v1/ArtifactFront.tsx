@@ -28,7 +28,11 @@ export function ArtifactFront({
         </div>
       );
     case "media":
-      return <ArtifactPrint subject={subject} size={print} onMediaLoad={onMediaLoad} style={style} />;
+      return (
+        <div data-artifact-front className="shrink-0" style={style}>
+          <ArtifactPrint subject={subject} size={print} onMediaLoad={onMediaLoad} />
+        </div>
+      );
     case "media-fallback":
       return (
         <div data-artifact-front className="shrink-0" style={style}>
