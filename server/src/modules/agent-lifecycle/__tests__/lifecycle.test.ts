@@ -17,6 +17,7 @@ import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import os from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -355,6 +356,19 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("treats runs recorded before the host boot as stopped even when their pid or pgid is live again", async () => {
+    const agent = await hire();
+    const beforeBoot = new Date(Date.now() - os.uptime() * 1000 - 60_000);
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: agent.id, status: "succeeded", invocationSource: "on_demand", runtimeMode: "legacy",
+        startedAt: beforeBoot, finishedAt: beforeBoot, processStartedAt: beforeBoot,
+        processPid: process.pid, processGroupId: process.pid },
+      { companyId, agentId: agent.id, status: "cancelled", invocationSource: "on_demand", runtimeMode: "legacy",
+        startedAt: beforeBoot, finishedAt: beforeBoot },
+    ]);
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
   });
 
   it("does not advance termination while a cancelled process still runs", async () => {

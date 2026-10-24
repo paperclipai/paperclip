@@ -1,6 +1,7 @@
+import os from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -9,7 +10,16 @@ import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   if (!agentIds.length) return true;
-  const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
+  const { resultJson: _resultJson, contextSnapshot: _contextSnapshot, stdoutExcerpt: _stdoutExcerpt,
+    stderrExcerpt: _stderrExcerpt, usageJson: _usageJson, ...lightRunColumns } = getTableColumns(heartbeatRuns);
+  const runs = await db.select({
+    ...lightRunColumns,
+    resultJson: sql<(typeof heartbeatRuns.$inferSelect)["resultJson"]>`${heartbeatRuns.resultJson} - 'stdout' - 'stderr'`,
+    contextSnapshot: sql<(typeof heartbeatRuns.$inferSelect)["contextSnapshot"]>`null`,
+    stdoutExcerpt: sql<(typeof heartbeatRuns.$inferSelect)["stdoutExcerpt"]>`null`,
+    stderrExcerpt: sql<(typeof heartbeatRuns.$inferSelect)["stderrExcerpt"]>`null`,
+    usageJson: sql<(typeof heartbeatRuns.$inferSelect)["usageJson"]>`null`,
+  }).from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
   const runIds = db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(inArray(heartbeatRuns.agentId, agentIds));
   const leases = await db.select().from(environmentLeases).where(or(
     inArray(environmentLeases.heartbeatRunId, runIds),
@@ -19,6 +29,7 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   const coordinators = await db.select().from(nativeRunFinalizations)
     .where(inArray(nativeRunFinalizations.runId, runIds));
   const now = new Date();
+  const bootedAt = new Date(Date.now() - os.uptime() * 1000);
   const abandoned = coordinators.filter(row => row.leaseOwner);
   if (abandoned.some(row => !row.leaseExpiresAt || row.leaseExpiresAt > now || row.resultId ||
       runs.find(run => run.id === row.runId)?.status !== "cancelled")) return false;
@@ -40,6 +51,8 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
       if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt)) return false;
       continue;
     }
+    const lastSeen = run.processStartedAt ?? run.finishedAt ?? run.startedAt;
+    if (lastSeen && lastSeen < bootedAt) continue;
     let processAlive = Boolean(run.processPid && !absent(run.processPid));
     let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
     if (processAlive && run.processStartedAt) {
