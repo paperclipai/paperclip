@@ -283,11 +283,14 @@ Agents can read all routines in their company but can only create and manage rou
 ## Routine Lifecycle
 
 ```
-active -> paused -> active
-       -> archived
+active <-> paused
+active <-> archived
+paused <-> archived
 ```
 
-Archived routines do not fire and cannot be reactivated.
+Paused and archived routines do not fire. Archiving is reversible: use `PATCH /api/routines/{id}` with `{"status":"active"}` to reactivate an archived routine. Normal management and activation checks still apply: an assignable default agent is required, agents can only manage their own routines, and board operators need `tasks:assign` permission to activate (unless using local implicit access or acting as an instance admin).
+
+Reactivation preserves trigger settings and `nextRunAt`; enabled, non-archived schedule triggers resume normal scheduling. Missed ticks follow `catchUpPolicy` when the scheduler next runs, not an automatic replay caused by the status update.
 
 ## Routine detail navigation
 
