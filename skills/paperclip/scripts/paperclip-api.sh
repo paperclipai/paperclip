@@ -20,7 +20,7 @@ EOF2
 }
 
 [[ $# -ge 2 && $# -le 3 ]] || usage
-method=${1^^}
+method=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
 path=$2
 body=${3:-}
 [[ $path == /* ]] || usage
@@ -30,7 +30,10 @@ base="${base%/}"
 base="${base%/api}"
 : "${PAPERCLIP_API_KEY:?Missing PAPERCLIP_API_KEY}"
 
-args=(-sS -m 60 -X "$method" -w '\n%{http_code}')
+response_file=$(mktemp)
+trap 'rm -f "$response_file"' EXIT
+
+args=(-sS -m 60 -X "$method" -o "$response_file" -w '%{http_code}')
 if [[ -n ${PAPERCLIP_RUN_ID:-} ]]; then
   args+=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
 fi
@@ -42,18 +45,13 @@ if [[ -n $body ]]; then
 fi
 
 set +e
-response=$(curl -K <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") "${args[@]}" "$base$path")
+http_code=$(curl -K <(printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY") "${args[@]}" "$base$path")
 curl_exit=$?
 set -e
 
-http_code=${response##*$'\n'}
-out=${response%"$http_code"}
-out=${out%$'\n'}
-
-if [[ -n $out ]]; then
-  printf '%s\n' "$out"
-fi
-if [[ $curl_exit -ne 0 || $http_code -ge 400 || $http_code -eq 0 ]] || [[ $method != GET && $method != DELETE && -z $out ]]; then
-  printf '%s %s FAILED (curl exit %s, HTTP %s): %s\n' "$method" "$path" "$curl_exit" "${http_code:-000}" "${out:-<empty response>}" >&2
+cat "$response_file"
+if [[ $curl_exit -ne 0 || ${http_code:-0} -ge 400 || ${http_code:-0} -eq 0 ]] || [[ $method != GET && $method != DELETE && ! -s $response_file ]]; then
+  detail=$(head -c 4000 "$response_file" | tr -d '\0')
+  printf '%s %s FAILED (curl exit %s, HTTP %s): %s\n' "$method" "$path" "$curl_exit" "${http_code:-000}" "${detail:-<empty response>}" >&2
   exit 1
 fi

@@ -34,7 +34,7 @@ describe("paperclip api helper", () => {
     await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))));
   });
 
-  async function startServer(status: number, responseBody: string) {
+  async function startServer(status: number, responseBody: string | Buffer) {
     const requests: RecordedRequest[] = [];
     const server = http.createServer((req, res) => {
       let body = "";
@@ -61,18 +61,21 @@ describe("paperclip api helper", () => {
   }
 
   function runHelper(apiUrl: string, args: string[], input?: string, extraEnv: Record<string, string> = {}) {
-    return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    return new Promise<{ code: number | null; stdout: string; stdoutBytes: Buffer; stderr: string }>((resolve, reject) => {
       const child = spawn("bash", [HELPER_PATH, ...args], {
         env: { ...process.env, PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: "test-key", PAPERCLIP_RUN_ID: "test-run", ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       child.stdin.end(input);
-      let stdout = "";
+      const stdoutChunks: Buffer[] = [];
       let stderr = "";
-      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
       child.stderr.on("data", (chunk) => (stderr += chunk));
       child.on("error", reject);
-      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.on("close", (code) => {
+        const stdoutBytes = Buffer.concat(stdoutChunks);
+        resolve({ code, stdout: stdoutBytes.toString("utf8"), stdoutBytes, stderr });
+      });
     });
   }
 
@@ -116,6 +119,16 @@ describe("paperclip api helper", () => {
     expect(result.code).toBe(0);
     expect(requests[0]).toMatchObject({ method: "POST", url: "/api/companies/c1/issues", contentType: "application/json" });
     expect(requests[0]?.body).toBe(input ?? bodyArgs[0]);
+  });
+
+  it("passes binary responses through unchanged", async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x00, 0xff]);
+    const { baseUrl } = await startServer(200, bytes);
+
+    const result = await runHelper(baseUrl, ["GET", "/api/attachments/a1/content"]);
+
+    expect(result.code).toBe(0);
+    expect(result.stdoutBytes.equals(bytes)).toBe(true);
   });
 
   it("fails on HTTP errors and shows the server response on stderr", async () => {
