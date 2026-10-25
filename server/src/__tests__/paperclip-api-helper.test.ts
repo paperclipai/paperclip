@@ -70,7 +70,7 @@ describe("paperclip api helper", () => {
     return new Promise<{ code: number | null; stdout: string; stdoutBytes: Buffer; stderr: string }>((resolve, reject) => {
       const child = spawn("bash", [HELPER_PATH, ...args], {
         cwd: workspace,
-        env: { ...process.env, TMPDIR: "/nonexistent-controller-tmp", PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: "test-key", PAPERCLIP_RUN_ID: "test-run", ...extraEnv },
+        env: { ...process.env, TMPDIR: "/nonexistent-controller-tmp", PAPERCLIP_HELPER_STATE_DIR: "", PAPERCLIP_WORKSPACE_CWD: workspace, PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: "test-key", PAPERCLIP_RUN_ID: "test-run", ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       child.stdin.end(input);
