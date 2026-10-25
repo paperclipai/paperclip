@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const HELPER_PATH = path.resolve("skills/paperclip/scripts/paperclip-api.sh");
 
@@ -29,9 +29,15 @@ async function realCurl() {
 
 describe("paperclip api helper", () => {
   const servers: http.Server[] = [];
+  let workspace = "";
+
+  beforeEach(async () => {
+    workspace = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-api-workspace-"));
+  });
 
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => new Promise((resolve) => server.close(resolve))));
+    await fs.rm(workspace, { recursive: true, force: true });
   });
 
   async function startServer(status: number, responseBody: string | Buffer) {
@@ -63,7 +69,8 @@ describe("paperclip api helper", () => {
   function runHelper(apiUrl: string, args: string[], input?: string, extraEnv: Record<string, string> = {}) {
     return new Promise<{ code: number | null; stdout: string; stdoutBytes: Buffer; stderr: string }>((resolve, reject) => {
       const child = spawn("bash", [HELPER_PATH, ...args], {
-        env: { ...process.env, PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: "test-key", PAPERCLIP_RUN_ID: "test-run", ...extraEnv },
+        cwd: workspace,
+        env: { ...process.env, TMPDIR: "/nonexistent-controller-tmp", PAPERCLIP_API_URL: apiUrl, PAPERCLIP_API_KEY: "test-key", PAPERCLIP_RUN_ID: "test-run", ...extraEnv },
         stdio: ["pipe", "pipe", "pipe"],
       });
       child.stdin.end(input);
@@ -86,6 +93,7 @@ describe("paperclip api helper", () => {
 
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({ id: "agent-1" });
+    expect(await fs.readdir(path.join(workspace, ".paperclip/api-helper"))).toEqual([]);
     expect(requests[0]).toMatchObject({ method: "GET", url: "/api/agents/me", authorization: "Bearer test-key", runId: "test-run" });
   });
 

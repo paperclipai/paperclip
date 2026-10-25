@@ -30,7 +30,8 @@ base="${base%/}"
 base="${base%/api}"
 : "${PAPERCLIP_API_KEY:?Missing PAPERCLIP_API_KEY}"
 
-response_file=$(mktemp)
+state_dir=${PAPERCLIP_HELPER_STATE_DIR:-${PAPERCLIP_WORKSPACE_CWD:-$PWD}/.paperclip/api-helper}
+response_file=$(umask 077; mkdir -p "$state_dir" && mktemp "$state_dir/response.XXXXXX")
 trap 'rm -f "$response_file"' EXIT
 
 args=(-sS -m 60 -X "$method" -o "$response_file" -w '%{http_code}')
