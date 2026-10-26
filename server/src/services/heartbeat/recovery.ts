@@ -310,6 +310,7 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
+  "t3code_local",
 ]);
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {

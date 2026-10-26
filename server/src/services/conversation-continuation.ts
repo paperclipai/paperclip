@@ -8,7 +8,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 const LOCAL_CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-  "pi_local", "grok_local", "kimi_local", "hermes_local",
+  "pi_local", "grok_local", "kimi_local", "hermes_local", "t3code_local",
 ] as const;
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
