@@ -104,6 +104,54 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0].lifecycleHolds).not.toContain("budget");
   });
 
+  async function sessionFixture(failedSelects = 0) {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Session delta", issuePrefix: "SDL" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Codex", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId, status: "succeeded", sessionIdAfter: "thread-1", createdAt: new Date(Date.now() - 60_000),
+        usageJson: { rawInputTokens: 1_000_000, rawInputIncludesCached: false, rawCachedInputTokens: 0, rawOutputTokens: 100_000 } },
+      { id: runId, companyId, agentId, status: "running", sessionIdBefore: "thread-1" },
+    ]);
+    const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: agentId,
+      metric: "billed_cents", windowKind: "lifetime", amount: 100_000, notifyEnabled: false }).returning();
+    await db.insert(budgetReservations).values({ companyId, agentId, runId, amountCents: "10" });
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "budget-live-attempts-"));
+    directories.push(directory);
+    const proxy = new Proxy(db, { get(target, property) {
+      if (property === "select" && failedSelects > 0) { failedSelects--; return () => { throw new Error("Database unavailable"); }; }
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    } }) as Db;
+    const recorder = await createRunUsageRecorder(proxy, { companyId, runId, adapterType: "codex_local" }, directory);
+    const capture = (inputTokens: number, outputTokens: number) => recorder.capture({ usageBasis: "session_cumulative", provider: "openai",
+      biller: "openai", billingType: "metered_api", model: "gpt-6.1-sol", complete: true, usage: { inputTokens, cachedInputTokens: 0, outputTokens } });
+    const readUsage = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].usageJson;
+    return { runId, policy, capture, readUsage };
+  }
+
+  it("settles a complete session-cumulative checkpoint by its session delta when the run never completes", async () => {
+    const f = await sessionFixture();
+    await f.capture(1_500_000, 150_000);
+    expect(await f.readUsage()).toMatchObject({ inputTokens: 500_000, outputTokens: 50_000, costUsdExact: "1.500000000",
+      costStatus: "estimated", accountingReceiptReady: true, budgetExposure: { costCents: "150.0000000" } });
+    expect((await computeObservedSpend(db, f.policy)).liveObservedCents).toBe("150.0000000");
+
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await accountRunCost(db, f.runId)).toBe(true);
+    expect(await db.select().from(costEvents)).toMatchObject([{ inputTokens: 500_000, outputTokens: 50_000 }]);
+    expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.0000000", ledgerCents: "150.0000000" });
+    expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.runId)))[0].state).toBe("settled");
+  });
+
+  it("keeps cumulative totals pending when the session baseline cannot be read and retries it on the next checkpoint", async () => {
+    const f = await sessionFixture(1);
+    await f.capture(1_200_000, 120_000);
+    expect(await f.readUsage()).toMatchObject({ inputTokens: 1_200_000, usageSource: "session_cumulative", accountingReceiptReady: false });
+    await f.capture(1_500_000, 150_000);
+    expect(await f.readUsage()).toMatchObject({ inputTokens: 500_000, usageSource: "per_run", accountingReceiptReady: true });
+  });
+
   it("does not resurrect cumulative USD when the normalized per-run attempt remains unpriced", async () => {
     const f = await fixture(false);
     await db.insert(budgetReservations).values({ companyId: f.companyId, agentId: f.agentId, runId: f.runId, amountCents: "10" });
@@ -115,8 +163,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await f.recorder.capture({ ...f.identity, attemptId: unknownAttemptId, model: "unsupported", complete: false,
       usage: { inputTokens: 30, outputTokens: 30 } });
     expect((await f.readRun()).usageJson).toMatchObject({ costUsdExact: "100.000000000",
-      costStatus: "unpriced", accountingReceiptReady: false, usageSource: "per_run", budgetExposure: { costCents: null } });
-    expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.0000000", effectiveHeldCents: "10.0000000" });
+      costStatus: "unpriced", accountingReceiptReady: false, usageSource: "per_run", budgetExposure: { costCents: "0.1200000" } });
+    expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.1200000", effectiveHeldCents: "10.0000000" });
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
     expect(await accountRunCost(db, f.runId)).toBe(false);
     expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.runId)))[0].state).toBe("held");

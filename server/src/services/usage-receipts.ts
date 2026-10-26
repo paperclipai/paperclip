@@ -23,6 +23,7 @@ import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
+import { createHeartbeatRunState, normalizeAdapterRunUsage, normalizeUsageTotals } from "./heartbeat/run-state.js";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -589,7 +590,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     if (typeof old.accountingReceiptSourceId === "string") fences[old.accountingReceiptSourceId] = Number(old.accountingReceiptSequence ?? 0);
     return tx.update(heartbeatRuns).set({ usageJson: { ...old, accountingReceiptSourceFences: fences,
       accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false } })
-      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson });
+      .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson, agentId: heartbeatRuns.agentId, sessionIdBefore: heartbeatRuns.sessionIdBefore });
   }, { isolationLevel: "read committed" });
   for (const item of pending) await fs.rm(item.file, { force: true });
   if (bound.length !== 1) throw conflict("Run cannot accept a new usage recorder");
@@ -613,6 +614,15 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
   }
   const projectLiveUsage = createLiveRunUsageProjection(initialLiveUsage);
+  const readSessionBaseline = () => createHeartbeatRunState(db).resolveNormalizedUsageForSession({
+    agentId: bound[0].agentId, runId: input.runId, sessionId: bound[0].sessionIdBefore,
+    rawUsage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, usageBasis: "session_cumulative",
+  }).then(resolution => resolution.previousRawUsage, error => {
+    sessionBaseline = undefined;
+    logger.warn({ err: error, runId: input.runId }, "Session usage baseline unavailable; receipt keeps cumulative totals until completion");
+    return undefined;
+  });
+  let sessionBaseline: Promise<ReturnType<typeof normalizeUsageTotals> | undefined> | undefined;
   let chain = Promise.resolve();
   let captureFailed = bound[0].usageJson?.accountingCaptureFailed === true;
   let finishFailedCapture: (() => void) | undefined;
@@ -699,7 +709,12 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       // can be considered complete, even if a later attempt succeeded.
       receipt.complete = !captureFailed && parts.every(part => part.complete);
     }
-    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
+    const baseline = receipt.usageBasis === "session_cumulative" ? await (sessionBaseline ??= readSessionBaseline()) : undefined;
+    const journaled = baseline === undefined ? receipt : priceAnthropicReceipt(priceCodexReceipt({ ...receipt, usageBasis: "per_run",
+      usage: normalizeAdapterRunUsage(normalizeUsageTotals(receipt.usage), baseline, "session_cumulative") ?? undefined,
+      costUsd: null, costUsdExact: null, cacheAdjustedCostUsd: null, usageByModel: undefined }));
+    const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(),
+      receipt: journaled, liveCostCents: journaled === receipt ? liveCostCents : liveRunUsageCostCents(journaled) };
     const file = await spoolUsageReceipt(envelope, directory);
     crashPoint("accounting.usage_receipt.after_spool_before_db");
     try {
