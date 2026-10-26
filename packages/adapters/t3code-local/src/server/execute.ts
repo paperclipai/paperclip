@@ -21,6 +21,8 @@ import {
   renderTemplate,
   resolveCommandForLogs,
   runChildProcess,
+  runningProcesses,
+  signalRunningProcess,
   selectInitialCommunicationGuidance,
   selectPaperclipPromptSections,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -276,7 +278,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!first || first.result || !exitedCleanly(first.proc) || !isT3ProjectNotFound(first.proc.stderr)) return first;
     if (signal?.aborted) return first;
     await onLog("stdout", `[paperclip] No T3 Code project contains "${cwd}"; adding it as a project.\n`);
-    const added = await runT3(["project", "add", cwd], { helper: "project-add" });
+    if (signal?.aborted) return first;
+    // Setup runs under its own process key, so Stop must end it directly.
+    const helperKey = `${runId}:project-add`;
+    const stopSetup = () => {
+      const running = runningProcesses.get(helperKey);
+      if (running) signalRunningProcess(running, "SIGTERM");
+    };
+    signal?.addEventListener("abort", stopSetup, { once: true });
+    const added = await runT3(["project", "add", cwd], { helper: "project-add" })
+      .finally(() => signal?.removeEventListener("abort", stopSetup));
+    if (signal?.aborted) return first;
     return added.exitCode === 0 ? (await runTurn(null)) ?? first : first;
   };
 

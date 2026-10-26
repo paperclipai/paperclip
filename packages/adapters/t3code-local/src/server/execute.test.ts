@@ -269,7 +269,29 @@ describe("t3code_local execute", () => {
     expect(await env.calls()).toEqual([]);
   });
 
-  it("starts no thread when Stop arrives while the project is being added", async () => {
+  it("ends a running project add as soon as Stop arrives", async () => {
+    const env = await setup({
+      "thread start": [
+        { stderr: "No T3 Code project matches '/x'. Pass a project id or a path inside a project.\n", exit: 1 },
+        { stdout: result({ status: "completed" }) },
+      ],
+      "project add": [{ sleep: 20 }],
+    });
+    const controller = new AbortController();
+    const started = Date.now();
+    const res = await execute(makeContext(env, {
+      signal: controller.signal,
+      onLog: async (_stream, chunk) => {
+        if (chunk.includes("adding it as a project")) setTimeout(() => controller.abort(), 300);
+      },
+    }));
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start", "project add"]);
+    expect(res).toMatchObject({ errorCode: "cancelled" });
+  }, 15_000);
+
+  it("adds no project and starts no thread when Stop arrives before setup", async () => {
     const env = await setup({
       "thread start": [
         { stderr: "No T3 Code project matches '/x'. Pass a project id or a path inside a project.\n", exit: 1 },
@@ -283,7 +305,7 @@ describe("t3code_local execute", () => {
       onLog: async (_stream, chunk) => { if (chunk.includes("adding it as a project")) controller.abort(); },
     }));
 
-    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start", "project add"]);
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start"]);
     expect(res).toMatchObject({
       errorCode: "cancelled",
       executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
