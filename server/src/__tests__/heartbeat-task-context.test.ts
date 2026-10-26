@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues, userWorkspacePreferences } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, documentRevisions, documents, heartbeatRuns, issueComments, issueDocuments, issues, userWorkspacePreferences } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -248,6 +248,26 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     });
     expect(JSON.stringify(context.paperclipWake)).not.toContain("other issue canary");
     expect(context.paperclipWakeComment).toBeUndefined();
+  });
+
+  it("sends the plan body on fresh attempts and only the exact revision pointer on resumed turns", async () => {
+    const f = await seed();
+    const documentId = randomUUID(), revisionId = randomUUID();
+    const body = "Plan body canary with acceptance criteria";
+    await db.insert(documents).values({ id: documentId, companyId: f.companyId, latestBody: body, latestRevisionId: revisionId });
+    await db.insert(documentRevisions).values({ id: revisionId, documentId, companyId: f.companyId, revisionNumber: 3, body });
+    await db.insert(issueDocuments).values({ companyId: f.companyId, issueId: f.issueId, documentId, key: "plan" });
+    const { context } = await execute(f, {});
+    const pointer = `Task plan document ${documentId}, revision 3 (${revisionId}):`;
+    for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownAssignment"]) {
+      expect(context[key]).toContain(pointer);
+      expect(context[key]).toContain(body);
+    }
+    for (const key of ["paperclipTaskMarkdownCompact", "paperclipTaskMarkdownAssignmentCompact"]) {
+      expect(context[key]).toContain(pointer);
+      expect(context[key]).toContain(`/api/issues/${f.issueId}/documents/plan`);
+      expect(context[key]).not.toContain(body);
+    }
   });
 
   it("quarantines low-trust summaries and comments before preparing higher-trust prompts", async () => {
