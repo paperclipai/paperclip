@@ -807,16 +807,18 @@ if (process.argv.includes("resume")) {
 }
 `, "utf8");
     await fs.chmod(commandPath, 0o755);
+    const onUsage = vi.fn(async () => {});
     try {
       const result = await execute({
         runId: `resume-stop-${started}`,
         agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: { engine: "cli" } },
         runtime: { sessionId: "existing-session", sessionParams: null, sessionDisplayId: "existing-session", taskKey: null },
         config: { engine: "cli", command: commandPath, cwd: root, promptTemplate: "Test resume." },
-        context: {}, onLog: async () => {},
+        context: {}, onLog: async () => {}, onUsage,
       });
       expect((await fs.readFile(attemptsPath, "utf8")).trim().split("\n")).toHaveLength(started ? 1 : 2);
       expect(result.sessionId).toBe(started ? "existing-session" : "fresh-session");
+      if (!started) expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ usageBasis: "session_cumulative", usageSessionId: "fresh-session" }));
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -977,7 +979,9 @@ console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1500
       expect(result).toMatchObject({ exitCode: 0, sessionId: "codex-thread-1", usageBasis: "session_cumulative",
         usage: { inputTokens: 5000000, cachedInputTokens: 10000000, outputTokens: 500000 } });
       expect(onUsage).toHaveBeenCalled();
-      for (const [receipt] of onUsage.mock.calls as unknown as Array<[{ usageBasis?: string }]>) expect(receipt.usageBasis).toBe("session_cumulative");
+      // The receipt names the thread its totals belong to, so the server never
+      // subtracts another thread's baseline from them.
+      for (const [receipt] of onUsage.mock.calls as unknown as Array<[object]>) expect(receipt).toMatchObject({ usageBasis: "session_cumulative", usageSessionId: "codex-thread-1" });
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

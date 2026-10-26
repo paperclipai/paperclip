@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -105,17 +105,13 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   async function sessionFixture(failedSelects = 0) {
-    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Session delta", issuePrefix: "SDL" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Codex", adapterType: "codex_local" });
-    await db.insert(heartbeatRuns).values([
-      { companyId, agentId, status: "succeeded", sessionIdAfter: "thread-1", createdAt: new Date(Date.now() - 60_000),
-        usageJson: { rawInputTokens: 1_000_000, rawInputIncludesCached: false, rawCachedInputTokens: 0, rawOutputTokens: 100_000 } },
-      { id: runId, companyId, agentId, status: "running", sessionIdBefore: "thread-1" },
-    ]);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded", sessionIdAfter: "thread-1", createdAt: new Date(Date.now() - 60_000),
+      usageJson: { rawInputTokens: 1_000_000, rawInputIncludesCached: false, rawCachedInputTokens: 0, rawOutputTokens: 100_000 } });
     const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "agent", scopeId: agentId,
       metric: "billed_cents", windowKind: "lifetime", amount: 100_000, notifyEnabled: false }).returning();
-    await db.insert(budgetReservations).values({ companyId, agentId, runId, amountCents: "10" });
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "budget-live-attempts-"));
     directories.push(directory);
     const proxy = new Proxy(db, { get(target, property) {
@@ -123,11 +119,23 @@ const support = await getEmbeddedPostgresTestSupport();
       const value = Reflect.get(target, property);
       return typeof value === "function" ? value.bind(target) : value;
     } }) as Db;
-    const recorder = await createRunUsageRecorder(proxy, { companyId, runId, adapterType: "codex_local" }, directory);
-    const capture = (inputTokens: number, outputTokens: number) => recorder.capture({ usageBasis: "session_cumulative", provider: "openai",
-      biller: "openai", billingType: "metered_api", model: "gpt-6.1-sol", complete: true, usage: { inputTokens, cachedInputTokens: 0, outputTokens } });
-    const readUsage = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].usageJson;
-    return { runId, policy, capture, readUsage };
+    // A run that resumes thread-1, as Codex CLI reports it: thread totals.
+    async function startRun() {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", sessionIdBefore: "thread-1" });
+      await db.insert(budgetReservations).values({ companyId, agentId, runId, amountCents: "10" });
+      const recorder = await createRunUsageRecorder(proxy, { companyId, runId, adapterType: "codex_local" }, directory);
+      const capture = (inputTokens: number, outputTokens: number, usageSessionId: string | null = "thread-1") => recorder.capture({ usageBasis: "session_cumulative",
+        usageSessionId, provider: "openai", biller: "openai", billingType: "metered_api", model: "gpt-6.1-sol", complete: true,
+        usage: { inputTokens, cachedInputTokens: 0, outputTokens } });
+      const readUsage = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].usageJson;
+      const interrupt = async () => {
+        await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+        return accountRunCost(db, runId);
+      };
+      return { runId, capture, readUsage, interrupt };
+    }
+    return { policy, startRun, ...await startRun() };
   }
 
   it("settles a complete session-cumulative checkpoint by its session delta when the run never completes", async () => {
@@ -152,6 +160,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await f.readUsage()).toMatchObject({ inputTokens: 500_000, usageSource: "per_run", accountingReceiptReady: true });
   });
 
+  it("subtracts only the baseline of the thread that reported the totals", async () => {
+    const f = await sessionFixture();
+    // Codex started a fresh thread instead of resuming thread-1: count it from zero.
+    await f.capture(1_500_000, 150_000, "thread-2");
+    expect(await f.readUsage()).toMatchObject({ inputTokens: 1_500_000, outputTokens: 150_000, usageSource: "per_run",
+      accountingReceiptReady: true, rawUsageSessionId: "thread-2" });
+    // No baseline provably belongs to an unnamed thread; completion resolves it.
+    const unnamed = await f.startRun();
+    await unnamed.capture(1_200_000, 120_000, null);
+    expect(await unnamed.readUsage()).toMatchObject({ inputTokens: 1_200_000, usageSource: "session_cumulative", accountingReceiptReady: false });
+  });
+
+  it("charges each thread token once when a resumed run follows an interrupted, already charged run", async () => {
+    const f = await sessionFixture();
+    await f.capture(1_500_000, 150_000);
+    expect(await f.interrupt()).toBe(true);
+    const next = await f.startRun();
+    await next.capture(1_800_000, 180_000);
+    expect(await next.readUsage()).toMatchObject({ inputTokens: 300_000, outputTokens: 30_000, accountingReceiptReady: true });
+    expect(await next.interrupt()).toBe(true);
+    expect(await db.select({ inputTokens: costEvents.inputTokens, outputTokens: costEvents.outputTokens }).from(costEvents)
+      .orderBy(desc(costEvents.inputTokens))).toEqual([{ inputTokens: 500_000, outputTokens: 50_000 }, { inputTokens: 300_000, outputTokens: 30_000 }]);
+  });
+
   it("does not resurrect cumulative USD when the normalized per-run attempt remains unpriced", async () => {
     const f = await fixture(false);
     await db.insert(budgetReservations).values({ companyId: f.companyId, agentId: f.agentId, runId: f.runId, amountCents: "10" });
@@ -163,8 +195,8 @@ const support = await getEmbeddedPostgresTestSupport();
     await f.recorder.capture({ ...f.identity, attemptId: unknownAttemptId, model: "unsupported", complete: false,
       usage: { inputTokens: 30, outputTokens: 30 } });
     expect((await f.readRun()).usageJson).toMatchObject({ costUsdExact: "100.000000000",
-      costStatus: "unpriced", accountingReceiptReady: false, usageSource: "per_run", budgetExposure: { costCents: "0.1200000" } });
-    expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.1200000", effectiveHeldCents: "10.0000000" });
+      costStatus: "unpriced", accountingReceiptReady: false, usageSource: "per_run", budgetExposure: { costCents: null } });
+    expect(await computeObservedSpend(db, f.policy)).toMatchObject({ liveObservedCents: "0.0000000", effectiveHeldCents: "10.0000000" });
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
     expect(await accountRunCost(db, f.runId)).toBe(false);
     expect((await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.runId)))[0].state).toBe("held");
