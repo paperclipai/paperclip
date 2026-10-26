@@ -3836,7 +3836,7 @@ export async function ensureAbsoluteDirectory(
     await assertDirectory();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Could not create working directory "${cwd}": ${reason}`);
+    throw Object.assign(new Error(`Could not create working directory "${cwd}": ${reason}`, { cause: err }), { code: (err as NodeJS.ErrnoException).code });
   }
 }
 

@@ -22,7 +22,7 @@ describe("working directory preflight", () => {
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
-  it("accepts a searchable read-only workspace without requesting write access", async () => {
+  it.skipIf(process.platform === "win32")("accepts a searchable read-only workspace without requesting write access", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cwd-"));
     try {
       await fs.chmod(root, 0o500);
@@ -42,6 +42,21 @@ describe("working directory preflight", () => {
       await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
       expect((await fs.stat(cwd)).isDirectory()).toBe(true);
       expect(access).toHaveBeenCalledWith(cwd, constants.X_OK);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the code and cause when a created directory cannot be entered", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cwd-"));
+    const cwd = path.join(root, "created");
+    try {
+      const permission = Object.assign(new Error("Access denied"), { code: "EACCES" });
+      vi.spyOn(fs, "access").mockRejectedValueOnce(permission);
+      const denied = `Working directory cannot be entered by the current runtime user: "${cwd}" (EACCES)`;
+      await expect(ensureAbsoluteDirectory(cwd, { createIfMissing: true })).rejects.toMatchObject({
+        code: "EACCES", message: `Could not create working directory "${cwd}": ${denied}`,
+        cause: { code: "EACCES", message: denied, cause: permission },
+      });
+      expect((await fs.stat(cwd)).isDirectory()).toBe(true);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
