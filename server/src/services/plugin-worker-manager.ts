@@ -2994,10 +2994,10 @@ export function createPluginWorkerHandle(
         return;
       }
       const allowedCompanyId = context.invocationScope?.companyId;
-      if (allowedCompanyId && companyId !== allowedCompanyId) {
+      if (!allowedCompanyId || companyId !== allowedCompanyId) {
         log.warn(
           { method: notification.method, companyId, allowedCompanyId },
-          "dropping plugin stream notification outside invocation company scope",
+          "dropping plugin stream notification outside a host-owned company scope",
         );
         return;
       }

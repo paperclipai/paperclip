@@ -268,3 +268,69 @@ describe("PluginWorkerManager stream handler wiring", () => {
     expect(handler).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("PluginWorkerManager stream company binding", () => {
+  it("drops a stream notification the host cannot bind to a company", async () => {
+    const handler = vi.fn();
+    const manager = createPluginWorkerManager({ onStreamNotification: handler });
+    try {
+      await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
+      await manager.call("test.stream-plugin", "emitStreamProactively", {
+        channel: "chat",
+        targetCompanyId: "co-2",
+        event: { n: 1 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("delivers a proactive stream notification for a configured company", async () => {
+    const handler = vi.fn();
+    const manager = createPluginWorkerManager({ onStreamNotification: handler });
+    try {
+      await manager.startWorker("test.stream-plugin", {
+        ...STREAM_START_OPTIONS,
+        proactiveCompanyScopes: ["co-2"],
+      });
+      await manager.call("test.stream-plugin", "emitStreamProactively", {
+        channel: "chat",
+        targetCompanyId: "co-2",
+        event: { n: 1 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(handler.mock.calls.map((call) => call[1])).toEqual([
+      "streams.open",
+      "streams.emit",
+      "streams.close",
+    ]);
+    expect(handler).toHaveBeenCalledWith("test.stream-plugin", "streams.emit", {
+      channel: "chat",
+      companyId: "co-2",
+      event: { n: 1 },
+    });
+  });
+
+  it("drops a stream notification outside the live invocation's company", async () => {
+    const handler = vi.fn();
+    const manager = createPluginWorkerManager({ onStreamNotification: handler });
+    try {
+      await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
+      await manager.call("test.stream-plugin", "emitStream", {
+        channel: "chat",
+        companyId: "co-1",
+        streamCompanyId: "co-2",
+        event: { n: 2 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+});

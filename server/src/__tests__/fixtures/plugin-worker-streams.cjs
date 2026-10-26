@@ -18,15 +18,15 @@ rl.on("line", (line) => {
     send({
       jsonrpc: "2.0",
       id: message.id,
-      result: { ok: true, supportedMethods: ["emitStream"] },
+      result: { ok: true, supportedMethods: ["emitStream", "emitStreamProactively"] },
     });
     return;
   }
 
-  if (method === "emitStream") {
+  if (method === "emitStream" || method === "emitStreamProactively") {
     const params = message.params ?? {};
     const channel = params.channel;
-    const companyId = params.companyId;
+    const companyId = params.streamCompanyId ?? params.companyId ?? params.targetCompanyId;
     const invocationId = message.paperclipInvocation
       ? message.paperclipInvocation.id
       : undefined;
