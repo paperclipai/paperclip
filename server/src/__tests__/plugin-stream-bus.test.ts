@@ -1,9 +1,39 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   createPluginStreamBus,
   publishWorkerStreamNotification,
 } from "../services/plugin-stream-bus.js";
 import { createPluginWorkerManager } from "../services/plugin-worker-manager.js";
+
+const STREAM_WORKER_ENTRYPOINT = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "plugin-worker-streams.cjs",
+);
+
+const STREAM_MANIFEST: PaperclipPluginManifestV1 = {
+  id: "test.stream-plugin",
+  apiVersion: 1,
+  version: "1.0.0",
+  displayName: "Stream test plugin",
+  description: "Stream test plugin",
+  author: "Paperclip",
+  categories: ["automation"],
+  capabilities: [],
+  entrypoints: { worker: "dist/worker.js" },
+};
+
+const STREAM_START_OPTIONS = {
+  entrypointPath: STREAM_WORKER_ENTRYPOINT,
+  manifest: STREAM_MANIFEST,
+  config: {},
+  instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+  apiVersion: 1 as const,
+  hostHandlers: {},
+};
 
 describe("PluginStreamBus", () => {
   it("delivers a published event only to subscribers of the matching tuple", () => {
@@ -134,5 +164,107 @@ describe("PluginWorkerManager stream handler wiring", () => {
     expect(typeof manager.setStreamNotificationHandler).toBe("function");
     expect(() => manager.setStreamNotificationHandler(() => {})).not.toThrow();
     expect(() => manager.setStreamNotificationHandler(null)).not.toThrow();
+  });
+
+  it("forwards a worker's stream notifications to the manager handler and on to the bus", async () => {
+    const bus = createPluginStreamBus();
+    const received: Array<{ event: unknown; eventType: string }> = [];
+    bus.subscribe("test.stream-plugin", "chat", "co-1", (event, eventType) => {
+      received.push({ event, eventType });
+    });
+
+    const manager = createPluginWorkerManager();
+    manager.setStreamNotificationHandler((pluginId, method, params) =>
+      publishWorkerStreamNotification(bus, pluginId, method, params),
+    );
+    try {
+      await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
+      await manager.call("test.stream-plugin", "emitStream", {
+        channel: "chat",
+        companyId: "co-1",
+        event: { type: "text", text: "token" },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(received.map((entry) => entry.eventType)).toEqual(["open", "message", "close"]);
+    expect(received[1]?.event).toEqual({ type: "text", text: "token" });
+  });
+
+  it("uses the handler that is set when the notification arrives, not at start", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const manager = createPluginWorkerManager();
+    manager.setStreamNotificationHandler(first);
+    try {
+      await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
+      manager.setStreamNotificationHandler(second);
+      await manager.call("test.stream-plugin", "emitStream", {
+        channel: "chat",
+        companyId: "co-1",
+        event: { n: 1 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(3);
+    expect(second.mock.calls.map((call) => call[1])).toEqual([
+      "streams.open",
+      "streams.emit",
+      "streams.close",
+    ]);
+    expect(second).toHaveBeenCalledWith("test.stream-plugin", "streams.emit", {
+      channel: "chat",
+      companyId: "co-1",
+      event: { n: 1 },
+    });
+  });
+
+  it("keeps a per-worker onStreamNotification instead of the manager handler", async () => {
+    const managerHandler = vi.fn();
+    const workerHandler = vi.fn();
+    const manager = createPluginWorkerManager();
+    manager.setStreamNotificationHandler(managerHandler);
+    try {
+      await manager.startWorker("test.stream-plugin", {
+        ...STREAM_START_OPTIONS,
+        onStreamNotification: workerHandler,
+      });
+      await manager.call("test.stream-plugin", "emitStream", {
+        channel: "chat",
+        companyId: "co-1",
+        event: { n: 2 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(managerHandler).not.toHaveBeenCalled();
+    expect(workerHandler).toHaveBeenCalledTimes(3);
+    expect(workerHandler.mock.calls.map((call) => call[0])).toEqual([
+      "streams.open",
+      "streams.emit",
+      "streams.close",
+    ]);
+  });
+
+  it("forwards notifications from a manager built with the constructor option", async () => {
+    const handler = vi.fn();
+    const manager = createPluginWorkerManager({ onStreamNotification: handler });
+    try {
+      await manager.startWorker("test.stream-plugin", STREAM_START_OPTIONS);
+      await manager.call("test.stream-plugin", "emitStream", {
+        channel: "chat",
+        companyId: "co-1",
+        event: { n: 3 },
+      });
+    } finally {
+      await manager.stopAll();
+    }
+
+    expect(handler).toHaveBeenCalledTimes(3);
   });
 });
