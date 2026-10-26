@@ -10,7 +10,13 @@ function normalize(raw: unknown): Record<string, unknown> | null {
   const threadId = readNonEmptyString(record.threadId);
   if (!threadId) return null;
   const cwd = readNonEmptyString(record.cwd);
-  return { threadId, ...(cwd ? { cwd } : {}) };
+  const provider = readNonEmptyString(record.provider);
+  const model = readNonEmptyString(record.model);
+  return {
+    threadId,
+    ...(cwd ? { cwd } : {}),
+    ...(provider && model ? { provider, model } : {}),
+  };
 }
 
 export const sessionCodec: AdapterSessionCodec = {

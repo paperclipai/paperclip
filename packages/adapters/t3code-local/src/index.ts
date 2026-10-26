@@ -34,7 +34,7 @@ Operational fields:
 
 Notes:
 - New runs use \`t3 thread start <cwd> - --wait --json\`; the message is read from stdin.
-- Later runs in the same cwd queue the message on the same thread with \`t3 thread send <threadId> - --wait --json\`.
+- Later runs in the same cwd with the same provider and model queue the message on the same thread with \`t3 thread send <threadId> - --wait --json\`.
 - Exit code 2 means the agent asked a question that must be answered in T3 Code; the run fails with the thread id so it can be answered there.
 - On timeout or cancellation the adapter runs \`t3 thread stop <threadId> --json\` and only reports the provider as stopped once T3 Code confirms the turn ended.
 - Skills are managed by T3 Code's providers, not by Paperclip.

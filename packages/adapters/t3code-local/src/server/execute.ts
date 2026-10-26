@@ -40,7 +40,7 @@ import {
   type T3RunResult,
 } from "./parse.js";
 
-/** Bound for the short helper commands (project add, thread list, thread stop). */
+/** Bound for `project add`; stop confirmation uses its own deadline. */
 const HELPER_TIMEOUT_SEC = 30;
 const STOP_POLL_MS = 1000;
 
@@ -67,8 +67,36 @@ function exitedCleanly(proc: RunProcessResult): boolean {
   return !proc.timedOut && proc.signal === null && proc.exitCode !== null;
 }
 
+/** The CLI fails these before it launches or messages a thread. */
+function failedBeforeLaunch(proc: RunProcessResult): boolean {
+  return exitedCleanly(proc) && (
+    /No running T3 Code server/i.test(proc.stderr) || isT3ProjectNotFound(proc.stderr) || isT3ThreadNotFound(proc.stderr)
+  );
+}
+
+function cancellationAcknowledged() {
+  return { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } };
+}
+
+function stoppedBeforeTurn(): AdapterExecutionResult {
+  return {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    errorCode: "cancelled",
+    errorMessage: "Stopped before T3 Code started a turn",
+    executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    resultJson: cancellationAcknowledged(),
+  };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, signal } = ctx;
+  // Register before any setup so a Stop always reaches this run.
+  await ctx.onCancellationReady?.();
+  if (signal?.aborted) {
+    return stoppedBeforeTurn();
+  }
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -120,12 +148,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const sessionParams = parseObject(runtime.sessionParams);
   const storedThreadId = asString(sessionParams.threadId, runtime.sessionId ?? "").trim();
   const storedCwd = asString(sessionParams.cwd, "");
-  const canResume =
-    storedThreadId.length > 0 && (storedCwd.length === 0 || path.resolve(storedCwd) === path.resolve(cwd));
-  if (storedThreadId && !canResume) {
+  const cwdMatches = storedCwd.length === 0 || path.resolve(storedCwd) === path.resolve(cwd);
+  // A thread keeps the model it started with; an older session without these
+  // fields counts as the project default.
+  const storedSelection = `${asString(sessionParams.provider, "")}/${asString(sessionParams.model, "")}`;
+  const selectionMatches = storedSelection === `${provider}/${model}`;
+  const canResume = storedThreadId.length > 0 && cwdMatches && selectionMatches;
+  if (storedThreadId && !cwdMatches) {
     await onLog(
       "stdout",
       `[paperclip] T3 Code thread "${storedThreadId}" was saved for cwd "${storedCwd}" and will not be resumed in "${cwd}".\n`,
+    );
+  } else if (storedThreadId && !selectionMatches) {
+    await onLog(
+      "stdout",
+      `[paperclip] T3 Code thread "${storedThreadId}" used provider/model "${storedSelection}"; starting a new thread for "${provider}/${model}".\n`,
     );
   }
 
@@ -185,13 +222,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   // Helper commands get their own process key so they never replace the run's
   // registered provider invocation.
-  const runT3 = (args: string[], options: { helper?: string; stdin?: string } = {}) =>
+  const runT3 = (args: string[], options: { helper?: string; stdin?: string; timeoutSec?: number } = {}) =>
     runChildProcess(options.helper ? `${runId}:${options.helper}` : runId, command, args, {
       cwd,
       env,
       stdin: options.stdin,
-      timeoutSec: options.helper ? HELPER_TIMEOUT_SEC : timeoutSec,
-      graceSec,
+      timeoutSec: options.timeoutSec ?? (options.helper ? HELPER_TIMEOUT_SEC : timeoutSec),
+      graceSec: options.helper ? 1 : graceSec,
       onLog,
       onSpawn: options.helper ? undefined : onSpawn,
     });
@@ -200,8 +237,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const title = `Paperclip: ${agent.name} (${runId.slice(0, 8)})`;
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
 
-  const runTurn = async (threadId: string | null): Promise<Attempt> => {
+  /** Null when the run was stopped before this turn could start. */
+  const runTurn = async (threadId: string | null): Promise<Attempt | null> => {
+    if (signal?.aborted) return null;
     const prompt = await buildPrompt(Boolean(threadId));
+    if (signal?.aborted) return null;
     const args = threadId
       ? ["thread", "send", threadId, "-", "--wait", "--json"]
       : [
@@ -230,26 +270,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return { proc, result: parseT3RunResult(proc.stdout), threadId, markStopped };
   };
 
-  const startThread = async (): Promise<Attempt> => {
+  /** Falls back to the earlier attempt when a Stop prevents the retry. */
+  const startThread = async (): Promise<Attempt | null> => {
     const first = await runTurn(null);
-    if (first.result || !exitedCleanly(first.proc) || !isT3ProjectNotFound(first.proc.stderr)) return first;
+    if (!first || first.result || !exitedCleanly(first.proc) || !isT3ProjectNotFound(first.proc.stderr)) return first;
+    if (signal?.aborted) return first;
     await onLog("stdout", `[paperclip] No T3 Code project contains "${cwd}"; adding it as a project.\n`);
     const added = await runT3(["project", "add", cwd], { helper: "project-add" });
-    return added.exitCode === 0 ? runTurn(null) : first;
+    return added.exitCode === 0 ? (await runTurn(null)) ?? first : first;
   };
 
   /** Resolves the attempt's thread and confirms no turn of it is running. */
   const confirmStopped = async (attempt: Attempt): Promise<{ threadId: string | null; error: string | null }> => {
-    const stderr = attempt.proc.stderr;
-    // These failures happen before the CLI launches or messages a thread.
-    if (exitedCleanly(attempt.proc) && (
-      /No running T3 Code server/i.test(stderr) || isT3ProjectNotFound(stderr) || isT3ThreadNotFound(stderr)
-    )) {
-      return { threadId: attempt.threadId, error: null };
-    }
+    if (failedBeforeLaunch(attempt.proc)) return { threadId: attempt.threadId, error: null };
+    // Every helper below shares this window, so settlement stays within it.
+    const budgetSec = Math.max(graceSec, 5);
+    const deadline = Date.now() + budgetSec * 1000;
+    const remainingSec = () => Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+    const notConfirmed = (id: string) => `T3 Code did not confirm within ${budgetSec}s that thread ${id} stopped.`;
     let threadId = attempt.result?.threadId ?? attempt.threadId;
     if (!threadId) {
-      const listed = await runT3(["thread", "list", "--project", cwd, "--json"], { helper: "thread-list" });
+      const listed = await runT3(["thread", "list", "--project", cwd, "--json"], {
+        helper: "thread-list",
+        timeoutSec: remainingSec(),
+      });
       const threads = parseT3ThreadList(listed.stdout);
       if (!threads) {
         const reason = firstNonEmptyLine(listed.stderr) || `t3 thread list exited with code ${listed.exitCode ?? -1}`;
@@ -258,9 +302,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       threadId = threads.find((thread) => thread.title === title)?.threadId ?? null;
       if (!threadId) return { threadId: null, error: null };
     }
-    const deadline = Date.now() + Math.max(graceSec, 5) * 1000;
     for (;;) {
-      const stop = await runT3(["thread", "stop", threadId, "--json"], { helper: "thread-stop" });
+      const stop = await runT3(["thread", "stop", threadId, "--json"], {
+        helper: "thread-stop",
+        timeoutSec: remainingSec(),
+      });
+      if (stop.timedOut) return { threadId, error: notConfirmed(threadId) };
       const status = parseT3StopStatus(stop.stdout);
       if (status && T3_STOPPED_STATUSES.has(status)) return { threadId, error: null };
       if (stop.exitCode !== 0 && isT3ThreadNotFound(stop.stderr)) return { threadId, error: null };
@@ -274,22 +321,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const reason = firstNonEmptyLine(stop.stderr) || `exit code ${stop.exitCode ?? -1}`;
         return { threadId, error: `Could not stop T3 Code thread ${threadId}: ${reason}` };
       }
-      if (Date.now() >= deadline) {
-        return { threadId, error: `T3 Code did not confirm that thread ${threadId} stopped.` };
-      }
+      if (Date.now() + STOP_POLL_MS >= deadline) return { threadId, error: notConfirmed(threadId) };
       await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS));
     }
   };
 
   let attempt = canResume ? await runTurn(storedThreadId) : await startThread();
   let staleThreadReplaced = false;
-  if (canResume && !attempt.result && exitedCleanly(attempt.proc) && isT3ThreadNotFound(attempt.proc.stderr)) {
+  if (
+    attempt && canResume && !attempt.result && exitedCleanly(attempt.proc) && isT3ThreadNotFound(attempt.proc.stderr)
+    && !signal?.aborted
+  ) {
     await onLog(
       "stdout",
       `[paperclip] T3 Code thread "${storedThreadId}" is unavailable; starting a new thread.\n`,
     );
     staleThreadReplaced = true;
-    attempt = await startThread();
+    attempt = (await startThread()) ?? attempt;
+  }
+  if (!attempt) {
+    return stoppedBeforeTurn();
   }
 
   let threadId = attempt.result?.threadId ?? attempt.threadId;
@@ -305,18 +356,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await providerStop.collectBeforeRestore();
 
   const { proc, result } = attempt;
+  const cancelled = signal?.aborted === true && result?.status !== "completed";
+  if (cancelled && failedBeforeLaunch(proc)) return stoppedBeforeTurn();
   const waiting = result?.status === "waiting";
   const failed = proc.timedOut || proc.exitCode !== 0 || result?.status !== "completed";
   const runError = !failed
     ? null
-    : proc.timedOut
-      ? `Timed out after ${timeoutSec}s`
-      : waiting
-        ? `T3 Code thread ${result!.threadId} is waiting for an answer. Open it in T3 Code to respond.`
-        : result?.error
-          || firstNonEmptyLine(proc.stderr)
-          || (result ? `T3 Code run ended with status ${result.status}` : null)
-          || (proc.signal ? `t3 was terminated by signal ${proc.signal}` : `t3 exited with code ${proc.exitCode ?? -1}`);
+    : cancelled
+      ? "Stopped by the operator"
+      : proc.timedOut
+        ? `Timed out after ${timeoutSec}s`
+        : waiting
+          ? `T3 Code thread ${result!.threadId} is waiting for an answer. Open it in T3 Code to respond.`
+          : result?.error
+            || firstNonEmptyLine(proc.stderr)
+            || (result ? `T3 Code run ended with status ${result.status}` : null)
+            || (proc.signal ? `t3 was terminated by signal ${proc.signal}` : `t3 exited with code ${proc.exitCode ?? -1}`);
   const errorMessage = stopError ? [runError, stopError].filter(Boolean).join(" ") : runError;
 
   return {
@@ -326,11 +381,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     errorMessage,
     errorCode: stopError
       ? "t3code_stop_unverified"
-      : waiting
-        ? "t3code_needs_input"
-        : failed && isT3ServerUnavailable(proc.stderr)
-          ? "t3code_server_unavailable"
-          : null,
+      : cancelled
+        ? "cancelled"
+        : waiting
+          ? "t3code_needs_input"
+          : failed && isT3ServerUnavailable(proc.stderr)
+            ? "t3code_server_unavailable"
+            : null,
     // T3 Code reports no token usage; close collection with an unknown price.
     usageComplete: true,
     usageBasis: "per_run",
@@ -340,7 +397,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     provider: provider || null,
     model: model || null,
     sessionId: threadId,
-    sessionParams: threadId ? { threadId, cwd } : null,
+    sessionParams: threadId ? { threadId, cwd, ...(provider ? { provider, model } : {}) } : null,
     sessionDisplayId: threadId,
     clearSession: staleThreadReplaced && !threadId,
     summary: result?.reply ?? null,
@@ -349,6 +406,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId: result?.runId ?? null,
       status: result?.status ?? null,
       ...(failed ? { stderr: proc.stderr } : {}),
+      ...(cancelled && !stopError ? cancellationAcknowledged() : {}),
     },
   };
 }

@@ -302,6 +302,8 @@ export const HEARTBEAT_RUN_TERMINAL_STATUSES = [
 ] as const;
 
 const SESSIONED_LOCAL_ADAPTERS = new Set([
+  // t3code_local is absent: its provider runs inside the T3 Code server, so
+  // the `t3` waiter's PID proves nothing about whether the turn stopped.
   "claude_local",
   "codex_local",
   "cursor",
@@ -310,7 +312,6 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "kimi_local",
   "opencode_local",
   "pi_local",
-  "t3code_local",
 ]);
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {

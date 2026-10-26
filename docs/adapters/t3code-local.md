@@ -34,11 +34,15 @@ The `t3code_local` adapter runs Paperclip agents as threads on your local [T3 Co
 
 ## Session persistence
 
-The adapter stores `{ threadId, cwd }`. The next run resumes the thread only when the stored `cwd` matches the run's working directory; otherwise it starts a new thread. When T3 Code no longer knows the stored thread, the adapter starts a new thread in the same run.
+The adapter stores `{ threadId, cwd, provider, model }` (`provider` and `model` only when they are set). The next run resumes the thread only when the stored `cwd` matches the run's working directory and the stored `provider` and `model` match the agent's current ones; otherwise it starts a new thread, because a T3 Code thread keeps the model it started with. A session saved without `provider` and `model` counts as the project default, so it resumes only while the agent leaves both unset. When T3 Code no longer knows the stored thread, the adapter starts a new thread in the same run.
 
 ## Stopping
 
-On timeout or cancellation the adapter runs `t3 thread stop <threadId> --json` before it returns, and polls until T3 Code reports that no turn of the thread is running. Only then does Paperclip treat the provider as stopped. When the stop cannot be confirmed, the run fails with error code `t3code_stop_unverified`. A run whose thread id was never printed is found again by its title with `t3 thread list --json`.
+The adapter registers for cancellation before any setup. A Stop that arrives before a turn starts, including while the adapter adds the project or before it retries with a new thread, ends the run as `cancelled` without starting a turn.
+
+On timeout or cancellation of a running turn, the adapter runs `t3 thread stop <threadId> --json` before it returns, and polls until T3 Code reports that no turn of the thread is running. Only then does Paperclip treat the provider as stopped; a confirmed Stop ends the run as `cancelled`. The confirmation, including every `thread list` and `thread stop` call, must finish within `max(graceSec, 5)` seconds. When the stop cannot be confirmed in that window, the run fails with error code `t3code_stop_unverified`. A run whose thread id was never printed is found again by its title with `t3 thread list --json`.
+
+Paperclip's crash recovery does not treat the `t3` process as the provider: if Paperclip restarts or loses the process, the run is not retried or continued automatically. It is held for reconciliation, as for gateway adapters, because the turn may still be running in T3 Code.
 
 ## Limits
 

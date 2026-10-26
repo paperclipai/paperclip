@@ -88,7 +88,7 @@ describe("t3code_local execute", () => {
       exitCode: 0,
       errorMessage: null,
       summary: "All done",
-      sessionParams: { threadId: "thr-1", cwd: env.workspace },
+      sessionParams: { threadId: "thr-1", cwd: env.workspace, provider: "codex", model: "gpt-5.5" },
       sessionDisplayId: "thr-1",
       costStatus: "unpriced",
     });
@@ -103,6 +103,47 @@ describe("t3code_local execute", () => {
 
     expect((await env.calls()).map((call) => call.args)).toEqual([["thread", "send", "thr-old", "-", "--wait", "--json"]]);
     expect(res).toMatchObject({ exitCode: 0, summary: "ok", sessionDisplayId: "thr-old" });
+  });
+
+  it("starts a new thread when the provider or model changed", async () => {
+    const env = await setup({ "thread start": [{ stdout: result({ threadId: "thr-new", status: "completed" }) }] });
+    const res = await execute(makeContext(env, {
+      config: { provider: "codex", model: "gpt-5.5" },
+      runtime: {
+        sessionId: null,
+        sessionParams: { threadId: "thr-old", cwd: env.workspace, provider: "codex", model: "gpt-5.4" },
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+    }));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start"]);
+    expect(res.sessionParams).toEqual({ threadId: "thr-new", cwd: env.workspace, provider: "codex", model: "gpt-5.5" });
+  });
+
+  it("treats a session without a stored model as the project default", async () => {
+    const env = await setup({ "thread start": [{ stdout: result({ threadId: "thr-new", status: "completed" }) }] });
+    await execute(makeContext(env, {
+      config: { provider: "codex", model: "gpt-5.5" },
+      runtime: { sessionId: null, sessionParams: { threadId: "thr-old", cwd: env.workspace }, sessionDisplayId: null, taskKey: null },
+    }));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start"]);
+  });
+
+  it("resumes when the stored provider and model match", async () => {
+    const env = await setup({ "thread send": [{ stdout: result({ threadId: "thr-old", status: "completed" }) }] });
+    await execute(makeContext(env, {
+      config: { provider: "codex", model: "gpt-5.5" },
+      runtime: {
+        sessionId: null,
+        sessionParams: { threadId: "thr-old", cwd: env.workspace, provider: "codex", model: "gpt-5.5" },
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+    }));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread send"]);
   });
 
   it("starts a new thread when the stored thread belongs to another cwd", async () => {
@@ -195,15 +236,96 @@ describe("t3code_local execute", () => {
       "thread stop": [{ stdout: `${JSON.stringify({ threadId: "thr-old", runId: null, status: "no_active_run" })}\n` }],
     });
     const onProviderStopped = vi.fn(async () => {});
+    const onCancellationReady = vi.fn(async () => {});
+    const controller = new AbortController();
     const res = await execute(makeContext(env, {
       runtime: { sessionId: null, sessionParams: { threadId: "thr-old" }, sessionDisplayId: null, taskKey: null },
-      onSpawn: async ({ pid }) => { setTimeout(() => process.kill(pid, "SIGTERM"), 300); },
+      signal: controller.signal,
+      onCancellationReady,
+      // The host aborts the signal and kills the registered waiter process.
+      onSpawn: async ({ pid }) => {
+        setTimeout(() => { controller.abort(); process.kill(pid, "SIGTERM"); }, 300);
+      },
       onProviderStopped,
     }));
 
+    expect(onCancellationReady).toHaveBeenCalledOnce();
     expect((await env.calls()).at(-1)!.args).toEqual(["thread", "stop", "thr-old", "--json"]);
-    expect(res.signal).toBe("SIGTERM");
+    expect(res).toMatchObject({ signal: "SIGTERM", errorCode: "cancelled", errorMessage: "Stopped by the operator" });
+    expect(res.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
     expect(onProviderStopped).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it("starts nothing when the run was stopped before setup", async () => {
+    const env = await setup({});
+    const controller = new AbortController();
+    controller.abort();
+    const res = await execute(makeContext(env, { signal: controller.signal }));
+
+    expect(res).toMatchObject({
+      errorCode: "cancelled",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    });
+    expect(await env.calls()).toEqual([]);
+  });
+
+  it("starts no thread when Stop arrives while the project is being added", async () => {
+    const env = await setup({
+      "thread start": [
+        { stderr: "No T3 Code project matches '/x'. Pass a project id or a path inside a project.\n", exit: 1 },
+        { stdout: result({ status: "completed" }) },
+      ],
+      "project add": [{ sleep: 0.3 }],
+    });
+    const controller = new AbortController();
+    const res = await execute(makeContext(env, {
+      signal: controller.signal,
+      onLog: async (_stream, chunk) => { if (chunk.includes("adding it as a project")) controller.abort(); },
+    }));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start", "project add"]);
+    expect(res).toMatchObject({
+      errorCode: "cancelled",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    });
+  });
+
+  it("does not start a replacement thread when Stop arrives before the resume retry", async () => {
+    const env = await setup({
+      "thread send": [{ stderr: "Thread thr-gone was not found.\n", exit: 1, sleep: 0.3 }],
+      "thread start": [{ stdout: result({ status: "completed" }) }],
+    });
+    const controller = new AbortController();
+    const res = await execute(makeContext(env, {
+      runtime: { sessionId: null, sessionParams: { threadId: "thr-gone" }, sessionDisplayId: null, taskKey: null },
+      signal: controller.signal,
+      onSpawn: async () => { controller.abort(); },
+    }));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread send"]);
+    expect(res).toMatchObject({ errorCode: "cancelled" });
+  });
+
+  it("bounds a hanging thread stop by the confirmation window", async () => {
+    const env = await setup({
+      "thread send": [{ sleep: 10 }],
+      "thread stop": [{ sleep: 30 }],
+    });
+    const onProviderStopped = vi.fn(async () => {});
+    const started = Date.now();
+    const res = await execute(makeContext(env, {
+      config: { timeoutSec: 1, graceSec: 1 },
+      runtime: { sessionId: null, sessionParams: { threadId: "thr-old" }, sessionDisplayId: null, taskKey: null },
+      onProviderStopped,
+    }));
+
+    // 1s run timeout + 5s confirmation window + kill grace.
+    expect(Date.now() - started).toBeLessThan(9_000);
+    expect(res).toMatchObject({
+      errorCode: "t3code_stop_unverified",
+      errorMessage: "Timed out after 1s T3 Code did not confirm within 5s that thread thr-old stopped.",
+    });
+    expect(onProviderStopped).not.toHaveBeenCalled();
   }, 20_000);
 
   it("reports an unverified stop when the t3 CLI has no thread stop", async () => {
