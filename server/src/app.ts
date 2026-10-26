@@ -563,17 +563,6 @@ export async function createApp(
   app.use(runtimeConnectionIntentRoutes(db));
   app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
-
-  // Real-time plugin streaming. The SSE pipeline (PluginStreamBus, the
-  // /plugins/:id/bridge/stream/:channel route, worker-side stream RPC handlers,
-  // and the usePluginStream() hook) already exists in core but was never
-  // connected: nothing created a stream bus or routed worker stream
-  // notifications into it, so the SSE route returned 501 and `ctx.streams.emit`
-  // went nowhere. Wire them together here. We set the manager's stream handler
-  // *after* obtaining the manager (rather than only via its constructor) so the
-  // bus is populated whether the manager was created here or injected by the
-  // caller (the production entrypoint injects one). Plugins that don't stream
-  // are unaffected (they never open a channel).
   const streamBus = createPluginStreamBus();
   workerManager.setStreamNotificationHandler((pluginId, method, params) =>
     publishWorkerStreamNotification(streamBus, pluginId, method, params),

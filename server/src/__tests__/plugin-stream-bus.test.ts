@@ -74,18 +74,64 @@ describe("publishWorkerStreamNotification", () => {
 
     expect(publishSpy).not.toHaveBeenCalled();
   });
+
+  it("drops a notification whose channel or companyId is not a string", () => {
+    const bus = createPluginStreamBus();
+    const publishSpy = vi.spyOn(bus, "publish");
+
+    publishWorkerStreamNotification(bus, "p", "streams.emit", {
+      channel: 7,
+      companyId: "co",
+      event: {},
+    });
+    publishWorkerStreamNotification(bus, "p", "streams.emit", {
+      channel: "c",
+      companyId: { id: "co" },
+      event: {},
+    });
+
+    expect(publishSpy).not.toHaveBeenCalled();
+  });
+
+  it("never reaches a subscriber on another company", () => {
+    const bus = createPluginStreamBus();
+    const mine = vi.fn();
+    const theirs = vi.fn();
+    bus.subscribe("p", "c", "co-1", mine);
+    bus.subscribe("p", "c", "co-2", theirs);
+
+    publishWorkerStreamNotification(bus, "p", "streams.emit", {
+      channel: "c",
+      companyId: "co-1",
+      event: { type: "text" },
+    });
+
+    expect(mine).toHaveBeenCalledTimes(1);
+    expect(theirs).not.toHaveBeenCalled();
+  });
+
+  it("never reaches a subscriber on another channel", () => {
+    const bus = createPluginStreamBus();
+    const mine = vi.fn();
+    const theirs = vi.fn();
+    bus.subscribe("p", "c", "co", mine);
+    bus.subscribe("p", "other", "co", theirs);
+
+    publishWorkerStreamNotification(bus, "p", "streams.emit", {
+      channel: "c",
+      companyId: "co",
+      event: { type: "text" },
+    });
+
+    expect(mine).toHaveBeenCalledTimes(1);
+    expect(theirs).not.toHaveBeenCalled();
+  });
 });
 
 describe("PluginWorkerManager stream handler wiring", () => {
-  it("exposes a settable stream-notification handler (fixes the orphaned-bus case)", () => {
-    // Regression guard for the wiring gap: the server must be able to attach the
-    // stream handler to a manager it was handed (the production entrypoint
-    // injects the manager), not only via the constructor. A manager that lacked
-    // this setter would leave the SSE bus orphaned — opening connections that
-    // never receive events instead of failing fast.
+  it("exposes a settable stream-notification handler", () => {
     const manager = createPluginWorkerManager();
     expect(typeof manager.setStreamNotificationHandler).toBe("function");
-    // Setting and detaching must not throw.
     expect(() => manager.setStreamNotificationHandler(() => {})).not.toThrow();
     expect(() => manager.setStreamNotificationHandler(null)).not.toThrow();
   });
