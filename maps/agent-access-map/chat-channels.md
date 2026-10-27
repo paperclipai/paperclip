@@ -115,8 +115,13 @@ GitHub publication recovery (2026-10-14): assigned-agent `submit_review`, `comme
 and `update_comment` calls reuse their run-, task-, endpoint-, and argument-bound
 publication on an exact retry. Identity uses the complete durable request rather
 than the shortened audit preview. A changed suffix, changed nested entry, or
-missing publication cannot authorize another write. Exact retries only read the
-receipt; the worker owns pending provider retries. Fresh gateway policy and provider authority remain
+missing completed publication cannot authorize another write. Exact retries read an
+existing receipt; the worker owns pending provider retries. A request interrupted
+during metadata or file reads before staging can repeat that preflight with the
+same full request identity. The immutable assessment, unique publication and
+provider lease still serialize its external write. `begin_review` exact retries
+resolve the run's current review and return a typed result instead of an audit
+preview. Fresh gateway policy and provider authority remain
 required. The durable worker resumes transient failures after restart and stops
 at its retry cap, revoked authority, or a superseded head. A pending receipt is
 not task completion. Source:
@@ -134,6 +139,15 @@ follow normal access checks. Provider-fixture coverage is not live GitHub proof.
 Native terminal reconciliation resolves the accepted run identity through the
 existing chat provenance resolver; an older run's reply cannot complete a newer
 request merely because both requests share the same PR comment.
+A terminal native success does not authorize missing-response publication while
+its native phase or durable presentation decision remains pending. Maintenance
+rechecks the same request after authoritative settlement; failures keep their
+separate fallback path.
+Maintenance projects the bounded server-committed native passive-wait decision
+only after current request ownership. It settles a no-comment acknowledgement
+without authorizing a new send or counting an old shared receipt as a current-run
+reply. Existing final App/marker-owned PR content survives progress acknowledgements;
+new canonical review publication remains the writer for replacement assessments.
 
 Speko browser sessions use `POST /api/companies/{companyId}/voice-sessions`,
 with GET inspection/notification and POST `/{sessionId}/end` operations below
@@ -276,6 +290,27 @@ caller/session permissions and real provider delivery need separate verification
 GitHub review summary headings use the bot display name. Checks remain
 independently scoped by GitHub App and endpoint/PR/commit identity.
 
+After publishing a review, native agents can report `yielded` with
+`response_wake` and no attention requests. Current conversation authorization
+is checked again at commit. The task remains in review without a human card;
+real human dependencies retain the ordinary attention-request path. A timed
+wait requires a confirmed `set_task_monitor` schedule. Database coverage lives
+in `external-chat-wait.integration.test.ts`; this is not live model evidence.
+
+Inherited GitHub review waits (2026-10-26): an explicit native `response_wake`
+after tree resume or same-agent continuation may retain the provider-event path
+through accepted requester identity lineage and the latest processed review
+publication for that task/conversation. This does not grant monitor management
+or publication authority. Current task/agent/company binding, repository,
+principal and endpoint checks remain effective. PostgreSQL regressions cover
+quiet repeated finalization, historical publication reuse, newer unreviewed
+heads and revoked access; live GitHub delivery remains separate acceptance.
+Omitted/null yielded reports may use the current run's server-projected published
+review wait. The same proof is rechecked at feedback, finalization and commit;
+older/different-run review, pending publication and revoked connection cannot
+supply it. This grants no new publication/monitor authority and leaves Done policy
+unchanged; explicit malformed input is not coerced.
+
 ## `outbound-email`
 
 Capability ID: `chat-channels/outbound-email`.
@@ -293,3 +328,11 @@ Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b832
 Verification: `not-run` — Use the actual permitted writer and run to create one child/publication, confirm recipient delivery and an exact-message reply, and repeat idempotent requests without duplicate sends. Assert run/owner/mode/budget/company/credential/attachment denials and separate read access. Inspect the provider before resolving an unknown write outcome; a 202 or queued publication alone is not proof of delivery.
 
 Gaps: Real AgentMail transport, recipient delivery, and each native tool binding still need live proof. Controlled provider receipts and inbound-reply recipes do not establish a newly initiated external email journey.
+
+Ordinary task Retry can select newer linked-human GitHub input whose original
+admission was skipped by a budget or agent-availability gate. The chat owner
+revalidates its exact processed delivery, company/task/agent/principal, unchanged
+comment, session generation, and admitted instruction snapshot. A separate retry
+receipt preserves the original skipped receipt and older failed native result.
+Current access and normal native stop/cleanup guards still govern execution;
+board wake metadata alone cannot manufacture chat authority or replay old work.

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -32,9 +32,19 @@ import {
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function legacySideEffectKey(invocation: typeof toolInvocations.$inferSelect, argumentsHash: string) {
+  const scope = { companyId: invocation.companyId, runId: invocation.runId, issueId: invocation.issueId,
+    applicationId: invocation.applicationId, connectionId: invocation.connectionId,
+    catalogEntryId: invocation.catalogEntryId, toolName: invocation.toolName, argumentsHash };
+  return `side_effect:${createHash("sha256").update(JSON.stringify(Object.fromEntries(
+    Object.entries(scope).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+  ))).digest("hex")}`;
+}
 
 async function createCompany(db: ReturnType<typeof createDb>) {
   return db.insert(companies).values({
@@ -892,9 +902,117 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const replay = await toolAccessPolicyService(db).recordInvocation(input, decision);
 
     expect(first.replayed).toBe(false);
-    expect(first.invocation.idempotencyKey).toMatch(/^side_effect:/);
+    expect(first.invocation.idempotencyKey).toMatch(/^side_effect:v2:/);
     expect(replay.replayed).toBe(true);
     expect(replay.invocation.id).toBe(first.invocation.id);
+  });
+
+  it.each([
+    [{ password: "old-value" }, { password: "new-value" }],
+    [{ body: `${"x".repeat(500)}old` }, { body: `${"x".repeat(500)}new` }],
+    [{ items: [...Array.from({ length: 50 }, (_, index) => index), "old"] }, { items: [...Array.from({ length: 50 }, (_, index) => index), "new"] }],
+  ])("blocks unverifiable legacy default-key writes until an explicit new operation is requested (%#)", async (original, replacement) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: "legacy-identity-fixture-key" });
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: original, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    // A complete new request can equal the old shortened preview verbatim.
+    // That must not bypass the legacy verifier through the current-key lookup.
+    const previewArguments = JSON.parse(first.invocation.argumentsSummary!.summary);
+    for (const args of [original, replacement, previewArguments]) {
+      await expect(svc.recordInvocation({ ...input, request: { ...input.request, arguments: args } }, decision))
+        .rejects.toMatchObject({ status: 409, details: {
+          reasonCode: "legacy_tool_idempotency_unverifiable", invocationId: first.invocation.id,
+        } });
+    }
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
+    const explicit = await svc.recordInvocation({ ...input, request: { ...input.request, arguments: replacement,
+      idempotencyKey: "intentional-new-operation" } }, decision);
+    expect(explicit.replayed).toBe(false);
+    expect(explicit.invocation.id).not.toBe(first.invocation.id);
+  });
+
+  it.each(["preview", "complete"])("replays a legacy default-key result when its %s identity proves an exact match", async (identityKind) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: "legacy-identity-fixture-key" });
+    // Historical sorting was ordinal; the new canonical serializer uses locale order.
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: identityKind === "preview"
+        ? { Z: "last", a: "first" } : { password: "saved-secret" }, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    expect(first.invocation.argumentsHash).not.toBe(first.invocation.argumentsSummary!.sha256);
+    const oldHash = identityKind === "preview" ? first.invocation.argumentsSummary!.sha256! : first.invocation.argumentsHash!;
+    const resultSummary = { summary: "saved result" };
+    await db.update(toolInvocations).set({ argumentsHash: oldHash, resultSummary,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    expect(await svc.recordInvocation(input, decision)).toMatchObject({ replayed: true,
+      invocation: { id: first.invocation.id, resultSummary } });
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
+  });
+
+  it("uses authenticated legacy arguments to distinguish an exact retry from a new secret operation", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const signingSecret = "legacy-identity-fixture-key";
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: signingSecret });
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: { password: "old-value" }, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    await db.insert(toolActionRequests).values({ companyId: company.id, invocationId: first.invocation.id,
+      status: "executed", canonicalArgumentsHash: oldHash, canonicalArgumentsSummary: first.invocation.argumentsSummary!, signedArguments: signToolArguments({
+        invocationId: first.invocation.id, toolName: "send_email", canonicalArguments: canonicalToolArguments(input.request.arguments), signingSecret,
+      }) });
+    expect(await svc.recordInvocation(input, decision)).toMatchObject({ replayed: true, invocation: { id: first.invocation.id } });
+    const replacement = await svc.recordInvocation({ ...input, request: { ...input.request, arguments: { password: "new-value" } } }, decision);
+    expect(replacement.replayed).toBe(false);
+    expect(await db.select().from(toolInvocations)).toHaveLength(2);
+  });
+
+  it("separates no-run default keys by actor and never exposes another actor's legacy result", async () => {
+    const company = await createCompany(db);
+    const firstAgent = await createAgent(db, company.id);
+    const secondAgent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values([sendEmailGrantRow(company, firstAgent), sendEmailGrantRow(company, secondAgent)]);
+    const svc = toolAccessPolicyService(db);
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: firstAgent.id, agentId: firstAgent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: { body: "same request" }, sideEffecting: true } };
+    const secondInput = { ...input, actor: { actorType: "agent" as const, actorId: secondAgent.id, agentId: secondAgent.id } };
+    const first = await svc.recordInvocation(input, await svc.decide(input));
+    const second = await svc.recordInvocation(secondInput, await svc.decide(secondInput));
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash, resultSummary: { summary: "first actor's result" },
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    await db.delete(toolInvocations).where(eq(toolInvocations.id, second.invocation.id));
+    const error = await svc.recordInvocation(secondInput, await svc.decide(secondInput)).then(() => null, failure => failure);
+    expect(error).toMatchObject({ status: 409 });
+    expect(error.details).toEqual({ reasonCode: "legacy_tool_idempotency_unverifiable" });
+    expect(JSON.stringify(error)).not.toContain(first.invocation.id);
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
   });
 
   it("enforces rate-limit policies before explicit grants", async () => {

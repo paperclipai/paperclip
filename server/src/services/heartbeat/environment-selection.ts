@@ -18,6 +18,7 @@ import {
 } from "../execution-workspace-policy.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -116,7 +117,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (existingExecutionWorkspace && issueId && !isDotRun && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
-    && readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved) {
+    && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+      || readTaskDirectoryRetention(existingExecutionWorkspace) !== null)) {
     const [boundIssue] = await db.select({ id: issues.id, companyId: issues.companyId, projectId: issues.projectId })
       .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)));
     if (!boundIssue) throw new Error("Execution workspace issue is unavailable");

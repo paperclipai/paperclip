@@ -18,6 +18,8 @@ export interface RunnerSelectorOptions {
   maxParallel: number;
   maxAutomaticRetries: number;
   connectionConfig?: string;
+  githubReviewConfig?: string;
+  provisionGitHubRepository?: boolean;
 }
 
 export class RunnerSelectorError extends Error {}
@@ -62,6 +64,11 @@ export function parseRunnerSelectors(
       options.connectionConfig = valueFor(args, index, flag);
       index += 1;
     }
+    else if (flag === "--github-review-config") {
+      options.githubReviewConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--provision-github-repository") options.provisionGitHubRepository = true;
     else if (flag === "--max-parallel") {
       const value = valueFor(args, index, flag);
       index += 1;
@@ -207,7 +214,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
-  if (executions.some(e => e.task.flow === "provider_connection")) throw new RunnerSelectorError("Provider connection journeys use an explicit local/staging connection configuration; they are not admitted to paid CI matrix jobs yet.");
+  if (executions.some(e => ["provider_connection", "github_review_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,

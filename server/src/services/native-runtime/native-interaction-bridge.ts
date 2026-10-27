@@ -633,6 +633,8 @@ export async function routePersistedNativeResultAttention(input: {
           decisionId: existingDecision.id,
           leaseOwner: null,
           leaseExpiresAt: null,
+          recoveryState: null,
+          recoveryRequestId: null,
           failureCode: nonEmptyText(finalizationError?.cause),
           failureDetail: finalizationError ? {
             originalFailureCode: finalizationError.cause,

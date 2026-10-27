@@ -4,6 +4,11 @@ This map accompanies the [feature map](../feature-map/README.md). It records API
 agent entry points, permission boundaries and verification for the same capability IDs.
 The [shared contract](../README.md) defines the format and maintenance rules.
 
+The [chat scenario catalog](../../tests/runner-e2e/chat-scenarios/README.md) uses
+these same IDs for human requests and expected outcomes. Its scenarios retain
+the access boundaries here; neither a CEO role nor a planned scenario grants
+board authority or establishes a working production tool binding.
+
 Use full capability IDs when referring to access contracts outside their file:
 `onboarding/company` means the `company` capability in `onboarding.md` in both maps.
 The [feature index](../feature-map/README.md#browse-features) lists feature and

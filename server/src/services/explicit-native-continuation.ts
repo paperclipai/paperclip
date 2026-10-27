@@ -31,6 +31,10 @@ import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js
 type Run = typeof heartbeatRuns.$inferSelect;
 const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
 
+export function isUserCommentContinuationReason(reason: string | null | undefined): boolean {
+  return reason === "issue_commented" || reason === "issue_reopened_via_comment" || reason === "issue_assigned";
+}
+
 function processStopped(pid: number): boolean {
   try { process.kill(pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
@@ -96,7 +100,7 @@ export async function admitExplicitNativeContinuation(input: {
   const retry = input.reason === "retry_failed_run" &&
     z.string().guid().safeParse(input.failedRunId).success;
   if (!retry && !input.taskRetryRequestId && !input.queuedCommentInterruptId && (!commentId || !z.string().guid().safeParse(commentId).success ||
-      !["issue_commented", "issue_reopened_via_comment"].includes(input.reason ?? ""))) return null;
+      !isUserCommentContinuationReason(input.reason))) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   ));
@@ -194,8 +198,19 @@ export async function admitExplicitNativeContinuation(input: {
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
+    // Several retained holds may describe this same failed execution. Reuse
+    // its current explicit Retry strategy for a historical hold that predates
+    // system recovery. Every hold still passes the stop/effect checks below.
+    const sourceRunId = run.id;
+    const strategyEvidence = input.taskRetryRequestId && !Object.hasOwn(action.evidence, "systemRecovery")
+      ? actions.find(candidate => {
+          const recovery = readSystemRecovery(candidate.evidence);
+          return candidate.evidence.runId === sourceRunId && recovery?.sourceRunId === sourceRunId &&
+            recovery.intentId === input.taskRetryRequestId;
+        })?.evidence ?? action.evidence
+      : action.evidence;
     const freshIntent = await canSelectFreshWorkspace({ db, companyId, issueId, agentId, actorId,
-      sourceRunId: run.id, evidence: action.evidence, taskRetryRequestId: input.taskRetryRequestId,
+      sourceRunId: run.id, evidence: strategyEvidence, taskRetryRequestId: input.taskRetryRequestId,
       queuedRequestId: input.queuedCommentRequestId });
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&

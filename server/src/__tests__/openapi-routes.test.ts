@@ -21,6 +21,7 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "agent-project-access.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-avatars.ts": "/api",
   "agent-profile-avatar.ts": "/api",
@@ -985,6 +986,21 @@ describe("openapi routes", () => {
       extraInSpec: [],
       excludedRoutes: [...explicitOpenApiOperationCoverageExclusions].sort(),
     });
+  });
+
+  it("documents additive project access as board-only with a strict request", () => {
+    const { spec } = loadSpecRoutes();
+    const path = spec.paths["/api/agents/{id}/project-access"];
+    for (const operation of [path.get, path.post]) {
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"].content["application/json"].schema.required).toEqual(["projectIds", "canManage"]);
+    }
+    expect(path.post.requestBody.content["application/json"].schema).toMatchObject({
+      additionalProperties: false, required: ["projectIds"],
+      properties: { projectIds: { type: "array", items: { type: "string", format: "uuid" } } },
+    });
+    expect(path.post.responses["409"]).toBeDefined();
   });
 
   it("documents the authenticated personal primary-agent contract", () => {

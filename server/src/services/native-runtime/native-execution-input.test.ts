@@ -21,12 +21,13 @@ describe("LCA-05 explicit native work mode", () => {
         normalizedSessionId: null,
         provider: "codex",
         codexReasoningEffort: "high",
+        codexWebSearch: "disabled",
         planningContext: workMode === "planning" ? { documentId: null, baseRevisionId: null, baseRevisionNumber: 0, markdown: "", sha256: "a".repeat(64), reviewContext: {} } : null,
         completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: "Deliver the requested work", criteria: [{ id: "output", requirement: "Deliver the requested work" }] } },
         runtimeContext: nativeRuntimeContextFixture(),
       });
       expect(input.task.workMode).toBe(workMode);
-      expect(input.provider).toMatchObject({ kind: "codex", reasoningEffort: "high" });
+      expect(input.provider).toMatchObject({ kind: "codex", reasoningEffort: "high", webSearch: "disabled" });
       expect(input.executionMode).toBe(workMode === "planning" ? "plan" : "default");
       expect(input.task.title).toBe(text);
     }

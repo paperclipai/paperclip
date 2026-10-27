@@ -13,6 +13,12 @@ export function assertRootDatabase(db: Db) {
 type LifecycleRow = typeof agents.$inferSelect;
 type ChangeOptions = { version?: number; owner?: string; reason?: string };
 
+// Prepared drafts wait for the wizard; they have no background verification obligation.
+export const pendingLifecycleWork = and(
+  inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
+  sql`not (${agents.lifecycleState} = 'verifying' and ${agents.lifecycleHolds} @> '["setup"]'::jsonb)`,
+);
+
 /** The caller owns the accounting transaction and has locked this agent. */
 async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: LifecycleRow,
   command: LifecycleCommand, options: ChangeOptions = {}, policyHolds?: string[], restartPause = false) {
@@ -47,14 +53,17 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
   }
   if (command === "pause") holds = [...new Set([...holds, reason])];
   if (command === "resume") holds = holds.filter(hold => reason === "user" ? ["budget", "company_archived", "company_paused"].includes(hold) : hold !== reason);
+  const blockingHolds = holds.filter(hold => hold !== "setup" || !["preparing", "verifying"].includes(agent.lifecycleState));
   let next = command === "reconcile"
-    ? holds.length && !["pausing", "paused"].includes(agent.lifecycleState) ? "pausing" as const
+    ? blockingHolds.length && !["pausing", "paused"].includes(agent.lifecycleState) ? "pausing" as const
       : !holds.length && agent.lifecycleState === "paused" ? "resuming" as const : agent.lifecycleState
     : command === "resume" && (holds.length || agent.lifecycleState === "pausing") ? agent.lifecycleState
     : transition(agent.lifecycleState, command, agent.lifecycleOperation?.resumeState);
   if (restartPause && next === "paused") next = "pausing";
   if (command === "complete" && next === "ready" && holds.length) next = "pausing";
   if (command === "complete" && next === "paused" && !holds.length) next = "resuming";
+  if (["complete", "reconcile"].includes(command) && next === "paused" && holds.length === 1 && holds[0] === "setup"
+    && await effects.setupRequiresPreparation(tx, agent.companyId, agent.defaultEnvironmentId)) next = "preparing";
   if (next === agent.lifecycleState) {
     if (JSON.stringify(holds) !== JSON.stringify(agent.lifecycleHolds) || agent.pauseReason !== (holds[0] ?? null)) {
       const [updated] = await tx.update(agents).set({ lifecycleHolds: holds, pauseReason: holds[0] ?? null }).where(eq(agents.id, agent.id)).returning();
@@ -131,7 +140,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
         lifecycleOperation: sql`coalesce(${agents.lifecycleOperation}, '{"id":"", "hostComplete":false, "completedPluginIds":[], "attempts":0}'::jsonb)
           || jsonb_build_object('leaseOwner', ${owner}::text, 'leaseUntil', ${(new Date(now.getTime() + 120_000)).toISOString()}::text,
             'attempts', coalesce((${agents.lifecycleOperation}->>'attempts')::integer, 0) + 1)`,
-      }).where(and(eq(agents.id, id), inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
+      }).where(and(eq(agents.id, id), pendingLifecycleWork,
         sql`(${agents.lifecycleState} in ('pausing', 'terminating', 'cleaning_up') or exists (
           select 1 from ${companies} where ${companies.id} = ${agents.companyId} and ${companies.status} = 'active'))`,
         sql`coalesce((${agents.lifecycleOperation}->>'leaseUntil')::timestamptz, '-infinity') <= ${now.toISOString()}::timestamptz`,
@@ -179,7 +188,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
     },
     async pending(limit, now) {
       return db.select({ id: agents.id }).from(agents).where(and(
-        inArray(agents.lifecycleState, ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"]),
+        pendingLifecycleWork,
         sql`coalesce((${agents.lifecycleOperation}->>'leaseUntil')::timestamptz, '-infinity') <= ${now.toISOString()}::timestamptz`,
         sql`coalesce((${agents.lifecycleOperation}->>'retryAt')::timestamptz, '-infinity') <= ${now.toISOString()}::timestamptz`,
       )).orderBy(asc(agents.updatedAt), asc(agents.id)).limit(limit).then(rows => rows.map(row => row.id));

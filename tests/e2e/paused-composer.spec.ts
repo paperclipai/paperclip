@@ -7,6 +7,51 @@ async function json(response: APIResponse) {
 }
 
 for (const classic of [false, true]) {
+  test(`resume preview: ${classic ? "classic" : "task chat"} does not promise to wake blocked work`, async ({ page, request }) => {
+    test.setTimeout(120_000);
+    const company = await json(await request.post("/api/companies", { data: { name: `Resume preview ${Date.now()}` } }));
+    const settings = await json(await request.get("/api/instance/settings/experimental"));
+    try {
+      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: classic } }));
+      const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
+        name: "Resume preview fixture", role: "engineer", adapterType: "process",
+        adapterConfig: { command: "/usr/bin/true" },
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } },
+      } }));
+      const task = await json(await request.post(`/api/companies/${company.id}/issues`, { data: {
+        title: "Blocked work stays blocked", status: "blocked", assigneeAgentId: agent.id,
+      } }));
+      await page.goto(`/${company.issuePrefix}/issues/${task.identifier}`);
+      await page.getByRole("button", { name: "More task actions", exact: true }).click();
+      await page.getByRole("button", { name: "Pause work", exact: true }).click();
+      const takeover = page.getByTestId("paused-composer-takeover");
+      await expect(takeover).toBeVisible();
+      // Enable dispatch only after the hold exists; assignment itself otherwise starts a run.
+      expect((await json(await request.get(`/api/issues/${task.id}`))).status).toBe("blocked");
+      await json(await request.patch(`/api/agents/${agent.id}`, { data: {
+        runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+      } }));
+      await takeover.getByRole("button", { name: "Resume task" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toContainText("The pause will be removed from 1 task.");
+      const wake = dialog.getByRole("checkbox", { name: "Wake affected agents (0)" });
+      await expect(wake).toBeDisabled();
+      await expect(wake).not.toBeChecked();
+      await expect(dialog).toContainText("Blocked, backlog, and unassigned tasks will be unpaused but will not start.");
+      await dialog.getByRole("button", { name: "Resume work", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(takeover).toHaveCount(0);
+      await page.reload();
+      const editor = (classic ? page.getByTestId("issue-chat-composer") : page).getByRole("textbox", { name: "editable markdown" });
+      await expect(editor).toBeVisible();
+      expect((await json(await request.get(`/api/issues/${task.id}`))).status).toBe("blocked");
+      expect(await json(await request.get(`/api/companies/${company.id}/heartbeat-runs?agentId=${agent.id}`))).toEqual([]);
+    } finally {
+      await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+      await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: settings.enableClassicTaskInterface } });
+    }
+  });
+
   test(`paused composer: ${classic ? "classic" : "task chat"} preserves drafts and requires resume`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const company = await json(await request.post("/api/companies", { data: { name: `Paused composer ${Date.now()}` } }));
@@ -63,8 +108,17 @@ for (const classic of [false, true]) {
       await takeover.getByRole("link", { name: "Resume subtree" }).click();
       await expect(page).toHaveURL(new RegExp(task.identifier));
       await takeover.getByRole("button", { name: "Resume subtree" }).click();
-      await page.getByRole("dialog").getByRole("checkbox").uncheck();
+      const subtreeWake = page.getByRole("dialog").getByRole("checkbox");
+      if (await subtreeWake.isEnabled()) await subtreeWake.uncheck();
+      else await expect(subtreeWake).not.toBeChecked();
+      const released = page.waitForResponse((response) =>
+        response.request().method() === "POST"
+        && new URL(response.url()).pathname.startsWith(`/api/issues/${task.identifier}/tree-holds/`)
+        && new URL(response.url()).pathname.endsWith("/release"),
+      );
       await page.getByRole("dialog").getByRole("button", { name: "Resume subtree", exact: true }).click();
+      expect((await released).ok()).toBe(true);
+      await expect(page.getByRole("dialog")).toHaveCount(0);
       await page.goto(`/${company.issuePrefix}/issues/${child.identifier}`);
       await expect(takeover).toHaveCount(0);
       await expect(editor).toBeVisible();

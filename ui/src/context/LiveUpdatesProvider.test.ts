@@ -16,6 +16,24 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("refreshes saved project access with permission saves and live agent activity", async () => {
+    const client = new QueryClient();
+    const target = queryKeys.agents.projectAccess("agent-1");
+    const other = queryKeys.agents.projectAccess("agent-2");
+    client.setQueryData(target, { projectIds: [] });
+    client.setQueryData(other, { projectIds: ["other-project"] });
+    await client.invalidateQueries({ queryKey: queryKeys.agents.detail("agent-1") });
+    expect(client.getQueryState(target)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+    client.setQueryData(target, { projectIds: ["project-1"] });
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "agent", entityId: "agent-1", action: "agent.permissions_updated",
+    }, { userId: "user-1", agentId: null });
+    expect(client.getQueryState(target)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(other)?.isInvalidated).toBe(false);
+    client.clear();
+  });
+
   it('refreshes sources, legacy repositories and installed skills after a background import', () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
@@ -266,6 +284,69 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.runDetail("run-1"),
     });
+  });
+
+  it("patches progress without refetching visible task history but refreshes actual activity and terminal runs", async () => {
+    vi.stubGlobal("document", { visibilityState: "visible" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const issue = { id: "issue-1", identifier: "DEMO-1", companyId: "company-1", assigneeAgentId: "agent-1", executionRunId: "run-1" };
+    const run = { id: "run-1", agentId: "agent-1", status: "running" };
+    const snapshots = [
+      [queryKeys.issues.detail("DEMO-1"), issue],
+      [queryKeys.issues.activity("DEMO-1"), []],
+      [queryKeys.issues.runs("DEMO-1"), [{ runId: "run-1" }]],
+      [queryKeys.issues.liveRuns("DEMO-1"), [run]],
+      [queryKeys.issues.activeRun("DEMO-1"), run],
+      [queryKeys.issues.comments("DEMO-1"), { pages: [[]], pageParams: [null] }],
+    ] as const;
+    const readers = snapshots.map(() => vi.fn(async () => undefined as unknown));
+    const observers = snapshots.map(([queryKey, data], index) => {
+      client.setQueryData(queryKey, data);
+      readers[index].mockResolvedValue(data);
+      return new QueryObserver(client, { queryKey, queryFn: readers[index], staleTime: Infinity });
+    });
+    const unsubscribe = observers.map(observer => observer.subscribe(() => {}));
+    const gate = { cooldownHits: new Map<string, number[]>(), suppressUntil: 0, observedRunOutcomes: new Set<string>() };
+    const deliver = (event: Parameters<typeof __liveUpdatesTestUtils.handleLiveEvent>[3]) =>
+      __liveUpdatesTestUtils.handleLiveEvent(client, "company-1", "/DEMO/issues/DEMO-1", event, () => null, gate,
+        { userId: "viewer", agentId: null });
+    try {
+      for (let id = 1; id <= 3; id++) {
+        deliver({ id, companyId: "company-1", type: "heartbeat.run.progress", createdAt: "2020-01-01T00:00:00Z",
+          payload: { runId: "run-1", issueId: "issue-1", agentId: "agent-1", phase: "working", message: `Step ${id}`,
+            currentToolName: "read_task", updatedAt: "2020-01-01T00:00:00Z" } });
+      }
+      await Promise.resolve();
+      expect(readers.map(reader => reader.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
+      expect(client.getQueryData(queryKeys.issues.activeRun("DEMO-1"))).toMatchObject({ currentStatusMessage: "Step 3", currentToolName: "read_task" });
+      expect(client.getQueryData(queryKeys.issues.liveRuns("DEMO-1"))).toMatchObject([{ currentStatusMessage: "Step 3" }]);
+      deliver({ id: 4, companyId: "company-1", type: "heartbeat.run.progress", createdAt: "2020-01-01T00:00:01Z",
+        payload: { runId: "unknown-run", issueId: "issue-1", agentId: "agent-1", message: "New run" } });
+      await vi.waitFor(() => {
+        expect(readers.slice(0, 5).every(reader => reader.mock.calls.length > 0)).toBe(true);
+        expect(client.isFetching()).toBe(0);
+      });
+      readers.forEach(reader => reader.mockClear());
+      deliver({ id: 5, companyId: "company-1", type: "activity.logged", createdAt: "2020-01-01T00:00:02Z",
+        payload: { entityType: "issue", entityId: "issue-1", action: "issue.comment_added", actorType: "user", actorId: "another-viewer" } });
+      await vi.waitFor(() => {
+        expect(readers[1]).toHaveBeenCalled();
+        expect(readers[5]).toHaveBeenCalled();
+        expect(client.isFetching()).toBe(0);
+      });
+      readers.forEach(reader => reader.mockClear());
+      deliver({ id: 6, companyId: "company-1", type: "heartbeat.run.status", createdAt: "2020-01-01T00:00:03Z",
+        payload: { runId: "run-1", issueId: "issue-1", agentId: "agent-1", status: "succeeded" } });
+      await vi.waitFor(() => {
+        expect(readers.every(reader => reader.mock.calls.length > 0)).toBe(true);
+        expect(client.isFetching()).toBe(0);
+      });
+    } finally {
+      unsubscribe.forEach(stop => stop());
+      observers.forEach(observer => observer.destroy());
+      client.clear();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("applies heartbeat progress payloads directly to cached visible issue runs", () => {

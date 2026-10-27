@@ -94,6 +94,7 @@ export interface EvalSessionUsage {
   cachedInputTokens: number;
   reasoningTokens: number;
   providerReportedCostNanodollars: number | null;
+  legacyLedgerCostNanodollars?: number;
   providerReportedCostProvenance: "legacy_runner_usage_ledger" | "unavailable";
   estimatedCostNanodollars: number | null;
   pricingVersion: EstimatedModelCost["pricingVersion"] | null;
@@ -401,6 +402,8 @@ export function evalSessionUsage(
   }
   const candidate = snapshot.config?.provider === "acpx"
     && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
+  const codex = snapshot.config?.provider === "codex";
+  const providerCostUnavailable = candidate || codex;
   let estimate: EstimatedModelCost | null;
   try {
     estimate = estimateModelCostNanodollars(model, totals);
@@ -413,14 +416,12 @@ export function evalSessionUsage(
   }
   return {
     ...totals,
-    // Candidate ACP adapters do not supply authenticated USD receipts. The
-    // shared legacy ledger fills absent cost with zero, so its numeric value
-    // cannot establish an invoice amount for these profiles.
-    providerReportedCostNanodollars: candidate ? null : totals.providerReportedCostNanodollars,
-    providerReportedCostProvenance: candidate ? "unavailable" : "legacy_runner_usage_ledger",
+    ...(codex ? { legacyLedgerCostNanodollars: totals.providerReportedCostNanodollars } : {}),
+    providerReportedCostNanodollars: providerCostUnavailable ? null : totals.providerReportedCostNanodollars,
+    providerReportedCostProvenance: providerCostUnavailable ? "unavailable" : "legacy_runner_usage_ledger",
     estimatedCostNanodollars: estimate?.estimatedCostNanodollars ?? null,
     pricingVersion: estimate?.pricingVersion ?? null,
     ratesUsdPerMillionTokens: estimate?.ratesUsdPerMillionTokens ?? null,
-    costCoverage: candidate ? (estimate === null ? "unpriced" : "estimated") : "legacy_ledger_and_estimate",
+    costCoverage: providerCostUnavailable ? (estimate === null ? "unpriced" : "estimated") : "legacy_ledger_and_estimate",
   };
 }

@@ -49,6 +49,29 @@ Automated: [execution policy](../../server/src/__tests__/issue-execution-policy.
 
 Manual: Complete implementation under a review-required policy and confirm it waits for the required review outcome. Exercise rejection and later approval. Pause the parent while child work is pending, then verify resumption respects budget and ownership gates.
 
+Resume removes the pause without changing task status. Its wake count includes only
+current agent assignees on todo, in-progress, or in-review tasks. The dialog explains
+that blocked, backlog, and unassigned tasks remain idle. Verify this in both task
+interfaces with [the paused composer browser suite](../../tests/e2e/paused-composer.spec.ts).
+Release rechecks tasks reopened after the pause; another active pause still prevents
+their execution, and uncertain prior executions must be reconciled before waking.
+
+### Plugin task panels
+
+An installed plugin can offer an agent detail tab in the task side panel through
+its optional `taskSidePanel` declaration. The host supplies the task's running
+agent. The plugin's authorized availability route decides whether the panel is
+shown, and the plugin owns its label and viewer. No contribution appears for a
+missing plugin, inactive run, unavailable view or access failure. A closed panel
+can be reopened from the launcher while available.
+
+Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
+[task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
+Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and
+[task panel tests](../../ui/src/components/task-side-panel/TaskSidePanel.test.tsx)
+cover availability, task/agent changes, failures, inactivity and dismissal.
+These mocks do not establish a particular plugin's live transport behavior.
+
 ## Gotchas
 
 - Review completion and task completion are different events under some policies.

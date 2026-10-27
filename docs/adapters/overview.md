@@ -53,6 +53,19 @@ Worked examples:
   `credentials.json` from the sandbox image's own `$HOME/.claude`. The
   snapshot's Claude login is the credential source for the run.
 
+### OpenCode sandbox memory pressure
+
+On managed Linux sandboxes, the Legacy OpenCode adapter adds a local plugin through
+OpenCode's [`shell.env` hook](https://opencode.ai/docs/plugins/#inject-environment-variables).
+The hook supplies a Bash startup file only to shell subprocesses. It sets their
+Linux `oom_score_adj` to `1000`, so the kernel prefers to kill memory-heavy tool
+commands before OpenCode when the sandbox runs out of memory.
+
+An existing `BASH_ENV` takes precedence. Local and SSH execution keep their
+existing behavior. The guard does not increase the sandbox memory limit, apply
+to other shells, or prevent OpenCode itself from exhausting memory. If the
+runtime cannot set the process preference, the command still runs.
+
 ### Hermes local vs gateway
 
 Use `hermes_local` when Paperclip should start the local `hermes` CLI on the

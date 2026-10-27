@@ -326,7 +326,7 @@ describe("GitHub external object provider", () => {
         status: 403,
         headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
       }),
-      { ok: false, liveness: "unreachable", errorCode: "github_rate_limited" },
+      { ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" },
     ],
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
@@ -498,7 +498,7 @@ describe("GitHub external object provider", () => {
     expect(JSON.stringify(result)).not.toContain("http");
   });
 
-  it("classifies a 404 as unreachable when the repository probe is rate-limited", async () => {
+  it("classifies a 404 as rate-limited when the repository probe is rate-limited", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/repos/acme/app")) {
         return new Response("", {
@@ -519,14 +519,188 @@ describe("GitHub external object provider", () => {
     expect(result).toEqual(
       expect.objectContaining({
         ok: false,
-        liveness: "unreachable",
-        errorCode: "github_repo_probe_failed",
+        liveness: "rate_limited",
+        errorCode: "github_rate_limited",
       }),
     );
     expect(result).not.toEqual(
       expect.objectContaining({ ok: false, liveness: "auth_required", errorCode: "github_repo_not_accessible" }),
     );
     expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies an authenticated rate limit as rate-limited rather than unreachable", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      tokenProvider: async () => "ghp_secret",
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("ghp_secret");
+  });
+
+  it("classifies a 429 as rate-limited", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 429,
+      headers: { "retry-after": "60" },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
+  });
+
+  it("limits a server-environment token to public repositories and never fetches a private object", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true, full_name: "acme/app" });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/42"), expect.anything());
+    expect(JSON.stringify(result)).not.toContain("env-token");
+  });
+
+  it("fails closed when a server-environment token probe does not confirm the repository is public", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      // No `private` flag: public visibility is not positively confirmed.
+      if (url.endsWith("/repos/acme/app")) return response({ full_name: "acme/app" });
+      return response({ state: "open", draft: false, merged: false, title: "Unconfirmed PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/42"), expect.anything());
+    expect(JSON.stringify(result)).not.toContain("env-token");
+  });
+
+  it("uses a server-environment token to resolve a public repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: false });
+      return response({ state: "open", draft: false, merged: false, title: "Public PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
+  });
+
+  it("re-verifies public access for a server-environment token instead of reusing a cached verdict", async () => {
+    let repoPrivate = false;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: repoPrivate });
+      return response({ state: "open", draft: false, merged: false, title: "acme/app PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    // First refresh while the repository is public: the object resolves.
+    const publicResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+    expect(publicResult.ok).toBe(true);
+
+    // The repository becomes private inside the probe-cache TTL. The server token
+    // still has access, but this company did not authorize it, so the second object
+    // must not reuse the cached "public" verdict to read private details.
+    repoPrivate = true;
+    const privateResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/43", "pull_request"),
+    });
+
+    expect(privateResult).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/43"), expect.anything());
+    expect(JSON.stringify(privateResult)).not.toContain("env-token");
+  });
+
+  it("lets a company-scoped token resolve a private repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
   });
 });
 

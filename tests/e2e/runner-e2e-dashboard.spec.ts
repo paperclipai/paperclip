@@ -363,3 +363,32 @@ test("case status dots summarize matching results and open failures", async ({ p
   await page.getByRole("button", { name: "Legacy Codex · Daytona sandbox", exact: true }).click();
   await expect(topLink).toHaveAttribute("data-case-status", "failed");
 });
+
+test("keeps long feedback fingerprints inside a scrollable review table on phones", async ({ page }) => {
+  const { emptyFeedbackSummary } = await import("../runner-e2e/feedback.js");
+  const { feedbackReviewTemplate } = await import("../runner-e2e/feedback-dispositions.js");
+  const execution = runnerExecutionById(executionIds[0]);
+  const entry = resultFor(execution, "passed");
+  entry.result.feedback = { ...emptyFeedbackSummary(), collection: "complete", invocationCollection: "complete",
+    complaints: 2, bodiesCollected: 2,
+    review: ["a", "b"].map(value => ({ fingerprint: value.repeat(64), kind: "complaint", occurrences: 1, disposition: "needs_investigation" })),
+  };
+  const campaign = buildRunnerCampaign({ campaignId: "feedback-mobile", generatedAt: entry.result.finishedAt, expected: [execution.id], results: [entry.result] });
+  campaign.feedbackReview = { ...feedbackReviewTemplate(campaign), version: 1, reviewedAt: "2026-10-20T01:00:00Z", reviewedBy: "agent",
+    decisions: [{ fingerprint: "a".repeat(64), disposition: "actionable", issueNumber: 123 },
+      { fingerprint: "b".repeat(64), disposition: "duplicate", duplicateOf: "a".repeat(64) }],
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openReport(page, renderRunnerE2EDashboard({ title: "Feedback review", generatedAt: campaign.generatedAt,
+    expected: campaign.expected, catalog: [execution], entries: [entry], campaign }));
+  await page.getByText("Campaign usage and spend", { exact: true }).click();
+  const decisions = page.getByRole("region", { name: "Feedback review decisions" });
+  await expect(decisions).toBeVisible();
+  expect(await decisions.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await decisions.focus();
+  await page.keyboard.press("Tab");
+  const followup = decisions.getByRole("link", { name: "#123" });
+  await expect(followup).toBeFocused();
+  await expect(followup).toBeInViewport();
+});

@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { readTaskRetryIntent, readTaskRetryBoardMessageOrigin } from "./task-retry.js";
+import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   heartbeatRuns,
@@ -10,7 +11,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden } from "../errors.js";
-import { boundRunIssueId } from "./run-task-binding.js";
+import { boundRunIssueId, runTaskContextColumn } from "./run-task-binding.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
@@ -72,7 +73,7 @@ async function lockIdentityTask(
 ) {
   const [run] = await executor
     .select({
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      contextSnapshot: runTaskContextColumn,
       nativeIssueId: heartbeatRuns.nativeIssueId,
       issueId: heartbeatRuns.issueId,
     })
@@ -150,7 +151,11 @@ async function activate(executor: Executor, context: RunIdentityContext) {
         eq(heartbeatRuns.companyId, context.companyId),
       ),
     )
-    .returning();
+    .returning({
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: heartbeatRuns.issueId,
+      contextSnapshot: runTaskContextColumn,
+    });
   const issueId = run ? boundRunIssueId(run) : null;
   if (typeof issueId === "string")
     await executor
@@ -197,6 +202,39 @@ export async function initializeRunIdentity(
       return current!;
     }
     const operatorIdentity = await explicitOperatorRunIdentity(tx, run);
+    let retryOrigin: string | null = null;
+    const retryId = run.contextSnapshot?.taskRetryRequestId;
+    if (typeof retryId === "string") {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, retryId), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId)));
+      const retry = readTaskRetryIntent(receipt?.payload);
+      if (run.contextSnapshot?.boardMessageRetry === true || retry?.boardMessageOrigin) {
+        if (!retry?.boardMessageOrigin) throw forbidden("This saved message can no longer be retried safely. Send a new message on the task to continue from saved work.");
+        const [dispatch] = run.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+          eq(agentWakeupRequests.status, "claimed"), eq(agentWakeupRequests.reason, "task_retry"),
+          eq(agentWakeupRequests.idempotencyKey, `task-retry-dispatch:${receipt!.id}`),
+          eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.requestedByActorId, retry.actorId))) : [];
+        const [task] = input.issueId ? await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, run.agentId),
+          eq(issues.executionRunId, run.id))) : [];
+        const origin = input.issueId && run.status === "running" && task && dispatch &&
+          [run.issueId, run.nativeIssueId, run.contextSnapshot?.issueId, run.contextSnapshot?.taskId]
+            .every(id => id === null || id === undefined || id === input.issueId) && receipt!.runId === run.id && receipt!.status === "coalesced" &&
+          receipt!.reason === "task_retry" && receipt!.requestedByActorType === "user" &&
+          run.contextSnapshot?.previousRunId === retry.sourceRunId && retry.generationId === receipt!.id && !retry.chatActionId && !retry.canonicalIntentId &&
+          receipt!.payload?.issueId === input.issueId && retry.actorId === receipt!.requestedByActorId &&
+          await readTaskRetryBoardMessageOrigin(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
+            agentId: run.agentId, sourceRunId: retry.sourceRunId, actorId: retry.actorId });
+        if (!origin || origin.commentId !== retry.boardMessageOrigin.commentId ||
+            origin.identityContextId !== retry.boardMessageOrigin.identityContextId) {
+          throw forbidden("This saved message can no longer be retried safely. Send a new message on the task to continue from saved work.");
+        }
+        retryOrigin = origin.identityContextId;
+      }
+    }
     const [parent] = input.parentRunId
       ? await tx
           .select()
@@ -222,7 +260,7 @@ export async function initializeRunIdentity(
             )
         : [];
     const parentId = operatorIdentity ? null : (
-      interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+      retryOrigin ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
     );
     const [origin] = parentId
       ? await tx
@@ -430,12 +468,22 @@ export async function acceptSteeredIdentity(
 export async function captureRunIdentity(
   db: Db,
   input: { companyId: string; runId: string; agentId: string },
+  options?: { readScope: "github_credentials" | "request_authentication" },
 ) {
   // Lock acquisition serializes with steering delivery and its durable acknowledgement.
   return db.transaction(async (tx) => {
     await lockIdentityTask(tx, input.companyId, input.runId);
     const [run] = await tx
-      .select()
+      .select(options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
+        ...getTableColumns(heartbeatRuns),
+        contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+          then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+            'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'projectId', ${heartbeatRuns.contextSnapshot}->'projectId',
+            'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy') else null end`,
+        runnerProfileJson: sql<Record<string, unknown> | null>`null`,
+        resultJson: sql<Record<string, unknown> | null>`null`,
+        stdoutExcerpt: sql<string | null>`null`, stderrExcerpt: sql<string | null>`null`,
+      } : getTableColumns(heartbeatRuns))
       .from(heartbeatRuns)
       .where(
         and(

@@ -263,16 +263,28 @@ export async function resolveEnvironmentExecutionTarget(input: {
       throw new Error("Plugin environment does not provide native Runner task execution");
     }
     // The Runner resolves its workspace locally; this is only a relative scope marker.
-    return {
-      kind: "remote", transport: "sandbox", providerKey: "plugin",
+    const acquisition:SandboxLeaseAcquisition = {outcome:lease.metadata?.runnerTaskReused === true ? "resumed" : "created",providerLeaseId:lease.providerLeaseId!};
+    const target: Extract<AdapterExecutionTarget,{kind:"remote";transport:"sandbox"}> = {
+      kind: "remote", transport: "sandbox", providerKey: lease.provider ?? "plugin",
       environmentId: input.environment.id, leaseId: lease.id, remoteCwd: ".",
-      runnerLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
-      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: lease.providerLeaseId! },
+      runnerLifecyclePolicy: lease.metadata?.runnerTaskLifecyclePolicy as { mode: "warm"; idleTimeoutMs: number } | undefined ?? { mode: "per_turn", idleTimeoutMs: null },
+      reusableLeaseConfigured: lease.leasePolicy === "reuse_by_environment",
+      effectiveCapabilities: { reusableLeases: lease.leasePolicy === "reuse_by_environment", nativeSyncIn: false, nativeSyncOut: false,
+        persistentProcessSessions: false, independentControlCommands: false, incrementalSessionOutput: false,
+        concurrentSyncOperations: false, duplexCommandStream: false, runnerWebSocketIngress: true },
+      sandboxLeaseAcquisition:acquisition,
       ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
-      runnerTask: operation => runtime.task({ companyId: input.companyId, leaseId: lease.id,
-        operation: environmentTaskOperationSchema.parse(operation) }),
-
+      runnerTask: async operation => {
+        const result = await runtime.task({ companyId: input.companyId, leaseId: lease.id,
+          operation: environmentTaskOperationSchema.parse(operation) });
+        if (result.kind === "description" && result.taskId !== acquisition.providerLeaseId) {
+          acquisition.outcome = "replacement";
+          acquisition.providerLeaseId = result.taskId;
+        }
+        return result;
+      },
     };
+    return target;
   }
 
   if (input.environment.driver === "sandbox") {

@@ -428,6 +428,23 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+  it("connects 1Password using only its service-account token and links official creation instructions", async () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(entry => entry.slug === "1password")!;
+    listGalleryMock.mockResolvedValue({ apps: [app] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="1password" />);
+    const fields = container.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    expect(fields).toHaveLength(1);
+    expect(fields[0]!.getAttribute("aria-label")).toBe("Paste your 1Password Service Account token");
+    expect(container.querySelector('a[href="https://www.1password.dev/service-accounts/get-started#create-a-service-account"]')).not.toBeNull();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await act(async () => setInputValue(fields[0]!, "ops_disposable-fixture"));
+    await act(async () => buttonByText("Connect")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: "1password",
+      connectionMethodKey: "service-account", credentialValues: { "credentials.authorization": "ops_disposable-fixture" } }));
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
     const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
     experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });

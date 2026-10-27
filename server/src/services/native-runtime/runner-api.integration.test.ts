@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { eq } from "drizzle-orm";
@@ -931,6 +931,22 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const download = await fixture.authority.execute({ tool: "call_api", callId: "download", arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: fixture.binaryArtifactId } } }) as any;
     expect(download).toMatchObject({ status: 206, byteSize: 32000, artifact: { artifactId: fixture.binaryArtifactId, byteSize: 32000 } });
     expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: download.artifact.artifactId, companyId: fixture.companyId, createdByAgentId: fixture.agentId })]));
+  });
+
+  it.each(["sample.txt", "/home/agent/proof.txt"])("uploads remote task bytes at %s and fails closed without the reader", async (sourcePath) => {
+    const fixture=await server.fixture();
+    const bytes=Buffer.from("proof exists only on the execution host\n");
+    const read=vi.fn(async(path:string,maxBytes:number)=>{expect(path).toBe(sourcePath);expect(maxBytes).toBeGreaterThan(bytes.length);return bytes;});
+    const binding={...fixture.authority.binding,executionTargetKind:"remote" as const,readRemoteApiFile:read};
+    const authority=new PaperclipRunnerToolAuthority(server.db,binding);
+    const call={tool:"call_api" as const,callId:randomUUID(),arguments:{operationId:"POST /api/companies/{companyId}/issues/{issueId}/attachments",pathParams:{issueId:fixture.issueId},files:[{path:sourcePath}]}};
+    await expect(authority.execute(call)).resolves.toMatchObject({status:201});
+    expect(read).toHaveBeenCalledOnce();
+    expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({sha256:createHash("sha256").update(bytes).digest("hex"),byteSize:bytes.length})]));
+    const unsupported=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:undefined});
+    await expect(unsupported.execute({...call,callId:randomUUID()})).rejects.toThrow("Remote workspace file uploads are unavailable");
+    const changing=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:async()=>{await server.db.update(heartbeatRuns).set({status:"cancelled"}).where(eq(heartbeatRuns.id,fixture.runId));return bytes;}});
+    await expect(changing.execute({...call,callId:randomUUID()})).rejects.toThrow();
   });
 
   it("does not accept caller-supplied identity in an API comment", async () => {

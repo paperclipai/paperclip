@@ -102,6 +102,7 @@ export interface BuildNativeExecutionInput {
   homeMode?: "isolated" | "preconfigured";
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
   codexReasoningEffort?: string;
+  codexWebSearch?: "disabled";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxSessionMode?: "agent" | "plan" | "ask";
@@ -364,6 +365,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
             model: input.model ?? null,
             approvalPolicy: input.codexApprovalPolicy ?? "never",
             ...(input.codexReasoningEffort ? { reasoningEffort: input.codexReasoningEffort } : {}),
+            ...(input.codexWebSearch ? { webSearch: input.codexWebSearch } : {}),
           },
     completionContract: {
       id: input.completionContract.id,

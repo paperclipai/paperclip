@@ -1,5 +1,9 @@
 import { parseFinalizationCrashBinding, readFinalizationCrashBoundary, type FinalizationCrashBinding } from "./finalization-crash-boundary.js";
 import { parseRestartRunnerIdentity, type RestartRunnerIdentity } from "./process-tree-owner.js";
+import { recoverInterruptedFeedback } from "./feedback-recovery.js";
+import { normalizedSecrets } from "./redaction.js";
+import { CREDENTIAL_NAMES } from "./types.js";
+import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
@@ -117,6 +121,43 @@ let child: ChildProcess | null = null;
 let unexpectedChildFailure: Error | null = null;
 let shutdownSignal: NodeJS.Signals | null = null;
 let activeRestartRequestId: string | null = null;
+let feedbackRecovery: Promise<void> | undefined;
+
+function recoverFeedbackBeforeShutdown() {
+  return feedbackRecovery ??= (async () => {
+    const privateDir = process.env.PAPERCLIP_RUNNER_E2E_PRIVATE_DIR;
+    const campaignId = process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID;
+    const attemptId = process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID;
+    if (!privateDir || !campaignId || !attemptId || process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1") return;
+    const deadlineAt = Date.now() + 5_000;
+    const secrets = normalizedSecrets([...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES,
+      "PAPERCLIP_E2E_GATEWAY_TOKEN", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_DECISION_SIGNING_SECRET",
+      "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "BETTER_AUTH_SECRET"].map(name => process.env[name]));
+    for (const executionId of executionIds) {
+      if (Date.now() >= deadlineAt) break;
+      const execution = runnerMatrix.find(row => row.id === executionId);
+      if (!execution) continue;
+      try {
+        await recoverInterruptedFeedback({ identity: { campaignId, attemptId, executionId },
+          caseDirectory: path.join(privateDir, "cases", execution.task.id), secrets, deadlineAt,
+          api: { async get<T>(endpoint: string, options?: { timeout: number }): Promise<T> {
+            const base = `http://127.0.0.1:${port}`;
+            const url = new URL(endpoint, base);
+            if (url.origin !== base || !url.pathname.startsWith("/api/")) throw new Error("Invalid feedback recovery endpoint");
+            const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(Math.max(1, Math.min(options?.timeout ?? 1_000, deadlineAt - Date.now()))) });
+            if (!response.ok) { await response.body?.cancel(); throw new Error("Feedback recovery read failed"); }
+            return response.json() as Promise<T>;
+          } },
+        });
+      } catch { appendLog("Feedback recovery checkpoint unavailable; retain private recovery state.\n"); }
+    }
+  })();
+}
+
+async function stopWithFeedback(candidate: ChildProcess, signal: NodeJS.Signals) {
+  await recoverFeedbackBeforeShutdown();
+  await stopServer(candidate, signal);
+}
 
 function appendLog(message: string) {
   process.stderr.write(message);
@@ -186,7 +227,7 @@ async function startServer() {
   // that race create an unowned replacement server.
   if (shutdownSignal) {
     // The main/error path awaits this same promise and reports any failure.
-    void stopServer(candidate, shutdownSignal).catch(() => {});
+    void stopWithFeedback(candidate, shutdownSignal).catch(() => {});
   }
   await stopServer.watch(candidate);
   return candidate;
@@ -252,6 +293,7 @@ async function waitForHealthToStop() {
 
 interface RestartRequest {
   requestId: string;
+  controllerDowntimeMs?: number;
   preserveRunner?: RestartRunnerIdentity;
   crashAfterResult?: FinalizationCrashBinding;
 }
@@ -280,9 +322,15 @@ async function readRestartRequest(): Promise<RestartRequest | null> {
     return null;
   }
   const preserveRunner = (value as { preserveRunner?: unknown }).preserveRunner;
+  const controllerDowntimeMs = (value as { controllerDowntimeMs?: unknown }).controllerDowntimeMs;
+  if (controllerDowntimeMs !== undefined && (!Number.isSafeInteger(controllerDowntimeMs)
+    || Number(controllerDowntimeMs) < 0 || Number(controllerDowntimeMs) > 300_000)) {
+    throw new Error("Controller downtime must be an integer between zero and five minutes");
+  }
   const crashAfterResult = (value as { crashAfterResult?: unknown }).crashAfterResult;
   if (crashAfterResult !== undefined && preserveRunner !== undefined) throw new Error("A finalization crash cannot preserve a running provider");
-  return { requestId, ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }),
+  return { requestId, ...(controllerDowntimeMs === undefined ? {} : { controllerDowntimeMs: Number(controllerDowntimeMs) }),
+    ...(preserveRunner === undefined ? {} : { preserveRunner: parseRestartRunnerIdentity(preserveRunner) }),
     ...(crashAfterResult === undefined ? {} : { crashAfterResult: parseFinalizationCrashBinding(crashAfterResult) }) };
 }
 
@@ -307,7 +355,7 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer({ requestId, preserveRunner, crashAfterResult }: RestartRequest) {
+async function restartServer({ requestId, preserveRunner, crashAfterResult, controllerDowntimeMs = 0 }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
@@ -324,6 +372,11 @@ async function restartServer({ requestId, preserveRunner, crashAfterResult }: Re
   // Do not mistake an orphaned old server for a healthy replacement. The port
   // must stop answering before the next launcher is allowed to start.
   await waitForHealthToStop();
+  const downtimeDeadline = Date.now() + controllerDowntimeMs;
+  while (Date.now() < downtimeDeadline) {
+    if (shutdownRequested()) throw new Error("Wrapper shutdown interrupted controller downtime");
+    await delay(Math.min(250, downtimeDeadline - Date.now()));
+  }
   if (shutdownRequested()) {
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
@@ -344,9 +397,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     if (shutdownSignal) return;
     shutdownSignal = signal;
     if (!child) return;
-    // Begin immediately, including during a health/restart wait. The final
-    // cleanup joins this promise instead of sending a second graceful signal.
-    void stopServer(child, signal).catch(() => {});
+    void stopWithFeedback(child, signal).catch(() => {});
   });
 }
 
@@ -374,6 +425,7 @@ async function supervise() {
     await delay(200);
   }
 
+  await recoverFeedbackBeforeShutdown();
   await stopServer.stopAll(shutdownSignal ?? "SIGTERM");
 }
 
@@ -394,6 +446,7 @@ try {
     }
   }
   try {
+    await recoverFeedbackBeforeShutdown();
     await stopServer.stopAll();
   } catch (stopError) {
     appendLog(`Failed to stop Paperclip after supervisor failure: ${stopError instanceof Error ? stopError.message : String(stopError)}\n`);

@@ -2,7 +2,8 @@ import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -1033,6 +1034,177 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(feed.items.filter((item) => item.sourceKind === "failed_run")).toEqual([]);
   });
+
+  it("hides a failed run only after a newer run of the same agent on the same issue or task", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATK");
+    const taskIssueId = await insertIssue({ companyId, identifier: "ATK-1", title: "Task-keyed", status: "in_progress" });
+    const issueKeyedId = await insertIssue({ companyId, identifier: "ATK-2", title: "Issue-keyed", status: "in_progress" });
+    const otherIssueId = await insertIssue({ companyId, identifier: "ATK-3", title: "Other work", status: "in_progress" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const taskKeyedFailureId = randomUUID();
+    const issueKeyedFailureId = randomUUID();
+    const unkeyedHiddenFailureId = randomUUID();
+    const unkeyedKeptFailureId = randomUUID();
+    const failureIds = [taskKeyedFailureId, issueKeyedFailureId, unkeyedHiddenFailureId, unkeyedKeptFailureId];
+    const sameMillisecondRunId = randomUUID();
+    const run = (id: string, agentId: string, status: string, contextSnapshot: Record<string, unknown>, at: Date) => ({
+      id, companyId, agentId, invocationSource: "automation", status, contextSnapshot,
+      createdAt: at, updatedAt: at, finishedAt: at, ...(status === "failed" ? { error: "adapter failed" } : {}),
+    });
+
+    await db.insert(heartbeatRuns).values([
+      run(taskKeyedFailureId, workerId, "failed", { taskId: taskIssueId }, failedAt),
+      run(issueKeyedFailureId, workerId, "failed", { issueId: issueKeyedId }, failedAt),
+      run(unkeyedHiddenFailureId, workerId, "failed", {}, failedAt),
+      run(unkeyedKeptFailureId, reviewerId, "failed", {}, failedAt),
+      run(randomUUID(), workerId, "succeeded", { taskId: taskIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { wakeReason: "timer" }, laterAt),
+      run(randomUUID(), reviewerId, "succeeded", { issueId: issueKeyedId }, laterAt),
+      run(randomUUID(), reviewerId, "succeeded", { issueId: otherIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: otherIssueId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: otherIssueId, taskId: issueKeyedId }, laterAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: "", taskId: issueKeyedId }, laterAt),
+      run(sameMillisecondRunId, workerId, "succeeded", { issueId: issueKeyedId }, failedAt),
+      run(randomUUID(), workerId, "succeeded", { issueId: issueKeyedId }, new Date("2026-07-09T11:59:00.000Z")),
+    ]);
+    await db.execute(sql`update heartbeat_runs set created_at = created_at + interval '400 microseconds'
+      where id in (${sql.join(failureIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+    await db.execute(sql`update heartbeat_runs set created_at = created_at + interval '600 microseconds'
+      where id = ${sameMillisecondRunId}::uuid`);
+    await db.insert(heartbeatRunEvents).values(
+      failureIds.map((runId) => ({
+        companyId,
+        runId,
+        agentId: runId === unkeyedKeptFailureId ? reviewerId : workerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })),
+    );
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+      .toEqual([issueKeyedFailureId, unkeyedKeptFailureId].sort());
+  });
+
+  it("keeps newer-run response size bounded despite unrelated retained history", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+    const issueId = await insertIssue({ companyId, identifier: "ATW-1", title: "Exhausted task", status: "in_progress" });
+    const otherIssueId = await insertIssue({ companyId, identifier: "ATW-2", title: "Other task", status: "done" });
+    const failedId = randomUUID(), failedAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: failedId, companyId, agentId: workerId, status: "failed", contextSnapshot: { issueId },
+      createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId, agentId: workerId, runId: failedId, seq: 1, eventType: "lifecycle",
+      message: "Bounded retry exhausted after scheduled attempts",
+    });
+    for (let batch = 0; batch < 4; batch += 1) {
+      await db.insert(heartbeatRuns).values(Array.from({ length: 500 }, (_, index) => ({
+        id: randomUUID(), companyId, agentId: workerId, status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId, prompt: "x".repeat(8_000) },
+        createdAt: new Date(failedAt.getTime() + batch * 500 + index + 1),
+        updatedAt: failedAt, finishedAt: failedAt,
+      })));
+    }
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+      expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
+    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+    expect(reads.filter(event => event.operation === "execute")
+      .reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(remaining?.count).toBe(2001);
+  });
+
+  it("reads keyless history once per agent despite thousands of failures", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATB");
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const hiddenIds = Array.from({ length: 16_390 }, () => randomUUID());
+    const keptIds = Array.from({ length: 10 }, () => randomUUID());
+    const failure = (id: string, agentId: string) => ({
+      id, companyId, agentId, invocationSource: "automation", status: "failed", error: "adapter failed",
+      contextSnapshot: {}, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    const failures = hiddenIds.map((id) => failure(id, workerId));
+    keptIds.forEach((id, index) => failures.splice(index * 1_700, 0, failure(id, reviewerId)));
+    for (let start = 0; start < failures.length; start += 1_000) {
+      const chunk = failures.slice(start, start + 1_000);
+      await db.insert(heartbeatRuns).values(chunk);
+      await db.insert(heartbeatRunEvents).values(chunk.map((run) => ({
+        companyId, runId: run.id, agentId: run.agentId, seq: 1, eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })));
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
+      contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
+    });
+
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, {
+        includeDismissed: true, all: true, allowUnscopedAll: true,
+      });
+      expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+        .toEqual([...keptIds].sort());
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeLessThan(4);
+  }, 180_000);
+
+  it("checks more failed runs for a newer run than one statement can bind", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Keyed retained failures", status: "in_progress" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const hiddenIds = Array.from({ length: 16_390 }, () => randomUUID());
+    const keptIds = Array.from({ length: 10 }, () => randomUUID());
+    const failure = (id: string, agentId: string) => ({
+      id, companyId, agentId, invocationSource: "automation", status: "failed", error: "adapter failed",
+      contextSnapshot: { issueId }, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    const failures = hiddenIds.map((id) => failure(id, workerId));
+    keptIds.forEach((id, index) => failures.splice(index * 1_700, 0, failure(id, reviewerId)));
+    for (let start = 0; start < failures.length; start += 1_000) {
+      const chunk = failures.slice(start, start + 1_000);
+      await db.insert(heartbeatRuns).values(chunk);
+      await db.insert(heartbeatRunEvents).values(chunk.map((run) => ({
+        companyId, runId: run.id, agentId: run.agentId, seq: 1, eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })));
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
+      contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
+    });
+
+    const feed = await attentionService(db).list(companyId, {
+      includeDismissed: true, all: true, allowUnscopedAll: true,
+    });
+    expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id).sort())
+      .toEqual([...keptIds].sort());
+  }, 180_000);
 
   it("enriches interaction details with project, workspace, plan metadata, and images", async () => {
     const { companyId, workerId } = await seedCompany("ATE");

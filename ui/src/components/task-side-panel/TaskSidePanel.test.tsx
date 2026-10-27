@@ -13,6 +13,7 @@ import {
   taskPanelPropertiesTab,
   writeTaskSidePanelState,
 } from "@/lib/task-side-panel-state";
+import type { TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
 import { TaskSidePanel } from "./TaskSidePanel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,6 +26,13 @@ class ResizeObserverStub {
 
 (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
+vi.mock("@/plugins/slots", () => ({
+  PluginSlotMount: ({ context }: { context: { entityId: string } }) => <div>Plugin viewer {context.entityId}</div>,
+}));
+vi.mock("@/hooks/useTaskPluginPanels", () => ({
+  taskPluginPanelId: (panel: TaskPluginPanel) => `plugin:${panel.slot.pluginKey}:${panel.slot.id}:${panel.entityId}`,
+}));
+const pluginPanel = { entityId: "33333333-3333-4333-8333-333333333333", runId: "run-1", slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } } as TaskPluginPanel;
 const browserFixture = vi.hoisted(() => ({ data: [] as import("@paperclipai/shared").TaskBrowser[], viewer: vi.fn(async () => ({ url: "https://live.browser-use.com/test-viewer" })), control: vi.fn(async () => ({})) }));
 vi.mock("@/hooks/useTaskBrowsers", () => ({ useTaskBrowsers: () => ({ data: browserFixture.data, isError: false }) }));
 vi.mock("@/api/browser-use", () => ({ browserUseApi: { viewer: browserFixture.viewer, control: browserFixture.control, presence: vi.fn(async () => ({ accepted: true })) } }));
@@ -178,6 +186,61 @@ describe("TaskSidePanel", () => {
       />
     );
   }
+
+  it("adds the active plugin panel, preserves manual dismissal, and removes inactive plugin panels", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Live view");
+    expect(container.textContent).toContain(`Plugin viewer ${pluginPanel.entityId}`);
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]')?.click());
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await render(panel({ pluginPanels: [] }));
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    // An already handled panel remains available in the launcher without reopening.
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("restores an automatically removed panel without taking focus after availability recovers", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    await act(async () => container.querySelector<HTMLButtonElement>('#side-panel-tab-properties')?.click());
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("preserves dismissal and saved selection when the mobile drawer remounts", async () => {
+    const openedPluginPanelKeys = new Set<string>();
+    const dismissedPluginPanelKeys = new Set<string>();
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch tabs"]')?.click());
+    const close = document.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]');
+    expect(close).not.toBeNull();
+    await act(async () => close!.click());
+    const selected = container.querySelector('[id^="side-panel-tab-"]')?.id;
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(null);
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
+    expect(container.querySelector('[id^="side-panel-tab-"]')?.id).toBe(selected);
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("replaces a previous agent's plugin panel when the task's running agent changes", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    const next = { ...pluginPanel, entityId: "44444444-4444-4444-8444-444444444444", runId: "run-2" };
+    await render(panel({ pluginPanels: [next] }));
+    expect(container.querySelectorAll('[data-side-panel-tab-target^="plugin:"]')).toHaveLength(1);
+    expect(container.textContent).toContain(`Plugin viewer ${next.entityId}`);
+    expect(container.textContent).not.toContain(`Plugin viewer ${pluginPanel.entityId}`);
+  });
 
   it("keeps the upload slot mounted and inert when switching away from Artifacts", async () => {
     await render(panel({ streamlinedTabs: true, artifactsOpenRequestId: 1 }));

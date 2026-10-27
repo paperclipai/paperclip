@@ -11,6 +11,7 @@ const EVENT_POLL_INTERVAL_MS = 2_000;
 export interface NativeRunTranscriptSource {
   id: string;
   status: string;
+  conversationOnly?: boolean;
   runtimeMode?: "legacy" | "native";
 }
 
@@ -26,7 +27,7 @@ function isLive(status: string): boolean {
 export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource[]) {
   const nativeRunsKey = runs
     .filter((run) => run.runtimeMode === "native")
-    .map((run) => `${run.id}:${run.status}`)
+    .map((run) => `${run.id}:${run.status}:${Boolean(run.conversationOnly)}`)
     .sort()
     .join(",");
   const nativeRuns = useMemo(
@@ -43,8 +44,14 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   const retry = useCallback(() => setRetryGeneration((value) => value + 1), []);
   const projectionCacheRef = useRef(new Map<string, { events: HeartbeatRunEvent[]; transcript: TranscriptEntry[] }>());
   const cursorByRunRef = useRef(new Map<string, number>());
+  const conversationOnlyByRunRef = useRef(new Map<string, boolean>());
 
   useEffect(() => {
+    for (const run of nativeRuns) {
+      const mode = Boolean(run.conversationOnly);
+      if (conversationOnlyByRunRef.current.get(run.id) !== mode) cursorByRunRef.current.delete(run.id);
+      conversationOnlyByRunRef.current.set(run.id, mode);
+    }
     let cancelled = false;
     const controller = new AbortController();
     const timers = new Set<number>();
@@ -71,7 +78,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         const incoming: HeartbeatRunEvent[] = [];
         for (;;) {
           const page = await readTranscriptRequest(
-            (signal) => heartbeatsApi.events(run.id, cursor, EVENT_PAGE_SIZE, { signal }),
+            (signal) => (run.conversationOnly ? heartbeatsApi.conversationEvents : heartbeatsApi.events)(run.id, cursor, EVENT_PAGE_SIZE, { signal }),
             controller.signal,
           );
           if (cancelled) return;
@@ -89,7 +96,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         cursorByRunRef.current.set(run.id, cursor);
         if (incoming.length > 0) setEventsByRun((previous) => {
           const next = new Map(previous);
-          next.set(run.id, [...(previous.get(run.id) ?? []), ...incoming]);
+          next.set(run.id, [...new Map([...(previous.get(run.id) ?? []), ...incoming].map((event) => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq));
           return next;
         });
         setErrorsByRun((previous) => {

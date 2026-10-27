@@ -18,6 +18,40 @@ function shellExit(script: string, args: string[]) {
 }
 
 describe("remote recovery diagnostic shell receipts", () => {
+  it("keeps permission-denied liveness uncertain", async () => {
+    const root = await mkdtemp(join(tmpdir(), "remote-probe-denied-"));
+    const marker = join(root, "marker");
+    const hook = join(root, "denied.cjs");
+    try {
+      await writeFile(marker, `nonce\n${process.pid}\n2026-10-26T00:00:00.000Z\nrunner\n`);
+      await writeFile(hook, 'process.kill = () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); };');
+      const script = `NODE_OPTIONS="--require=${hook}"; export NODE_OPTIONS; kill() { return 1; }; ` + REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT;
+      expect(shellExit(script, [marker, "nonce", "runner", String(process.pid)])).toBe(46);
+      expect(() => process.kill(process.pid, 0)).not.toThrow();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { fingerprint: "linux:abcd-1234:100", code: 45 },
+    { fingerprint: "linux:abcd-1234:101", code: 47 },
+    { fingerprint: "", code: 44 },
+  ])("requires the saved generation before accepting a zombie receipt (%j)", async ({ fingerprint, code }) => {
+    const root = await mkdtemp(join(tmpdir(), "remote-probe-zombie-"));
+    const marker = join(root, "marker");
+    try {
+      await writeFile(marker, `nonce\n${process.pid}\n2026-10-26T00:00:00.000Z\nrunner\n`);
+      await writeFile(join(root, "cmdline"), "");
+      await writeFile(join(root, "stat"), `${process.pid} (runner (child)) ${["Z", ...Array(18).fill("0"), 100].join(" ")}\n`);
+      await writeFile(join(root, "boot_id"), "abcd-1234\n");
+      const script = REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT
+        .replaceAll('"/proc/$pid/cmdline"', JSON.stringify(join(root, "cmdline")))
+        .replaceAll('"/proc/" + pid + "/cmdline"', JSON.stringify(join(root, "cmdline")))
+        .replaceAll('"/proc/" + pid + "/stat"', JSON.stringify(join(root, "stat")))
+        .replaceAll('"/proc/sys/kernel/random/boot_id"', JSON.stringify(join(root, "boot_id")));
+      expect(shellExit(script, [marker, "nonce", "runner", String(process.pid), fingerprint])).toBe(code);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("distinguishes missing, unsafe and valid marker reads without exposing their contents", async () => {
     const root = await mkdtemp(join(tmpdir(), "remote-recovery-read-"));
     const marker = join(root, "marker");

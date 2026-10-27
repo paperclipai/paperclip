@@ -2612,6 +2612,41 @@
       "when": 1792713110842,
       "tag": "0374_rare_wolfpack",
       "breakpoints": true
+    },
+    {
+      "idx": 375,
+      "version": "7",
+      "when": 1792775097887,
+      "tag": "0375_short_mercury",
+      "breakpoints": true
+    },
+    {
+      "idx": 376,
+      "version": "7",
+      "when": 1792783857131,
+      "tag": "0376_clear_committed_native_recovery_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 377,
+      "version": "7",
+      "when": 1792790134086,
+      "tag": "0377_clear_settled_native_run_process_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 378,
+      "version": "7",
+      "when": 1793041667443,
+      "tag": "0378_environment_skill_runtime_hooks",
+      "breakpoints": true
+    },
+    {
+      "idx": 379,
+      "version": "7",
+      "when": 1793049353756,
+      "tag": "0379_white_giant_girl",
+      "breakpoints": true
     }
   ]
 }

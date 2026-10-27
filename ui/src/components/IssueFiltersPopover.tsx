@@ -491,6 +491,7 @@ export function IssueFiltersPopover({
                         : value === "waiting" ? "waiting"
                         : value === "running" ? "running"
                         : value === "auth_required" ? "auth_required"
+                        : value === "rate_limited" ? "rate_limited"
                         : value === "unreachable" ? "unreachable"
                         : value === "stale" ? "unknown"
                         : "closed";

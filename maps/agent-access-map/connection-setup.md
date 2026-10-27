@@ -16,6 +16,12 @@ Settings → Connections. It adds no Apps provider or transport. Credential owne
 and audience rules are the existing connection rules; saving a connection alone
 does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
+1Password adds a service-account catalog method. Agents request access through
+the existing connection tools and invoke its reviewed item actions through the
+run-scoped gateway. The service-account token stays in the selected user/company
+vault; vault boundaries are enforced by 1Password. Setup remains board-owned.
+Evidence and limits: [1Password connector](../../doc/connections/1PASSWORD.md).
+
 ## `catalog`
 
 Capability ID: `connection-setup/catalog`.
@@ -284,3 +290,27 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Error reporting and human repair exist; no generic agent permission to reconnect
 accounts.
+
+Supabase and Vercel deployment methods (2026-10-22) reuse human-authorized setup
+and assigned run-scoped tools. Native Supabase calls use the saved project;
+native Vercel calls use the saved team and validate project ownership. Tokens
+remain in the selected personal/company vault grant and cannot be exported by
+`mintConnectionTokenForAgent`. Action policies, changed-schema quarantine,
+responsible-user access and immediate removal apply to deployment/configuration
+calls. Database/provider-fixture evidence lives in
+[deployment connector governance](../../server/src/__tests__/deployment-connections.test.ts).
+It does not establish authenticated provider deployment, OAuth consent or remote
+revocation. See [Supabase](../../doc/connections/SUPABASE.md) and
+[Vercel](../../doc/connections/vercel.md) for the remaining live-proof matrix.
+
+Native delivery (2026-10-23): reviewed REST connections are admitted in connection
+readiness, native runtime snapshots, and runtime gateway preparation. The real
+Codex walkthrough initially failed at all three despite a successful board test;
+the database-backed lifecycle regression now covers ready search/request,
+existing-card completion, assigned-tool search/call, and inactive/unrecognized
+connection denial for both providers. After repair, a real Codex agent deployed
+and configured both services. Supabase's Dashboard invocation returned the marker,
+and Vercel's signed-in browser served the preview. The Vercel first-deployment
+production exception remains recorded as a separate failed outcome; default
+preview now requires an existing deployment and reports target mismatches for
+reconciliation. See the provider documents for the external-deletion race limit.

@@ -6,6 +6,7 @@ import { isForbiddenConfigEnvKey, parseObject } from "@paperclipai/adapter-utils
 import { requireServerAdapter } from "../adapters/index.js";
 import { agentEnvironmentTestService } from "./agent-environment-test.js";
 import { aiConnectionRouterService } from "./ai-connection-router.js";
+import { aiConnectionService } from "./ai-connections.js";
 import { withManagedAiProbe, stripAiAuthBindings } from "./ai-connection-runtime.js";
 import { environmentService } from "./environments.js";
 import { secretService } from "./secrets.js";
@@ -73,6 +74,11 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
         { ...context, consumerType: "environment", consumerId: environmentId });
       config = { ...config, env: { ...resolved.env, ...parseObject(config.env) } };
     }
+    if (binding) await aiConnectionService(db).select({
+      companyId: agent.companyId, userId: responsibleUserId, agentId: agent.id,
+      adapterType: agent.adapterType, model: config.model, runnerProvider: config.provider,
+      acpxAgent: config.acpxAgent, binding,
+    });
     const target = await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
     try {

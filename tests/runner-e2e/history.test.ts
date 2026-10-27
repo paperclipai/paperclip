@@ -32,6 +32,7 @@ import { renderRunnerHistoryIndex } from "./history-index.js";
 import { renderPublicCampaignSummary } from "./public-summary-image.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 import { connectionCheckpoints, type ConnectionEvidence } from "./connection-evidence.js";
+import { githubJourneyCheckpoints, type GitHubReviewJourneyEvidence } from "./github-review-evidence.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 const temporaryDirectories: string[] = [];
@@ -65,10 +66,51 @@ function result(execution: MatrixExecution, status: "passed" | "failed") {
     durationMs: 1_000,
     cleanup: "passed",
     ...(execution.task.flow === "provider_connection" ? { providerConnection: { version: 1, outcome: status, phase: "finished", assisted: false, authFreshness: "signed-in", target: { mode: "attach", origin: "http://127.0.0.1:3100", commit: "a".repeat(40), deploymentMode: "local_trusted" }, entry: "agent", method: "api-key", checkpoints: Object.fromEntries(connectionCheckpoints.map(key => [key, true])), waits: [] } satisfies ConnectionEvidence } : {}),
+    ...(execution.task.flow === "github_review_journey" ? { githubReviewJourney: {
+      version: 1, outcome: status, phase: "finished", setupId: "fixture", hosting: "self-hosted",
+      targetCommit: "a".repeat(40), assisted: false, dependencies: [],
+      checkpoints: Object.fromEntries(githubJourneyCheckpoints.map(key => [key, true])),
+      cleanup: { endpoint: true, pullRequest: true, branch: true, app: true },
+    } satisfies GitHubReviewJourneyEvidence } : {}),
   } satisfies RunnerE2EResult;
 }
 
 describe("runner E2E campaign history", () => {
+  it("retains the supervisor trace outcome independently of the worker export through regeneration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-finalized-trace-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const attempt: RunnerE2EResult = { ...result(execution, "failed"), failureClass: "permanent_infrastructure",
+      tracing: { projectId: "11111111-1111-4111-8111-111111111111", traceId: "a".repeat(32), spanId: "b".repeat(16),
+        status: "accepted", verification: "unverified", nativeConfiguration: "configured",
+        finalization: { spanId: "c".repeat(16), status: "accepted", outcome: "failed", verification: "unverified" } },
+    };
+    const campaign = buildRunnerCampaign({ campaignId: "finalized-trace", generatedAt: attempt.finishedAt,
+      expected: [execution.id], results: [attempt], attempts: [attempt] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root, historyFile: null });
+    const rebuilt = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(rebuilt.results[0].tracing).toEqual(attempt.tracing);
+    expect(rebuilt.accounting.attempts[0].tracing).toEqual(attempt.tracing);
+    expect(rebuilt.failed).toBe(1);
+    expect(await readFile(path.join(root, "dashboard.html"), "utf8")).toContain("Supervisor outcome: failed; finalization export: accepted");
+  });
+
+  it("preserves all-attempt costs when regenerating a retained report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-attempt-costs-"));
+    temporaryDirectories.push(root);
+    const execution = runnerMatrix[0]!;
+    const first = result(execution, "failed");
+    const last = { ...result(execution, "passed"), attempt: 2, usage: { inputTokens: 200, outputTokens: 50, costUsd: 0.02 } };
+    const campaign = buildRunnerCampaign({ campaignId: "retries", generatedAt: last.finishedAt,
+      expected: [execution.id], results: [last], attempts: [first, last] });
+    await writeFile(path.join(root, "normalized-results.json"), JSON.stringify(campaign));
+    await regenerateRunnerDashboard({ bundle: root });
+    const regenerated = JSON.parse(await readFile(path.join(root, "normalized-results.json"), "utf8"));
+    expect(regenerated.accounting).toEqual(campaign.accounting);
+    expect(regenerated.billing.reportedLlmCostUsd).toBe(0.03);
+    expect(regenerated.results[0].billing.reportedCostUsd).toBe(0.02);
+  });
   it("does not let empty legacy provenance hide a later measured source", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-legacy-source-"));
     temporaryDirectories.push(root);

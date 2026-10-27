@@ -755,6 +755,7 @@ V1 non-terminal liveness rule:
 
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
+- A published advisory GitHub review can also remain `in_review` through an authorized external response wait or a saved monitor. Rating, CI state, and merge state alone do not create human attention. The current committed wait is an action path while its assigned endpoint and conversation remain active; it creates no Mine participation.
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
 - external waits are durable only when persisted as a bounded monitor/scheduled wake, a first-class blocker with a named owner and action, or healthy delegated child work connected by a blocker edge when the source must wait; parent/child structure alone is not a wait path
 - unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
@@ -889,6 +890,21 @@ including same-task retry ancestry. It does not expand inherited boundaries or
 grant privileged tools. Backlog assignments retain the existing human requester
 without starting a run. Reassignment transactionally cancels prior human requests,
 including service/plugin writes; cancelled runs cannot authorize later retries. See `doc/LOW-TRUST-PRESETS.md` for containment details.
+
+Project or repository access is a separate boundary from exact-task direction.
+A workspace project denial appears on the task with a link to the agent's
+Permissions / Trust settings. Board operators with `agents:create` can add
+same-company projects through `POST /api/agents/:id/project-access`; the operation
+locks the agent, preserves existing permissions and audits added projects.
+Saving does not retry work. The task offers explicit Retry after the required
+projects are allowed, and dispatch rechecks authorization. Readiness checks the
+task's current organizational project and selected workspace source, including
+a valid pending selection. Moving the task to an allowed project does not clear
+a retained source's access requirement. Existing setup failures with the exact
+project-boundary denial also receive the explanation on reload, without assuming
+that the task's current project caused the historical failure. A stale or
+unavailable workspace selection stays in the non-retryable failure state; it
+does not ask the user to grant project access that cannot repair the selection.
 
 Cross-issue writes are contained per heartbeat run. An agent-authored comment
 may wake the target assignee, including an explicit `resume: true` comment on a
@@ -1885,6 +1901,13 @@ Required UX behaviors:
 - quick actions: pause/resume agent, create task, approve/reject request
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
+
+Cold opens of ordinary tasks show the instruction and recent conversation before
+related metadata and historical run activity. Earlier messages and diagnostics
+load through **More messages**. Messages observed while the task stays open remain
+visible; deep links still load their target. Compact reads retain the full reads'
+authorization and redaction rules. Agent Chat and the classic task interface keep
+their existing history behavior.
 
 Regular task chats and Agent Chat keep requests as compact, reopenable entries
 at their original position in the feed. Dismissing any composer request clears

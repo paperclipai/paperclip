@@ -1,0 +1,99 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: workspaces
+status: planned
+scenarios:
+  - id: workspaces.locate-files
+    capabilities:
+      - workspaces/binding
+    context: >-
+      The website task has a projectless execution workspace; the agent may read its current
+      binding.
+    query: >-
+      Where are the files for the website task actually being worked on?
+    expected_outcome: >-
+      The response identifies the workspace bound to that task and points to the supported file
+      or workspace view. It does not infer the location from an agent's default directory or a
+      project name. Any pending workspace selection is distinguished from the active binding.
+  - id: workspaces.prepare-repository
+    capabilities:
+      - workspaces/provisioning
+      - projects/repositories
+    context: >-
+      The active task has a valid workspace but its authorized repository has not been acquired;
+      normal trust permits acquisition.
+    query: >-
+      Use the acorn/site repository for this task.
+    expected_outcome: >-
+      The repository request is persisted through the task-bound preparation path, and the
+      harness prepares it under normal admission. Chat reports pending or failed preparation
+      honestly and continues after readiness without a fabricated user checklist. A repository
+      record alone is not proof that the files are available.
+  - id: workspaces.private-repository-no-access
+    capabilities:
+      - workspaces/provisioning
+      - connection-setup/task-request
+    context: >-
+      The requested repository is private and the task lacks an eligible Git connection.
+    query: >-
+      Check out our private acorn/site repository and fix the header.
+    expected_outcome: >-
+      The agent requests the missing repository access through the supported flow, preserving
+      the task and repository intent. It does not substitute a public similarly named
+      repository, use another person's credentials or claim a checkout succeeded. After access
+      is granted, preparation resumes against the intended source.
+  - id: workspaces.preview-service
+    capabilities:
+      - workspaces/services
+      - documents-artifacts/work-products
+    context: >-
+      The website files exist in an owned ready workspace and the agent can manage its runtime
+      service.
+    query: >-
+      Start a preview of the website so I can look at it.
+    expected_outcome: >-
+      A supported preview service starts, and the agent verifies readiness before returning the
+      accessible endpoint. Chat ties the preview to the right workspace and exposes actionable
+      startup failure if needed. A created service record or a process launch message alone is
+      not a working preview.
+  - id: workspaces.inspect-git
+    capabilities:
+      - workspaces/files-git
+    context: >-
+      The task's repository contains a synthetic uncommitted header edit and an unrelated
+      existing change.
+    query: >-
+      Show me what changed in the website files.
+    expected_outcome: >-
+      The agent inspects the actual authorized workspace and summarizes the relevant diff with
+      file references. It preserves pre-existing changes and distinguishes committed from
+      uncommitted work. It does not claim the remote repository was updated or inspect a
+      similarly named checkout elsewhere on the host.
+  - id: workspaces.close-and-reopen
+    capabilities:
+      - workspaces/closure
+    context: >-
+      A completed task workspace has retained files and no active run; the actor has the
+      supported closure permission.
+    query: >-
+      Close this workspace for now, but let me come back to the files later.
+    expected_outcome: >-
+      The permitted close operation changes lifecycle state while retaining the promised work
+      and source references. Chat explains the supported reopen or retrieval path and verifies
+      the actual state. Closure is not treated as deleting files, force-reconciling a branch or
+      cancelling another task's workspace.
+  - id: workspaces.recover-lost-sandbox
+    capabilities:
+      - workspaces/closure
+      - recovery/workspace
+    context: >-
+      A historical export failed and its exact sandbox was destroyed; surviving task attachments
+      exist and only the board can choose reconstruction.
+    query: >-
+      Continue from whatever files survived that failed website run.
+    expected_outcome: >-
+      The response directs the authorized human to Continue from saved sources with the
+      available attachments and known losses. The harness reconstructs through normal
+      fresh-session admission after the decision. The old failure remains visible, newer work is
+      preserved and chat does not claim lost files were recovered without evidence.

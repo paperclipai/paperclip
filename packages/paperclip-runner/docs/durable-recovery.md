@@ -175,6 +175,30 @@ The ACK means that every source event through sequence 9 is committed or
 deduplicated. The runner rejects an ACK that moves backward or beyond its
 produced source cursor. It removes only events at or below a valid ACK.
 
+The controller stages routine priority 1 and 2 event snapshots with asynchronous
+file writes and file fsyncs. Those operations let unrelated HTTP requests run
+while the volume is slow. Rename and directory fsync remain synchronous. The
+candidate snapshot stays private until its atomic replacement
+and directory flush finish. Lifecycle readers and replacement connections see
+only the committed cursor. The controller acknowledges the event after that commit.
+A command that saves during staging includes the pending event in its own
+durable write. Further commands do not add event deliveries or cause another
+staged write. Other authority changes leave an uncommitted event available for
+replay instead of repeatedly rewriting the snapshot. A replaced
+connection cannot publish its old candidate. Its unacknowledged event remains
+available for replay. A failed write fences further authority until reload.
+Priority 0 events, all `run.*` and `turn.*` lifecycle events, commands,
+authentication, and semantic tool input retain synchronous persistence. The
+lifecycle rule also covers producers that label a terminal event priority 1.
+A terminal suffix remains in the same
+control-loop turn. Semantic tool admission and dispatch cannot yield to a
+replacement connection between those operations.
+Controller replacement must still stop ingress and drain admitted processing
+before a successor reuses the journal. External control routes stop their
+reconnect loop before the controller joins admitted work. An incomplete drain
+cannot certify a reusable checkpoint. Snapshots use compact JSON; existing
+indented snapshots remain readable.
+
 For the lost-ACK fault, the mock commits an event, drops the ACK and socket, and
 reports the prior cursor once after reconnect. The runner sends the same bytes
 again. The mock increments delivery count, keeps one logical event, and sends
@@ -292,6 +316,7 @@ model or rely on an LLM choosing the desired timing.
 | Execution and cleanup both fail | Original execution error retained; cleanup error attached | `native-session-runtime.test.ts` |
 | Retry in same process or after local log loss | Earlier attempts survive locally and in the durable mirror | Server `run-log-store.test.ts` |
 | Two restores overlap and one appends before the other publishes | Complete prefix is published without replacement; both attempts survive | Server `run-log-store.test.ts` |
+| New run whose row has no log reference, output sequence, or log size | No durable-mirror request; a later attempt with a recorded log reference still restores after local loss | Server `run-log-store.test.ts`, `heartbeat/run-output.test.ts` |
 
 ## Residual local trust and revocation window
 

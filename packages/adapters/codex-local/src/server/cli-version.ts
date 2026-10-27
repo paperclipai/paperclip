@@ -3,6 +3,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import {
   CODEX_CHATGPT_MODEL_REJECTION_RE,
+  codexChatGptRetirementHint,
   codexCliVersionAtLeast,
   minimumCodexCliVersionForModel,
   normalizeCodexModel,
@@ -110,6 +111,7 @@ export function codexHelloProbeModelRejectionCheck(input: {
   if (!match) return null;
   const model = match[1]!;
   const minimum = minimumCodexCliVersionForModel(model);
+  const retirementHint = codexChatGptRetirementHint(model);
   const versionNote = input.detectedVersion
     ? ` Detected Codex CLI ${input.detectedVersion}.`
     : "";
@@ -118,8 +120,8 @@ export function codexHelloProbeModelRejectionCheck(input: {
     level: "error",
     message: `The Codex backend rejected ${model} for this ChatGPT account.`,
     detail: `${match[0]}${versionNote}`,
-    hint: minimum
+    hint: retirementHint ?? (minimum
       ? `${model} needs Codex CLI ${minimum} or newer with ChatGPT sign-in. ${sandboxUpgradeHint(input.targetIsSandbox)} If the CLI is already new enough, the plan does not include this model (Enterprise and Edu administrators must enable it) or the rollout has not reached the account; choose another model or use an OpenAI API key.`
-      : `The ChatGPT plan does not include ${model}, the rollout has not reached the account, or the installed Codex CLI is older than the model requires. ${sandboxUpgradeHint(input.targetIsSandbox)} Otherwise choose another model or use an OpenAI API key.`,
+      : `The ChatGPT plan does not include ${model}, the rollout has not reached the account, or the installed Codex CLI is older than the model requires. ${sandboxUpgradeHint(input.targetIsSandbox)} Otherwise choose another model or use an OpenAI API key.`),
   };
 }

@@ -14,6 +14,12 @@ Delegated work and interactions persist their originating context. Retries retai
 
 Executions with managed GitHub configured receive token-free `git` and `gh` launchers. Each launcher invocation resolves one eligible credential from the current run's accepted identity at operation start. A `gh` command's child Git processes inherit that command's captured identity; later steering does not change already-started operations.
 
+GitHub credential capture reads the current task, project, and retained trust
+policy bindings without transferring saved prompts, runner profiles, results,
+or log excerpts. It keeps the existing task/run lock order and accepted-identity
+reconciliation. Other identity callers retain their complete execution input,
+including the native input required by project creation authorization.
+
 Native runners retain a session-owned broker and launcher path across warm turns. The provider keeps an opaque transport token, not a GitHub credential or the previous run's signed capability. After acquiring exclusive session ownership, the controller binds the broker to the current company, agent, task, and run. Requests cannot choose another run or responsible person. The broker rejects requests while idle and discards credential responses if their run binding changed during acquisition. Each operation still rechecks the live run, accepted identity, grants, and trust policy through the shared credential resolver. Changing run IDs alone no longer replaces the provider process; changes to authentication mode, provider credentials, permissions, or other session configuration retain their existing retirement rules.
 
 The session broker listens only on controller loopback and accepts only its authenticated GitHub credential operation. Remote executions reach it through the existing authenticated callback bridge. Its transport and launchers are retired with the provider session. If remote bridge startup fails, anonymous launchers keep ordinary work available; the next run retries setup with a fresh session. Controller restart/cold recovery still uses the existing checkpoint and process-recovery rules; the broker's in-memory authority is not persisted for adoption.
@@ -154,3 +160,55 @@ these company-scoped records when their company is deleted. Run-scoped adapters 
 Native warm sessions retain their token-free launchers and inactive broker until
 session retirement; environment deletion and orderly controller shutdown close
 idle owners first. Cleanup failures are logged and do not change the run result.
+
+## Project authorization for background repository work
+
+Background provisioning and workspace maintenance have no responsible task user.
+They must not retain a task's identity. A signed-in project workspace writer can
+select their own active, company-installed GitHub Connector grant in project
+settings and explicitly authorize the project. The binding stores the exact grant
+ID and consenting user, never a credential. Revocation records a project lifecycle
+event so subscribed providers can reconcile the change.
+
+`GET /api/projects/:id/git-authorization` returns the current binding and only the
+viewer's eligible personal grants. `PUT` accepts `{ grantId }` or `{ grantId: null }`.
+Agents cannot create this standing consent. Project workspace writers can remove it.
+Core rechecks membership, Connector installation/enablement, grant status, and
+repository metadata on each background use. Public repositories never require
+a connection or credential. Private repositories wait for authorization before
+provisioning starts, so missing consent cannot leave a failed anonymous clone.
+Repository selections retain the same visibility metadata used by the UI lock.
+Legacy workspaces use existing Connector catalog metadata, with anonymous
+GitHub discovery only when visibility is unknown. Unknown visibility defers
+provisioning; it is never assumed public. It never substitutes another grant
+when the selected one fails. Replacing a grant requires explicit reauthorization.
+Project consent follows the selected connection's current GitHub repository access,
+including repositories added to the project later. It does not create a second
+repository approval list. Project repository editors may add sources within that
+connection's access; manage permitted repositories in the GitHub connection.
+Background export also rechecks the consenting user's project read access and the
+project's existing trust policy. Low-trust or unverified projects cannot export a
+raw credential through standing consent.
+Cloud owner access is rechecked through current Cloud authority and the managed
+owner-elevation setting on every private background export; saved local admin
+roles cannot replace that authority. An unavailable authority check cannot confer
+owner access, though explicit project membership still applies.
+
+The trusted plugin capability `projects.git-credentials` enables
+`ctx.projects.resolveGitCredential(projectId, workspaceId, companyId)`. The host
+binds requests to the active project lifecycle or workspace operation; data, UI,
+tool, and proactive calls do not carry this authority. Repository URLs come from
+stored project workspaces. Foreground preparation uses the live run's accepted
+identity and standard trust checks, even when background project consent exists.
+Maintenance ignores originating run/agent context and uses project consent only.
+After archival, existing consent remains usable only for host-issued workspace
+inspection and removal. New provisioning and new consent remain blocked.
+
+The provider receives a transient GitHub token with its existing provider
+permissions. This is not a repository-scoped or read-only token minting API.
+Only grant-listed repositories can trigger background export. Plugins must never
+save tokens in entities, state, configuration, operation receipts, or logs, and
+must send them only to trusted execution infrastructure over HTTPS. Revocation
+prevents subsequent credential acquisition; it cannot recall a token already
+sent to an in-flight operation. Existing tasks and Git credential fallback rules
+outside this plugin API are unchanged.

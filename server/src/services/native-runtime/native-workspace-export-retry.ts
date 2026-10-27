@@ -1,3 +1,4 @@
+import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
@@ -92,6 +93,7 @@ export async function retryNativeWorkspaceExport(input: {
           // Persist cleanup authority before any provider call. A lost resume
           // reply or controller restart must not leave a running sandbox behind
           // an old stopped receipt. The pending claim fences the cleanup sweeper.
+          await notifyEnvironmentCleanup(tx);
           const [lease] = await tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
             releasedAt: now, failureReason: "workspace_export_resume_pending", updatedAt: now,
             metadata: { ...current.lease.metadata, remoteExecutionTermination: undefined,
@@ -140,6 +142,7 @@ export async function retryNativeWorkspaceExport(input: {
         await tx.update(issues).set({ executionRunId: current.run.id, updatedAt: now }).where(eq(issues.id, current.issue.id));
         // Reclaim the same lease only for control-plane copyback. The normal
         // finalization settlement will stop/retain it again on success or failure.
+        await notifyEnvironmentCleanup(tx);
         await tx.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null, failureReason: null,
           metadata: { ...current.lease.metadata, remoteExecutionTermination: undefined,
             // Keep stop-only authority through copyback and commitment. A crash

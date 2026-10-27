@@ -57,6 +57,16 @@ export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
     : provider === "github" ? "Personal access token" : "API key";
 }
 
+export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
+  const personal = connection.ownership === "personal";
+  return [
+    connection.name,
+    aiMethodLabel(connection.provider, connection.method),
+    personal ? "Personal" : "Company shared",
+    connection.accountLabel || connection.ownerName,
+  ].filter(Boolean).join(" · ");
+}
+
 export function matchesAiRequirement(
   connection: AiConnectionSummary,
   requirement: AiConnectionRequirement,

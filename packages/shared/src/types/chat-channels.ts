@@ -409,6 +409,14 @@ export interface SafeExternalChatCard {
   title: string;
   body?: string;
   actions?: SafeExternalChatCardAction[];
+  /** A compact choice whose opaque option tokens use the normal action ledger. */
+  selection?: {
+    actionId: string;
+    label: string;
+    multiple?: boolean;
+    submitLabel?: string;
+    options: Array<{ actionId: string; label: string; description?: string; selected?: boolean }>;
+  };
 }
 
 export interface SafeChatPublicationPayload {

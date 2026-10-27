@@ -1,8 +1,9 @@
+import { enqueueIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
-  connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
+  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
   toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles, toolPolicies,
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
@@ -58,6 +59,27 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, resultJson: { conversationContinuation: "continue_conversation_v1" } }).returning();
     return run!;
   }
+
+  it("settles a published Slack card when existing access retires the connection request", async () => {
+    const f = await seed();
+    const endpointId = randomUUID();
+    const [app] = await db.insert(toolApplications).values({ companyId: f.companyId, applicationKey: `chat:slack:${endpointId}`, name: "Slack", type: "chat", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: app.id, name: "Slack channel", uid: endpointId, connectionPurpose: "channel", transport: "chat_sdk", status: "active", enabled: true }).returning();
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId: connection.id, provider: "slack", publicId: randomUUID(), assignedAgentId: f.agentId, status: "active", capabilities: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: true, messageDeletes: false, reactions: true, files: true, cards: true, actions: true, modals: true, slashCommands: true, ephemeralMessages: true, proactiveDirectMessages: true } });
+    await db.insert(chatConversations).values({ companyId: f.companyId, endpointId, issueId: f.issueId, externalConversationId: "C-CONNECTION", externalThreadId: "slack:C-CONNECTION:123.1", externalLabel: "Connection setup", state: "active" });
+    await db.update(issueThreadInteractions).set({ createdByAgentId: f.agentId }).where(eq(issueThreadInteractions.id, f.intent.id));
+    const interaction = await issueThreadInteractionService(db).getById(f.intent.id);
+    expect(interaction).not.toBeNull();
+    const [original] = await enqueueIssueInteractionChatPublications(db, interaction!);
+    expect(original).toBeDefined();
+    await db.update(chatPublications).set({ state: "published", providerMessageId: "123.2" }).where(eq(chatPublications.id, original.id));
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 1 });
+    const publications = await db.select().from(chatPublications).where(eq(chatPublications.endpointId, endpointId));
+    expect(publications).toHaveLength(2);
+    const terminal = publications.find(row => row.id !== original.id);
+    expect(terminal?.payload.card?.body).toBe("Expired in Paperclip");
+    expect(terminal?.payload.card?.actions).toBeUndefined();
+  });
 
   it("ignores an already available connection before the worker retires its card", async () => {
     const f = await seed(); const run = await retry(f);

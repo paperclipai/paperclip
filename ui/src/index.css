@@ -583,6 +583,8 @@
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
      Desktop and the classic thread use the safe-area default. */
   --tc-composer-bottom: var(--sz-calc-8);
+  --mobile-chat-viewport-height: 100dvh;
+  --tc-composer-editor-max-height: min(var(--sz-28dvh), calc(var(--mobile-chat-viewport-height) * 0.4));
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
@@ -885,6 +887,62 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
 
 .mobile-nav-composer {
   transition: bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
+}
+
+/* Mobile conversations use the same single message scroller + normal footer as
+   desktop. Opt in from the rendered task shell, so classic tasks, lists, and
+   the empty agent-chat picker retain their existing document layout. */
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+}
+
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body,
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root {
+  height: 100%;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  height: var(--mobile-chat-viewport-height);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) :is(.app-main-row, .app-content-row) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-content-column {
+  flex: 1;
+  min-height: 0;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-breadcrumb {
+  flex-shrink: 0;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) #main-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: var(--tc-composer-visible-nav-offset);
+}
+
+.paperclip-app-shell[data-mobile="true"][data-keyboard-open="true"]:has([data-task-chat-shell]) #main-content {
+  padding-bottom: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3292,10 +3350,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   scrollbar-gutter: stable;
 }
 
-.task-chat-window-scroll {
-  overflow-anchor: none;
-}
-
 .task-chat-loading-shell .animate-pulse {
   animation: none;
 }
@@ -3625,6 +3679,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 :root, .dark {
   --task-row-height-comfortable: calc(var(--spacing) * 11);
   --task-row-height-compact: calc(var(--spacing) * 8);
+  --task-row-recovery-width: calc(var(--spacing) * 32);
+  --task-row-external-width: calc(var(--spacing) * 10);
   --task-row-padding-inline: calc(var(--spacing) * 4);
   --task-row-gap: calc(var(--spacing) * 2);
   --task-row-indent-step: calc(var(--spacing) * 6);
@@ -3662,6 +3718,40 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 .task-row-group + .task-row-group { border-top: 0; }
 
+.task-row-stable, .task-row-skeleton {
+  height: var(--task-row-height-comfortable);
+  min-height: var(--task-row-height-comfortable);
+}
+.task-row-stable { align-items: center; }
+.task-row-stable [data-slot="task-row-leading"] { align-items: center; padding-top: 0; }
+.task-row-stable [data-slot="task-row-title"] {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-row-stable [data-slot="task-row-recovery"] {
+  width: var(--task-row-control-size);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-row-stable [data-slot="task-row-external"] {
+  width: var(--task-row-external-width);
+  flex-shrink: 0;
+}
+.task-row-stable [data-slot="task-row-metadata"] {
+  width: var(--task-row-time-width);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.task-row-stable [data-slot="task-row-content"] { align-self: center; }
+@media (min-width: 640px) {
+  .task-row-stable [data-slot="task-row-recovery"] { width: var(--task-row-recovery-width); }
+}
+.task-row-skeleton { display: flex; align-items: center; gap: var(--task-row-gap); padding-inline: var(--task-row-padding-inline); }
 .task-row-refreshed {
   --task-row-height: var(--task-row-height-comfortable);
   --task-row-guide-end-gap: calc((var(--task-row-height) - var(--task-row-control-size)) / 2);

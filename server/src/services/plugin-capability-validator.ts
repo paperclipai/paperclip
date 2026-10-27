@@ -47,6 +47,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.resolveGitCredential": ["projects.git-credentials"],
   "projects.getInstanceSecrets": ["projects.instance-secrets"],
   "projects.managed.get": ["projects.managed"],
   "projects.managed.reconcile": ["projects.managed"],

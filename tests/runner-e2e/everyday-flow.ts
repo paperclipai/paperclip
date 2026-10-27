@@ -89,7 +89,7 @@ interface Input {
   workspacePath: string;
   privateDir: string;
   deadlineAt: number;
-  restart(): Promise<void>;
+  restart(controllerDowntimeMs?: number): Promise<void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -169,7 +169,8 @@ export async function runEverydayFlow(input: Input) {
   let project = fixtures.project;
   const caseId = execution.task.id;
   const requireRemoteRestart = caseId === "recover-controller" && execution.environment.id === "daytona"
-    && execution.profile.generation === "native" && execution.profile.provider === "codex";
+    && execution.profile.generation === "native" && (execution.profile.provider === "codex"
+      || execution.profile.provider === "acpx");
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -949,7 +950,7 @@ export async function runEverydayFlow(input: Input) {
           ev.remoteRestart = { before };
           await input.evidence("remote-restart-before.json", before);
         } else ev.allowedInterruptedRuns.push(active.id);
-        await input.restart();
+        await input.restart(requireRemoteRestart ? 125_000 : undefined);
         note("controller-restarted");
         await openParent();
         if (requireRemoteRestart) {
@@ -1643,7 +1644,9 @@ export async function runEverydayFlow(input: Input) {
           ev.remoteRestart!.final = final;
           return final;
         }, accept: final => gradeRemoteRestart({ ...ev.remoteRestart, final }).every(check => check.passed),
-        reject: final => ["failed", "cancelled", "timed_out"].includes(final.run.status) ? "Original remote run failed after restart" : undefined });
+        reject: final => ["failed", "cancelled", "timed_out"].includes(final.run.status) ? "Original remote run failed after restart"
+          : final.run.status === "succeeded" && final.run.nativePhase === "committed"
+            && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
       await input.evidence("remote-restart-final.json", final);
     }
     ev.checks.push(

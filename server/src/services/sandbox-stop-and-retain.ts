@@ -1,3 +1,4 @@
+import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
@@ -102,7 +103,7 @@ async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" |
     provider: lease.provider, providerLeaseId: lease.providerLeaseId,
     ...(lease.provider && isBuiltinSandboxProvider(lease.provider) && !lease.metadata?.sandboxProviderPlugin && lease.metadata?.pluginId == null
       ? { builtinProvider: lease.provider } : { pluginId: lease.metadata?.pluginId }) };
-  const [updated] = await db.update(environmentLeases).set({
+  const [updated] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now, updatedAt: now,
     metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
       [SANDBOX_STOP_AND_RETAIN_KEY]: intent, pendingCleanupAttemptId: requestId,
@@ -114,7 +115,7 @@ async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: "active" |
     sql`${environmentLeases.provider} is not distinct from ${lease.provider}`,
     sql`${environmentLeases.providerLeaseId} is not distinct from ${lease.providerLeaseId}`,
     sql`${environmentLeases.metadata} is not distinct from ${lease.metadata === null ? null : JSON.stringify(lease.metadata)}::jsonb`,
-  )).returning();
+  )).returning());
   return updated ?? null;
 }
 
@@ -125,7 +126,7 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
   const receipt = remoteTerminationReceipt(lease, options.receipt), stopped = receipt?.state === "stopped";
   const now = new Date();
   const removeIntent: SQL = stopped ? sql`- 'sandboxStopAndRetain'` : sql``;
-  const [updated] = await db.update(environmentLeases).set({
+  const [updated] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: stopped ? "released" : "pending_cleanup", cleanupStatus: stopped ? "success" : "failed",
     failureReason: stopped ? null : "sandbox_stop_pending",
     releasedAt: now, lastUsedAt: now, updatedAt: now,
@@ -146,7 +147,7 @@ export async function settleStopOnlyCleanup(db: Db, lease: Lease, options: { att
     sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.attemptId}`,
     sql`${environmentLeases.metadata}->'sandboxStopAndRetain' = ${JSON.stringify(lease.metadata?.[SANDBOX_STOP_AND_RETAIN_KEY])}::jsonb`,
     sql`${environmentLeases.metadata}->>'pluginId' is not distinct from ${intent.pluginId}`,
-  )).returning();
+  )).returning());
   return updated ?? null;
 }
 

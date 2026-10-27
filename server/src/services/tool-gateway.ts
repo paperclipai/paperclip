@@ -1,3 +1,4 @@
+import { restConnectorFor } from "./connectors/rest-registry.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
@@ -183,6 +184,7 @@ import {
   readSignedToolArgumentsPayload,
   signToolArguments,
   summarizeToolValue,
+  toolRequestIdentityHash,
   TOOL_ACTION_REQUEST_SIGNING_GRACE_MS,
   ToolActionSigningSecretMissingError,
   ToolContentValidationError,
@@ -1235,7 +1237,18 @@ export function createToolGatewayService(
   });
   const pluginToolDispatcher = options.pluginToolDispatcher;
   const interactions = issueThreadInteractionService(db);
-  const policyService = toolAccessPolicyService(db);
+  const policyService = toolAccessPolicyService(db, { toolActionSigningSecret: options.toolActionSigningSecret });
+  async function recordToolInvocation(input: ToolAccessDecisionInput, decision: ToolAccessDecision) {
+    try {
+      return await policyService.recordInvocation(input, decision);
+    } catch (error) {
+      const details = error instanceof HttpError ? asRecord(error.details) : null;
+      if (error instanceof HttpError && error.status === 409 && details?.reasonCode === "legacy_tool_idempotency_unverifiable") {
+        throw new ToolGatewayHttpError(error.status, error.message, details.reasonCode, details);
+      }
+      throw error;
+    }
+  }
   const secrets = secretService(db);
   // Authentication produces a new session object for every operation. Keep
   // credential acquisition scoped to that object and out of persisted inputs.
@@ -1446,8 +1459,9 @@ export function createToolGatewayService(
         (!featureSettings || isConnectorFeatureEnabled(getAppDefinitionForApplicationKey(application.applicationKey), featureSettings)) &&
         !isRetiredComposioConnection(connection) &&
         !(nativeProviderCatalogFor(connection) && !nativeProviderCatalogFor(connection)!.isCurrentEntry(catalogEntry)) &&
+        !(restConnectorFor(connection) && !restConnectorFor(connection)!.isCurrent(catalogEntry)) &&
         !(isRailwayEndpoint(connection.config.url) && (isRailwayToolBlocked(catalogEntry.toolName) || (normalizeRailwayToolName(catalogEntry.toolName).startsWith(RAILWAY_TOOL_PREFIX) && connection.config.railwayApiStatus !== "available"))) &&
-        (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection)) && application.type === "rest_api") ||
+        (((isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) && application.type === "rest_api") ||
         (connection.transport === "mcp_remote" &&
           application.type === "mcp_http") ||
         (connection.transport === "local_stdio" &&
@@ -1473,7 +1487,7 @@ export function createToolGatewayService(
       ({ catalogEntry, connection, application }, index) => {
         if (
           connection.transport !== "mcp_remote" &&
-          connection.transport !== "local_stdio" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection)
+          connection.transport !== "local_stdio" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection)
         ) {
           throw new Error(
             `Non-MCP connection ${connection.id} cannot be exposed through the MCP gateway`,
@@ -2407,7 +2421,7 @@ export function createToolGatewayService(
     policyDecision: ToolAccessDecision;
   }): Promise<never> {
     const canonicalArguments = canonicalToolArguments(input.parameters);
-    const canonicalArgumentsHash = input.argumentsSummary.sha256 ?? "";
+    const canonicalArgumentsHash = toolRequestIdentityHash(input.parameters, options.toolActionSigningSecret);
     const approvalSnapshot = await connectedRemoteApprovalSnapshot(
       input.session,
       input.tool,
@@ -3209,8 +3223,20 @@ export function createToolGatewayService(
       }
     }
     if (tool.providerType === "paperclip_github_chat") {
-      const data = await githubChatReviewService(db).execute(session, tool.upstreamToolName ?? "", parameters, invocationId);
-      return { content: JSON.stringify(data), data };
+      try {
+        const data = await githubChatReviewService(db).execute(session, tool.upstreamToolName ?? "", parameters, invocationId);
+        return { content: JSON.stringify(data), data };
+      } catch (error) {
+        // Complete request identities can reach the publication owner through
+        // fresh execution instead of receipt replay. Preserve the same conflict
+        // category for changed content without reclassifying stale-head or
+        // assessment-coverage conflicts from that owner.
+        if (error instanceof HttpError && error.status === 409
+          && asRecord(error.details)?.reasonCode === "github_idempotency_conflict") {
+          throw new ToolGatewayHttpError(error.status, error.message, "github_idempotency_conflict", asRecord(error.details) ?? {});
+        }
+        throw error;
+      }
     }
     if (tool.name === "mcp-remote-fixture:echo") {
       return {
@@ -4903,7 +4929,7 @@ export function createToolGatewayService(
         ),
       )
       .limit(1);
-    if (!connection || (connection.transport !== "mcp_remote" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection))) {
+    if (!connection || (connection.transport !== "mcp_remote" && !isBrowserUseConnection(connection) && !nativeProviderCatalogFor(connection) && !restConnectorFor(connection))) {
       throw new ToolGatewayHttpError(
         404,
         `Tool "${tool.name}" not found`,
@@ -4929,6 +4955,10 @@ export function createToolGatewayService(
     const nativeProvider = nativeProviderCatalogFor(connection);
     if (nativeProvider && !nativeProvider.isCurrentEntry(entry)) {
       throw new ToolGatewayHttpError(409, `${nativeProvider.name}'s action catalog changed. Review the updated actions in Permissions.`, `${nativeProvider.slug}_catalog_changed`);
+    }
+    const restConnector = restConnectorFor(connection);
+    if (restConnector && !restConnector.isCurrent(entry)) {
+      throw new ToolGatewayHttpError(409, `${restConnector.name}'s action catalog changed. Review the updated actions in Permissions.`, "provider_catalog_changed");
     }
     return { entry, connection };
   }
@@ -6070,6 +6100,17 @@ export function createToolGatewayService(
       ms = railwayCommandBudgetMs(parameters);
     }
     const grant = await resolveConnectionGrant(session, connection);
+    const restConnector = restConnectorFor(connection);
+    if (restConnector) {
+      const budgetMs = Math.min(ms, 30_000);
+      const deadlineAt = Date.now() + budgetMs;
+      const signal = AbortSignal.timeout(budgetMs);
+      const client = restConnector.client(connection, await resolveCredentialHeaders(session, connection, grant),
+        (url, init) => options.remoteHttpRequest ? options.remoteHttpRequest(url, init)
+          : guardedRemoteHttpFetch(url, init, remoteHttpFetchOptions()), signal, deadlineAt);
+      const data = await client.invoke(entry.toolName, parameters);
+      return { result: { content: JSON.stringify(data), data: { structuredContent: data, transport: "rest_api" } } };
+    }
     const nativeProvider = nativeProviderCatalogFor(connection);
     if (nativeProvider) {
       const budgetMs = Math.min(ms, 30_000);
@@ -8178,8 +8219,12 @@ export function createToolGatewayService(
     const parameters = signedPayload.arguments;
     const canonicalArguments = canonicalToolArguments(parameters);
     if (
-      claimed.canonicalArgumentsHash !==
-        summarizeToolValue(parameters).sha256 ||
+      ![
+        toolRequestIdentityHash(parameters, options.toolActionSigningSecret),
+        // Historical approvals used the redacted preview hash. Their signature
+        // still binds the complete canonical arguments checked below.
+        summarizeToolValue(parameters).sha256,
+      ].includes(claimed.canonicalArgumentsHash) ||
       !verifyToolArgumentsSignature({
         signedArguments: claimed.signedArguments,
         invocationId: invocation.id,
@@ -8377,6 +8422,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession;
     toolName: string;
     argumentsHash: string;
+    parameters: unknown;
   }) {
     if (!input.session.issueId || !input.session.agentId) return null;
     const [match] = await db
@@ -8393,7 +8439,7 @@ export function createToolGatewayService(
         and(
           eq(toolActionRequests.companyId, input.session.companyId),
           eq(toolActionRequests.issueId, input.session.issueId),
-          eq(toolActionRequests.canonicalArgumentsHash, input.argumentsHash),
+          inArray(toolActionRequests.canonicalArgumentsHash, [input.argumentsHash, summarizeToolValue(input.parameters).sha256]),
           eq(toolInvocations.agentId, input.session.agentId),
           eq(toolInvocations.toolName, input.toolName),
           inArray(toolActionRequests.status, [
@@ -8406,9 +8452,25 @@ export function createToolGatewayService(
           ]),
         ),
       )
-      .orderBy(desc(toolActionRequests.createdAt))
+      .orderBy(
+        desc(sql`${toolActionRequests.canonicalArgumentsHash} = ${input.argumentsHash}`),
+        desc(toolActionRequests.createdAt),
+      )
       .limit(1);
     if (!match) return null;
+    if (match.actionRequest.signedArguments) {
+      const signed = readSignedToolArgumentsPayload({
+        signedArguments: match.actionRequest.signedArguments,
+        invocationId: match.invocation.id,
+        toolName: match.invocation.toolName,
+        signingSecret: options.toolActionSigningSecret,
+      });
+      // Redacted legacy hashes can collide across different secrets. Only
+      // replay the exact authenticated arguments, including legacy approvals.
+      if (!signed || canonicalToolArguments(signed.arguments) !== canonicalToolArguments(input.parameters)) return null;
+    } else if (match.actionRequest.canonicalArgumentsHash !== input.argumentsHash) {
+      return null;
+    }
     if (match.actionRequest.status === "failed" && match.invocation.errorCode !== "provider_interaction_required") return null;
     // The gateway builds an ask-first request in two steps inside one call: it
     // inserts the row with a null signature and a null expiry, then signs the
@@ -8464,6 +8526,7 @@ export function createToolGatewayService(
     session: ToolGatewaySession;
     toolName: string;
     argumentsHash: string;
+    parameters: unknown;
   }) {
     const match = await matchingAgentActionRequest(input);
     if (!match) return null;
@@ -9417,7 +9480,7 @@ export function createToolGatewayService(
         consumeRateLimit: true,
       });
       const accessDecision = await policyService.decide(decisionInput);
-      const recorded = await policyService.recordInvocation(
+      const recorded = await recordToolInvocation(
         decisionInput,
         accessDecision,
       );
@@ -9437,7 +9500,7 @@ export function createToolGatewayService(
           );
         }
         const canonicalArguments = canonicalToolArguments(requestedParameters);
-        const canonicalArgumentsHash = argumentValidation.summary.sha256 ?? "";
+        const canonicalArgumentsHash = toolRequestIdentityHash(requestedParameters, options.toolActionSigningSecret);
         const approvalSnapshot = await connectedRemoteApprovalSnapshot(
           session,
           tool,
@@ -10146,7 +10209,7 @@ export function createToolGatewayService(
         if (typeof args.idempotencyKey === "string") {
           const key = `slack:${tool.connectionId}:${session.issueId}:${session.responsibleUserId}:${args.idempotencyKey}`;
           const [prior] = await db.select().from(toolInvocations).where(and(eq(toolInvocations.companyId, session.companyId), eq(toolInvocations.idempotencyKey, key)));
-          const currentHash = (await validateToolContent({ value: args, direction: "arguments", sensitiveMode: "redact", promptInjectionMode: "ignore" })).summary.sha256;
+          const currentHash = toolRequestIdentityHash(args, options.toolActionSigningSecret);
           if (prior && (prior.toolName !== tool.name || prior.argumentsHash !== currentHash)) throw new ToolGatewayHttpError(409, "Idempotency key belongs to a different Slack operation", "slack_idempotency_conflict");
           input = { ...input, idempotencyKey: key };
         }
@@ -10316,7 +10379,8 @@ export function createToolGatewayService(
         const replay = await replayMatchingAgentAction({
           session,
           toolName: tool.name,
-          argumentsHash: argumentValidation.summary.sha256 ?? "",
+          argumentsHash: toolRequestIdentityHash(requestedParameters, options.toolActionSigningSecret),
+          parameters: requestedParameters,
         });
         if (replay?.matched) {
           let replayResult: unknown = replay.result;
@@ -10649,8 +10713,10 @@ export function createToolGatewayService(
         });
         const storedCanonical = canonicalToolArguments(storedParameters);
         if (
-          actionRequest.canonicalArgumentsHash !==
-            summarizeToolValue(storedParameters).sha256 ||
+          ![
+            toolRequestIdentityHash(storedParameters, options.toolActionSigningSecret),
+            summarizeToolValue(storedParameters).sha256,
+          ].includes(actionRequest.canonicalArgumentsHash) ||
           !verifyToolArgumentsSignature({
             signedArguments: actionRequest.signedArguments,
             invocationId: storedInvocation.id,
@@ -10731,7 +10797,7 @@ export function createToolGatewayService(
         if (accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && SLACK_TOOLS.some(t => t.name === tool.upstreamToolName && t.risk === "approval")) {
           accessDecision = { ...accessDecision, allowed: false, decision: "require_approval", reasonCode: "requires_approval_policy", explanation: "Slack destructive actions, channel creation and invitations require approval." };
         }
-        const recorded = await policyService.recordInvocation(
+        const recorded = await recordToolInvocation(
           decisionInput,
           accessDecision,
         );
@@ -10742,7 +10808,7 @@ export function createToolGatewayService(
           : false;
         const gitHubPublicationReplay = recorded.replayed &&
           tool.providerType === "paperclip_github_chat" &&
-          ["comment", "update_comment", "submit_review"].includes(tool.upstreamToolName ?? "") &&
+          ["begin_review", "comment", "update_comment", "submit_review"].includes(tool.upstreamToolName ?? "") &&
           recorded.invocation.approvalState === "not_required";
         const gitHubReplayPolicyAllowed = accessDecision.allowed;
         const gitHubReplayBindingMatches =
@@ -10767,9 +10833,16 @@ export function createToolGatewayService(
               throw new ToolGatewayHttpError(409, error.message, "github_idempotency_conflict");
             throw error;
           }
-          if (!receipt)
-            throw new ToolGatewayHttpError(409, "The saved GitHub publication is not available yet", "github_publication_unavailable");
-          recoveredGitHubPublication = { content: JSON.stringify(receipt), data: receipt };
+          if (receipt) {
+            recoveredGitHubPublication = { content: JSON.stringify(receipt), data: receipt };
+          } else {
+            const canRepeatPreflight = tool.upstreamToolName === "begin_review" ||
+              (recorded.invocation.status !== "succeeded" && !recorded.invocation.resultHash);
+            const exactRequest = recorded.invocation.argumentsHash ===
+              toolRequestIdentityHash(effectiveParameters, options.toolActionSigningSecret);
+            if (!canRepeatPreflight || !exactRequest)
+              throw new ToolGatewayHttpError(409, "The saved GitHub publication is not available yet", "github_publication_unavailable");
+          }
         }
         if (recorded.replayed && !retryingSlackRateLimit && !retryingGitHubPublication) {
           if (gitHubPublicationReplay && !gitHubReplayPolicyAllowed)
@@ -11250,7 +11323,7 @@ export function createToolGatewayService(
         consumeRateLimit: true,
       });
       const accessDecision = await policyService.decide(decisionInput);
-      const recorded = await policyService.recordInvocation(
+      const recorded = await recordToolInvocation(
         decisionInput,
         accessDecision,
       );

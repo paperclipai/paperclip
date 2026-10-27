@@ -427,19 +427,24 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
         and(
           inArray(chatGitHubReviews.state, ["queued", "running"]),
           isNull(chatGitHubReviews.assessment),
-          sql`exists (
-        select 1 from ${chatActions} action
-        join ${chatDeliveries} delivery
-          on delivery.id::text = ${chatGitHubReviews.deliveryId}
+          sql`${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`,
+          sql`(
+        select action.id from ${chatActions} action
         where action.company_id = ${chatGitHubReviews.companyId}
           and action.endpoint_id = ${chatGitHubReviews.endpointId}
-          and delivery.endpoint_id = action.endpoint_id
           and action.kind = 'github_review_check'
           and action.status = 'cancelled'
           and action.result->>'code' = 'stale_head'
-          and action.payload->'event'->>'deliveryId' =
-            delivery.normalized_event->'githubAutomatic'->'context'->>'deliveryId'
-      )`,
+          and action.payload->'event'->>'deliveryId' = (
+            select delivery.normalized_event->'githubAutomatic'->'context'->>'deliveryId'
+            from ${chatDeliveries} delivery
+            where delivery.id = case
+              when ${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+              then ${chatGitHubReviews.deliveryId}::uuid end
+              and delivery.endpoint_id = ${chatGitHubReviews.endpointId}
+          )
+        limit 1
+      ) is not null`,
         ),
       );
     const rows = await db

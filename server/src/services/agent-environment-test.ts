@@ -2,7 +2,8 @@ import { join } from "node:path";
 import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
 import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { randomUUID } from "node:crypto";
-import type { Db } from "@paperclipai/db";
+import { agents, companies, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
@@ -19,6 +20,7 @@ import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: PluginWorkerManager) {
   const instanceSettings = instanceSettingsService(db);
@@ -212,6 +214,25 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // agent lease) and archive it on release instead of deleting it, so the
     // operator can inspect the exact sandbox from the provider dashboard while
     // provider-side expiry reaps it later.
+    if (environment.driver === "plugin" && await pluginEnvironmentRequiresAgent(db, environment)) {
+      const [agent] = input.agentId ? await db.select({ state: agents.lifecycleState, pauseReason: agents.pauseReason,
+        requiresApproval: companies.requireBoardApprovalForNewAgents }).from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))) : [];
+      if (agent?.state === "paused" && agent.pauseReason === "setup" && agent.requiresApproval) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: "environment_agent_approval_required", level: "warn",
+          message: "The selected account will be verified on the agent computer after hire approval.",
+        }], release: noopRelease,
+      };
+      if (!agent || ["paused", "preparing"].includes(agent.state)) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: !input.agentId ? "environment_agent_required" : "environment_agent_preparing", level: "warn",
+          message: !input.agentId ? "This environment needs a saved agent before its connection can be tested."
+            : "The agent computer is being prepared. Test the connection when preparation finishes.",
+        }], release: noopRelease,
+      };
+    }
     const testEnvironment = environment.driver === "sandbox"
       ? {
           ...environment,
@@ -231,6 +252,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         ...(environment.driver === "plugin" && input.adapterType === "paperclip_runner"
           ? { requestedExpiresAt: new Date(Date.now() + 180_000) } : {}),
         environment: testEnvironment,
+        configuredEnvironment: environment,
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
@@ -472,21 +494,27 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     environmentId: string,
     adapterType?: string,
   ): Promise<void> {
+    if (!await assertAdapterTestEnvironmentBinding(companyId, environmentId)) return;
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: adapterType === "paperclip_runner" ? [...ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS, "plugin"] : ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
+  // The company-binding half of the guard. A route that must resolve the
+  // runner before it knows the adapter type runs this first, then runs the
+  // full guard with the resolved adapter type. Returns the environment, or
+  // null for a missing one, which leaks no tenant state; the execution-context
+  // resolver surfaces the existing environment_not_found check.
+  async function assertAdapterTestEnvironmentBinding(companyId: string, environmentId: string) {
     const environment = await environmentsSvc.getById(environmentId);
-    if (!environment) {
-      // A missing environment leaks no tenant state. The execution-context
-      // resolver surfaces the existing environment_not_found check.
-      return;
-    }
+    if (!environment) return null;
     const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
     if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
       throw forbidden("The selected environment belongs to another company.", {
         code: "environment_company_mismatch",
       });
     }
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: adapterType === "paperclip_runner" ? [...ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS, "plugin"] : ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
-    });
+    return environment;
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
@@ -579,5 +607,5 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
 
-  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, testManagedEnvironment };
+  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, assertAdapterTestEnvironmentBinding, testManagedEnvironment };
 }

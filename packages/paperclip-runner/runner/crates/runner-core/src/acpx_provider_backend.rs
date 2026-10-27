@@ -1998,9 +1998,11 @@ impl AcpxCommandExecutor {
                     state.lifecycle = "closed".to_owned();
                     state.provider_exit_unconfirmed = true;
                     if let Some(turn_id) = failed_turn {
+                        let message = crate::durable::redact_text(&error.to_string());
                         state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
                             payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
-                                "code":"acpx_provider_transport_failed","message":crate::durable::redact_text(&error.to_string())}) })?;
+                                "code":"acpx_provider_transport_failed","message":message,
+                                "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
                         state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
                             payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"unknown","provider":"acpx"}) })?;
                     }
@@ -3212,7 +3214,7 @@ mod tests {
     #[test]
     fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
         let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v28-identity.json"
+            "../../../../test-fixtures/pi-acp/profile-v29-identity.json"
         ))
         .unwrap();
         let mut value = descriptor("codex");
@@ -3229,6 +3231,7 @@ mod tests {
         current.validate(&context()).unwrap();
 
         for prior in [
+            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),

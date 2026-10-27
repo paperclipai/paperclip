@@ -7,6 +7,11 @@ The maps describe the same capabilities from two perspectives:
 - [Agent access map](agent-access-map/README.md): the APIs and agent entry points
   for those capabilities, their permission boundaries, and access verification.
 
+The [chat scenario catalog](../tests/runner-e2e/chat-scenarios/README.md) adds
+natural-language requests, starting context and expected conversational outcomes
+for the same capability IDs. It lives with Product E2E as planning data; a scenario
+reference is neither a registered execution nor evidence that a journey passed.
+
 These are sibling directories under `maps/`. Each feature file has a same-named
 agent access companion. Reuse the product map's sub-feature IDs, so `tasks/create`
 identifies the same capability in both maps. Product behavior remains governed by
@@ -136,6 +141,9 @@ tool binding, CLI support, or work mode, update the affected companion and produ
 recipe as appropriate in the same change. Preserve IDs across renames where the
 capability is unchanged; update the affected cross-links together. Indexes discover recipes automatically. An API-only
 change may update the companion without rewriting unchanged user instructions.
+Update the corresponding chat scenarios when their request, assumptions or
+expected outcome changes; use multiple cases for meaningfully different starting
+conditions rather than treating an API path as conversational coverage.
 
 [maintain-verification-skill](../.agents/skills/maintain-verification-skill/SKILL.md)
 owns reconciliation of both maps. It follows changed source and authorization,

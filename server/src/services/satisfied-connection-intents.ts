@@ -1,3 +1,4 @@
+import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { approvals, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
@@ -111,10 +112,14 @@ export function satisfiedConnectionIntentService(db: Db) {
             if (!connection) return false;
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
-            await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
+            const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
                 reason: "An already authorized connection is available to the requesting agent." },
-            }).where(and(eq(issueThreadInteractions.id, intent.id), eq(issueThreadInteractions.status, "pending")));
+            }).where(and(eq(issueThreadInteractions.id, intent.id), eq(issueThreadInteractions.status, "pending"))).returning();
+            if (!retired) return false;
+            const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+            const interaction = await issueThreadInteractionService(txDb).getById(retired.id);
+            if (interaction) await enqueueTerminalIssueInteractionChatPublications(txDb, interaction);
             await tx.update(issues).set({ updatedAt: now }).where(and(eq(issues.id, task.id), eq(issues.companyId, task.companyId)));
             await tx.insert(connectionIntentDeliveries).values({ interactionId: intent.id, companyId: task.companyId }).onConflictDoNothing();
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);

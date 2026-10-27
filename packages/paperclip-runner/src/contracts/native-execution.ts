@@ -160,7 +160,7 @@ export type NativeProviderConfigV4 =
 
 export type NativeProviderConfigV5 =
   | Exclude<NativeProviderConfigV4, { kind: "codex" }>
-  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string });
+  | (Extract<NativeProviderConfigV4, { kind: "codex" }> & { reasoningEffort?: string; webSearch?: "disabled" });
 
 export interface NativeExecutionInputV1 {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V1;
@@ -571,7 +571,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "acpx"
         ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : [])]
       : provider.kind === "codex" && isV4
-        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort"] : [])]
+        ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort", "webSearch"] : [])]
         : provider.kind === "opencode" && isV4
           ? ["kind", "model", "permissionMode"]
           : ["kind", "model"],
@@ -780,6 +780,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (isV5 && provider.reasoningEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(provider.reasoningEffort))) {
       throw new NativeExecutionInputError("input.provider.reasoningEffort is unsupported");
     }
+    if (isV5 && provider.webSearch !== undefined && provider.webSearch !== "disabled") {
+      throw new NativeExecutionInputError("input.provider.webSearch must be disabled when specified");
+    }
     parsedProvider = {
       kind: "codex",
       model: providerModel,
@@ -789,6 +792,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       ...(isV5 && provider.reasoningEffort !== undefined
         ? { reasoningEffort: text(provider.reasoningEffort, "input.provider.reasoningEffort") }
         : {}),
+      ...(isV5 && provider.webSearch === "disabled" ? { webSearch: "disabled" as const } : {}),
     };
   }
   if (!Array.isArray(contract.criteria) || contract.criteria.length === 0) {

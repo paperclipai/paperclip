@@ -6,6 +6,13 @@ afterEach(() => vi.unstubAllEnvs());
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
 
 describe("ACPX launch environment", () => {
+  it("retains an explicit Claude MCP timeout without inheriting an ambient or sibling setting", () => {
+    vi.stubEnv("MCP_TOOL_TIMEOUT", "999999");
+    expect(createSanitizedAcpxSpawnInput(undefined, "claude").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+    expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "claude").env.MCP_TOOL_TIMEOUT).toBe("120000");
+    expect(createSanitizedAcpxSpawnInput({ MCP_TOOL_TIMEOUT: "120000" }, "codex").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+  });
+
   it("excludes general IAM from the Pi sidecar and launch, including selected task values", () => {
     const iam = { AWS_ACCESS_KEY_ID: "general-key", AWS_SECRET_ACCESS_KEY: "general-secret", AWS_SESSION_TOKEN: "general-session" };
     const source = { ...iam, ...configuredEnvironmentProjection({ ...iam, CUSTOM_SETTING: "allowed" }), AWS_BEARER_TOKEN_BEDROCK: "provider-key" };

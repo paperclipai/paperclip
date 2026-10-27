@@ -6,7 +6,7 @@ export default defineConfig({
     name: "runner-e2e-support",
     include: ["**/*.test.ts", "**/*.test.mjs"],
     // These use node:test and run separately in test:e2e:runner:unit.
-    exclude: [...configDefaults.exclude, "native-completion-{checks,git-source,source-contract}.test.mjs"],
+    exclude: [...configDefaults.exclude, "native-completion-{checks,git-source,source-contract}.test.mjs", "artifact-budget.test.mjs"],
     testTimeout: 30_000,
   },
 });

@@ -1,0 +1,96 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: documents-artifacts
+status: planned
+scenarios:
+  - id: documents-artifacts.write-plan
+    capabilities:
+      - documents-artifacts/documents
+    context: >-
+      A delegated task has no plan document; the agent is authorized to edit its documents.
+    query: >-
+      Save a short implementation plan on the website task.
+    expected_outcome: >-
+      A versioned plan document is persisted on the intended task and linked in chat. Its
+      contents reflect the actual request and remain readable after reload. A conversational
+      paragraph alone does not count as saving the plan.
+  - id: documents-artifacts.restore-document
+    capabilities:
+      - documents-artifacts/documents
+    context: >-
+      The task has three plan revisions and the person identifies the previous version as the
+      desired content.
+    query: >-
+      Restore the plan to the version before the last edit.
+    expected_outcome: >-
+      The prior contents are restored through the document revision path while retaining audit
+      history. The agent identifies the resulting current revision and handles any concurrent
+      edit explicitly. Restoring text does not retroactively approve that revision or rewind
+      executed work.
+  - id: documents-artifacts.resolve-feedback
+    capabilities:
+      - documents-artifacts/annotations
+    context: >-
+      A review annotation is anchored to the pricing paragraph of a task document.
+    query: >-
+      Fix the confusing pricing paragraph and resolve my comment.
+    expected_outcome: >-
+      The agent reads the anchored feedback, edits the relevant document and resolves the
+      correct annotation only after addressing it. Unrelated comments remain open. Chat links to
+      the updated document and explains the substantive change, with the annotation relationship
+      preserved across revisions.
+  - id: documents-artifacts.produce-download
+    capabilities:
+      - documents-artifacts/attachments
+      - documents-artifacts/work-products
+    context: >-
+      The website task generated an HTML file in its authorized workspace.
+    query: >-
+      Give me a downloadable copy of the website.
+    expected_outcome: >-
+      The file is registered and uploaded through the product artifact path, with a download the
+      person can actually open. Its bytes match the produced work and its source task is
+      retained. A local sandbox path or an assertion that a file exists does not satisfy
+      delivery.
+  - id: documents-artifacts.revise-delivery
+    capabilities:
+      - documents-artifacts/work-products
+      - documents-artifacts/library
+    context: >-
+      Version one of a website is already delivered and accessible; a second revision is
+      requested.
+    query: >-
+      Shorten the headline and give me a new version, but keep the old one available.
+    expected_outcome: >-
+      The updated deliverable is linked to the same work with clear revision context, and the
+      original remains retrievable. The library opens the intended stack or work product. The
+      agent does not overwrite the only retained copy or label stale bytes as the new revision.
+  - id: documents-artifacts.find-artifact
+    capabilities:
+      - documents-artifacts/library
+      - inbox-search/search
+    context: >-
+      Multiple website drafts exist across authorized projects; a restricted project has a
+      similarly named artifact.
+    query: >-
+      Find the final website files we delivered last week.
+    expected_outcome: >-
+      The agent searches visible artifact and task records, distinguishes final delivery from
+      drafts and returns usable source and download links. It uses the requested time context
+      and discloses ambiguity if there is no clear final version. Restricted artifacts and their
+      previews remain excluded.
+  - id: documents-artifacts.private-download
+    capabilities:
+      - documents-artifacts/attachments
+      - tasks/privacy
+    context: >-
+      A private task owns an attachment; a second observer lacks access despite knowing the
+      download link.
+    query: >-
+      Share the file from my private launch task with everyone.
+    expected_outcome: >-
+      The agent explains the source privacy boundary and the authorized sharing step instead of
+      publishing the bytes through another task or public URL. The copied download remains
+      access-controlled until a legitimate visibility change allows it. Chat contains no
+      unauthorized excerpt or alternate delivery that bypasses that boundary.

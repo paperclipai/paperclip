@@ -47,6 +47,10 @@ export interface RunnerExecutionDriver {
   }) => Promise<Record<string, unknown>>;
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
+  /** Process lifetime while disconnected. Defaults to the active-connection
+   * recovery budget for compatibility. Null uses the authenticated connection
+   * lease as the lifetime bound, so controller downtime cannot kill its owner. */
+  runnerProcessReconnectGraceMs?: number | null;
   /**
    * A verified Runner that outlived its controller. Adoption registers
    * the durable authority and waits for this exact process to reconnect; it

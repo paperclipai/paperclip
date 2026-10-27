@@ -57,6 +57,7 @@ export const externalObjectFilterOrder = [
   "waiting",
   "running",
   "auth_required",
+  "rate_limited",
   "unreachable",
   "stale",
   "none",
@@ -67,6 +68,7 @@ const EXTERNAL_OBJECT_FILTER_LABELS: Record<string, string> = {
   waiting: "Any waiting",
   running: "Any running",
   auth_required: "Auth required",
+  rate_limited: "Rate limited",
   unreachable: "Unreachable",
   stale: "Stale",
   none: "No external objects",
@@ -193,6 +195,8 @@ function issueMatchesExternalObjectStatusFilter(
     case "auth_required":
       return (summary?.authRequiredCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "auth_required") > 0;
+    case "rate_limited":
+      return summaryRecordCount(summary?.byLiveness, "rate_limited") > 0;
     case "unreachable":
       return (summary?.unreachableCount ?? 0) > 0
         || summaryRecordCount(summary?.byLiveness, "unreachable") > 0;

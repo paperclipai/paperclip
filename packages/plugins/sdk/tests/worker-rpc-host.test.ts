@@ -1198,6 +1198,7 @@ describe("Durable lifecycle inbox RPC", () => {
       ctx.data.register("drain", async ({ companyId }) => {
         const events = await ctx.events.listLifecycle(companyId!, 10, "6");
         await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a", true);
         return events;
       });
     } });
@@ -1220,11 +1221,12 @@ describe("Durable lifecycle inbox RPC", () => {
       input.write(serializeMessage(createRequest(method, params, id)));
     });
     try {
-      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe", "agents.lifecycle.manage"], entrypoints: {} }, config: {}, databaseNamespace: null });
       expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
       ]);
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });

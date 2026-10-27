@@ -22,6 +22,7 @@ import { DesignSandboxProvider } from "./context/DesignSandboxContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
@@ -34,6 +35,8 @@ initPluginBridge(React, ReactDOM);
 // DevTools performance tracks and never clears them; on a long-lived tab they
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
+
+startChunkLoadRecovery();
 
 // Parked SPA tabs never navigate, so beyond registering the worker this also
 // re-checks /sw.js on tab focus and hourly, and applies a discovered update

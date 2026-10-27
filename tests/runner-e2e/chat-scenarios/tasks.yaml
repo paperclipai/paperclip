@@ -1,0 +1,189 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: tasks
+status: planned
+scenarios:
+  - id: tasks.create-backlog
+    capabilities:
+      - tasks/create
+      - agent-chat/handoff
+      - projects/task-context
+    context: >-
+      Launch exists and Morgan is an available engineer. The CEO may create and assign
+      tasks. No ordinary work tasks exist yet, and the person wants to save work for later.
+      Funding admits the configured provider, including unpriced usage when using a subscription.
+    query: >-
+      Add a task for Morgan to draft the launch announcement in Launch, but don't start it yet.
+    expected_outcome: >-
+      Exactly one task is created in Launch, assigned to Morgan and in backlog from the
+      original creation. Morgan does not execute it. Chat provides a usable task link and
+      accurately explains that the work is saved for later. After reload, the task, assignment,
+      status and source conversation remain intact.
+  - id: tasks.delegate-announcement
+    capabilities:
+      - tasks/create
+      - agent-chat/handoff
+      - projects/task-context
+      - documents-artifacts/documents
+    context: >-
+      Launch exists with its current launch brief in the project description. Morgan is an
+      available engineer and the CEO may assign work. No work task exists yet. The brief
+      supplies the product, launch date and an invitation code that are not in the query.
+      Funding admits both agents' configured provider, including unpriced subscription usage.
+    query: >-
+      Have Morgan write a two-sentence launch announcement using the Launch project brief,
+      save it on the task, and send me the result here when it's finished.
+    expected_outcome: >-
+      The CEO creates one ordinary task in Launch assigned to Morgan. Morgan executes it,
+      saves a two-sentence announcement grounded in the project brief and completes the
+      task. An automatic completion reply in the original conversation gives access to that
+      saved result without another user message. The conversation stays available after reload.
+  - id: tasks.website-task
+    capabilities:
+      - tasks/create
+      - agent-chat/handoff
+      - projects/task-context
+    context: >-
+      The Launch project and an available frontend engineer Morgan exist. The CEO may assign
+      work.
+    query: >-
+      Create a task for Morgan to build a simple website for our new product in the Launch
+      project.
+    expected_outcome: >-
+      One ordinary work task captures the request, selected project and single assignee, and
+      chat returns its link. The standing conversation remains available while work runs
+      separately. The agent reports the task's actual state and does not claim the website
+      exists merely because the task was created.
+  - id: tasks.website-without-project
+    capabilities:
+      - tasks/create
+      - projects/lifecycle
+      - agent-chat/handoff
+    context: >-
+      No suitable project exists. The CEO can create projects and assign Morgan; the request
+      explicitly names a new project.
+    query: >-
+      Start a Launch project and have Morgan build its landing page.
+    expected_outcome: >-
+      The agent creates one Launch project and a linked work task with the website brief, then
+      returns both links. It carries the conversation's requirements into the task and uses an
+      available execution context. Retry after a lost acknowledgement must not create a second
+      project or duplicate assignment.
+  - id: tasks.attachment-brief
+    capabilities:
+      - tasks/create
+      - documents-artifacts/attachments
+    context: >-
+      The person has uploaded a synthetic product brief in this chat. Morgan is authorized to
+      read its resulting task.
+    query: >-
+      Have Morgan turn the attached brief into a website.
+    expected_outcome: >-
+      The delegated task retains an accessible attachment or durable reference and the requested
+      outcome. Morgan can retrieve the actual brief from the work context. The chat response
+      links to the task; merely mentioning an unavailable filename or leaving the upload
+      accessible only to the original conversation is insufficient.
+  - id: tasks.organize-open-work
+    capabilities:
+      - tasks/organize
+    context: >-
+      Launch has todo, active, blocked and done tasks, including more results than one default
+      page. The agent can read them all.
+    query: >-
+      Show me all open Launch work, grouped by owner, with blocked items first.
+    expected_outcome: >-
+      The answer uses current task records, excludes terminal work and groups each task by its
+      actual single owner with source links. It fetches enough pages to support all, or clearly
+      reports a bounded partial result. It does not silently equate a search limit with the full
+      project inventory.
+  - id: tasks.edit-properties
+    capabilities:
+      - tasks/properties
+    context: >-
+      Launch page task is visible and mutable, Morgan is eligible, and changing assignment is
+      allowed at the task's current execution boundary.
+    query: >-
+      Make the landing-page task high priority and assign it to Morgan.
+    expected_outcome: >-
+      The requested priority and single assignee persist on the intended task. Chat identifies
+      the task and summarizes the actual edits. If execution ownership prevents the assignment
+      now, the response distinguishes the saved change from a pending or denied change and does
+      not create another task as a workaround.
+  - id: tasks.ambiguous-task
+    capabilities:
+      - tasks/properties
+      - inbox-search/search
+    context: >-
+      Two accessible tasks in different projects are named Landing page; no active selection
+      resolves the reference.
+    query: >-
+      Mark the landing-page task as high priority.
+    expected_outcome: >-
+      The agent asks which of the two linked tasks the person means before mutating either. The
+      clarification retains the requested priority change. After the person selects one, only
+      that task changes; matching the first search result is not sufficient.
+  - id: tasks.comment-with-reference
+    capabilities:
+      - tasks/discussion
+    context: >-
+      Launch page task is visible; a separate approved design task is also accessible.
+    query: >-
+      Add a note to the landing-page task saying to follow the approved design task.
+    expected_outcome: >-
+      One attributed comment is saved on the intended task with a usable reference to the design
+      record. Chat links to that comment or task. It does not impersonate the human author or
+      move the design task's private contents into a broader audience.
+  - id: tasks.completion-with-gate
+    capabilities:
+      - tasks/completion
+      - task-coordination/signoff
+    context: >-
+      Morgan's implementation is delivered but an independent review is still required.
+    query: >-
+      The site looks finished; mark the task done.
+    expected_outcome: >-
+      The agent checks the actual completion policy and explains the outstanding review. It uses
+      the eligible review or human-resolution path instead of forcing Done. The task remains in
+      the appropriate nonterminal state until that gate is satisfied, and chat distinguishes
+      implementation delivery from accepted completion.
+  - id: tasks.private-task
+    capabilities:
+      - tasks/privacy
+      - agent-chat/handoff
+    context: >-
+      The conversation contains private launch information, the person has a valid private
+      project, and both CEO and Morgan are authorized for it.
+    query: >-
+      Ask Morgan to draft the confidential launch announcement in my private project.
+    expected_outcome: >-
+      The created task retains the source and project privacy restrictions and the authorized
+      assignee. Chat links to it without exposing the brief to company-wide work. An unrelated
+      company member cannot discover or read the delegated task through search, project lists or
+      copied links.
+  - id: tasks.share-private-task
+    capabilities:
+      - tasks/privacy
+    context: >-
+      A private task is readable by the CEO, but changing its audience requires the authorized
+      human owner.
+    query: >-
+      Share this private task with Riley.
+    expected_outcome: >-
+      The agent distinguishes reading the task from managing its audience and guides the owner
+      to the supported sharing control. It checks the intended same-company person rather than
+      broadening visibility to everyone. Until the authorized change succeeds, Riley gains no
+      access and chat makes no success claim.
+  - id: tasks.assignment-conflict
+    capabilities:
+      - tasks/properties
+      - task-coordination/delegation
+    context: >-
+      Morgan holds the current execution checkout; another actor changed assignment after the
+      CEO last read the task.
+    query: >-
+      Move this task to Riley now.
+    expected_outcome: >-
+      The agent handles the stale ownership result by rereading current state and explaining the
+      actual assignment boundary. It does not overwrite a newer checkout, run two owners
+      concurrently, or claim Riley has begun before accepted reassignment and normal admission.

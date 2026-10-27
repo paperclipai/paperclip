@@ -7,9 +7,10 @@ import { useNativeRunTranscripts } from "./useNativeRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
 const eventsMock = vi.hoisted(() => vi.fn());
+const conversationEventsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/heartbeats", () => ({
-  heartbeatsApi: { events: eventsMock },
+  heartbeatsApi: { events: eventsMock, conversationEvents: conversationEventsMock },
 }));
 
 function Probe() {
@@ -47,6 +48,29 @@ describe("useNativeRunTranscripts", () => {
     act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
+  });
+
+  it("expands from sequence zero without duplicating the preview or withholding new runs", async () => {
+    let state: ReturnType<typeof useNativeRunTranscripts>;
+    const event = (seq: number, text: string) => ({
+      id: `event-${seq}`, runId: "old", companyId: "company", seq, eventType: "item.completed", createdAt: new Date().toISOString(),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType: "item.completed", runId: "old", schemaVersion: 1, emittedAt: new Date().toISOString(), itemId: `item-${seq}`, payload: { kind: "agentMessage", text } } },
+    });
+    conversationEventsMock.mockResolvedValue([event(3, "Latest answer")]);
+    eventsMock.mockImplementation((id) => Promise.resolve(id === "old" ? [event(1, "Earlier answer"), event(3, "Latest answer")] : []));
+    function Window({ compact }: { compact: boolean }) {
+      state = useNativeRunTranscripts([
+        { id: "old", runtimeMode: "native", status: "succeeded", conversationOnly: compact },
+        { id: "new", runtimeMode: "native", status: "succeeded" },
+      ]);
+      return null;
+    }
+    await act(async () => { root.render(<Window compact />); });
+    expect(conversationEventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(eventsMock).toHaveBeenCalledWith("new", 0, 1000, expect.any(Object));
+    await act(async () => { root.render(<Window compact={false} />); });
+    expect(eventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(state!.transcriptByRun.get("old")?.filter((entry) => entry.kind === "assistant").map((entry) => entry.text)).toEqual(["Earlier answer", "Latest answer"]);
   });
 
   it("exposes event transport failures and retries terminal runs until recovery", async () => {

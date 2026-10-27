@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, validatePreparedRunnerLaunch,
-  type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
+  runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 
 const requirements: RunnerProviderLaunchRequirements = {
   schema: "paperclip.runner.launch-requirements.v1",
@@ -19,6 +19,42 @@ const environment: RunnerProviderLaunchEnvironment = {
 };
 
 describe("built-in provider launch preparation", () => {
+  it("binds disabled hosted search to the prepared launch and overrides execution-host arguments", () => {
+    const disabled = runnerProviderLaunchRequirements({ provider: "codex", disableCodexWebSearch: true },
+      requirements.identity, { model: requirements.model }, null, "");
+    expect(disabled.settings).toHaveProperty("disableCodexWebSearch", true);
+    expect(runnerLaunchRequirementsDigest(disabled)).not.toBe(runnerLaunchRequirementsDigest({ ...disabled, settings: {} }));
+    const launch = createRunnerProviderLaunch(disabled, { ...environment,
+      options: { codexArgs: ["-c", 'web_search="live"', "app-server"] } });
+    expect(launch.args).toEqual(["-c", 'web_search="live"', "-c", 'web_search="disabled"', "app-server"]);
+    const prepared = { configurationId: "search-policy", requirementsDigest: runnerLaunchRequirementsDigest(disabled), provider: launch };
+    expect(() => validatePreparedRunnerLaunch(disabled, prepared)).not.toThrow();
+    expect(() => validatePreparedRunnerLaunch(disabled, { ...prepared,
+      provider: { ...launch, args: ["app-server"] } })).toThrow("runner_prepared_launch_requirements_mismatch");
+    for (const leading of ["--", "--search", "--search=true"]) {
+      expect(() => createRunnerProviderLaunch(disabled, { ...environment,
+        options: { codexArgs: [leading, "app-server"] } })).toThrow("runner_codex_web_search_policy_override");
+      expect(() => validatePreparedRunnerLaunch(disabled, { ...prepared,
+        provider: { ...launch, args: [leading, ...launch.args as string[]] } })).toThrow("runner_prepared_launch_requirements_mismatch");
+    }
+    expect(() => validatePreparedRunnerLaunch(disabled, { ...prepared,
+      provider: { ...launch, args: ["--", ...launch.args as string[]] } })).toThrow("runner_prepared_launch_requirements_mismatch");
+    for (const tail of [["-c", 'web_search="live"'], ['-cweb_search="live"'], ["--search"], ['--config=web_search="live"'], ["--"]]) {
+      expect(() => createRunnerProviderLaunch(disabled, { ...environment,
+        options: { codexArgs: ["app-server", ...tail] } })).toThrow("runner_codex_web_search_policy_override");
+      expect(() => validatePreparedRunnerLaunch(disabled, { ...prepared,
+        provider: { ...launch, args: [...launch.args as string[], ...tail] } })).toThrow("runner_prepared_launch_requirements_mismatch");
+    }
+
+  });
+
+  it.each([undefined, false])("preserves default hosted search when disable is %s", disableCodexWebSearch => {
+    const request = runnerProviderLaunchRequirements({ provider: "codex", disableCodexWebSearch },
+      requirements.identity, { model: requirements.model }, null, "");
+    const launch = createRunnerProviderLaunch(request, environment);
+    expect(launch.args).toEqual(["app-server"]);
+  });
+
   it("keeps Core's selection and policy when the execution environment changes", () => {
     const before = structuredClone(requirements);
     const local = createRunnerProviderLaunch(requirements, environment);
@@ -28,6 +64,17 @@ describe("built-in provider launch preparation", () => {
       readOnly: true, collaborationMode: "plan", instructions: requirements.instructions });
     expect(remote).toEqual({ ...local, cwd: "/guest/project", command: "/guest/bin/codex" });
     expect(requirements).toEqual(before);
+  });
+
+  it("preserves exact Copilot requirements and launch descriptors when Codex search disabling is absent or false", () => {
+    const selected = { provider: "acpx" as const, acpxAgent: "copilot" as const, acpxPermissionMode: "deny-all" as const };
+    const params = { model: "gpt-5.6-luna", approvalPolicy: "never", permissions: "paperclip-runner-workspace-read-only" };
+    const baseline = runnerProviderLaunchRequirements(selected, requirements.identity, params, null, "Copilot policy");
+    const scopedProbe = runnerProviderLaunchRequirements({ ...selected, disableCodexWebSearch: false },
+      requirements.identity, params, null, "Copilot policy");
+    expect(scopedProbe).toEqual(baseline);
+    expect(runnerLaunchRequirementsDigest(scopedProbe)).toBe(runnerLaunchRequirementsDigest(baseline));
+    expect(createRunnerProviderLaunch(scopedProbe, environment)).toEqual(createRunnerProviderLaunch(baseline, environment));
   });
 
   it("preserves the ACPX profile, run identity, and permission policy", () => {

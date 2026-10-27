@@ -20,6 +20,7 @@ import {
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
   pendingContextIntegrityProfiles,
+  productJourneys,
   suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
@@ -41,7 +42,7 @@ describe("runner E2E catalog", () => {
     expect(cell.requiredCredentials).toEqual([credential]);
     expect(cell.task).toMatchObject({ flow: "case_handoff", expectedRunCount: 4, minimumExpectedRunCount: 4,
       turnTimeoutMs: 90_000, attemptTimeoutMs: { local: 300_000 }, automaticRetryPolicy: "single_attempt" });
-    expect(cell.suite.definitionMetadata).toMatchObject({ version: 3, scheduling: "explicit-only",
+    expect(cell.suite.definitionMetadata).toMatchObject({ version: 4, scheduling: "explicit-only",
       credentialModes: ["isolated-company-subscription-login", "company-encrypted-api-secret-reference"],
       cases: { "receipt-smoke": { budgetMonthlyCents: 100, maximumProviderTurns: 4, minimumProviderTurns: 4,
         runTimeoutMs: 90_000, reasoningEffort: "low", agentDailyRunCaps: { triage: 1, builder: 2, verifier: 1 } },
@@ -55,6 +56,13 @@ describe("runner E2E catalog", () => {
     }
     expect(suiteDefinitionHash({ ...cell.suite, tasks: cell.suite.tasks.map(task => task.id === cell.task.id
       ? { ...task, expectedRunCount: 5 } : task) })).not.toBe(cell.suiteDefinitionHash);
+  });
+
+  it("exports deployment journeys separately from the model matrix and default selection", () => {
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-properties", "cloud-onboarding"]);
+    expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
+    expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
   });
 
   it("keeps the single managed onboarding variant explicit-only without changing local onboarding coverage", () => {
@@ -211,10 +219,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 28, 18, 2, 6, 6, 13, 10, 48, 16, 10, 2, 1, 1, 3, 116, 2,
+      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 2, 28, 18, 2, 6, 6, 13, 10, 2, 48, 16, 10, 2, 1, 1, 4, 116, 2, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(760);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(760);
+    expect(validateRunnerCatalog()).toHaveLength(769);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(769);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
@@ -511,13 +519,13 @@ describe("runner E2E catalog", () => {
 
   it("uses only declared secret references in generated payloads", () => {
     expect(
-      runnerMatrix.filter(entry => entry.task.flow !== "provider_connection").every((entry) =>
+      runnerMatrix.filter(entry => !["provider_connection", "github_review_journey"].includes(entry.task.flow)).every((entry) =>
         entry.requiredCredentials.includes(entry.profile.credential),
       ),
     ).toBe(true);
     expect(
       runnerMatrix
-        .filter((entry) => entry.environment.id === "daytona" && entry.task.flow !== "provider_connection")
+        .filter((entry) => entry.environment.id === "daytona" && !["provider_connection", "github_review_journey"].includes(entry.task.flow))
         .every((entry) =>
           entry.requiredCredentials.includes("DAYTONA_API_KEY"),
         ),

@@ -7,9 +7,11 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../environment-runtime.js";
 import { environmentService } from "../environments.js";
 import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "./recovery.js";
+import { createHeartbeatRunState } from "./run-state.js";
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
+import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { logger } from "../../middleware/logger.js";
@@ -22,7 +24,7 @@ const native = vi.hoisted(() => ({
   finalizations: vi.fn(async (_db: Db, _ids?: string[], _options?: unknown) => undefined),
   cleanups: vi.fn(async () => undefined),
   drainMaintenance: vi.fn<() => Promise<void>>(async () => undefined),
-  claims: vi.fn<() => Promise<NativeRestartRecoveryDisposition[]>>(async () => []),
+  claims: vi.fn<typeof claimNativeRestartRecoveries>(async () => []),
 }));
 const hotRestart = vi.hoisted(() => ({
   read: vi.fn<() => Promise<HotRestartIntent | null>>(async () => null),
@@ -48,6 +50,7 @@ function callbacks(db: Db) {
   return {
     enterShutdown: vi.fn(),
     getRun: vi.fn<HeartbeatRecoveryDependencies["getRun"]>(async () => null),
+    getRunWorkspaceSettlement: vi.fn(createHeartbeatRunState(db).getRunWorkspaceSettlement),
     getAgent: vi.fn<HeartbeatRecoveryDependencies["getAgent"]>(async () => null),
     appendRunEvent: vi.fn<HeartbeatRecoveryDependencies["appendRunEvent"]>(async () => undefined),
     setRunStatusIfRunning: vi.fn<HeartbeatRecoveryDependencies["setRunStatusIfRunning"]>(async () => ({ updated: false, run: null })),
@@ -604,6 +607,33 @@ describePostgres("heartbeat recovery module ownership", () => {
     finish();
     await Promise.all([...deps.activeRunExecutionPromises]);
     await vi.waitFor(() => expect(deps.activeRunExecutionPromises.size).toBe(0));
+  });
+
+  it("does not dispatch recovery for a run still preparing in this heartbeat process", async () => {
+    const run = await seedRun();
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, run.issueId!));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "observed" });
+    const deps = callbacks(db);
+    deps.activeRunExecutions.add(run.id);
+    deps.getRun.mockImplementation(async id => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0] ?? null);
+    native.claims.mockImplementationOnce(claimNativeRestartRecoveries);
+    const before = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    try {
+      const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
+      expect(result.awaitingEvidenceRunIds).toEqual([run.id]);
+      expect(result.claims).toEqual([]);
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id))).toEqual(before);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, run.issueId!))).toHaveLength(0);
+      expect((await deps.getRun(run.id))?.status).toBe("running");
+    } finally {
+      deps.activeRunExecutions.delete(run.id);
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
   });
 
   it("does not claim or execute recovery when persisted finalization fails", async () => {

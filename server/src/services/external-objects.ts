@@ -72,7 +72,7 @@ export type ExternalObjectResolveResult =
   | { ok: true; snapshot: ExternalObjectResolverSnapshot }
   | {
       ok: false;
-      liveness: Extract<ExternalObjectLivenessState, "auth_required" | "unreachable">;
+      liveness: Extract<ExternalObjectLivenessState, "auth_required" | "rate_limited" | "unreachable">;
       errorCode: string;
       errorMessage?: string | null;
       retryAfterSeconds?: number;
@@ -676,7 +676,7 @@ export function externalObjectService(
       byLiveness[object.liveness] = (byLiveness[object.liveness] ?? 0) + 1;
       const livenessTone = object.liveness === "auth_required" || object.liveness === "unreachable"
         ? "danger"
-        : object.liveness === "stale"
+        : object.liveness === "rate_limited" || object.liveness === "stale"
         ? "warning"
         : object.statusTone;
       if (severityRank[livenessTone] > severityRank[highestSeverity]) highestSeverity = livenessTone;

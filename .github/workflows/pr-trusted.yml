@@ -119,7 +119,7 @@ jobs:
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
 
       - name: Test standalone package build concurrency
         run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs

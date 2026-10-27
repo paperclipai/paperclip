@@ -1,3 +1,6 @@
+import { createWorkerTiming } from "./worker-timing.js";
+import { FEEDBACK_PERSISTENCE_SUITE, gradeFeedbackPersistence } from "./feedback-persistence.js";
+import { EvalAttemptTrace, evalBraintrustConfig, EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { captureFollowupStopFailureApiState } from "./followup-stop-evidence.js";
 import { runFollowupStopResumeFlow } from "./followup-stop-resume-flow.js";
 import { runFinalizationRecoveryFlow } from "./finalization-recovery-flow.js";
@@ -58,6 +61,8 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { RunnerApi, pollUntil } from "./api.js";
 import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
+import { collectAttemptFeedback, emptyFeedbackSummary } from "./feedback.js";
+import { finishBudgetedEvalSetup } from "./budgeted-setup.js";
 import { establishPublicMcpSession, runPublicMcpFlow } from "./public-mcp-flow.js";
 import { assistantUsage } from "./public-mcp-model.js";
 import { runnerExecutionById } from "./catalog.js";
@@ -259,6 +264,7 @@ async function restartIsolatedPaperclipServer(input: {
   deadlineAt: number;
   preserveRunner?: RestartRunnerIdentity;
   crashAfterResult?: FinalizationCrashBinding;
+  controllerDowntimeMs?: number;
 }): Promise<void> {
   const {
     controlDirectory,
@@ -269,7 +275,8 @@ async function restartIsolatedPaperclipServer(input: {
   const temporaryRequestPath = `${requestPath}.${process.pid}.${input.requestId}.tmp`;
   await writeFile(
     temporaryRequestPath,
-    JSON.stringify({ requestId: input.requestId, ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}),
+    JSON.stringify({ requestId: input.requestId, ...(input.controllerDowntimeMs !== undefined ? { controllerDowntimeMs: input.controllerDowntimeMs } : {}),
+      ...(input.preserveRunner ? { preserveRunner: input.preserveRunner } : {}),
       ...(input.crashAfterResult ? { crashAfterResult: input.crashAfterResult } : {}) }),
     { encoding: "utf8", mode: 0o600 },
   );
@@ -359,7 +366,9 @@ async function writeSanitizedJson(
   name: string,
   value: unknown,
   secrets: readonly string[],
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const raw = `${JSON.stringify(value)}\n`;
   // Public API payloads may contain harmless provider-shaped fixtures or
   // opaque generated tokens. Reject exact campaign credentials before writing,
@@ -368,8 +377,9 @@ async function writeSanitizedJson(
   const safe = `${JSON.stringify(sanitizeJson(value, secrets), null, 2)}\n`;
   const leak = findSecretLeakInJsonValues(JSON.parse(safe), secrets);
   if (leak) throw new Error(`Secret leak in ${name}: ${leak}`);
+  signal?.throwIfAborted();
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, name), safe, "utf8");
+  await writeFile(path.join(directory, name), safe, { encoding: "utf8", signal });
 }
 
 async function submitTaskRevision(page: Page, body: string): Promise<number> {
@@ -593,6 +603,7 @@ for (const execution of executions) {
     }
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
+    const workerTiming = await createWorkerTiming(path.join(snapshotsDir, "worker-timing.json"), { executionId: execution.id, attempt }, startedAtMs);
     const nonce = `${randomBytes(6).toString("hex")}-${attempt}`;
     const marker = execution.task.buildVisibleMarker(nonce);
     const title = execution.task.buildTitle(nonce);
@@ -609,7 +620,20 @@ for (const execution of executions) {
       verifyNativeInstructionPreflight(process.env[NATIVE_INSTRUCTION_PREFLIGHT_ENV]);
     }
     const credentials = credentialValues();
-    const secrets = normalizedSecrets(Object.values(credentials));
+    const secrets = normalizedSecrets([...Object.values(credentials), ...EVAL_OBSERVABILITY_SECRET_NAMES.map(name => process.env[name]), process.env.PAPERCLIP_E2E_GATEWAY_TOKEN]);
+    const traceConfig = evalBraintrustConfig(process.env);
+    const trace = traceConfig ? new EvalAttemptTrace(traceConfig, {
+      campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? "",
+      attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ?? "",
+      executionId: execution.id, provider: execution.profile.provider, model: execution.profile.model, environment: execution.environment.id,
+    }, {
+      suiteId: execution.suite.id, suiteDefinitionHash: execution.suiteDefinitionHash,
+      profileId: execution.profile.id, caseId: execution.task.id, sourceRevision: resolveRunnerE2ESource().sha,
+    }) : undefined;
+    const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
+    const onCompanyCreated = async (id: string) => {
+      if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
+    };
     const api = new RunnerApi(request);
     const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
@@ -626,6 +650,7 @@ for (const execution of executions) {
     let issue: IssueRecord | undefined;
     let workflowCase: { id: string; identifier?: string } | undefined;
     let selectedRuns: RunRecord[] = [];
+    let feedback = emptyFeedbackSummary();
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
     let matcherResults: MatcherResult[] = [];
     let downloadedResponseProof: Awaited<ReturnType<typeof readResponseProof>> | undefined;
@@ -891,6 +916,8 @@ for (const execution of executions) {
     });
 
     try {
+      trace?.phase("setup");
+      await saveTrace();
       if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
@@ -920,7 +947,7 @@ for (const execution of executions) {
         await setupGitStreamingWorkspace(workspacePath);
       }
       fixtures = execution.task.flow === "first_task"
-        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; } })
+        ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; }, onCompanyCreated })
         : await setupLiveFixtures({
         api,
         execution,
@@ -928,7 +955,13 @@ for (const execution of executions) {
         workspacePath,
         credentials,
         daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE,
+        onCompanyCreated,
       });
+      await finishBudgetedEvalSetup({ executionId: execution.id, agentId: fixtures.agent.id,
+        companyId: fixtures.company.id, deadlineAt: startedAtMs + deadlineMs, api,
+        observe: observations => writeSanitizedJson(snapshotsDir, "budgeted-setup.json", { observations }, secrets) });
+      await workerTiming.enter("execution");
+      trace?.phase("execution");
 
       if (["native-completion", NATIVE_INSTRUCTION_SUITE].includes(execution.suite.id)) {
         const receipt = await captureNativeDefault({ api, agentId: fixtures.agent.id, companyId: fixtures.company.id });
@@ -1209,7 +1242,7 @@ for (const execution of executions) {
         const story = await runEverydayFlow({
           page, api, fixtures, execution, nonce, workspacePath, privateDir,
           deadlineAt: startedAtMs + deadlineMs,
-          restart: () => restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          restart: controllerDowntimeMs => restartIsolatedPaperclipServer({ api, requestId: `story-${nonce}`, deadlineAt: startedAtMs + deadlineMs, controllerDowntimeMs }),
           observe: (storyIssue, storyRuns) => { issue = storyIssue; selectedRuns = storyRuns; },
           capture: captureScreenshot,
           evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
@@ -3078,6 +3111,8 @@ for (const execution of executions) {
         }
       }
     } finally {
+      await workerTiming.enter("cleanup");
+      trace?.phase("cleanup", Boolean(primaryError));
       await responseTiming?.stop();
       await reviewProvider?.close();
       try {
@@ -3136,7 +3171,29 @@ for (const execution of executions) {
               }
             },
             assertions: beforeEnvironmentTeardownAssertions,
-            teardown: () => fixtures!.teardown(),
+            teardown: async () => {
+              await workerTiming.enter("feedback");
+              trace?.phase("feedback");
+              try {
+                feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
+                  onCheckpoint: summary => { feedback = summary; },
+                  persist: async (evidence, signal) => {
+                    await writeSanitizedJson(snapshotsDir, "agent-feedback.pending.json", evidence, secrets, signal);
+                    signal.throwIfAborted();
+                    await rename(path.join(snapshotsDir, "agent-feedback.pending.json"), path.join(snapshotsDir, "agent-feedback.json"));
+                    signal.throwIfAborted();
+                  },
+                });
+              } catch {
+                feedback.collection = feedback.bodiesCollected ? "partial" : "unavailable";
+                feedback.invocationCollection = "unavailable";
+                networkDiagnostics.push({ feedbackCaptureError: "feedback_evidence_write_failed" });
+              } finally {
+                await workerTiming.enter("cleanup");
+                trace?.phase("cleanup", !["complete", "not_started"].includes(feedback.collection));
+                await fixtures!.teardown();
+              }
+            },
           });
           matcherResults.push(...verification.checks.map(check => ({
             matcher: { kind: "json_path" as const, path: `remoteCleanup.${check.id}`, expected: true }, passed: check.passed, detail: check.detail,
@@ -3202,6 +3259,20 @@ for (const execution of executions) {
         }
       }
 
+      await workerTiming.enter("finalization");
+      if (execution.suite.id === FEEDBACK_PERSISTENCE_SUITE) {
+        let evidence: unknown;
+        try { evidence = JSON.parse(await readFile(path.join(snapshotsDir, "agent-feedback.json"), "utf8")); } catch { evidence = undefined; }
+        const checks = gradeFeedbackPersistence({ evidence, nonce, companyId: fixtures?.company.id,
+          agentId: fixtures?.agent.id, taskId: issue?.id, runIds: selectedRuns.map(run => run.id) });
+        matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const,
+          path: `feedbackPersistence.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
+        if (checks.some(check => !check.passed)) primaryError ??= new Error("Feedback persistence matcher failed");
+      }
+
+      const traceReceipt = await trace?.export({ failed: Boolean(primaryError), runIds: selectedRuns.map(run => run.id),
+        cleanup, complaints: feedback.complaints, suggestions: feedback.suggestions });
+      await saveTrace();
       const finishedAtMs = Date.now();
       const runtimeUsage = fixtureRuntimeCostCoverage(buildRuntimeUsage({
         environmentId: execution.environment.id,
@@ -3211,6 +3282,12 @@ for (const execution of executions) {
       }), fixtures ?? {});
       const resultWithoutBilling: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
+        ...(process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID && process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID ? {
+          accountingIdentity: {
+            campaignId: process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID,
+            attemptId: process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID,
+          },
+        } : {}),
         executionId: execution.id,
         suiteId: execution.suite.id,
         suiteDefinitionHash: execution.suiteDefinitionHash,
@@ -3248,6 +3325,7 @@ for (const execution of executions) {
         startedAt,
         finishedAt: new Date(finishedAtMs).toISOString(),
         durationMs: finishedAtMs - startedAtMs,
+        workerTiming: await workerTiming.finish(finishedAtMs),
         usage:
           selectedRuns.length === 1
             ? (selectedRuns[0]?.usageJson ?? null)
@@ -3258,6 +3336,8 @@ for (const execution of executions) {
                 })),
               },
         runtimeUsage,
+        feedback,
+        ...(traceReceipt ? { tracing: traceReceipt } : {}),
         matcherResults,
         screenshots,
         cleanup,

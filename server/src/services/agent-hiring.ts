@@ -12,7 +12,7 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
-import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -44,6 +44,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+  if (adapterType === "paperclip_runner" && !["openai_dot", "grok_bot", "muse"].includes(String(adapterConfig.provider)) &&
+      (await resolveAgentRunnerTaskDriverForCompany(db, companyId, data.defaultEnvironmentId))?.warmTaskVersion === 1) {
+    adapterConfig.lifecycleMode = "warm";
+  }
   await agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
     companyId, consume: true, environmentId: data.defaultEnvironmentId ?? null,
     childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,

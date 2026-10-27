@@ -491,26 +491,34 @@ test("two chains run by separate shells at the same time both record", { skip: p
   await withRepo(async ({ repoRoot, packageRoot }) => {
     const pendingDirectory = buildInputsPendingDirectory(packageRoot);
     const marker = path.join(repoRoot, "release-the-chains");
-    const records = () => (existsSync(pendingDirectory) ? readdirSync(pendingDirectory).sort() : []);
+    const records = () => (existsSync(pendingDirectory) ? readdirSync(pendingDirectory).filter(name => name.endsWith(".json")).sort() : []);
 
-    const first = runChainInShell("sh", packageRoot, marker);
-    await waitFor(() => records().length === 1, "the first chain's record");
-    const second = runChainInShell("sh", packageRoot, marker);
-    await waitFor(() => records().length === 2, "the second chain's record");
-    const [firstId, secondId] = records().map((name) => name.replace(/\.json$/, ""));
-    assert.notEqual(firstId, secondId);
-    for (const id of [firstId, secondId]) {
-      assert.match(id, /^\d+$/, "a chain's record is named after its shell's pid");
-      assert.equal(readBuildInputsStamp(buildInputsPendingPath(packageRoot, id)).buildId, id);
+    const staged = path.join(pendingDirectory, "999999.json.999999.tmp");
+    const chains = [runChainInShell("sh", packageRoot, marker)];
+    let results;
+    try {
+      await waitFor(() => records().length === 1, "the first chain's record");
+      await writeFile(staged, "{");
+      chains.push(runChainInShell("sh", packageRoot, marker));
+      await waitFor(() => records().length === 2, "the second chain's record");
+      const [firstId, secondId] = records().map((name) => name.replace(/\.json$/, ""));
+      assert.notEqual(firstId, secondId);
+      for (const id of [firstId, secondId]) {
+        assert.match(id, /^\d+$/, "a chain's record is named after its shell's pid");
+        assert.equal(readBuildInputsStamp(buildInputsPendingPath(packageRoot, id)).buildId, id);
+      }
+    } finally {
+      await rm(staged, { force: true });
+      await writeFile(marker, "go\n");
+      results = await Promise.allSettled(chains);
     }
 
-    await writeFile(marker, "go\n");
-    const results = await Promise.all([first, second]);
     for (const result of results) {
-      assert.match(result.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} begin: `));
-      assert.match(result.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} recorded: `), "a chain finished without recording");
+      assert.equal(result.status, "fulfilled", result.reason?.message);
+      assert.match(result.value.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} begin: `));
+      assert.match(result.value.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} recorded: `), "a chain finished without recording");
     }
-    assert.deepEqual(records(), []);
+    assert.deepEqual(await readdir(pendingDirectory), []);
     assert.equal(assessRunnerBuild({ repoRoot, packageRoot }).current, true);
 
     // The same chain under bash, which may exec its last command: `--finish`

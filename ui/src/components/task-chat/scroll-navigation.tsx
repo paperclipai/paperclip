@@ -16,7 +16,7 @@ export function taskChatScrollEntry(location: { key: string; hash: string; pathn
 
 // Scoped to browser-history entries, not issues: opening the same task from a
 // new Inbox click starts at latest, while Back restores the previous reading.
-const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | null }>();
+const positions = new Map<string, { top: number; anchor: ThreadScrollAnchor | null; followBottom: boolean }>();
 
 export function useTaskChatScrollNavigation() {
   const navigation = useContext(TaskChatScrollNavigation);
@@ -32,6 +32,9 @@ export function useTaskChatScrollNavigation() {
       if (!navigation) return null;
       if (navigation.restore && positionKey && positions.has(positionKey)) {
         const saved = positions.get(positionKey)!;
+        // A saved pixel offset goes stale when rotation changes text wrapping.
+        // Bottom-follow needs no row measurements, even across navigation.
+        if (saved.followBottom) return Math.max(0, root.scrollHeight - root.clientHeight);
         if (saved.anchor && [...root.querySelectorAll<HTMLElement>("[data-thread-anchor]")].some((row) => row.dataset.threadAnchor === saved.anchor?.id)) {
           return scrollTop + threadScrollAnchorDelta(root, saved.anchor, viewportTop);
         }
@@ -45,9 +48,9 @@ export function useTaskChatScrollNavigation() {
       }
       return null;
     },
-    remember(top: number, anchor: ThreadScrollAnchor | null) {
+    remember(top: number, anchor: ThreadScrollAnchor | null, followBottom: boolean) {
       if (!positionKey || !ready) return;
-      positions.set(positionKey, { top, anchor });
+      positions.set(positionKey, { top, anchor, followBottom });
       if (positions.size > 100) positions.delete(positions.keys().next().value!);
     },
   };

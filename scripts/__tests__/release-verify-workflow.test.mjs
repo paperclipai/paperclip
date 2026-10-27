@@ -698,8 +698,22 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
       (match) => match[1],
     );
-    assert.equal(crons.length, 1, `${name} must have one schedule`);
-    assert.match(crons[0], /^\d{1,2} \d{1,2} \* \* 0$/);
+    if (name === "runner-full-stack-e2e.yml") {
+      assert.deepEqual(crons, ["47 8 * * *", "47 9 * * 0"]);
+      assert.ok(workflow.includes("vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'"));
+      assert.ok(workflow.includes("Prepare bounded campaign before credentials"));
+      assert.ok(workflow.includes("--max-parallel 1 --max-automatic-retries 0"));
+      const catalog = workflow.slice(workflow.indexOf("  catalog:"), workflow.indexOf("  daytona_image:"));
+      assert.ok(catalog.includes("EVAL_OPERATING_OVERHEAD_JSON: ${{ vars.RUNNER_E2E_OPERATING_OVERHEAD_JSON }}"));
+      assert.ok(catalog.includes("operating_overhead: ${{ steps.catalog.outputs.operating_overhead }}"));
+      const prepare = workflow.slice(workflow.indexOf("      - name: Prepare bounded campaign before credentials"), workflow.indexOf("      - name: Run bounded campaign and retain feedback review"));
+      assert.ok(prepare.includes("EVAL_OPERATING_OVERHEAD_JSON: ${{ needs.catalog.outputs.operating_overhead }}"));
+      assert.ok(prepare.includes("EVAL_TEST_RUNNER: ${{ needs.authorize.outputs.test_runner }}"));
+      assert.ok(!prepare.includes("vars.RUNNER_E2E_OPERATING_OVERHEAD_JSON"));
+    } else {
+      assert.equal(crons.length, 1, `${name} must have one schedule`);
+      assert.match(crons[0], /^\d{1,2} \d{1,2} \* \* 0$/);
+    }
   }
 
   const chaosWorkflow = actionPinWorkflows[2];

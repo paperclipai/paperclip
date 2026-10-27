@@ -108,6 +108,7 @@ export type RegisteredPluginComponent =
 
 type SlotFilters = {
   slotTypes: PluginUiSlotType[];
+  taskSidePanel?: boolean;
   entityType?: PluginUiSlotEntityType | null;
   companyId?: string | null;
   enabled?: boolean;
@@ -662,6 +663,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     for (const contribution of data ?? []) {
       for (const slot of contribution.slots) {
         if (!allowedTypes.has(slot.type)) continue;
+        if (filters.taskSidePanel && !slot.taskSidePanel) continue;
         if (requiresEntityType(slot.type)) {
           if (!filters.entityType) continue;
           if (!slot.entityTypes?.includes(filters.entityType)) continue;
@@ -684,7 +686,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
       return a.displayName.localeCompare(b.displayName);
     });
     return rows;
-  }, [data, filters.entityType, slotTypesKey]);
+  }, [data, filters.entityType, filters.taskSidePanel, slotTypesKey]);
 
   // A replacement surface must not disappear while an unrelated plugin loads.
   const contributions = useMemo(() => {

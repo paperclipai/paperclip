@@ -8,8 +8,13 @@ import {
   type GitHubReviewConclusion,
   type GitHubReviewEventContext,
   type GitHubAutomaticEventContext,
+  type GitHubIssueEventContext,
   type GitHubReviewPolicy,
 } from "@paperclipai/shared";
+
+export type GitHubAutomaticPolicyContext =
+  | Pick<GitHubReviewEventContext, "event" | "repositoryId" | "repository" | "author" | "sender" | "draft" | "baseBranch" | "labels">
+  | Pick<GitHubIssueEventContext, "event" | "repositoryId" | "repository" | "author" | "sender" | "labels">;
 
 export function effectiveGitHubReviewPolicy(
   configuration: GitHubChatConfiguration,
@@ -85,7 +90,7 @@ export function githubReviewLineIsInPatch(
 
 export function githubReviewSchedulingDecision(input: {
   configuration: GitHubChatConfiguration;
-  context: GitHubAutomaticEventContext;
+  context: GitHubAutomaticPolicyContext;
   repositoryEnabled: boolean;
   /** Resolved against current company membership and the user's confirmed link. */
   linkedMemberUserId: string | null;
@@ -291,6 +296,7 @@ export function githubReviewConfigurationPrompt(
     "In a PR's main conversation, the same main comment is reused across pushes and repeat review requests. Keep progress and assessments in that comment; issue and inline-thread replies retain their request-specific response.",
     GITHUB_CONFIGURED_SKILL_GUIDANCE,
     policy.instructions,
+    "Paperclip task status is separate from human attention. Publishing the advisory review is your deliverable. A low rating, pending or failed CI, and an open or unmerged PR do not require a Paperclip completion approval. Do not ask a person to approve your review, fix its findings, verify CI, or decide to merge just to keep this task in review. When configured to track the PR after publication, report yielded with continuation.kind=response_wake and no attentionRequests to wait for the next authorized GitHub event; Paperclip keeps the published review task in review. For a timed check, use monitor only after set_task_monitor confirms a persisted schedule. Do not claim a monitor exists otherwise. Report done when the configured completion conditions have evidence, including merge if that is the configured rule. Reserve human attentionRequests for a concrete dependency that prevents the assigned review itself, such as missing repository access or required information.",
     "Assessment rubric (0–5):",
     ...GITHUB_REVIEW_RUBRIC,
     "Call begin_review with the current reviewed commit before assessing a requested review; metadata reads and ordinary discussion do not change a check. Report incomplete analysis honestly. Provide rationale, reviewed paths, omissions, and limitations. Coverage paths must name only allowed changed files; describe other inspected context in the rationale. If submission validation fails, correct the indicated fields and retry submit_review; a plain comment does not complete a review or update its check. Formal approval is a separate explicitly permitted tool action.",

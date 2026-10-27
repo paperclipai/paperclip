@@ -1,3 +1,6 @@
+import { chatInteractionForm } from "./chat-interaction-forms.js";
+import { slackInteractionRequiresBoard } from "./chat-channels/slack/cards.js";
+import { answeredChatQuestionBody, chatInteractionPresentation } from "./chat-interaction-presentation.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { nativePhotonInteraction } from "./photon/interactions.js";
 import { randomBytes } from "node:crypto";
@@ -16,6 +19,8 @@ import type {
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
   RequestConfirmationInteraction,
+  RequestCheckboxConfirmationInteraction,
+  SuggestTasksInteraction,
   SafeExternalChatCardAction,
 } from "@paperclipai/shared";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
@@ -68,7 +73,34 @@ function terminalNativeInteractionCopy(
     }
     return null;
   }
-  if (interaction.kind !== "ask_user_questions") return null;
+  if (interaction.kind === "request_checkbox_confirmation" && interaction.status === "accepted") {
+    const labels = interaction.payload.options.filter(option => interaction.result?.selectedOptionIds?.includes(option.id)).map(option => option.label);
+    const body = labels.length ? `Saved checks: ${labels.join("; ")}` : "Saved checks: none selected.";
+    return { body, text: body };
+  }
+  if (interaction.kind === "request_item_verdicts" && interaction.status === "answered") {
+    const body = interaction.payload.items.map(item => {
+      const result = interaction.result?.items.find(result => result.id === item.id);
+      return `${item.label}: ${result?.verdict ?? "pending"}${result?.reason ? ` — ${result.reason}` : ""}`;
+    }).join("\n\n");
+    return { body, text: body };
+  }
+  if (interaction.kind === "suggest_tasks" && (interaction.status === "accepted" || interaction.status === "rejected")) {
+    const body = interaction.status === "rejected" ? "Dismissed — no tasks created." :
+      (interaction.result?.createdTasks ?? []).map(task => {
+        const url = publicChatTaskUrl(task.issueId);
+        return `Created: ${task.identifier ?? "Task"} — ${task.title}${url ? `\n${url}` : ""}`;
+      }).join("\n\n");
+    return { body, text: body };
+  }
+  if (interaction.kind === "connection_intent" && (interaction.status === "accepted" || interaction.status === "rejected")) {
+    const body = interaction.status === "accepted" ? `Connected: ${interaction.payload.serviceName}` : `Declined: ${interaction.payload.serviceName}. No access was granted.`;
+    return { body, text: body };
+  }
+  if (interaction.kind !== "ask_user_questions") {
+    const body = ({ accepted: "Accepted", rejected: "Rejected", answered: "Answered", cancelled: "Cancelled in Paperclip", expired: "Expired in Paperclip" } as Record<string, string>)[interaction.status];
+    return body ? { body, text: `${body}.` } : null;
+  }
   if (interaction.status === "answered") {
     const question = nativeChatQuestion(interaction);
     const answer = question
@@ -82,7 +114,7 @@ function terminalNativeInteractionCopy(
             (candidate) => candidate.id === answer.optionIds[0],
           )
         : null;
-    const body = option ? `Answered: ${option.label}.` : "Answered.";
+    const body = option ? `Answered: ${option.label}.` : answeredChatQuestionBody(interaction);
     return { body, text: body };
   }
   if (interaction.status === "cancelled") {
@@ -149,13 +181,14 @@ export function telegramCallbackDataByteLength(
 
 export function nativeChatQuestion(
   interaction: AskUserQuestionsInteraction,
+  maxOptions = MAX_NATIVE_QUESTION_OPTIONS,
 ): AskUserQuestionsQuestion | null {
   if (interaction.payload.questions.length !== 1) return null;
   const question = interaction.payload.questions[0];
   if (
     question.selectionMode !== "single" ||
     question.allowOther === true ||
-    question.options.length > MAX_NATIVE_QUESTION_OPTIONS ||
+    question.options.length > maxOptions ||
     question.options.some((option) => option.freeText === true)
   ) {
     return null;
@@ -163,13 +196,36 @@ export function nativeChatQuestion(
   return question;
 }
 
+export function nativeChatCustomQuestion(interaction: AskUserQuestionsInteraction): AskUserQuestionsQuestion | null {
+  const question = interaction.payload.questions[0];
+  if (interaction.payload.questions.length !== 1 || !question || question.selectionMode !== "single" || !question.allowOther ||
+      !interaction.payload.questionSet?.questions[0]?.customAnswer) return null;
+  const options = question.options.filter(option => !option.freeText);
+  return options.length > 0 && options.length <= 100 ? { ...question, options } : null;
+}
+
+export function nativeChatMultiQuestion(interaction: AskUserQuestionsInteraction): AskUserQuestionsQuestion | null {
+  const question = interaction.payload.questions[0];
+  if (interaction.payload.questions.length !== 1 || !question || question.selectionMode !== "multi" || question.allowOther || question.options.length === 0 || question.options.length > 100 || question.options.some(option => option.freeText)) return null;
+  return question;
+}
+
+export function nativeChatSuggestions(interaction: IssueThreadInteraction): SuggestTasksInteraction | null {
+  return interaction.kind === "suggest_tasks" && interaction.payload.tasks.filter(task => !task.hiddenInPreview).length > 0 && interaction.payload.tasks.length <= 100 ? interaction : null;
+}
+
+export function nativeChatCheckbox(interaction: IssueThreadInteraction): RequestCheckboxConfirmationInteraction | null {
+  return interaction.kind === "request_checkbox_confirmation" && !interaction.payload.rejectRequiresReason &&
+    interaction.payload.target?.type !== "issue_document" && interaction.payload.options.length <= 100 ? interaction : null;
+}
+
 /**
- * Telegram can safely render ordinary binary confirmations as inline buttons.
+ * Slack and Telegram can render ordinary binary confirmations as inline buttons.
  * Confirmations that collect a rejection reason or authorize a credential,
  * connection, or tool side effect stay in Paperclip, where the complete
  * governed review UI and permission checks are available.
  */
-export function nativeTelegramConfirmation(
+export function nativeChatConfirmation(
   interaction: IssueThreadInteraction,
 ): RequestConfirmationInteraction | null {
   if (interaction.kind !== "request_confirmation") return null;
@@ -185,40 +241,6 @@ export function nativeTelegramConfirmation(
   return interaction;
 }
 
-function textForQuestionInteraction(
-  interaction: AskUserQuestionsInteraction,
-  taskUrl: string | null,
-): string {
-  const lines = [
-    interaction.payload.title ?? interaction.title ?? "Input needed",
-    "",
-  ];
-  if (interaction.summary) lines.push(interaction.summary, "");
-  for (const question of interaction.payload.questions) {
-    lines.push(question.prompt);
-    if (question.helpText) lines.push(question.helpText);
-    for (const option of question.options) lines.push(`- ${option.label}`);
-    lines.push("");
-  }
-  lines.push(
-    taskUrl
-      ? `Open the task in Paperclip to respond: ${taskUrl}`
-      : "Open the task in Paperclip to respond.",
-  );
-  return lines.join("\n");
-}
-
-function genericInteractionText(taskUrl: string | null): string {
-  return [
-    "This task needs an authorized response in Paperclip.",
-    taskUrl
-      ? `Open the task in Paperclip to respond: ${taskUrl}`
-      : "Open the task in Paperclip to respond.",
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join("\n\n");
-}
-
 /**
  * Enqueues one immutable outbox item per live external task binding. A lone
  * closed single-select question receives compact executable buttons. Slack and
@@ -230,17 +252,6 @@ export async function enqueueIssueInteractionChatPublications(
   interaction: IssueThreadInteraction,
 ) {
   if (interaction.status !== "pending") return [];
-  // The first native-chat wave intentionally externalizes only questions and
-  // confirmations. Other governance interactions have richer partial and
-  // terminal semantics that are authoritative in Paperclip; projecting a
-  // generic link card without complete settlement/recovery would leave stale
-  // provider prompts after a board decision.
-  if (
-    interaction.kind !== "ask_user_questions" &&
-    interaction.kind !== "request_confirmation"
-  ) {
-    return [];
-  }
   // An endpoint is one immutable provider bot identity. Never externalize a
   // user/system-authored interaction, or let one agent speak through another
   // agent's endpoint. If the interaction names a source run, verify that run's
@@ -285,30 +296,46 @@ export async function enqueueIssueInteractionChatPublications(
   if (bindings.length === 0) return [];
 
   const taskUrl = publicChatInteractionTaskUrl(interaction.issueId);
-  const question =
-    interaction.kind === "ask_user_questions"
-      ? nativeChatQuestion(interaction)
-      : null;
   const inserted: Array<typeof chatPublications.$inferSelect> = [];
   for (const { conversation, endpoint } of bindings) {
     if (endpoint.assignedAgentId !== interaction.createdByAgentId) continue;
+    if (endpoint.provider !== "slack" && interaction.kind !== "ask_user_questions" && interaction.kind !== "request_confirmation") continue;
+    let connectionDecline = endpoint.provider === "slack" && endpoint.capabilities.actions && interaction.kind === "connection_intent" ? interaction : null;
+    let suggestions = endpoint.provider === "slack" && endpoint.capabilities.actions ? nativeChatSuggestions(interaction) : null;
+    const suggestedOptions = suggestions?.payload.tasks.filter(task => !task.hiddenInPreview).map(task => ({ actionId: createChatQuestionOptionActionToken(), option: { id: task.clientKey, label: task.title, description: task.description } })) ?? [];
+    let checklist = endpoint.provider === "slack" && endpoint.capabilities.actions ? nativeChatCheckbox(interaction) : null;
+    const checklistOptions = checklist?.payload.options.map(option => ({ actionId: createChatQuestionOptionActionToken(), option })) ?? [];
+    const customQuestion = endpoint.provider === "slack" && endpoint.capabilities.modals === true && interaction.kind === "ask_user_questions" ? nativeChatCustomQuestion(interaction) : null;
+    const multipleQuestion = endpoint.provider === "slack" && interaction.kind === "ask_user_questions" ? nativeChatMultiQuestion(interaction) : null;
+    const question = interaction.kind === "ask_user_questions"
+      ? multipleQuestion ?? customQuestion ?? nativeChatQuestion(interaction, endpoint.provider === "slack" ? 100 : MAX_NATIVE_QUESTION_OPTIONS) : null;
+    const inlineSelection = endpoint.provider === "slack" && question && (multipleQuestion !== null || question.options.length > 5);
+    const multipleActionId = multipleQuestion ? createChatQuestionOptionActionToken() : null;
+    const presentation = chatInteractionPresentation(interaction, { compactChoices: Boolean(inlineSelection || checklist || suggestedOptions.length > 1), nativeCustomAnswer: Boolean(customQuestion) });
+    const requiresBoard = endpoint.provider === "slack" && slackInteractionRequiresBoard(presentation.body);
+    if (requiresBoard) {
+      connectionDecline = null;
+      suggestions = null;
+      checklist = null;
+    }
+    const formInteraction = chatInteractionForm(interaction, endpoint.provider);
     const formDraft =
-      interaction.kind === "ask_user_questions" &&
+      !requiresBoard && (!inlineSelection || customQuestion) && formInteraction &&
       (endpoint.provider === "slack" ||
         endpoint.provider === "discord" ||
         endpoint.provider === "microsoft-teams") &&
       endpoint.capabilities.actions === true &&
       endpoint.capabilities.modals === true
         ? createChatQuestionFormDraft(
-            interaction,
-            endpoint.provider === "discord"
-              ? { nativeProvider: "discord" }
+            formInteraction,
+            (endpoint.provider === "discord" || endpoint.provider === "slack")
+              ? { nativeProvider: endpoint.provider }
               : {},
           )
         : null;
     const supportsCallbacks =
-      endpoint.provider !== "imessage-photon" &&
-      formDraft === null &&
+      !requiresBoard && endpoint.provider !== "imessage-photon" &&
+      (formDraft === null || customQuestion !== null) &&
       question !== null &&
       endpoint.capabilities.actions === true;
     const questionActionTokens = supportsCallbacks
@@ -318,11 +345,11 @@ export async function enqueueIssueInteractionChatPublications(
         }))
       : [];
     const confirmation =
-      endpoint.provider === "telegram" && endpoint.capabilities.actions === true
-        ? nativeTelegramConfirmation(interaction)
+      !requiresBoard && (endpoint.provider === "telegram" || endpoint.provider === "slack") && endpoint.capabilities.actions === true
+        ? nativeChatConfirmation(interaction) ?? checklist
         : null;
-    const confirmationActionTokens = confirmation
-      ? (["accept", "reject"] as const).map((decision) => ({
+    const confirmationActionTokens = confirmation || suggestions || connectionDecline
+      ? (connectionDecline ? ["reject"] as const : ["accept", "reject"] as const).map((decision) => ({
           actionId: createChatConfirmationActionToken(),
           decision,
         }))
@@ -339,31 +366,32 @@ export async function enqueueIssueInteractionChatPublications(
     }
     const actions: SafeExternalChatCardAction[] = formDraft
       ? [
+          ...(customQuestion && !inlineSelection ? questionActionTokens.map(({ actionId, option }) => ({ type: "callback" as const, actionId, label: option.label })) : []),
           {
             type: "callback" as const,
             actionId: formDraft.openActionId,
-            label: "Respond",
-            style: "primary" as const,
+            label: customQuestion ? "Other…" : interaction.kind === "request_item_verdicts" ? "Review decisions" : "Respond",
+            style: customQuestion ? "default" as const : "primary" as const,
           },
         ]
       : supportsCallbacks
-        ? questionActionTokens.map(({ actionId, option }) => ({
+        ? (inlineSelection ? [] : questionActionTokens).map(({ actionId, option }) => ({
             type: "callback" as const,
             actionId,
             label: option.label,
           }))
-        : confirmation
-          ? confirmationActionTokens.map(({ actionId, decision }) => ({
+        : confirmation || suggestions || connectionDecline
+          ? confirmationActionTokens.filter(item => !(checklist || suggestedOptions.length > 1) || item.decision !== "accept").map(({ actionId, decision }) => ({
               type: "callback" as const,
               actionId,
               label:
                 decision === "accept"
-                  ? (confirmation.payload.acceptLabel ?? "Accept")
-                  : (confirmation.payload.rejectLabel ?? "Reject"),
+                  ? (suggestions ? "Create task" : confirmation!.payload.acceptLabel ?? "Accept")
+                  : (connectionDecline ? "Not now" : suggestions ? "Dismiss" : confirmation!.payload.rejectLabel ?? "Reject"),
               style:
                 decision === "accept"
                   ? ("primary" as const)
-                  : ("danger" as const),
+                  : (connectionDecline || suggestions ? "default" as const : "danger" as const),
             }))
           : taskUrl
             ? [
@@ -374,10 +402,9 @@ export async function enqueueIssueInteractionChatPublications(
                 },
               ]
             : [];
-    const text =
-      interaction.kind === "ask_user_questions"
-        ? textForQuestionInteraction(interaction, taskUrl)
-        : genericInteractionText(taskUrl);
+    if (connectionDecline && taskUrl) actions.unshift({ type: "link", label: "Review connection", url: taskUrl });
+    if (suggestions && taskUrl) actions.push({ type: "link", label: "Revise in Paperclip", url: taskUrl });
+    const text = [presentation.title, presentation.body, taskUrl ? `Open the task in Paperclip to respond: ${taskUrl}` : "Open the task in Paperclip to respond."].join("\n\n");
     const payload = projectSafeChatPublication({
       classification: "external",
       source: "issue_interaction",
@@ -392,27 +419,29 @@ export async function enqueueIssueInteractionChatPublications(
               : interaction.kind === "request_confirmation"
                 ? "confirmation"
                 : "status",
-          title:
-            interaction.kind === "ask_user_questions"
-              ? (question?.prompt ??
-                interaction.payload.title ??
-                interaction.title ??
-                "Input needed")
-              : interaction.kind === "request_confirmation"
-                ? interaction.payload.prompt
-                : "Response needed in Paperclip",
-          body:
-            interaction.kind === "ask_user_questions"
-              ? [...new Set([
-                  interaction.summary,
-                  ...(question
-                    ? [question.helpText]
-                    : interaction.payload.questions.flatMap(item => [item.prompt, item.helpText])),
-                ].filter((value): value is string => Boolean(value?.trim())))].join("\n\n") || undefined
-              : interaction.kind === "request_confirmation"
-                ? (interaction.payload.detailsMarkdown ?? undefined)
-                : "Open the task in Paperclip to review and respond.",
+          title: interaction.kind === "ask_user_questions" && question ? question.prompt : presentation.title,
+          body: presentation.body,
           actions,
+          ...(suggestions && suggestedOptions.length > 1 ? { selection: {
+            actionId: confirmationActionTokens.find(item => item.decision === "accept")!.actionId,
+            label: "Select tasks to create", multiple: true, submitLabel: "Create selected",
+            options: suggestedOptions.map(({ actionId, option }) => ({ actionId, label: option.label, ...(option.description ? { description: option.description } : {}) })),
+          } } : {}),
+          ...(checklist ? { selection: {
+            actionId: confirmationActionTokens.find(item => item.decision === "accept")!.actionId,
+            label: "Select checks", multiple: true, submitLabel: checklist.payload.acceptLabel ?? "Save checks",
+            options: checklistOptions.map(({ actionId, option }) => ({ actionId, label: option.label,
+              ...(option.description ? { description: option.description } : {}),
+              selected: checklist.payload.defaultSelectedOptionIds?.includes(option.id) ?? false })),
+          } } : {}),
+          ...(inlineSelection && supportsCallbacks ? { selection: {
+            actionId: multipleActionId ?? `pcs:${interaction.id}`,
+            label: multipleQuestion ? "Choose one or more" : "Choose an answer",
+            ...(multipleQuestion ? { multiple: true, submitLabel: "Submit answer" } : {}),
+            options: questionActionTokens.map(({ actionId, option }) => ({ actionId,
+              label: option.label + (interaction.kind === "ask_user_questions" && interaction.payload.questionSet?.questions.find(item => item.id === question.id)?.options?.find(item => item.id === option.id)?.recommended ? " (recommended)" : ""),
+              ...(option.description ? { description: option.description } : {}) })),
+          } } : {}),
         },
       },
     });
@@ -447,6 +476,15 @@ export async function enqueueIssueInteractionChatPublications(
             publicationId: publication.id,
           }),
         );
+      }
+      if (publication && supportsCallbacks && multipleQuestion && multipleActionId) {
+        await tx.insert(chatActions).values({
+          companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
+          kind: "question_answer", providerActionId: multipleActionId, status: "issued",
+          payload: { version: 1, publicationId: publication.id, interactionId: interaction.id, questionId: multipleQuestion.id,
+            selectionOptions: questionActionTokens.map(({ actionId, option }) => ({ value: actionId, optionId: option.id })),
+            expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() },
+        });
       } else if (publication && question && questionActionTokens.length > 0) {
         const expiresAt = new Date(
           publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS,
@@ -471,7 +509,7 @@ export async function enqueueIssueInteractionChatPublications(
         );
       } else if (
         publication &&
-        confirmation &&
+        (confirmation || suggestions || connectionDecline) &&
         confirmationActionTokens.length > 0
       ) {
         const expiresAt = new Date(
@@ -489,6 +527,8 @@ export async function enqueueIssueInteractionChatPublications(
               publicationId: publication.id,
               interactionId: interaction.id,
               decision,
+              ...(suggestions ? { selectionOptions: suggestedOptions.map(({ actionId, option }) => ({ value: actionId, optionId: option.id })) } : {}),
+              ...(checklist ? { selectionOptions: checklistOptions.map(({ actionId, option }) => ({ value: actionId, optionId: option.id })) } : {}),
               expiresAt,
             },
             status: "issued",
@@ -625,6 +665,7 @@ export async function enqueueTerminalIssueInteractionChatPublications(
   const resolutionOutcome = (interaction.result as { outcome?: unknown } | null)
     ?.outcome;
   const continuationWakeRequired =
+    (interaction.kind === "ask_user_questions" || interaction.kind === "request_confirmation" || interaction.kind === "request_item_verdicts") &&
     interaction.status !== "expired" &&
     resolutionOutcome !== "skipped" &&
     !(

@@ -61,6 +61,13 @@ inaccessible saved conversation; verify no cross-user or cross-company history a
 
 Automated: [chat project tools](../../server/src/__tests__/chat-project-tools.test.ts) checks tool contracts; live model choice and UI handoff require a manual run.
 
+Explicit live evals: [chat feature journeys](../../tests/runner-e2e/CHAT-FEATURES.md)
+send natural requests to save a backlog task or delegate an announcement. They
+check project/assignee, execution or non-execution, saved output, return to chat,
+and click the actual same-instance task link after reload. Registration alone
+does not establish a pass. Production chat guidance uses company-prefixed relative
+task links unless the platform supplied a verified absolute origin.
+
 Manual: Ask the configured agent to create bounded project work, inspect the proposed/created target, and open the resulting task. Verify the request context and intended project survived and the task produces a useful output.
 
 ### `conference-room`

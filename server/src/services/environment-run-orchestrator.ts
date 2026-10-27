@@ -214,6 +214,7 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    runnerTaskProjectIds?: readonly string[];
     adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
@@ -272,11 +273,13 @@ export function environmentRunOrchestrator(
     adapterType: string;
     adapterConfig?: Record<string, unknown>;
     admittedLifecycleMode?: "warm" | "per_turn";
+    managedAiCredentialIdentity?: string;
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    runnerTaskProjectIds?: readonly string[];
     /** Existing live runner recovery must use its original active lease, including ephemeral leases. */
     reattachRemoteLease?: { leaseId: string; providerLeaseId: string; remoteCwd: string };
     /** A new controller must stop the previous plugin task before allocating a replacement. */
@@ -290,7 +293,7 @@ export function environmentRunOrchestrator(
     });
 
     const environment = resolveRunnerEnvironmentForRun(
-      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode, input.managedAiCredentialIdentity,
     );
 
     if (input.recoverPluginTask && environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
@@ -317,6 +320,7 @@ export function environmentRunOrchestrator(
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       executionWorkspaceSettings: input.executionWorkspaceSettings,
+      runnerTaskProjectIds: input.runnerTaskProjectIds,
       adapterType: input.adapterType ?? null,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;

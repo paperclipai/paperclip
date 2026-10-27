@@ -129,6 +129,7 @@ export interface HeartbeatWorkspacePreparationInput {
     mergedConfig: Record<string, unknown>;
     configSnapshot: WorkspaceMetadataInput["configSnapshot"];
     secretManifest: WorkspaceMetadataInput["secretManifest"];
+    managedAiCredentialIdentity?: string;
   };
   reuse: {
     requestedShouldReuseExisting: boolean;
@@ -277,18 +278,33 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
       if (useIsolatedTaskDirectory && issueRef && !pluginTaskWorkspace) {
-        const cwd = await materializeIsolatedTaskDirectory({
-          companyId: agent.companyId,
-          issueId: issueRef.id,
-          ...(input.task.freshWorkspace?.mode === "fresh_isolated_workspace" ? { attemptId: run.id } : {}),
-        });
-        if (reusableExistingExecutionWorkspace && (
-          reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
-          reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
-          reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
-          reusableExistingExecutionWorkspace.strategyType !== "project_primary" ||
-          reusableExistingExecutionWorkspace.cwd !== cwd
-        )) {
+        // A completed fresh attempt becomes the current task directory. New
+        // input reuses that binding; only another fresh attempt changes roots.
+        let cwd: string;
+        try {
+          if (reusableExistingExecutionWorkspace) {
+            const [currentIssue] = await db.select({ workspaceId: issues.executionWorkspaceId }).from(issues)
+              .where(and(eq(issues.id, issueRef.id), eq(issues.companyId, agent.companyId)));
+            const stored = await executionWorkspacesSvc.getStoredById(agent.companyId, reusableExistingExecutionWorkspace.id);
+            if (fresh || currentIssue?.workspaceId !== reusableExistingExecutionWorkspace.id ||
+                reusableExistingExecutionWorkspace.companyId !== agent.companyId ||
+                reusableExistingExecutionWorkspace.sourceIssueId !== issueRef.id ||
+                reusableExistingExecutionWorkspace.mode !== "isolated_workspace" ||
+                reusableExistingExecutionWorkspace.strategyType !== "project_primary" || !stored ||
+                stored.companyId !== agent.companyId || stored.sourceIssueId !== issueRef.id ||
+                stored.mode !== "isolated_workspace" || stored.strategyType !== "project_primary" ||
+                stored.status !== "active" || stored.cwd !== reusableExistingExecutionWorkspace.cwd || !stored.cwd) {
+              throw new Error("The saved task directory binding changed");
+            }
+          }
+          cwd = await materializeIsolatedTaskDirectory({
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            ...(fresh ? { attemptId: run.id } : {}),
+            ...(reusableExistingExecutionWorkspace ? { reuseCwd: reusableExistingExecutionWorkspace.cwd! } : {}),
+          });
+        } catch (error) {
+          if (!reusableExistingExecutionWorkspace) throw error;
           throw new WorkspaceValidationFailure("The existing execution workspace is not this task's isolated directory.", {
             workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId: issueRef.id },
           });
@@ -1050,6 +1066,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       anchorRepoUrl: executionWorkspace.repoUrl,
       workspaces: repositoryRows,
       restoredContents: persistedExecutionWorkspace ? readGitCacheRestoration(persistedExecutionWorkspace)?.contents : undefined,
+      sharedBase: { companyId: agent.companyId, projectId: executionWorkspace.projectId! },
       resolveGitAuth: workspaceGitAuthProvider,
       prepareLocalSource: persistedExecutionWorkspace && issueId
         ? (sourceCwd, projectWorkspaceId) => executionWorkspacesSvc.prepareConfiguredRepositoryCopy({
@@ -1105,6 +1122,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       adapterType: agent.adapterType,
       adapterConfig: parseObject(agent.adapterConfig),
       admittedLifecycleMode: persistedNativeExecutionInput?.session.lifecyclePolicy.mode,
+      managedAiCredentialIdentity: input.config.managedAiCredentialIdentity,
+      runnerTaskProjectIds:[...new Set([executionWorkspace.projectId,...resolvedWorkspace.runnerTaskProjectIds ?? [],
+        ...(executionWorkspace.additionalWorkspaces ?? []).map(workspace=>workspace.projectId)]
+        .filter((id):id is string=>Boolean(id)))],
       recoverPluginTask: runOptions.nativeRestartRecovery?.kind === "resume_dead_runner" || runOptions.nativeRestartRecovery?.kind === "bootstrap_incomplete",
       issueId: issueId ?? null,
       heartbeatRunId: run.id,

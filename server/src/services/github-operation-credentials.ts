@@ -112,7 +112,7 @@ export async function resolveGitHubOperationCredentials(
     runId: string;
   },
 ) {
-  const { run, context } = await captureRunIdentity(db, input);
+  const { run, context } = await captureRunIdentity(db, input, { readScope: "github_credentials" });
   if (!context) throw forbidden("This run predates managed GitHub credentials");
   let summary: GitHubCredentialSummary;
   let env: Record<string, string> = {};

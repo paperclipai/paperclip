@@ -7,10 +7,16 @@ import { getDisabledAdapterTypes } from "./adapter-plugin-store.js";
 import { claudeRunnerUnsupportedSettings, PaperclipRunnerProviderProfileError, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { forbidden, unprocessable } from "../errors.js";
 import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
-import { resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
+import { parseEnvironmentDriverConfig, resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import { localAgentRunnerTarget } from "../lib/agent-runner-platform.js";
+import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@paperclipai/shared";
 
-export type RunnerTarget = { driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string };
+export type RunnerTarget = {
+  driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
+  /** A plugin environment whose driver declares Runner task execution. It runs agents only through Paperclip Runner. */
+  runnerTasks?: boolean;
+  warmTaskVersion?: 1;
+};
 export const AGENT_RUNNER_SSH_PLATFORM_COMMAND = "uname -s; uname -m; if paperclip_glibc_version=$(getconf GNU_LIBC_VERSION 2>/dev/null) && [ -n \"$paperclip_glibc_version\" ]; then printf 'glibc\\n%s\\n' \"$paperclip_glibc_version\"; else case \"$(ldd --version 2>&1)\" in *musl*) printf 'musl\\n' ;; *) printf 'unknown\\n' ;; esac; fi";
 export interface AgentRunnerSelection {
   adapterType?: string | null;
@@ -19,6 +25,7 @@ export interface AgentRunnerSelection {
   target?: RunnerTarget;
   /** Server-owned inactive setup drafts may precede model selection. Never use for a hire or run. */
   setupOnly?: boolean;
+  onConfigurationWarnings?: (warnings: AgentConfigurationWarning[]) => void;
 }
 
 function runnerAdaptersAvailable(harness: string, driver: string): boolean {
@@ -31,6 +38,14 @@ function runnerAdaptersAvailable(harness: string, driver: string): boolean {
 }
 
 export function agentRunnerAvailability(harness: string, target: RunnerTarget = localAgentRunnerTarget()): AgentRunnerAvailability {
+  if (target.runnerTasks) {
+    // The plugin provisions the host and launches its own pinned Runner, so
+    // Core has no platform to qualify. Legacy adapters cannot run on a plugin
+    // environment, so Paperclip Runner is the only choice.
+    return runnerAdaptersAvailable(harness, target.driver)
+      ? { supportedRunners: ["paperclip"], defaultRunner: "paperclip" }
+      : { supportedRunners: ["legacy"], defaultRunner: "legacy" };
+  }
   const supported = runnerAdaptersAvailable(harness, target.driver)
     && (target.driver !== "sandbox" || Boolean(target.platform && target.architecture
       && (target.platform !== "linux" || (target.libc === "glibc" && target.glibcVersion))))
@@ -121,6 +136,16 @@ function resolveClaudeRunnerConfig(config: Record<string, unknown>): Record<stri
 }
 
 export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
+  const result = resolveAgentRunner(input);
+  if (result.adapterType === "paperclip_runner" && agentHarnessType(result.adapterType, result.adapterConfig) === "claude_local") {
+    const normalized = normalizeClaudeRunnerOptions(input.adapterConfig ?? {});
+    result.adapterConfig = normalizeClaudeRunnerOptions(result.adapterConfig).config;
+    input.onConfigurationWarnings?.(normalized.warnings);
+  }
+  return result;
+}
+
+function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
   const adapterType = input.adapterType ?? "process";
   let config = { ...input.adapterConfig };
   const harness = agentHarnessType(adapterType, config);
@@ -246,7 +271,7 @@ export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterTyp
     incompatible(["env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS"]);
   }
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
-  for (const key of ["engine", "command", "extraArgs", "args", "agentCommand", "mode", "nonInteractivePermissions", "stateDir", "warmHandleIdleMs", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "search", "fastMode", "reasoningEffort", "effort"]) delete config[key];
+  for (const key of ["engine", "command", "extraArgs", "args", "agentCommand", "mode", "nonInteractivePermissions", "stateDir", "warmHandleIdleMs", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "fastMode", "reasoningEffort", "effort"]) delete config[key];
   if (config.model !== undefined && typeof config.model !== "string") incompatible(["model"]);
   config = { ...config, provider: "codex", model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : PAPERCLIP_RUNNER_DEFAULT_MODELS.codex, codexPermissionMode: config.codexPermissionMode ?? "never", lifecycleMode: config.lifecycleMode ?? "per_turn", ...(effort === undefined ? {} : { modelReasoningEffort: effort }) };
   try { resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: config }); }
@@ -266,30 +291,13 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
 
 export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null): Promise<RunnerTarget> {
   await waitForExternalAdapters();
-  const { instanceSettingsService } = await import("./instance-settings.js");
-  const { environmentService } = await import("./environments.js");
-  const settings = await instanceSettingsService(db).get();
-  const envs = environmentService(db);
-  const environmentId = defaultEnvironmentId ?? settings.defaultEnvironmentId;
-  let environment = environmentId ? await envs.getById(environmentId) : null;
-  if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
-    environment = await envs.findManagedSandboxEnvironment(companyId);
-    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", { code: "managed_sandbox_unavailable" });
-  }
-  if (settings.general?.executionMode === "kubernetes") {
-    environment = await envs.findKubernetesEnvironment(companyId);
-    if (!environment) return { driver: "sandbox" };
-  }
-  if (environmentId && !environment) throw unprocessable("Environment not found.");
-  if (environment) {
-    const boundCompanyIds = await envs.listBoundCompanyIds(environment.id);
-    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) throw forbidden("The selected environment belongs to another company.", { code: "environment_company_mismatch" });
-    if (environment.status === "archived") throw unprocessable("Environment is archived.");
-    if (environment.driver === "sandbox" && environment.config?.provider === "fake") throw unprocessable("The fake sandbox provider cannot execute runs.");
-  }
-  const driver = environment?.driver ?? "local";
+  const { environment, driver } = await resolveAgentRunnerEnvironmentForCompany(db, companyId, defaultEnvironmentId);
   let target: RunnerTarget = driver === "local" ? localAgentRunnerTarget()
     : { driver };
+  if (driver === "plugin" && environment) {
+    const taskDriver = await pluginEnvironmentRunnerTaskDriver(db, environment);
+    if (taskDriver) target = { driver, runnerTasks: true, ...(taskDriver.warmTaskVersion === 1 ? { warmTaskVersion: 1 as const } : {}) };
+  }
   if (driver === "sandbox" && environment) {
     const { readSandboxPlatformQualification } = await import("./environment-probe.js");
     const qualified = await readSandboxPlatformQualification(db, environment, companyId);
@@ -305,4 +313,58 @@ export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: stri
     target = { driver, platform: os === "Linux" ? "linux" : os === "Darwin" ? "darwin" : "unknown", architecture: arch === "x86_64" ? "x64" : ["aarch64", "arm64"].includes(arch) ? "arm64" : arch, ...(os === "Linux" && libc !== undefined ? { libc: libc === "glibc" || libc === "musl" ? libc : "unknown", ...(libc === "glibc" && glibcVersion !== undefined ? { glibcVersion } : {}) } : {}) };
   }
   return target;
+}
+
+export async function resolveAgentRunnerEnvironmentForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null) {
+  const resolved = await resolveAgentEnvironmentForCompany(db, companyId, defaultEnvironmentId);
+  if (resolved.environment?.driver === "sandbox" && resolved.environment.config?.provider === "fake") throw unprocessable("The fake sandbox provider cannot execute runs.");
+  return resolved;
+}
+
+// Hiring defaults inspect capabilities without probing or qualifying an already selected runner.
+export async function resolveAgentRunnerTaskDriverForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null) {
+  const { environment, driver } = await resolveAgentEnvironmentForCompany(db, companyId, defaultEnvironmentId);
+  return driver === "plugin" && environment ? pluginEnvironmentRunnerTaskDriver(db, environment) : undefined;
+}
+
+async function resolveAgentEnvironmentForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null) {
+  const { instanceSettingsService } = await import("./instance-settings.js");
+  const { environmentService } = await import("./environments.js");
+  const settings = await instanceSettingsService(db).get();
+  const envs = environmentService(db);
+  const environmentId = defaultEnvironmentId ?? settings.defaultEnvironmentId;
+  let environment = environmentId ? await envs.getById(environmentId) : null;
+  if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
+    environment = await envs.findManagedSandboxEnvironment(companyId);
+    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", { code: "managed_sandbox_unavailable" });
+  }
+  if (settings.general?.executionMode === "kubernetes") {
+    environment = await envs.findKubernetesEnvironment(companyId);
+    if (!environment) return { environment: null, driver: "sandbox" };
+  }
+  if (environmentId && !environment) throw unprocessable("Environment not found.");
+  if (environment) {
+    const boundCompanyIds = await envs.listBoundCompanyIds(environment.id);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) throw forbidden("The selected environment belongs to another company.", { code: "environment_company_mismatch" });
+    if (environment.status === "archived") throw unprocessable("Environment is archived.");
+  }
+  return { environment, driver: environment?.driver ?? "local" };
+}
+
+// The plugin's manifest declaration decides whether its environment runs
+// Runner tasks. Run admission separately verifies a ready plugin and a live
+// worker, so a plugin that is down still selects the Runner and fails its run.
+async function pluginEnvironmentRunnerTaskDriver(db: Db, environment: Parameters<typeof parseEnvironmentDriverConfig>[0]) {
+  let config: { pluginKey: string; driverKey: string };
+  try {
+    const parsed = parseEnvironmentDriverConfig(environment);
+    if (parsed.driver !== "plugin") return undefined;
+    config = parsed.config;
+  } catch {
+    return undefined;
+  }
+  const { pluginRegistryService } = await import("./plugin-registry.js");
+  const plugin = await pluginRegistryService(db).getByKey(config.pluginKey);
+  return plugin?.manifestJson.capabilities.includes("environment.drivers.register")
+    ? plugin.manifestJson.environmentDrivers?.find(driver => driver.driverKey === config.driverKey && driver.supportsTasks === true) : undefined;
 }

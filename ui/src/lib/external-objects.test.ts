@@ -14,6 +14,7 @@ import {
   externalObjectFallbackTone,
   externalObjectIconForCategory,
   externalObjectIconForKey,
+  externalObjectIconForLiveness,
   externalObjectLivenessLabel,
   externalObjectProviderLabel,
   externalObjectToneSeverity,
@@ -181,6 +182,15 @@ describe("external-objects helpers", () => {
     expect(externalObjectIconForKey("github")?.displayName ?? "").toMatch(/Github/i);
     expect(externalObjectIconForKey("git-pull-request")?.displayName ?? "").toMatch(/GitPullRequest/i);
     expect(externalObjectIconForKey("unknown-provider-icon")).toBeNull();
+  });
+
+  it("returns a liveness warning icon only for problem liveness states", () => {
+    expect(externalObjectIconForLiveness("rate_limited")?.displayName ?? "").toMatch(/AlertCircle|CircleAlert|Alert/);
+    expect(externalObjectIconForLiveness("unreachable")?.displayName ?? "").toMatch(/CloudOff|Cloud/);
+    expect(externalObjectIconForLiveness("auth_required")?.displayName ?? "").toMatch(/KeyRound|Key/);
+    expect(externalObjectIconForLiveness("fresh")).toBeNull();
+    expect(externalObjectIconForLiveness("unknown")).toBeNull();
+    expect(externalObjectIconForLiveness("stale")).toBeNull();
   });
 
   it("sorts items by severity first, preserving insertion order within a tone", () => {

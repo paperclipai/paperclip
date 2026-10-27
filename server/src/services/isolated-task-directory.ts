@@ -26,20 +26,34 @@ export async function materializeIsolatedTaskDirectory(input: {
   companyId: string;
   issueId: string;
   attemptId?: string;
+  /** Validate retained files in place; never recreate a missing directory. */
+  reuseCwd?: string;
 }): Promise<string> {
   // Files belong to the task, so reassignment preserves the same workspace.
-  const identities = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
+  let identities = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
   if (identities.some((value) => !/^[a-zA-Z0-9_-]+$/.test(value))) {
     throw new Error("Invalid isolated task workspace identity");
   }
   const root = resolvePaperclipInstanceRoot();
-  await mkdir(root, { recursive: true });
+  if (!input.reuseCwd) await mkdir(root, { recursive: true });
   let cwd = await realpath(root);
+  let namespace = input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces";
+  if (input.reuseCwd) {
+    const segments = path.relative(cwd, input.reuseCwd).split(path.sep);
+    if (input.attemptId || path.resolve(input.reuseCwd) !== input.reuseCwd ||
+        segments[1] !== input.companyId || segments[2] !== input.issueId ||
+        !((segments[0] === "isolated-workspaces" && segments.length === 3) ||
+          (segments[0] === "isolated-workspace-attempts" && segments.length === 4 && /^[a-zA-Z0-9_-]+$/.test(segments[3])))) {
+      throw new Error("Isolated task workspace path is not this task's directory");
+    }
+    namespace = segments[0];
+    identities = segments.slice(1);
+  }
   // A retry is a sibling namespace, never a descendant of the retained root.
   // An old copyback operation must not be able to overwrite its replacement.
-  for (const segment of [input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces", ...identities]) {
+  for (const segment of [namespace, ...identities]) {
     cwd = path.join(cwd, segment);
-    await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (!input.reuseCwd) await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "EEXIST") throw error;
     });
     const stat = await lstat(cwd);

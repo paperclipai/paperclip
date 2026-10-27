@@ -93,7 +93,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await stopDb?.();
   });
 
-  it("dispatches a plugin-only project without Core workspace files through the native heartbeat boundary", async () => {
+  it("dispatches a plugin-owned account per-turn without Core workspace files through the native heartbeat boundary", async () => {
     const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
     const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);
@@ -112,11 +112,11 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         capabilities: ["environment.drivers.register", "workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
         workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
         entrypoints: { worker: "worker.js" },
-        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] } });
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
     await db.insert(environments).values({ id: environmentId, companyId, name: "Tasks", driver: "plugin", status: "active",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
     await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
-      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, runtimeConfig: {},
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {},
       defaultEnvironmentId: environmentId, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId: sourceId, title: "Task-only dispatch", status: "in_progress",
       assigneeAgentId: agentId, issueNumber: 1, identifier: "TASK-1" });
@@ -129,14 +129,15 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       if (method === "environmentReleaseLease" || method === "environmentDestroyLease") return undefined;
       throw new Error(`Unexpected task provider call: ${method}`);
     });
-    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
     const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
     const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager, nativeSessionBackendFactory: entered });
     heartbeats.push(heartbeat);
     const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
     expect(run).not.toBeNull();
     await vi.waitFor(async () => { expect((await heartbeat.getRun(run!.id))?.status).toBe("failed"); }, { timeout: 10_000 });
-    expect(entered).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ runId: run!.id, companyId, issueId }) }));
+    expect(entered).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ runId: run!.id, companyId, issueId }),
+      session: expect.objectContaining({ lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }) }));
     expect((await heartbeat.getRun(run!.id))?.error).toContain("synthetic_native_boundary_reached");
     await heartbeat.drainActiveRunExecutions();
     expect(call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({ providerLeaseId: "heartbeat-task-attempt" }));

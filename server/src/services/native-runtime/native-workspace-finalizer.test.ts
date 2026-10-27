@@ -730,12 +730,12 @@ describe("native workspace finalization recovery", () => {
       mode: "isolated_workspace", strategyType: providerType === "plugin" ? "git_worktree" : "project_primary",
       branchName: "task-branch", metadata: providerType === "plugin" ? {} : { runnerTaskWorkspaceOwner: { agentId } } }).returning();
     const seeded = await seedRun({ executionWorkspaceId: workspace.id, title: "Plugin result before controller restart" });
-    const inspect = vi.spyOn(pluginWorkspaces, "inspectPluginWorkspace").mockResolvedValue({ kind: "inspection",
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
       branchName: "task-branch", headSha: "a".repeat(40), hasDirtyTrackedFiles: true, hasUntrackedFiles: false,
       hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
     try {
       expect(await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId })).toMatchObject({ status: "succeeded" });
-      if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id }));
+      if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id }), { agentId, runId: seeded.runId });
       else expect(inspect).not.toHaveBeenCalled();
     } finally { inspect.mockRestore(); }
   });
@@ -749,7 +749,7 @@ describe("native workspace finalization recovery", () => {
     ]).returning();
     const blocked = await seedRun({ executionWorkspaceId: unavailable.id, title: "Plugin is unavailable after restart" });
     const ready = await seedRun({ executionWorkspaceId: healthy.id, title: "Other result can recover" });
-    const inspect = vi.spyOn(pluginWorkspaces, "inspectPluginWorkspace").mockRejectedValue(new Error(message));
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockRejectedValue(new Error(message));
     const code = message.startsWith("plugin_workspace_") ? message : "plugin_workspace_inspection_failed";
     try {
       await expect(reconcileNativeFinalizations(db, [blocked.runId, ready.runId])).resolves.toBeDefined();

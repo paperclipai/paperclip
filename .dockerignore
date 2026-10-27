@@ -88,6 +88,7 @@ packages/grok-acp/bin
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v27-identity.json
 
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v28-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v29-identity.json
 
 !packages/paperclip-runner/test/fixtures/copilot-profile-v23-identity.json
 

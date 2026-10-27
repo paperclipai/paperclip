@@ -151,6 +151,11 @@ type TaskWatchdogPendingInteractionsByIssueId = Record<string, Array<{
 
 export type TaskWatchdogClassifierResult =
   | {
+    state: "incomplete";
+    reason: string;
+    includedIssueIds: string[];
+  }
+  | {
     state: "not_applicable";
     reason: string;
     includedIssueIds: string[];
@@ -189,6 +194,7 @@ export type TaskWatchdogClassifierResult =
 export type TaskWatchdogClassifierInput = {
   watchdog: TaskWatchdogClassifierConfig;
   issues: TaskWatchdogClassifierIssue[];
+  subtreeIncomplete?: boolean;
   activeRuns?: TaskWatchdogClassifierPath[];
   queuedWakeRequests?: TaskWatchdogClassifierPath[];
   blockers?: TaskWatchdogClassifierRelation[];
@@ -380,6 +386,15 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       state: "not_applicable",
       reason: "Task watchdog origin issues cannot themselves be watched.",
       includedIssueIds: [],
+    };
+  }
+
+  // A partial scan cannot prove that every execution path has stopped.
+  if (input.subtreeIncomplete) {
+    return {
+      state: "incomplete",
+      reason: "Watched subtree scan is incomplete because it exceeds the traversal depth limit.",
+      includedIssueIds: [...issuesById.keys()],
     };
   }
 
@@ -928,20 +943,35 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         assignee_user_id AS "assigneeUserId",
         origin_kind AS "originKind",
         updated_at AS "updatedAt",
-        created_at AS "createdAt"
+        created_at AS "createdAt",
+        EXISTS (
+          SELECT 1
+          FROM watched_issues boundary
+          JOIN issues child ON child.parent_id = boundary.id
+          WHERE boundary.depth = ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
+            AND child.company_id = ${companyId}
+            AND child.hidden_at IS NULL
+            AND child.harness_kind IS NULL
+            AND child.origin_kind <> ${TASK_WATCHDOG_ORIGIN_KIND}
+        ) AS "subtreeIncomplete"
       FROM watched_issues
     `);
 
-    return (Array.isArray(rows) ? rows : []) as TaskWatchdogClassifierIssue[];
+    const issueRows = (Array.isArray(rows) ? rows : []) as Array<
+      TaskWatchdogClassifierIssue & { subtreeIncomplete: boolean }
+    >;
+    return { issues: issueRows, incomplete: issueRows.some((row) => row.subtreeIncomplete) };
   }
 
   async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow) {
-    const issueRows = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId);
+    const subtree = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId);
+    const issueRows = subtree.issues;
     const subtreeIssueIds = issueRows.map((issue) => issue.id);
-    if (subtreeIssueIds.length === 0) {
+    if (subtreeIssueIds.length === 0 || subtree.incomplete) {
       return {
         watchdog: summarizeIssueWatchdog(watchdog),
-        issues: [],
+        issues: issueRows,
+        subtreeIncomplete: subtree.incomplete,
         activeRuns: [],
         queuedWakeRequests: [],
         blockers: [],
@@ -1683,6 +1713,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       allowed: false as const,
       reason: classification.state === "stopped"
         ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
+        : classification.state === "incomplete"
+        ? "Task-watchdog review cannot authorize mutations because the watched subtree scan is incomplete."
         : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
       classification,
     };
@@ -1782,6 +1814,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         live: 0,
         pendingFirstRun: 0,
         alreadyReviewed: 0,
+        incomplete: 0,
+        incompleteIssueIds: [] as string[],
         skipped: 0,
         watchdogIssueIds: [] as string[],
       };
@@ -1803,6 +1837,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.pendingFirstRun += 1;
         } else if (evaluated.state === "already_reviewed") {
           result.alreadyReviewed += 1;
+        } else if (evaluated.state === "incomplete") {
+          result.incomplete += 1;
+          result.incompleteIssueIds.push(row.issueId);
         } else {
           result.skipped += 1;
         }
@@ -1821,6 +1858,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         failed: 0,
         triggered: 0,
         pendingFirstRun: 0,
+        incomplete: 0,
+        incompleteIssueIds: [] as string[],
         skipped: 0,
         watchdogIssueIds: [] as string[],
       };
@@ -1834,6 +1873,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           result.watchdogIssueIds.push(evaluated.watchdogIssueId);
         } else if (evaluated.state === "pending_first_run") {
           result.pendingFirstRun += 1;
+        } else if (evaluated.state === "incomplete") {
+          result.incomplete += 1;
+          result.incompleteIssueIds.push(row.issueId);
         } else if (
           evaluated.state === "watchdog_review_open" ||
           evaluated.state === "watchdog_live" ||

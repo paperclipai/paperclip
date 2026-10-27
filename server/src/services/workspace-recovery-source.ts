@@ -10,6 +10,29 @@ export const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable",
 export const terminalWorkspaceRunStates = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 export type WorkspaceRecoverySourceIdentity = { companyId: string; issueId: string; runId: string; actionId: string };
 
+export function workspaceRecoverySourceEligible(includeCompleted = false) {
+  const actionEligible = sql`(${issueRecoveryActions.status} in ('active', 'escalated') or
+    (${issueRecoveryActions.status} = 'resolved' and (
+      (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
+        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+        and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${heartbeatRuns.id}::text) or
+      (${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,schema}' = 'paperclip.historical-workspace-source.v1'
+        and ${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,runId}' = ${heartbeatRuns.id}::text))))`;
+  return and(
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
+    includeCompleted ? sql`(${actionEligible} or ${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete')` : actionEligible,
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${heartbeatRuns.id}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${heartbeatRuns.id}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,policyVersion}' = '1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,schema}' = 'paperclip.system-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,schema}' = 'paperclip.workspace-recovery.v1'`,
+    sql`(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+      or ${issueRecoveryActions.evidence}->'historicalWorkspaceSource'->>'schema' = 'paperclip.historical-workspace-source.v1'
+      or ${issueRecoveryActions.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted'))`,
+  );
+}
+
 /** The preservation owner may reopen only its exact stop-only allocation.
  * This does not release the source's ordinary execution or destruction fence. */
 export async function ownedWorkspaceRecoveryLease(db: Db, input: WorkspaceRecoverySourceIdentity & {

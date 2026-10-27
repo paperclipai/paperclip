@@ -1,6 +1,9 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -915,12 +918,18 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(settledInvocation.idempotencyKey).not.toBeNull();
   });
 
-  it("does not leave unsigned action requests pending when signing is unavailable", async () => {
+  it("does not leave unsigned action requests pending when signing is unavailable", async ({ onTestFinished }) => {
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values(reviewNotePolicyRow(company));
     const gateway = createTestToolGatewayService(db, { toolActionSigningSecret: " " });
     const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const keyDirectory = await mkdtemp(join(tmpdir(), "tool-gateway-signing-failure-"));
+    onTestFinished(() => rm(keyDirectory, { recursive: true, force: true }));
+    const keyFile = join(keyDirectory, "master.key");
+    await writeFile(keyFile, "corrupt-fixture-master-key", { mode: 0o600 });
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", keyFile);
 
     await expect(gateway.executeTool({
       sessionToken: session.token,

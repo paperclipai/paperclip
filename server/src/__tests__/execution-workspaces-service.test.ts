@@ -949,6 +949,14 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       cwd: seed.worktreePath, baseRef: "main", config,
       deliveryState: "unknown", runtimeServices: [],
     });
+    const runtimeServiceId = randomUUID();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, seed.executionWorkspaceId));
+    await insertRunningWorkspaceService(runtimeServiceId, seed.companyId, workspace!.projectId!, seed.executionWorkspaceId, workspace!.sourceIssueId!, seed.worktreePath);
+    expect(await service.getStoredById(seed.companyId, seed.executionWorkspaceId, { includeRuntimeServices: true })).toMatchObject({
+      deliveryState: "unknown", runtimeServices: [{ id: runtimeServiceId, status: "running", healthStatus: "healthy" }],
+    });
+    await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId, { includeRuntimeServices: true }))
+      .rejects.toThrow("Task workspace access is no longer available");
     await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId))
       .rejects.toThrow("Task workspace access is no longer available");
     expect(await service.getStoredById(seed.companyId, randomUUID())).toBeNull();

@@ -26,6 +26,21 @@ export interface HeartbeatRunOutputInput {
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
 }
 
+/**
+ * True only when the persisted run row proves no earlier attempt began its log.
+ * The first begin() records logStore/logRef before any output can be appended
+ * or mirrored to object storage; output sequence and final size are recorded
+ * after that. A row with none of them has no durable log prefix to restore.
+ */
+export function isNewRunLog(
+  run: Pick<Run, "logStore" | "logRef" | "logBytes" | "lastOutputSeq">,
+): boolean {
+  return run.logStore == null
+    && run.logRef == null
+    && run.logBytes == null
+    && Number(run.lastOutputSeq ?? 0) === 0;
+}
+
 /** One recorder per execution attempt; the log store itself stays service-scoped. */
 export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput) {
   const { run, runId, issueId, runLogStore, identityRedactor, secretKeys, appendRunEvent, getCurrentUserRedactionOptions } = input;
@@ -74,6 +89,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       companyId: run.companyId,
       agentId: run.agentId,
       runId,
+      newRun: isNewRunLog(run),
     });
 
     await db

@@ -7,7 +7,7 @@ import { claimedAdapterType, conversationRecoveryActionPredicate, getConversatio
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
@@ -28,6 +28,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { alias } from "drizzle-orm/pg-core";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -344,6 +345,24 @@ export async function deliverReconciledExecutions(
   }
 }
 
+const supersedingWorkspaceHold = alias(issueRecoveryActions, "superseding_workspace_hold");
+
+function supersedingNativeWorkspaceHold(db: Db, input: {
+  companyId: string | typeof heartbeatRuns.companyId;
+  issueId: string | typeof issueRecoveryActions.sourceIssueId;
+  runId: string | typeof heartbeatRuns.id;
+}) {
+  return db.select({ id: supersedingWorkspaceHold.id }).from(supersedingWorkspaceHold).where(and(
+    eq(supersedingWorkspaceHold.companyId, input.companyId),
+    eq(supersedingWorkspaceHold.sourceIssueId, input.issueId),
+    eq(supersedingWorkspaceHold.status, "resolved"),
+    eq(supersedingWorkspaceHold.cause, "native_continuation_requires_reconciliation"),
+    sql`${supersedingWorkspaceHold.evidence}->>'runId' = ${input.runId}::text`,
+    sql`${supersedingWorkspaceHold.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    sql`${supersedingWorkspaceHold.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'`,
+  ));
+}
+
 export function unresolvedExecutionDispositions(db: Db, limit: number) {
   return db
     .select({ action: issueRecoveryActions })
@@ -372,9 +391,14 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
         sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
-        inArray(issueRecoveryActions.cause, [
-          ...EXECUTION_RECONCILIATION_CAUSES,
-        ]),
+        or(inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), and(
+          eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
+          eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
+          sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
+          sql`${issueRecoveryActions.wakePolicy}->>'runId' = ${heartbeatRuns.id}::text`,
+          exists(supersedingNativeWorkspaceHold(db, { companyId: heartbeatRuns.companyId,
+            issueId: issueRecoveryActions.sourceIssueId, runId: heartbeatRuns.id })),
+        )),
         inArray(heartbeatRuns.status, [
           "failed",
           "timed_out",
@@ -502,9 +526,6 @@ export async function settleUnrecoverableExecutions(
           !run ||
           !action ||
           action.evidence.runId !== runId ||
-          !EXECUTION_RECONCILIATION_CAUSES.includes(
-            action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number],
-          ) ||
           !["active", "escalated"].includes(action.status) ||
           (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== task.id ||
           !["failed", "timed_out", "interrupted", "cancelled"].includes(
@@ -512,6 +533,29 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        if (!EXECUTION_RECONCILIATION_CAUSES.includes(action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number])) {
+          if (run.runtimeMode !== "native" || run.nativePhase !== "terminal_failure"
+            || coordinator?.phase !== "terminal_failure" || coordinator.leaseOwner || coordinator.resultId
+            || coordinator.nextAttemptAt || coordinator.failureDetail?.successorRunId
+            || action.wakePolicy?.kind !== "resume_native_run" || action.wakePolicy.runId !== run.id) return;
+          const [hold] = await supersedingNativeWorkspaceHold(tx as unknown as Db, {
+            companyId: run.companyId, issueId: task.id, runId: run.id,
+          }).limit(1).for("update");
+          if (!hold) return;
+          await notifyExecutionRunWork(tx);
+          const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
+          await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
+            resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
+            nextAction: note, resolutionNote: note,
+            evidence: { ...action.evidence, supersedingRecoveryActionId: hold.id },
+          }).where(eq(issueRecoveryActions.id, action.id));
+          await persistActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system",
+            actorId: "execution-recovery", action: "issue.execution_recovery_settled", entityType: "issue",
+            entityId: task.id, runId: run.id,
+            details: { recoveryActionId: action.id, outcome: "cancelled", supersedingRecoveryActionId: hold.id },
+          });
+          return;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.

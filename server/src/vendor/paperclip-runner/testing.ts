@@ -26,6 +26,10 @@ const sourceUrl = new URL(
 );
 const runnerTesting = await import(sourceUrl.href) as RunnerTestingModule;
 
+export const startOpenCodeMcpBridge:
+  RunnerTestingModule["startOpenCodeMcpBridge"] =
+  runnerTesting.startOpenCodeMcpBridge;
+
 export const CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS:
   RunnerTestingModule["CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS"] =
   runnerTesting.CAPABILITY_HIGH_RISK_SEMANTIC_VECTORS;

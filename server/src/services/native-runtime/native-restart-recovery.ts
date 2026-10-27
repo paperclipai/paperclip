@@ -465,6 +465,7 @@ export async function claimNativeRestartRecoveries(input: {
   restartKind: NativeRestartKind;
   recoveryRequestId?: string | null;
   runIds?: string[];
+  liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
   now?: Date;
   limit?: number;
   coordinatedPreviousController?: {
@@ -577,6 +578,14 @@ export async function claimNativeRestartRecoveries(input: {
           kind: "blocked",
           runId: row.run.id,
           reason: "issue_execution_lock_changed",
+        } as const;
+      }
+
+      if (input.liveRunExecutions?.has(row.run.id)) {
+        return {
+          kind: "awaiting_evidence",
+          runId: row.run.id,
+          reason: "current_controller_preparing",
         } as const;
       }
 

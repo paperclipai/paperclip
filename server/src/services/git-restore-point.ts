@@ -1,4 +1,4 @@
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,10 +6,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
+import { REGENERABLE_WORKSPACE_DIR_NAMES } from "./workspace-compaction.js";
 
 const execFile = promisify(execFileCallback);
 
 export const RESTORE_POINT_PAYLOAD_SCHEMA = "paperclip.git-restore-point-payload.v1";
+export const RESTORE_POINT_PAYLOAD_SCHEMA_V2 = "paperclip.git-restore-point-payload.v2";
 const PAYLOAD_MAGIC = Buffer.from("PCRP-PLAIN1\n");
 const SEALED_MAGIC = Buffer.from("PCRP1");
 const KEY_SCHEMA = "paperclip.git-restore-point-key.v1";
@@ -42,16 +44,30 @@ export const DEFAULT_RESTORE_POINT_LIMITS: RestorePointLimits = {
 };
 
 export type RestorePointManifest = {
-  schema: typeof RESTORE_POINT_PAYLOAD_SCHEMA;
+  schema: typeof RESTORE_POINT_PAYLOAD_SCHEMA | typeof RESTORE_POINT_PAYLOAD_SCHEMA_V2;
   head: string;
   index: string | null;
   worktree: string | null;
+  ignored?: string;
   preserved: string[];
   prerequisites: string[];
   modes: Array<{ path: string; mode: number }>;
 };
 
-export type RestorePointSnapshot = { head: string; index: string | null; worktree: string | null; modes: Array<{ path: string; mode: number }> };
+export type RestorePointSnapshot = { head: string; index: string | null; worktree: string | null; ignored: string | null;
+  modes: Array<{ path: string; mode: number }> };
+
+export function restorePointSavesIgnoredFile(file: string) {
+  const parts = file.split("/").filter(Boolean);
+  if (parts.length === 0 || /^\.env(\..*)?$/.test(parts[parts.length - 1]!)) return false;
+  if (parts[0] === ".paperclip-repositories" || file === ".claude/settings.local.json") return false;
+  return !parts.slice(0, -1).some(part => REGENERABLE_WORKSPACE_DIR_NAMES.has(part));
+}
+
+async function savedIgnoredFiles(cwd: string, signal?: AbortSignal) {
+  return nulList(await git(cwd, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], { signal }))
+    .filter(restorePointSavesIgnoredFile).sort();
+}
 
 export type RestorePointIdentity = { companyId: string; workspaceId: string; restorePointId: string; generation: number };
 
@@ -89,10 +105,7 @@ function isolatedEnv(extra: Record<string, string> = {}) {
 }
 
 async function git(cwd: string, args: string[], options: GitOptions = {}): Promise<Buffer> {
-  const child = execFile("git", [
-    "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
-    "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args,
-  ], {
+  const child = execFile("git", gitArgs(cwd, args), {
     env: isolatedEnv(options.env),
     encoding: "buffer",
     maxBuffer: options.maxBuffer ?? 64 * 1024 * 1024,
@@ -102,6 +115,32 @@ async function git(cwd: string, args: string[], options: GitOptions = {}): Promi
   if (options.input !== undefined) child.child.stdin?.end(options.input);
   const { stdout } = await child;
   return stdout as Buffer;
+}
+
+function gitArgs(cwd: string, args: string[]) {
+  return ["-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args];
+}
+
+async function gitPipe(cwd: string, from: string[], to: string[], signal?: AbortSignal) {
+  const options = { env: isolatedEnv(), signal, timeout: 15 * 60_000 };
+  const source = spawn("git", gitArgs(cwd, from), { ...options, stdio: ["ignore", "pipe", "pipe"] });
+  const sink = spawn("git", gitArgs(cwd, to), { ...options, stdio: ["pipe", "ignore", "pipe"] });
+  source.stdout.pipe(sink.stdin);
+  sink.stdin.on("error", () => {});
+  const finished = (child: ReturnType<typeof spawn>) => new Promise<void>((resolve, reject) => {
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => { if (stderr.length < 4096) stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0 ? resolve() : reject(Object.assign(new Error(`git exited with ${code}`), { code, stderr })));
+  });
+  const done = [finished(source), finished(sink)];
+  try { await Promise.all(done); }
+  catch (error) {
+    source.kill("SIGKILL");
+    sink.kill("SIGKILL");
+    await Promise.allSettled(done);
+    throw error;
+  }
 }
 
 async function gitText(cwd: string, args: string[], options: GitOptions = {}) {
@@ -144,6 +183,7 @@ async function scanChangedPaths(cwd: string, limits: RestorePointLimits, signal?
     ...nulList(await git(cwd, ["ls-files", "-z", "--modified"], { signal })),
     ...nulList(await git(cwd, ["diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD"], { signal })),
     ...nulList(await git(cwd, ["ls-files", "-z", "--others", "--exclude-standard", "--", ".", ...EXCLUDED_UNTRACKED], { signal })),
+    ...await savedIgnoredFiles(cwd, signal),
   ]);
   if (changed.size > limits.maxFiles) throw new RestorePointSkip("restore_point_too_large");
   let totalBytes = 0;
@@ -174,6 +214,88 @@ async function scanChangedPaths(cwd: string, limits: RestorePointLimits, signal?
   return { modes: modes.sort((a, b) => a.path.localeCompare(b.path)) };
 }
 
+function quoteGitPath(file: string) {
+  let quoted = "\"";
+  for (const byte of Buffer.from(file, "utf8")) {
+    if (byte === 0x22 || byte === 0x5c) quoted += `\\${String.fromCharCode(byte)}`;
+    else if (byte < 0x20 || byte >= 0x7f) quoted += `\\${byte.toString(8).padStart(3, "0")}`;
+    else quoted += String.fromCharCode(byte);
+  }
+  return `${quoted}"`;
+}
+
+async function rawIgnoredTree(cwd: string, env: Record<string, string>, temporary: string, files: string[], signal?: AbortSignal) {
+  if (files.length === 0) return null;
+  const entries: string[] = [];
+  const regular: string[] = [];
+  for (const file of files) {
+    if (file.endsWith("/")) throw new RestorePointSkip("untracked_nested_repository");
+    if (/[\n\r]/.test(file)) throw new RestorePointSkip("unsupported_path");
+    const stat = await fs.lstat(path.join(cwd, file));
+    if (stat.isSymbolicLink()) {
+      const blob = await gitText(cwd, ["hash-object", "-w", "--no-filters", "--stdin"], { env, signal,
+        input: await fs.readlink(path.join(cwd, file), { encoding: "buffer" }) });
+      entries.push(`120000 ${blob}\t${file}`);
+    } else if (stat.isFile()) regular.push(file);
+    else if (stat.isDirectory()) throw new RestorePointSkip("untracked_nested_repository");
+    else throw new RestorePointSkip("unsupported_special_file");
+  }
+  if (regular.length > 0) {
+    const blobs = (await gitText(cwd, ["hash-object", "-w", "--no-filters", "--stdin-paths"], { env, signal,
+      input: regular.map(quoteGitPath).join("\n") + "\n" })).split("\n");
+    if (blobs.length !== regular.length || blobs.some(blob => !SHA.test(blob))) throw new RestorePointSkip("unsupported_path");
+    for (const [index, file] of regular.entries()) {
+      const mode = (await fs.lstat(path.join(cwd, file))).mode & 0o111 ? "100755" : "100644";
+      entries.push(`${mode} ${blobs[index]}\t${file}`);
+    }
+  }
+  const ignoredEnv = { ...env, GIT_INDEX_FILE: path.join(temporary, "ignored-index") };
+  await git(cwd, ["update-index", "-z", "--index-info"], { env: ignoredEnv, signal, input: entries.join("\0") + "\0" });
+  return await gitText(cwd, ["write-tree"], { env: ignoredEnv, signal });
+}
+
+async function writeIgnoredFiles(cwd: string, commit: string, signal?: AbortSignal) {
+  const listing = nulList(await git(cwd, ["ls-tree", "-r", "-z", "--long", `${commit}^{tree}`], { signal }));
+  const entries = listing.map((line) => {
+    const match = /^(100644|100755|120000) blob ([0-9a-f]{40}) +(\d+)\t(.+)$/s.exec(line);
+    if (!match) throw new RestorePointRestoreFailure("invalid_payload");
+    const target = path.join(cwd, match[4]!);
+    if (path.isAbsolute(match[4]!) || match[4]!.split("/").includes("..") || !target.startsWith(`${cwd}${path.sep}`)) {
+      throw new RestorePointRestoreFailure("invalid_payload");
+    }
+    return { mode: match[1]!, blob: match[2]!, size: Number(match[3]), target };
+  });
+  for (const entry of entries) {
+    if (await fs.lstat(entry.target).then(() => true, () => false)) throw new RestorePointRestoreFailure("ignored_files_conflict");
+  }
+  const contents = await git(cwd, ["cat-file", "--batch"], { signal, input: entries.map((entry) => entry.blob).join("\n") + "\n",
+    maxBuffer: entries.reduce((total, entry) => total + entry.size + 128, 4096) });
+  const blobs: Buffer[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const header = contents.subarray(offset, contents.indexOf(0x0a, offset)).toString("utf8");
+    const [sha, type, size] = header.split(" ");
+    if (sha !== entry.blob || type !== "blob" || !/^\d+$/.test(size ?? "")) throw new RestorePointRestoreFailure("invalid_payload");
+    const start = offset + header.length + 1;
+    blobs.push(contents.subarray(start, start + Number(size)));
+    offset = start + Number(size) + 1;
+  }
+  const written: string[] = [];
+  try {
+    for (const [index, entry] of entries.entries()) {
+      await fs.mkdir(path.dirname(entry.target), { recursive: true });
+      const parent = await fs.realpath(path.dirname(entry.target));
+      if (parent !== cwd && !parent.startsWith(`${cwd}${path.sep}`)) throw new RestorePointRestoreFailure("invalid_payload");
+      if (entry.mode === "120000") await fs.symlink(blobs[index]!, entry.target);
+      else await fs.writeFile(entry.target, blobs[index]!, { flag: "wx", mode: entry.mode === "100755" ? 0o755 : 0o644 });
+      written.push(entry.target);
+    }
+  } catch (error) {
+    for (const target of written.reverse()) await fs.rm(target, { force: true });
+    throw error instanceof RestorePointRestoreFailure ? error : new RestorePointRestoreFailure("ignored_files_conflict");
+  }
+}
+
 async function snapshotTrees(cwd: string, env: Record<string, string>, temporary: string, signal?: AbortSignal) {
   const indexCopy = path.join(temporary, "index");
   await copyIndex(cwd, indexCopy);
@@ -187,17 +309,20 @@ async function snapshotTrees(cwd: string, env: Record<string, string>, temporary
   const worktreeTree = await gitText(cwd, ["write-tree"], { env: worktreeEnv, signal });
   const gitlinks = await gitText(cwd, ["ls-tree", "-r", worktreeTree], { env, signal });
   if (/^160000 /m.test(gitlinks)) throw new RestorePointSkip("submodules_unsupported");
-  return { indexTree, worktreeTree };
+  const ignoredTree = await rawIgnoredTree(cwd, env, temporary, await savedIgnoredFiles(cwd, signal), signal);
+  return { indexTree, worktreeTree, ignoredTree };
 }
 
 async function snapshotCommits(cwd: string, env: Record<string, string>, temporary: string, modes: RestorePointSnapshot["modes"], signal?: AbortSignal): Promise<RestorePointSnapshot> {
   const head = await gitText(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], { signal });
   const headTree = await gitText(cwd, ["rev-parse", "HEAD^{tree}"], { signal });
-  const { indexTree, worktreeTree } = await snapshotTrees(cwd, env, temporary, signal);
-  if (indexTree === headTree && worktreeTree === headTree) return { head, index: null, worktree: null, modes: [] };
+  const { indexTree, worktreeTree, ignoredTree } = await snapshotTrees(cwd, env, temporary, signal);
+  const ignored = ignoredTree
+    ? await gitText(cwd, ["commit-tree", ignoredTree, "-p", head, "-m", "paperclip restore point ignored files"], { env, signal }) : null;
+  if (indexTree === headTree && worktreeTree === headTree) return { head, index: null, worktree: null, ignored, modes: ignored ? modes : [] };
   const index = await gitText(cwd, ["commit-tree", indexTree, "-p", head, "-m", "paperclip restore point index"], { env, signal });
   const worktree = await gitText(cwd, ["commit-tree", worktreeTree, "-p", head, "-p", index, "-m", "paperclip restore point worktree"], { env, signal });
-  return { head, index, worktree, modes };
+  return { head, index, worktree, ignored, modes };
 }
 
 const UNBOUNDED_LIMITS: RestorePointLimits = {
@@ -229,8 +354,16 @@ async function existingCommits(cwd: string, commits: readonly string[], signal?:
   return present;
 }
 
-async function unpreservedHistory(cwd: string, head: string, boundary: readonly string[], signal?: AbortSignal) {
-  const candidates = new Set<string>();
+async function presentCommits(cwd: string, commits: readonly string[], signal?: AbortSignal) {
+  const unique = [...new Set(commits.filter((commit) => SHA.test(commit)))];
+  if (unique.length === 0) return [];
+  const output = await gitText(cwd, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], { signal, input: unique.join("\n") + "\n" });
+  return output.split("\n").map((line) => line.split(" ")).filter(([sha, type]) => SHA.test(sha ?? "") && type === "commit").map(([sha]) => sha!);
+}
+
+async function unpreservedHistory(cwd: string, head: string, boundary: readonly string[], signal?: AbortSignal, extra: readonly string[] = []) {
+  if (new Set(extra).size > MAX_PRESERVED_COMMITS) throw new RestorePointSkip("restore_point_history_too_large");
+  const candidates = new Set<string>(await presentCommits(cwd, extra, signal));
   const reflog = await gitText(cwd, ["reflog", "show", "--format=%H", "HEAD"], { signal }).catch(() => "");
   for (const line of reflog.split("\n")) if (SHA.test(line)) candidates.add(line);
   const original = await gitText(cwd, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], { signal }).catch(() => "");
@@ -268,8 +401,10 @@ export function decodeRestorePointPayload(payload: Buffer): { manifest: RestoreP
   if (start + length > payload.length) throw new RestorePointRestoreFailure("invalid_payload");
   const manifest = JSON.parse(payload.subarray(start, start + length).toString("utf8")) as RestorePointManifest;
   const shas = [manifest.head, ...(manifest.index ? [manifest.index] : []), ...(manifest.worktree ? [manifest.worktree] : []),
-    ...manifest.preserved, ...manifest.prerequisites];
-  if (manifest.schema !== RESTORE_POINT_PAYLOAD_SCHEMA || shas.some((sha) => !SHA.test(sha))
+    ...(manifest.ignored !== undefined ? [manifest.ignored] : []), ...manifest.preserved, ...manifest.prerequisites];
+  const schemaValid = manifest.schema === RESTORE_POINT_PAYLOAD_SCHEMA ? manifest.ignored === undefined
+    : manifest.schema === RESTORE_POINT_PAYLOAD_SCHEMA_V2 && typeof manifest.ignored === "string";
+  if (!schemaValid || shas.some((sha) => typeof sha !== "string" || !SHA.test(sha))
     || (manifest.index === null) !== (manifest.worktree === null)
     || manifest.modes.some((entry) => typeof entry.path !== "string" || path.isAbsolute(entry.path)
       || entry.path.split("/").includes("..") || !Number.isInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o777)) {
@@ -281,6 +416,7 @@ export function decodeRestorePointPayload(payload: Buffer): { manifest: RestoreP
 export async function captureRestorePoint(input: {
   cwd: string;
   upstreamCommits: readonly string[];
+  preserveCommits?: readonly string[];
   limits?: Partial<RestorePointLimits>;
   signal?: AbortSignal;
 }): Promise<{ payload: Buffer; manifest: RestorePointManifest } | null> {
@@ -292,16 +428,17 @@ export async function captureRestorePoint(input: {
     const { store, env } = await snapshotStore(cwd, temporary);
     const snapshot = await snapshotCommits(cwd, env, temporary, modes, input.signal);
     const boundary = await existingCommits(cwd, input.upstreamCommits, input.signal);
-    const preserved = await unpreservedHistory(cwd, snapshot.head, boundary, input.signal);
+    const preserved = await unpreservedHistory(cwd, snapshot.head, boundary, input.signal, input.preserveCommits);
     const headOnUpstream = await (async () => {
       for (const tip of boundary) {
         if (await git(cwd, ["merge-base", "--is-ancestor", snapshot.head, tip], { signal: input.signal }).then(() => true, () => false)) return true;
       }
       return false;
     })();
-    if (headOnUpstream && snapshot.worktree === null && preserved.length === 0) return null;
+    if (headOnUpstream && snapshot.worktree === null && snapshot.ignored === null && preserved.length === 0) return null;
     const refs: Array<[string, string]> = [["refs/restore/head", snapshot.head]];
     if (snapshot.index && snapshot.worktree) refs.push(["refs/restore/index", snapshot.index], ["refs/restore/worktree", snapshot.worktree]);
+    if (snapshot.ignored) refs.push(["refs/restore/ignored", snapshot.ignored]);
     preserved.forEach((commit, index) => refs.push([`refs/restore/preserved/${index}`, commit]));
     for (const [ref, commit] of refs) await git(store, ["update-ref", ref, commit], { env, signal: input.signal });
     const exclusions = boundary.map((commit) => `^${commit}`);
@@ -316,10 +453,11 @@ export async function captureRestorePoint(input: {
     if (bundle.length > limits.maxBundleBytes) throw new RestorePointSkip("restore_point_too_large");
     const prerequisites = bundlePrerequisites(bundle);
     const manifest: RestorePointManifest = {
-      schema: RESTORE_POINT_PAYLOAD_SCHEMA,
+      schema: snapshot.ignored ? RESTORE_POINT_PAYLOAD_SCHEMA_V2 : RESTORE_POINT_PAYLOAD_SCHEMA,
       head: snapshot.head,
       index: snapshot.index,
       worktree: snapshot.worktree,
+      ...(snapshot.ignored ? { ignored: snapshot.ignored } : {}),
       preserved,
       prerequisites,
       modes: snapshot.modes,
@@ -345,6 +483,7 @@ export async function importRestorePoint(input: { repositoryCwd: string; payload
       expected.set("refs/restore/index", manifest.index);
       expected.set("refs/restore/worktree", manifest.worktree);
     }
+    if (manifest.ignored) expected.set("refs/restore/ignored", manifest.ignored);
     manifest.preserved.forEach((commit, index) => expected.set(`refs/restore/preserved/${index}`, commit));
     if (heads.some(([sha, ref]) => expected.get(ref ?? "") !== sha)) throw new RestorePointRestoreFailure("bundle_manifest_mismatch");
     const listed = new Set(heads.map(([, ref]) => ref));
@@ -371,10 +510,15 @@ export async function applyRestorePoint(input: { cwd: string; manifest: RestoreP
   const head = await gitText(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], { signal: input.signal });
   if (head !== manifest.head) throw new RestorePointRestoreFailure("head_mismatch");
   if (manifest.index && manifest.worktree) {
-    const diff = await git(cwd, ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", manifest.worktree], { signal: input.signal });
-    if (diff.length > 0) await git(cwd, ["apply", "--binary", "--whitespace=nowarn", "-"], { input: diff, signal: input.signal });
+    const changed = await git(cwd, ["diff", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD", manifest.worktree], { signal: input.signal }).then(() => false, (error: { code?: unknown }) => {
+      if (error.code === 1) return true;
+      throw error;
+    });
+    if (changed) await gitPipe(cwd, ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", manifest.worktree],
+      ["apply", "--binary", "--whitespace=nowarn", "-"], input.signal);
     await git(cwd, ["read-tree", `${manifest.index}^{tree}`], { signal: input.signal });
   }
+  if (manifest.ignored) await writeIgnoredFiles(cwd, manifest.ignored, input.signal);
   for (const entry of manifest.modes) {
     const target = path.join(cwd, entry.path);
     if (path.relative(cwd, target).startsWith("..")) throw new RestorePointRestoreFailure("invalid_payload");
@@ -383,7 +527,7 @@ export async function applyRestorePoint(input: { cwd: string; manifest: RestoreP
   }
   const restored = await currentRestorePointSnapshot(cwd, input.signal);
   if (restored.head !== manifest.head || restored.index !== manifest.index || restored.worktree !== manifest.worktree
-    || JSON.stringify(restored.modes) !== JSON.stringify(manifest.modes)) {
+    || restored.ignored !== (manifest.ignored ?? null) || JSON.stringify(restored.modes) !== JSON.stringify(manifest.modes)) {
     throw new RestorePointRestoreFailure("restored_contents_mismatch");
   }
 }
@@ -451,5 +595,21 @@ export async function restorePointHistoryDigest(input: string, signal?: AbortSig
   const cwd = await fs.realpath(input);
   const reflog = await gitText(cwd, ["reflog", "show", "--format=%H", "HEAD"], { signal }).catch(() => "");
   const original = await gitText(cwd, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], { signal }).catch(() => "");
-  return createHash("sha256").update(JSON.stringify([reflog.split("\n").filter((line) => SHA.test(line)), SHA.test(original) ? original : null])).digest("hex");
+  const linked = (await fs.lstat(path.join(cwd, ".git")).catch(() => null))?.isFile() ?? false;
+  const nested = linked ? await import("./nested-repository-worktrees.js") : null;
+  const scope = nested ? `refs/heads/${await nested.nestedWorktreeBranchPrefix(cwd)}` : "refs/remotes";
+  const remotes = await gitText(cwd, ["for-each-ref", ...nested ? [`--count=${nested.OWNED_NESTED_REF_LIMIT + 1}`] : [],
+    "--format=%(objectname) %(refname)", scope], { signal }).catch(() => "");
+  const remoteReflogs: string[] = [];
+  if (nested) {
+    if (remotes.split("\n").filter(Boolean).length > nested.OWNED_NESTED_REF_LIMIT) throw new Error("managed_checkout_local_tip_budget");
+    for (const ref of remotes.split("\n").map((line) => line.split(" ")[1]).filter(Boolean)) {
+      remoteReflogs.push(...(await gitText(cwd, ["reflog", "show", "--format=%H", ref!], { signal }).catch(() => "")).split("\n").filter((line) => SHA.test(line)).map((sha) => `${sha} ${ref}`));
+    }
+  } else {
+    remoteReflogs.push(...(await gitText(cwd, ["reflog", "show", "--all", "--format=%H %gD"], { signal }).catch(() => ""))
+      .split("\n").filter((line) => / refs\/remotes\//.test(line)));
+  }
+  return createHash("sha256").update(JSON.stringify([reflog.split("\n").filter((line) => SHA.test(line)), SHA.test(original) ? original : null,
+    remotes.split("\n").filter(Boolean), remoteReflogs])).digest("hex");
 }

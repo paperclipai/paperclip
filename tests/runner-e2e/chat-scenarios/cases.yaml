@@ -1,0 +1,112 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: cases
+status: planned
+scenarios:
+  - id: cases.browse-cases
+    capabilities:
+      - cases/browse
+    context: >-
+      Cases is enabled; visible records include open and closed cases across two projects.
+    query: >-
+      Show me the open customer cases for Launch.
+    expected_outcome: >-
+      The agent queries authorized case records, applies the requested project and status
+      filters and returns useful links. The answer reflects saved case state rather than
+      assuming task completion closed each case. Browser-only column choices are not falsely
+      claimed as agent-side mutations.
+  - id: cases.create-case
+    capabilities:
+      - cases/structure
+      - cases/handoffs
+      - documents-artifacts/documents
+    context: >-
+      Cases is enabled; the CEO can create and assign work, and triage and engineering agents
+      are eligible.
+    query: >-
+      Open a case for this customer bug, record the facts from my brief, and have Morgan
+      investigate first.
+    expected_outcome: >-
+      One case and its primary task are created with kickoff, structured facts, the brief and a
+      workflow document describing owners and handoffs. Required documents persist before work
+      starts. Chat links to the case and task rather than creating a passive record and claiming
+      investigation is underway.
+  - id: cases.update-case-facts
+    capabilities:
+      - cases/structure
+    context: >-
+      An authorized active case has facts and a task-owned document; the person supplies a
+      corrected reproduction step.
+    query: >-
+      Update the case: the bug happens only on mobile Safari.
+    expected_outcome: >-
+      The agent reads current facts, saves the correction without discarding unrelated fields
+      and keeps document ownership on the ordinary task. Subsequent handoff context reflects the
+      updated fact. A concurrent case change is handled explicitly instead of overwritten from
+      stale chat memory.
+  - id: cases.case-history
+    capabilities:
+      - cases/history
+    context: >-
+      A case has fact changes, document revisions and two handoffs by different agents.
+    query: >-
+      Who changed the diagnosis, and what did it say before?
+    expected_outcome: >-
+      The answer uses attributed case audit and document revision history, with links to the
+      relevant entries. It distinguishes a fact update from a handoff or document edit. Missing
+      historical content is acknowledged rather than reconstructed from the current summary.
+  - id: cases.related-work
+    capabilities:
+      - cases/task-links
+    context: >-
+      A case has a primary task and a linked follow-up; an unrelated private task is
+      inaccessible.
+    query: >-
+      Show me all the work tied to this case.
+    expected_outcome: >-
+      The agent returns the accessible primary and linked tasks with their real relationships
+      and current states. Links work in both directions where supported. Inaccessible work is
+      not exposed through titles or summaries, and similar task names alone do not count as an
+      established case link.
+  - id: cases.handoff-same-task
+    capabilities:
+      - cases/handoffs
+      - task-coordination/delegation
+    context: >-
+      Morgan owns the case's active primary task and is the responding agent for this scenario;
+      Riley is an eligible reviewer.
+    query: >-
+      Hand this case to Riley for review with the findings you saved.
+    expected_outcome: >-
+      The handoff preserves the same primary task, updates its eligible assignee and records the
+      new phase and instructions with the saved findings. It does not create a fresh primary
+      task per phase. Normal review, budget, stop and access gates still determine when Riley
+      can run.
+  - id: cases.close-case
+    capabilities:
+      - cases/handoffs
+      - tasks/completion
+    context: >-
+      The primary case task has completed its required review and the current owner may perform
+      a terminal handoff.
+    query: >-
+      Close this case now that the fix is accepted.
+    expected_outcome: >-
+      An explicit terminal handoff records the case's intended completion and closes it only
+      when ordinary primary-task completion gates accept the result. Case history and final
+      documents remain accessible. A merely completed task or an unresolved review does not
+      cause the agent to report the case closed.
+  - id: cases.cases-disabled
+    capabilities:
+      - cases/browse
+      - developer-labs/route-gates
+    context: >-
+      Cases is disabled; ordinary tasks remain available.
+    query: >-
+      Open a customer case for this bug.
+    expected_outcome: >-
+      The agent explains that Cases is unavailable in this instance and identifies the supported
+      enablement or ordinary-task alternative. It does not claim a normal task is a case or
+      silently enable an experiment under ordinary agent authority. The person can make the
+      consequential choice explicitly.

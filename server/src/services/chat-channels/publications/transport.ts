@@ -1,3 +1,4 @@
+import { slackPublicationCard } from "../slack/cards.js";
 import type { PublicationTransportInput } from "./types.js";
 import { createPhotonPublicationDelivery } from "../imessage-photon/publications.js";
 import { createOutboundAttachments } from "../outbound-attachments.js";
@@ -122,6 +123,7 @@ function safeCardForPublication(
   payload: SafeChatPublicationPayload,
   provider: ChatProvider,
 ) {
+  if (provider === "slack") return slackPublicationCard(payload);
   if (!payload.card) return null;
   const children = [];
   if (payload.card.body) children.push(CardText(payload.card.body));

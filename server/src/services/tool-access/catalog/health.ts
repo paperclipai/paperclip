@@ -4,6 +4,7 @@ import { createGitHubGrantContinuity } from "../github-grant-continuity.js";
 import { createToolRuntimeSlots } from "../runtime/slots.js";
 import type { ActorInfo } from "../types.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
 import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
@@ -121,7 +122,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
-      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection)) {
+      } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)) {
         await discoverTools(connection, undefined, actor);
       } else if (isAgentMailConnection(connection)) {
         await validateAgentMailConnection(connection);
@@ -157,6 +158,8 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           : config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
+          : restConnectorFor(connection)
+            ? `${restConnectorFor(connection)!.name} API access is connected.`
           : nativeProviderCatalogFor(connection)
             ? `${nativeProviderCatalogFor(connection)!.name} API access is connected.`
           : isBrowserUseConnection(connection)
@@ -202,12 +205,22 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         actor,
         details: { status: failure.status, transport: connection.transport },
       });
+      // Keep GitHub's recovery links so Refresh access can point at the exact
+      // installation page, such as the one with the Unsuspend button.
+      const githubRecovery =
+        failure.code === "github_installation_required" && error instanceof HttpError
+          ? {
+              installationUrl: asRecord(error.details).installationUrl,
+              managementUrl: asRecord(error.details).managementUrl,
+            }
+          : {};
       throw retainMcpConnectionFailure(error, new HttpError(healthFailureHttpStatus(failure), failure.message, {
         code: failure.code,
         connection: toConnection(updated),
         runtimeSlot,
         setupUrl: connectionSetupUrl(connection),
         reconnectUrl: connectionReconnectUrl(connection),
+        ...githubRecovery,
       }));
     }
   }

@@ -11,6 +11,7 @@ import { buildNativeRuntimeContext } from "../native-runtime/runtime-context.js"
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
+import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 
@@ -73,6 +74,31 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("keeps recovery out of live preparation before the workspace descriptor exists", async () => {
+    const { input, run, issue } = await fixture();
+    input.workspace.executionTarget = sandbox;
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issue.id));
+    const liveRunExecutions = new Set([run.id]);
+    const recoveryInput = { db, restartKind: "hard" as const, runIds: [run.id], liveRunExecutions };
+    vi.mocked(prepareNativeWorkspaceSync).mockImplementationOnce(async () => {
+      const saved = await read(run.id);
+      expect(saved.runnerProfileJson).toHaveProperty("nativeExecutionInput");
+      expect(saved.runnerProfileJson).not.toHaveProperty("nativeWorkspaceSync");
+      const before = await coordinators(run.id);
+      expect(await claimNativeRestartRecoveries(recoveryInput)).toEqual([
+        { kind: "awaiting_evidence", runId: run.id, reason: "current_controller_preparing" },
+      ]);
+      expect(await coordinators(run.id)).toEqual(before);
+      expect((await read(run.id)).status).toBe("running");
+      return null;
+    });
+    expect((await selectHeartbeatRuntime(db, input)).selected).toBe(true);
+    liveRunExecutions.delete(run.id);
+    expect(await claimNativeRestartRecoveries(recoveryInput)).toEqual([
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: run.id, controllerGeneration: 1 }),
+    ]);
+  });
 
   it("persists the native input, completion contract, and coordinator before transferring cleanup ownership", async () => {
     const { input, run } = await fixture();
@@ -309,6 +335,26 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       nativeExecutionInput: { session: { lifecyclePolicy: { mode: expected } } },
     });
     expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  it.each(["api_key", "subscription"] as const)("keeps managed Claude %s task execution warm", async method => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", lifecycleMode: "warm" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null });
+    input.workspace.executionTarget = { ...sandbox, runnerTask: vi.fn(), reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never, runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } };
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider: "anthropic" as const, method,
+      mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Claude selection");
+    expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000 });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } } });
   });
 
   it("preserves only server-owned admission and dispatch evidence when recording legacy selection", async () => {

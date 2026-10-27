@@ -16,6 +16,20 @@ Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
 It does not qualify a live model or a sandbox provider API.
 
+Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.
+The executor tests cover Claude and Codex, including reopening blocked work.
+The lease-authority integration test uses PostgreSQL to check that checkpoint
+discovery cannot launch work or bypass a termination receipt. A stale negative
+availability flag requires a fresh provider status before the checkpoint can
+be read for continuation.
+
+The executor can restore one quarantined journal in the same session scope.
+It requires a terminal prior run, completed commands, a terminal event, and an
+identity-matched suspended plugin checkpoint with no pending delivery or cleanup.
+Multiple candidates, contradictory direct state, and unfinished work still fail
+closed. Recovery preserves the journal and the provider's existing state owner.
+Do not delete a quarantine or change database ownership to force continuation.
+
 Use a disposable Linux container with Node.js, `sh`, `tar`, `base64`, `ps`, and
 `setsid`. Build `paperclip-runnerd` and `fake-codex-app-server` from the checkout's
 `packages/paperclip-runner/runner/Cargo.toml` for that container's architecture.

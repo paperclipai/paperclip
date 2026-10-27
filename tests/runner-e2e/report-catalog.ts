@@ -10,10 +10,7 @@ export interface ReportExecution {
     MatrixExecution["suite"],
     "id" | "label" | "description" | "expectedMatrixSize"
   >;
-  profile: Pick<
-    MatrixExecution["profile"],
-    "id" | "label" | "generation" | "provider" | "model" | "expectedRuntimeMode"
-  >;
+  profile: { id: string; label: string; generation: "legacy" | "native" | "none"; provider: string | null; model: string | null; expectedRuntimeMode: "legacy" | "native" | "none" };
   environment: Pick<
     MatrixExecution["environment"],
     "id" | "label" | "provider" | "expectedExecutionTarget"
@@ -23,9 +20,12 @@ export interface ReportExecution {
 
 export function parseReportExecutionId(id: string) {
   // These identities also become evidence paths. Reject path traversal and any
-  // syntax other than the four catalog identity segments, even in imported JSON.
+  // syntax other than catalog identities, even in imported JSON. Deployment
+  // journeys add one explicit target segment; all historical IDs stay intact.
   if (typeof id !== "string")
     throw new Error("Report execution identity must be a string");
+  const journey = /^(product-journeys)\.([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(id);
+  if (journey && id.length <= 512) return { suiteId: journey[1]!, targetId: journey[2]!, profileId: journey[3]!, environmentId: journey[4]! as "local" | "daytona", caseId: journey[5]! };
   const match =
     /^([a-z0-9][a-z0-9_-]*)\.([a-z0-9][a-z0-9_-]*)\.(local|daytona)\.([a-z0-9][a-z0-9_-]*)$/.exec(
       id,
@@ -39,6 +39,7 @@ export function parseReportExecutionId(id: string) {
     profileId: match[2]!,
     environmentId: match[3]! as "local" | "daytona",
     caseId: match[4]!,
+    targetId: undefined,
   };
 }
 
@@ -50,6 +51,7 @@ export function validateReportResultIdentity(result: RunnerE2EResult) {
     result.profileId !== identity.profileId ||
     result.environmentId !== identity.environmentId ||
     result.caseId !== identity.caseId
+    || identity.targetId !== undefined && result.productJourney?.targetId !== identity.targetId
   ) {
     throw new Error(
       `Result identity does not match execution ID: ${result.executionId}`,
@@ -101,7 +103,7 @@ export function discoverReportCatalog(input: {
     const knownEnvironment = input.catalog.find(
       (execution) => execution.environment.id === identity.environmentId,
     )?.environment;
-    const runtimeMode = result?.runtimeMode === "legacy" ? "legacy" : "native";
+    const runtimeMode = result?.runtimeMode ?? "native";
     catalog.push({
       id,
       suite,
@@ -114,8 +116,8 @@ export function discoverReportCatalog(input: {
         generation: runtimeMode,
         expectedRuntimeMode: runtimeMode,
         provider:
-          typeof result?.provider === "string" ? result.provider : "unknown",
-        model: typeof result?.model === "string" ? result.model : "unknown",
+          result?.runtimeMode === "none" ? null : result?.provider ?? "unknown",
+        model: result?.runtimeMode === "none" ? null : result?.model ?? "unknown",
       },
       environment: knownEnvironment ?? {
         id: identity.environmentId,

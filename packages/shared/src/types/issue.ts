@@ -493,6 +493,7 @@ export type IssueReviewAttentionPathKind =
   | "interaction"
   | "approval"
   | "monitor"
+  | "external_response"
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
@@ -842,6 +843,8 @@ export type IssueSummary = Pick<
 };
 
 export interface Issue {
+  /** Collection projections omit task bodies and cannot seed the detail cache. */
+  listProjection?: "index" | "rows";
   statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
@@ -957,6 +960,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "listProjection"
   | "externalConversationState"
   | "id"
   | "companyId"
@@ -1718,4 +1722,11 @@ export interface IssueAttachment {
   contentPath: string;
   openPath?: string;
   downloadPath?: string;
+}
+
+/** Bounded cold-open window; the complete chronological feed stays paginated. */
+export interface IssueRecentComments {
+  latestCommentId: string | null;
+  comments: IssueComment[];
+  hasMore: boolean;
 }

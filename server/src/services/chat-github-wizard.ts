@@ -33,6 +33,7 @@ import {
   type PaperclipCloudConnector,
 } from "./paperclip-cloud-connector.js";
 import { paperclipCloudConnectorEnrollmentStatus } from "./paperclip-cloud-connector-enrollment.js";
+import { pollGitHubBotCloudSetupEvents } from "./chat-github-cloud-ingress.js";
 
 /** Loopback aliases are equivalent locally, but Cloud requires the approved exact origin. */
 export function githubWizardBrowserOrigin(
@@ -920,6 +921,10 @@ export function githubChatWizardService(
     // Keep the same vaulted App in the wizard instead of throwing JSON from
     // the browser callback or relaxing the configure action's signature gate.
     bot = await endpoint(id, userId);
+    if (!bot.setup.webhookVerifiedAt && bot.setup.github?.cloudRegistrationId) {
+      await pollGitHubBotCloudSetupEvents(db);
+      bot = await endpoint(id, userId);
+    }
     if (!bot.setup.webhookVerifiedAt)
       return {
         endpointId: id,

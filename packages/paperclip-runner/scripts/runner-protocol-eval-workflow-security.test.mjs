@@ -38,6 +38,14 @@ test("direct live eval workflow keeps paid execution behind stable actor authori
   assert.match(workflow, /github\.triggering_actor/u);
   assert.match(workflow, /refs\/heads\/\$DEFAULT_BRANCH/u);
   assert.match(workflow, /Reauthorize paid execution before provider access/u);
+  const copilotCredential = "COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}";
+  assert.equal(workflow.split(copilotCredential).length - 1, 1);
+  const paid = workflow.slice(workflow.indexOf("  eval_shard_0:"), workflow.indexOf("  eval_shard_1:"));
+  assert.ok(paid.includes("name: runner-e2e-paid"));
+  assert.ok(paid.includes(copilotCredential));
+  const reauthorizationIndex = paid.indexOf("Reauthorize paid execution before provider access");
+  assert.ok(reauthorizationIndex >= 0);
+  assert.ok(reauthorizationIndex < paid.indexOf(copilotCredential));
   assert.match(
     workflow,
     /Reauthorize paid execution before provider access[\s\S]*actions\/checkout@[0-9a-f]{40}[\s\S]*Run one immutable direct protocol cell/u,

@@ -553,6 +553,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: ${{ matrix.credentialName == 'PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET' && secrets.GROK_AUTH_JSON || '' }}
+          COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}
           PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_ID: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_ID }}
           PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION: ${{ vars.PAPERCLIP_CLAUDE_MANAGED_AGENT_VERSION }}

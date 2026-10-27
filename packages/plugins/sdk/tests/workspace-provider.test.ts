@@ -50,6 +50,16 @@ const result = {
   branchCreatedByRuntime: true,
 };
 describe("workspace provider SDK", () => {
+  it("separates completion acknowledgement from removal safety", () => {
+    const input: PluginWorkspaceParams = { ...params, agentId: id(6), runId: id(7),
+      operation: { kind: "finalize", binding: result.binding } };
+    expect(workspaceProviderOperationSchema.parse(input.operation)).toEqual(input.operation);
+    expect(parseWorkspaceProviderResult(input, { kind: "finalized", headSha: "a".repeat(40), branchName: "task" }))
+      .toEqual({ kind: "finalized", headSha: "a".repeat(40), branchName: "task" });
+    expect(() => parseWorkspaceProviderResult(input, { kind: "removed" })).toThrow();
+    expect(() => parseWorkspaceProviderResult(input, { kind: "finalized", headSha: "bad", branchName: "task" })).toThrow();
+    expect(() => workspaceProviderOperationSchema.parse({ ...input.operation, localPath: "/untrusted" })).toThrow();
+  });
   it("prepares without a VM, lease, or host path", async () => {
     const harness = createWorkspaceProviderHarness(async (input) => {
       expect(input.agentId).toBeNull();

@@ -18,6 +18,7 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
   }
 }
 
+associate(["product-journeys"], { "task-properties": ["tasks/properties"], "cloud-onboarding": ["onboarding/first-task"] });
 associate(["core-compatibility", "openrouter-model-breadth", "extended-harnesses", "grok-qualification", "grok-subscription-qualification"], {
   "message-marker": ["runs-adapters/runs"],
   "hello-complete": ["runs-adapters/runs"],
@@ -32,6 +33,9 @@ associate(["local-session-integrity", "extended-harnesses", "grok-qualification"
 });
 associate(["question-resume"], {
   "question-answer-resume": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],
+});
+associate(["feedback-persistence"], {
+  "complaint-and-suggestion": ["activity/agent-commentary"],
 });
 associate(["continuation"], {
   "answer-updates-scope": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],

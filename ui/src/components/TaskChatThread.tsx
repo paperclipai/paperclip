@@ -23,6 +23,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import {
   IssueAssigneePausedNotice,
@@ -109,7 +110,6 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
@@ -138,6 +138,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
+const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -422,6 +423,9 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
   conversationMode?: boolean;
   creationActivity?: ActivityEvent[];
+  compactHistory?: boolean;
+  historyControl?: ReactNode;
+  onExpandHistory?: () => void;
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
@@ -898,6 +902,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of linkedRuns ?? []) {
       map.set(r.runId, {
         id: r.runId,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType ?? "",
         runtimeMode: r.runtimeMode,
@@ -908,6 +913,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of liveRuns ?? []) {
       map.set(r.id, {
         id: r.id,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType,
         runtimeMode: r.runtimeMode,
@@ -919,6 +925,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if (activeRun) {
       map.set(activeRun.id, {
         id: activeRun.id,
+        createdAt: activeRun.createdAt,
         status: activeRun.status,
         adapterType: activeRun.adapterType,
         runtimeMode: activeRun.runtimeMode,
@@ -929,9 +936,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
+  const openedAt = useMemo(() => Date.now(), [issueId]);
   const nativeRuns = useMemo(
-    () => runs.filter((run) => run.runtimeMode === "native"),
-    [runs],
+    () => runs.filter((run) => run.runtimeMode === "native").map((run) => ({
+      ...run,
+      conversationOnly: Boolean(props.compactHistory && (!run.createdAt || new Date(run.createdAt).getTime() <= openedAt)),
+    })),
+    [runs, props.compactHistory, openedAt],
   );
   const {
     transcriptByRun: nativeTranscriptByRun,
@@ -942,6 +953,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
   const logRuns = useMemo(() => runs.filter((run) =>
+    (!nativeRuns.some((nativeRun) => nativeRun.id === run.id && nativeRun.conversationOnly) ||
+      nativeTranscriptErrorsByRun.has(run.id) ||
+      (hydratedNativeRunIds.has(run.id) && (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)) && (
     run.runtimeMode !== "native" ||
     // Active runs still need the websocket log stream. Only settled native
     // history can skip the legacy transport when event history is available.
@@ -949,14 +963,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     nativeTranscriptErrorsByRun.has(run.id) ||
     (hydratedNativeRunIds?.has(run.id) &&
       (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)
-  ), [runs, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
+  )), [runs, nativeRuns, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
   const {
     transcriptByRun: logTranscriptByRun,
     isInitialHydrating: logsAreInitiallyHydrating,
     hydratedRunIds: hydratedLogRunIds,
+    truncatedRunIds,
     errorsByRun: logErrorsByRun,
     retry: retryLogs,
-  } = useLiveRunTranscripts({ runs: logRuns, companyId });
+  } = useLiveRunTranscripts({ runs: logRuns, companyId, ...(props.compactHistory ? { logReadLimitBytes: COMPACT_RUN_LOG_READ_LIMIT_BYTES } : {}) });
   const fallbackByRunRef = useRef(
     new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>(),
   );
@@ -2812,9 +2827,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const historyControl = props.historyControl ?? (
+    props.compactHistory && props.onExpandHistory
+    && logRuns.some((run) => truncatedRunIds?.has(run.id))
+      ? <Button type="button" variant="ghost" size="sm" onClick={props.onExpandHistory}>More run output</Button>
+      : null
+  );
   const renderBrief = useCallback(
-    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
-    [issueBrief],
+    () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} />{historyControl}</> : null,
+    [issueBrief, historyControl],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2968,10 +2989,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : logsAreInitiallyHydrating;
   });
   // Hydrating a run inserts activity around its saved reply and can move the
-  // latest viewport substantially. Wait for the initial comment window's run
-  // history and plan before revealing; older runs outside that window do not
-  // delay it, and the latch below keeps subsequent refreshes visible.
-  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
+  // latest viewport substantially in the full-history view. Cold opens reveal
+  // the brief and recent messages independently; neither plans nor transcripts
+  // may hold them behind the loading screen.
+  const historyPending = !props.compactHistory && (initialHistoryPending || planLoading || transcriptHistoryPending);
   const scrollNavigation = useTaskChatScrollNavigation();
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
@@ -3027,25 +3048,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={!historyPending || historyWaitExpired}>
-        <TaskChatWindowScroll
-          contentKey={isMobile ? autoFollowContentKey : 0}
-          enabled={isMobile && historyRevealed}
-        />
         <TaskChatPresentationProvider
           mode={streamlinedUiEnabled ? "streamlined" : "production"}
         >
           <div
             className={cn(
-              "flex flex-col",
-              !isMobile && "min-h-0 flex-1",
+              "flex min-h-0 flex-1 flex-col",
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
           >
             <div
               className={cn(
-                "relative flex flex-col",
-                (!isMobile || !historyRevealed) && "min-h-0 flex-1",
+                "relative flex min-h-0 flex-1 flex-col",
               )}
               aria-busy={!historyRevealed}
             >
@@ -3080,8 +3095,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <div
                 data-testid="task-chat-history-content"
                 className={cn(
-                  "flex flex-col",
-                  !isMobile && "min-h-0 flex-1",
+                  "flex min-h-0 flex-1 flex-col",
                   !historyRevealed && "invisible",
                 )}
                 inert={!historyRevealed}
@@ -3090,9 +3104,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <>
                     {items.length === 0 && !tailRunId && !optimisticRunnerStartup ? (
                       <div
-                        className={
-                          isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
-                        }
+                        className="min-h-0 flex-1 overflow-y-auto"
                       >
                         {threadHeaderWithBlockers ? (
                           <div
@@ -3124,7 +3136,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       <TaskChatThreadView
                         items={items}
                         attachments={attachments}
-                        header={threadHeaderWithBlockers}
+                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}</>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
                         renderMessageActions={renderMessageActions}
@@ -3228,7 +3240,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         }
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
-                        scroll={!isMobile}
                       />
                     )}
                   </>

@@ -59,6 +59,12 @@ the selected connection owns its provider routing.
 Changing those separately may make a binding incompatible; saving then requires
 a compatible choice. Agent configuration cannot grant access to another account.
 
+Agent account choices and legacy-adoption confirmations show the sign-in method,
+personal or company-shared scope, and available account or owner identity beside
+the connection name. Accounts with the same provider name can be distinguished
+before selection. These labels use existing authorized account metadata, never
+credentials or authentication paths.
+
 Personal defaults are unique per company, user, and provider. A Claude bot can use one user’s subscription and another user’s API key without changing its harness or model. Explicit shared selections remain pinned to the selected account and method.
 The first successful personal connection sets a default only when none exists.
 The additive `ai_provider_defaults` table preserves the legacy per-method preferences. Migration selects each user’s most recently updated provider preference (including unavailable accounts), and rerunning it never overwrites a provider default. New writes maintain the legacy table for older servers. A database trigger propagates older servers’ explicit default updates to the provider default. Inserting an additional method default does not replace an existing provider default.
@@ -115,6 +121,11 @@ remote environment blocks validation rather than probing the server host. The
 runtime test accepts the form’s prospective adapter selection before it is saved.
 For a saved-agent test, omitting `environmentId` uses the agent’s saved override.
 Sending `environmentId: null` tests a change back to the instance default.
+
+Saved-agent lifecycle verification checks managed account access before it
+allocates a test execution environment. Missing defaults, revoked accounts, and
+incompatible selections fail without creating a sandbox. The managed probe
+checks account access again after allocation so changes during setup still apply.
 
 ## On-demand usage limits
 

@@ -273,6 +273,7 @@ export type {
   PluginIssueSummariesClient,
   PluginAgentsClient,
   PluginAgentRuntimeState,
+  PluginAgentRuntimeIdentity,
   PluginAgentConnectionAssignments,
   PluginAgentRuntimeSkill,
   PluginAccessClient,
@@ -463,7 +464,7 @@ export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-er
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 
-export { environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
 export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential } from "./environment-tasks.js";
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 

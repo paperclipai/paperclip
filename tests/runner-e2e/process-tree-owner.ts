@@ -177,13 +177,13 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   }
   let graceComplete = false;
   let directGraceDelivered = false;
-  async function signalGracefully() {
+  async function signalGracefully(signal: "SIGTERM" | "SIGINT" = "SIGTERM") {
     if (graceComplete) return;
     await observe();
     // Choose and deliver from one validated table. ESRCH grants no ownership
     // coverage: the next grace poll can select that branch's surviving owner.
     const selected = new Set([...gracefulRoots()].filter(pid => !covered.has(pid)));
-    const delivered = signalSnapshot("SIGTERM", selected);
+    const delivered = signalSnapshot(signal, selected);
     for (const pid of delivered) {
       if (pid === root.pid) directGraceDelivered = true;
       covered.add(pid);
@@ -220,9 +220,10 @@ export async function stopKnownDirectChild(child: ChildProcess, phase: { gracefu
 }
 
 export async function incompleteTreeFallback(error: unknown, child: ChildProcess,
-  phase: { gracefulSent: boolean; forcedDeadline?: number }, deadline: number, forcedMs: number) {
+  phase: { gracefulSent: boolean; forcedDeadline?: number }, deadline: number, forcedMs: number,
+  signal: "SIGTERM" | "SIGINT" = "SIGTERM") {
   let fallbackError: unknown;
-  try { await stopKnownDirectChild(child, phase, deadline, forcedMs); }
+  try { await stopKnownDirectChild(child, phase, deadline, forcedMs, signal); }
   catch (failure) { fallbackError = failure; }
   throw new Error(`Owned tree cleanup incomplete: ${String(error)}${fallbackError ? `; ${String(fallbackError)}` : ""}`);
 }
@@ -234,13 +235,14 @@ export async function stopOwnedProcessTree(
   owner: ReturnType<typeof createProcessTreeOwner>,
   gracefulMs = 45_000,
   forcedMs = 5_000,
+  gracefulSignal: "SIGTERM" | "SIGINT" = "SIGTERM",
 ): Promise<void> {
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const deadline = Date.now() + gracefulMs;
   const phase: { gracefulSent: boolean; forcedDeadline?: number } = { gracefulSent: false };
   try {
     if (process.platform === "win32") {
-      await stopKnownDirectChild(child, phase, deadline, forcedMs);
+      await stopKnownDirectChild(child, phase, deadline, forcedMs, gracefulSignal);
       return;
     }
     const stopped = async () => {
@@ -248,7 +250,7 @@ export async function stopOwnedProcessTree(
       return (child.exitCode !== null || child.signalCode !== null) && owner.liveGroups().length === 0;
     };
     do {
-      await owner.signalGracefully();
+      await owner.signalGracefully(gracefulSignal);
       phase.gracefulSent ||= owner.directGraceDelivered();
       if (await stopped()) return;
       await wait(50);
@@ -262,6 +264,6 @@ export async function stopOwnedProcessTree(
     throw new Error("Observed launcher descendants remained after bounded cleanup");
   } catch (error) {
     phase.gracefulSent ||= owner.directGraceDelivered();
-    await incompleteTreeFallback(error, child, phase, deadline, forcedMs);
+    await incompleteTreeFallback(error, child, phase, deadline, forcedMs, gracefulSignal);
   }
 }

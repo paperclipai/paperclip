@@ -12,7 +12,7 @@ export function repositoryProofProfile(native: RunnerProfileFixture, legacy?: Ru
     const config = { ...(agent.adapterConfig as Record<string, unknown>), model: native.model };
     if (legacy) {
       delete (config as Record<string, unknown>).extraArgs;
-      delete (config as Record<string, unknown>).maxTurnsPerRun;
+      if (legacy.adapterType === "claude_local") (config as Record<string, unknown>).maxTurnsPerRun = 1000;
     }
     return { ...agent, ...(legacy ? { runner: "legacy" } : {}), budgetMonthlyCents: 1000, adapterConfig: config };
   } };

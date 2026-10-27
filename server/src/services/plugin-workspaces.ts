@@ -90,6 +90,9 @@ export async function callWorkspaceProvider(
   const selectedProvider = await provider(db, workers, workspace.companyId, pluginId);
   if (input.operation.kind === "prepare" && input.operation.fresh && selectedProvider.manifestJson.workspaceProvider?.freshWorkspaceVersion !== 1)
     throw conflict("Fresh workspace preparation is unavailable");
+  if (input.operation.kind === "finalize" &&
+    (selectedProvider.manifestJson.workspaceProvider?.finalizationVersion !== 1 || !input.runId || !input.agentId))
+    throw conflict("Workspace finalization is unavailable");
   const generation =
     typeof workspace.metadata?.lifecycleGeneration === "number"
       ? workspace.metadata.lifecycleGeneration
@@ -111,11 +114,12 @@ export async function callWorkspaceProvider(
         ? randomUUID()
         : createHash("sha256")
             .update(
-              JSON.stringify([workspace.id, operationGeneration, operation]),
+              JSON.stringify([workspace.id, operationGeneration, operation,
+                ...(operation.kind === "finalize" ? [input.runId, input.agentId] : [])]),
             )
             .digest("hex"),
     generation: operationGeneration,
-    deadline: new Date(Date.now() + 300_000).toISOString(),
+    deadline: new Date(Date.now() + (operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
     operation,
@@ -126,7 +130,7 @@ export async function callWorkspaceProvider(
       pluginId,
       "workspaceOperation",
       params,
-      310_000,
+      operation.kind === "finalize" ? 40_000 : 310_000,
     );
   } catch {
     throw conflict(
@@ -604,25 +608,42 @@ async function inspectBinding(
   return result;
 }
 
-export async function inspectPluginWorkspace(
-  db: Db,
-  workers: WorkspaceWorkers | undefined,
-  workspace: Workspace,
-) {
+/** Reconcile durable lifecycle intent under the same lock for either read path. */
+async function withRetainedWorkspace<T>(db: Db, workers: WorkspaceWorkers | undefined,
+  workspace: Workspace, operation: (workspace: Workspace) => Promise<T>) {
   return withExecutionWorkspaceLifecycleLock(db, workspace.id, async () => {
-    // Keep recovery intent/results durable across an ambiguous provider response.
-    workspace = await reconcilePluginWorkspaceReservation(
-      db,
-      workers,
-      workspace,
-    );
+    workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRestoration)
       workspace = await finishPendingRestoration(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRemoval)
       workspace = await finishPendingRemoval(db, workers, workspace);
-    if (workspace.metadata?.workspaceProviderRemoved === true)
-      return removedInspection();
-    return inspectBinding(db, workers, workspace);
+    return operation(workspace);
+  });
+}
+
+export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+  return withRetainedWorkspace(db, workers, workspace, (current) =>
+    current.metadata?.workspaceProviderRemoved === true
+      ? Promise.resolve(removedInspection()) : inspectBinding(db, workers, current));
+}
+
+/** Completion does not need the deletion-safety proof supplied by inspect. */
+export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined,
+  workspace: Workspace, context: { runId: string; agentId: string }) {
+  return withRetainedWorkspace(db, workers, workspace, async (current) => {
+    if (current.metadata?.workspaceProviderRemoved === true)
+      throw conflict("Workspace was removed before finalization");
+    const binding = readWorkspaceProviderBinding(current.metadata);
+    if (!binding) throw conflict("Workspace storage ownership is missing");
+    const selected = await provider(db, workers, current.companyId, binding.pluginId);
+    // Existing providers continue to use their established inspection contract.
+    if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1)
+      return inspectBinding(db, workers, current);
+    const result = await callWorkspaceProvider(db, workers, {
+      workspace: current, ...context, operation: { kind: "finalize", binding },
+    });
+    if (result.kind !== "finalized") throw conflict("Workspace finalization is incomplete");
+    return result;
   });
 }
 

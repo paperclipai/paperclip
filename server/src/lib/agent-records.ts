@@ -98,6 +98,8 @@ export interface CreateAgentOptions {
   claudeLogin?: ClaudeLoginContext;
 }
 
+type AgentEligibilityRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">;
+
 interface AgentShortnameRow {
   id: string;
   name: string;
@@ -340,7 +342,7 @@ export function agentRecordQueries(db: Db) {
     };
   }
 
-  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows = rows) {
+  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows: AgentEligibilityRow[] = rows) {
     const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
     return rows.map((row) => {
       const base = normalizeAgentBaseRow(row);
@@ -357,12 +359,17 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
+  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: AgentEligibilityRow[]) {
     return normalizeAgentRows([row], allCompanyRows)[0]!;
   }
 
   async function listCompanyAgentRows(companyId: string) {
     return db.select().from(agents).where(eq(agents.companyId, companyId));
+  }
+
+  async function listCompanyAgentEligibilityRows(companyId: string): Promise<AgentEligibilityRow[]> {
+    return db.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      status: agents.status, reportsTo: agents.reportsTo }).from(agents).where(eq(agents.companyId, companyId));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -405,7 +412,7 @@ export function agentRecordQueries(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [companyRows, hydrated] = await Promise.all([
-      listCompanyAgentRows(row.companyId),
+      listCompanyAgentEligibilityRows(row.companyId),
       hydrateAgentSpend([row]).then((rows) => rows[0]!),
     ]);
     return normalizeAgentRow(hydrated, companyRows);
@@ -472,6 +479,6 @@ export function agentRecordQueries(db: Db) {
     });
   }
 
-  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, hydrateAgentSpend,
+  return { normalizeAgentRows, normalizeAgentRow, listCompanyAgentRows, listCompanyAgentEligibilityRows, hydrateAgentSpend,
     getById, ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed };
 }

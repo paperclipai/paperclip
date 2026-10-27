@@ -1,3 +1,4 @@
+import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
 import { createConnectionGrants } from "./tool-access/connections/grants.js";
 import { createConnectionInstalls } from "./tool-access/connections/installs.js";
@@ -1803,7 +1804,24 @@ export function toolAccessService(
             .orderBy(desc(toolConnections.updatedAt))
             .limit(1)
         : [undefined];
-    const retainedConnection = requestedResumeConnection ?? recoveredConnection;
+    let retainedConnection = requestedResumeConnection ?? recoveredConnection;
+    const transport = method?.transport ?? "mcp_remote";
+    const applicationType = transport === "rest_api" ? "rest_api"
+      : transport === "mcp_remote" ? "mcp_http"
+        : transport === "local_stdio" ? "mcp_stdio" : null;
+    if ((retainedConnection && retainedConnection.transport !== transport)
+      || (existingApplication && applicationType && existingApplication.type !== applicationType)) {
+      if (requestedResumeConnection || input.applicationId) {
+        throw conflict("Create a separate app connection to change its connection method transport.", {
+          code: "connection_transport_change_not_supported",
+        });
+      }
+      // A new gallery connection may use another transport for the same app.
+      // Do not revive an archived MCP identity as REST (or the reverse): the
+      // application's type and any sibling connections belong to that identity.
+      retainedConnection = undefined;
+      existingApplication = null;
+    }
     let applicationName = existingApplication?.name ?? requestedName;
     let name = retainedConnection?.name ?? requestedName;
     if (!existingApplication) {
@@ -1933,7 +1951,6 @@ export function toolAccessService(
           "Dedicated GitHub identity requires an agent in this company",
         );
     }
-    const transport = method?.transport ?? "mcp_remote";
     const credentialSource: ToolConnectionCredentialSource =
       input.credentialSource ?? "paperclip_vault";
     if (
@@ -2412,7 +2429,7 @@ export function toolAccessService(
                 applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
                 name: applicationName,
                 description: safeApplicationDescription,
-                type: transport === "rest_api" && ["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+                type: transport === "rest_api" && (["browser-use-cloud", ...NATIVE_PROVIDER_SLUGS].includes(galleryEntry?.slug ?? "") || Boolean(restConnectorFor({ transport, config }))) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
                 status: "draft",
                 metadata: galleryEntry
                   ? {
@@ -4488,7 +4505,7 @@ export function toolAccessService(
             companyId,
             applicationKey: normalizeKey(input.applicationName ?? input.name),
             name: input.applicationName ?? input.name,
-            type: isBrowserUseConnection({ transport, config }) || nativeProviderCatalogFor({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
+            type: isBrowserUseConnection({ transport, config }) || nativeProviderCatalogFor({ transport, config }) || restConnectorFor({ transport, config }) ? "rest_api" : transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
             status: "active",
             metadata: {},
           })

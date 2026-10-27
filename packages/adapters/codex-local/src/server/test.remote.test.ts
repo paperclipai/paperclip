@@ -372,6 +372,35 @@ describe("codex remote environment diagnostics", () => {
     expect(result.checks.some((check) => check.code === "codex_hello_probe_auth_required")).toBe(false);
   });
 
+  it("names the ChatGPT retirement when the backend rejects a retired model", async () => {
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "ERROR: {\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}}",
+      pid: 223,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-5.5" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("fail");
+    const rejected = result.checks.find((check) => check.code === "codex_hello_probe_model_rejected");
+    expect(rejected).toMatchObject({
+      level: "error",
+      message: "The Codex backend rejected gpt-5.5 for this ChatGPT account.",
+      hint: "OpenAI retired gpt-5.5 from Codex with ChatGPT sign-in on 2026-10-14. Choose gpt-6.1-sol (gpt-6-luna on Free and Go plans), or use an OpenAI API key; API-key sessions are not affected.",
+    });
+    expect(rejected?.hint).not.toContain("Upgrade Codex");
+  });
+
   it("emits the canonical adapter_auth_missing check when a sandbox hello probe reports missing auth", async () => {
     // The sandbox has no seedable credentials, so the hello probe returns an
     // authentication-required error. The Test must emit the neutral canonical

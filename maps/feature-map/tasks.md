@@ -17,11 +17,24 @@ Agent access: [companion](../agent-access-map/tasks.md).
 - `create`: `tasks/create` — capture a title/request with the intended agent, project, and attachments.
 - `organize`: `tasks/organize` — filter, sort, group, and navigate tasks without losing the selected context.
 - `properties`: `tasks/properties` — change status, priority, assignee, project, and relationships where authorized.
+
 - `discussion`: `tasks/discussion` — persist comments, references, and files on the task.
 - `completion`: `tasks/completion` — distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
 - `privacy`: `tasks/privacy` — create private tasks, share or revoke access, and inspect parent/project inheritance before changing visibility.
 
+The [Product task-properties journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
+checks only assignment to the signed-in user and persistence after reload. Its
+source is reusable across self-hosted and Cloud; Cloud live qualification is
+separate. It does not cover other property operations or agent authorization.
+
 ## How to get to it (user POV)
+
+Cold collection loads use a lightweight index and batched hierarchy context,
+then fetch diagnostic details for visible rows. Delay the index, hierarchy, and
+visible-row details independently when verifying `tasks/organize`: row heights,
+title bounds, and the first-row origin should remain stable. Test nested expansion,
+scrolling to more rows, and detail/back navigation; a collection projection must
+never suppress the full task instruction fetch.
 
 ### `new-task`
 
@@ -33,7 +46,7 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 
 ### `task-detail`
 
-Open `/issues/:issueId` from a row, mention, or direct link.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction and recent exchange first. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single legacy run with a truncated log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -61,9 +74,11 @@ Use these checks alongside the entry-point recipes below and the operation recor
 
 ### `new-task`
 
-Automated: [creation dialog](../../ui/src/components/NewIssueDialog.test.tsx) is component coverage with mocked requests.
+Automated: [board dialogs](../../ui/src/components/BoardDialogs.test.tsx) checks that the task form appears on the first synchronous open and retains its draft across reopen. [Creation dialog](../../ui/src/components/NewIssueDialog.test.tsx) covers typing while agent/project requests are pending and retaining that text when defaults arrive. These are component checks with mocked requests.
 
 Manual: Create a uniquely named task with an agent and project. Open its resulting link and reload. Confirm text, attachment, assignment, and project persisted, and verify execution started only when the task and agent are eligible.
+
+On the first New task open after a page load, confirm the form appears without a loading dialog. Delay agent and project responses, type a request, then release the responses. Confirm the choices populate without replacing the form or its text.
 
 Creation is request-first: enter **Describe a task…**, choose the assignee and
 project, and submit **Create task**. A standalone title field is not always shown.
@@ -79,7 +94,9 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 ### `task-detail`
 
-Automated: [task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
+Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Edit the title/status while enrichment is pending and verify saves and rollbacks. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear. Reconnect after several turns and verify watched runs settle. Reopen after steering with more than 50 newer activity rows; the delivered message must not reappear in the queue.
+
+Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
 
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and

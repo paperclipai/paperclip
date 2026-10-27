@@ -97,11 +97,13 @@ export function pluginRegistryService(db: Db) {
     // ----- Read -----------------------------------------------------------
 
     /** List all registered plugins ordered by install order. */
-    list: () =>
-      db
-        .select()
-        .from(plugins)
-        .orderBy(asc(plugins.installOrder)),
+    list: (filter?: { sandboxProviderDriverKey: string }) => {
+      const query = db.select().from(plugins);
+      const driverKey = filter?.sandboxProviderDriverKey;
+      return (driverKey === undefined ? query : query.where(sql`${plugins.manifestJson} @> ${JSON.stringify({
+        environmentDrivers: [{ driverKey, kind: "sandbox_provider" }],
+      })}::jsonb`)).orderBy(asc(plugins.installOrder));
+    },
 
     /**
      * List installed plugins (excludes soft-deleted/uninstalled).

@@ -191,9 +191,15 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Plugin-managed skill keys automatically included when this environment is selected. */
+  skillKeys?: string[];
+  /** Leases require a saved agent and its lifecycle preparation, including during setup. */
+  requiresAgent?: boolean;
   /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
   supportsTasks?: boolean;
   freshWorkspaceVersion?: 1;
+  /** Codex task retention and authorized run attachment, version 1. */
+  warmTaskVersion?: 1;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -493,6 +499,12 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Also offer this agent detail tab beside a task while its agent is running.
+   * GET this plugin-relative path with :entityId replaced by the agent ID.
+   * The board/agent-scoped route returns { available: boolean }.
+   */
+  taskSidePanel?: { availabilityPath: string };
+
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
    * companySettingsPage slots.
@@ -697,6 +709,8 @@ export interface PaperclipPluginManifestV1 {
   agentLifecycle?: true;
   /** Own project storage and durable workspace operations as one contract. */
   workspaceProvider?: {
+    /** Supports bounded run completion separately from removal-safety inspection. */
+    finalizationVersion?: 1;
     freshWorkspaceVersion?: 1;
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;

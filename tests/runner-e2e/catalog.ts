@@ -1,3 +1,4 @@
+import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
 import { necessaryQuestionTask, necessaryQuestionDigest } from "./necessary-question.js";
@@ -18,11 +19,13 @@ import { NATIVE_INSTRUCTION_SUITE, NATIVE_INSTRUCTION_BASE_SHA, nativeInstructio
 import { nativeCompletionProfile, NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import { chatConfirmationTasks } from "./chat-cases.js";
 import { buildConnectionSuite } from "./connection-cases.js";
+import { buildGitHubReviewJourneySuite } from "./github-review-cases.js";
 import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDigest } from "./hiring-template-cases.js";
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -1154,6 +1157,17 @@ const repositoryModelProfiles = [
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "daytona-restart-continuity", label: "Daytona controller outage continuity", manualOnly: true,
+    description: "Keep the original active native runner, task tools and saved files through more than two minutes without a controller, then commit the result without replay.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native }) => productionStoryProfile(native)),
+    environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
+    tasks: everydayTasks.filter(task => task.id === "recover-controller")
+      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
+    definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
+      maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
+      authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
+  },
+  {
     id: "codie-latency-diagnostic",
     label: "Native Codex latency diagnostic",
     description: "One real Daytona turn on the staging-selected model. API-key auth and a fresh fixture do not reproduce the staging subscription, data or Slack delivery.",
@@ -1512,7 +1526,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
     ],
-    definitionMetadata: { version: 7, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 9, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      remoteControllerDowntimeMs: 125_000,
       remoteCodexRestart: "same-active-process-lease-native-prefix-and-workspace-receipt",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
   },
@@ -1587,6 +1602,19 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
     definitionMetadata: { version: 8, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
+  },
+  {
+    id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
+    description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
+    groups: ["chat", "native"],
+    profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
+      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] }))],
+    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+      instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
+      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
+      maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
+      scenarios: chatFeatureScenarios.map(({ id, capabilities }) => ({ id, capabilities })) },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
@@ -1664,6 +1692,17 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
 
   },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
+  {
+    id: FEEDBACK_PERSISTENCE_SUITE, label: "Feedback Persistence", manualOnly: true,
+    description: "Real complaint and suggestion submissions, durable bodies, and retained tool receipts.",
+    groups: ["native"],
+    profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: [feedbackPersistenceTask(runnerTasks.find(task => task.id === "message-marker")!)], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, owner: "runner-e2e-maintainers", scheduling: "explicit-only",
+      sourceDigest: feedbackPersistenceDigest(runnerTasks.find(task => task.id === "message-marker")!), expectedWorkRuns: 1, automaticRetryPolicy: "single_attempt",
+      budgetCents: 1_000, forecast: "unmeasured; gateway manifest required for bounded qualification",
+      grading: "retained-exact-bodies-and-run-attributed-completed-tools", feedback: "synthetic-disposable-items" },
+  },
   {
     id: "core-compatibility",
     label: "Core Runner Compatibility",
@@ -1788,6 +1827,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
       } },
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
+  buildGitHubReviewJourneySuite(runnerProfiles, runnerEnvironments),
   {
     id: "repository-skills", label: "Repository skill packages", manualOnly: true,
     description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
@@ -1863,8 +1903,8 @@ export function buildRunnerMatrix(
                 ]),
               ],
               requiredCredentials: [
-                ...(task.flow === "provider_connection" ? [] : [profile.credential]),
-                ...(task.flow !== "provider_connection" && environment.credential ? [environment.credential] : []),
+                ...(["provider_connection", "github_review_journey"].includes(task.flow) ? [] : [profile.credential]),
+                ...(!["provider_connection", "github_review_journey"].includes(task.flow) && environment.credential ? [environment.credential] : []),
                 ...(task.requiredCredentials ?? []),
               ],
             }))
@@ -2042,3 +2082,5 @@ export function runnerExecutionById(id: string): MatrixExecution {
   if (!execution) throw new Error(`Unknown runner E2E execution id: ${id}`);
   return execution;
 }
+
+export { productJourneys } from "./product-journeys/catalog.js";

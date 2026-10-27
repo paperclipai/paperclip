@@ -3,20 +3,22 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { acquireGitExpirationLocks } from "./git-workspace-expiration-locks.js";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases,
   workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, withDedicatedDbConnection, type Db } from "@paperclipai/db";
-import { createGitRemoteAuthProvider } from "./git-credentials.js";
+import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import type { StorageService } from "../storage/types.js";
+import { TASK_DIRECTORY_RETENTION_KEY } from "./isolated-task-directory-snapshot.js";
 import { currentRestorePointSnapshot, RestorePointSkip, type RestorePointLimits } from "./git-restore-point.js";
 import { abandonGitRestorePoint, abandonGitRestorePointsByKey, activateGitRestorePoints, restorePointHistoryUnchanged, restorePointSnapshotMatches, storeGitRestorePoint } from "./git-restore-point-storage.js";
 import { withIsolatedRepositorySourceLock, verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
+import { nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
-import { assertReproducibleGitFiles, assertReproducibleBaseGitStorage, assertReproducibleManagedCheckout, inspectGitCacheRecipe, inspectGitCacheRecipeForRestorePoint, readGitCacheRestoration, GIT_CACHE_RESTORATION_SCHEMA_V2,
+import { assertReproducibleGitFiles, assertReproducibleBaseGitStorage, assertReproducibleManagedCheckout, provenManagedCheckoutHistory, inspectGitCacheRecipe, inspectGitCacheRecipeForRestorePoint, readGitCacheRestoration, GIT_CACHE_RESTORATION_SCHEMA_V2,
   verifyRemoteGitCommit, gitCacheExpirationLockLocations, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, type ManagedCheckoutProver, gitCacheCommand, readGitCacheExpiration, finishGitCacheTrash, type GitCacheExpiration, type GitCacheRestoration, GIT_CACHE_RESTORATION_KEY, GIT_CACHE_EXPIRATION_REASON } from "./git-workspace-restoration.js";
 
-async function allocatedBytes(target: string, shouldContinue: () => boolean): Promise<number> {
+export async function allocatedBytes(target: string, shouldContinue: () => boolean): Promise<number> {
   if (!shouldContinue()) throw new Error("scan_stopped");
   const entry = await fs.lstat(target);
   if (!entry.isDirectory() && !entry.isFile() && !entry.isSymbolicLink()) throw new Error("unsupported_filesystem_entry");
@@ -35,7 +37,7 @@ export function withAnonymousGitFallback(provider: GitRemoteAuthProvider): GitRe
 }
 
 function expirationGitAuth(db: Db, workspace: Workspace) {
-  return withAnonymousGitFallback(createGitRemoteAuthProvider(db, workspace.companyId, { issueId: workspace.sourceIssueId! }));
+  return withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!));
 }
 
 const EXPIRATION_KEY = "gitCacheExpiration";
@@ -43,8 +45,33 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Expiration = GitCacheExpiration;
+export type GitExpirationFailure = { name: string; code: string | null; at: string | null; stderr: string | null };
+
 export type GitExpirationResult = { candidate: boolean; expired: boolean; reclaimedBytes: number;
-  candidateBytes: number; baseExpired: boolean; skipReason: string | null; restorePoint: boolean };
+  candidateBytes: number; baseExpired: boolean; skipReason: string | null; restorePoint: boolean; failure?: GitExpirationFailure };
+
+function redactGitOutput(text: string) {
+  return text.replace(/:\/\/[^@\s/]+@/g, "://<redacted>@")
+    .replace(/(authorization|token|password|secret)(\s*[:=]\s*)[^\n]*/gi, "$1$2<redacted>");
+}
+
+function recordSkip(result: GitExpirationResult, error: unknown) {
+  result.skipReason = error instanceof RestorePointSkip ? error.reason : skipReason(error);
+  if (result.skipReason === "inspection_failed") result.failure = describeGitExpirationFailure(error);
+}
+
+export function describeGitExpirationFailure(error: unknown): GitExpirationFailure {
+  if (!(error instanceof Error)) return { name: typeof error, code: null, at: null, stderr: null };
+  const details = error as Error & { code?: unknown; stderr?: unknown };
+  const frame = error.stack?.split("\n").slice(1).map(line => line.trim()).find(line => line.startsWith("at ")) ?? null;
+  const stderr = typeof details.stderr === "string" ? details.stderr : Buffer.isBuffer(details.stderr) ? details.stderr.toString("utf8") : "";
+  return {
+    name: error.name,
+    code: details.code === undefined || details.code === null ? null : String(details.code),
+    at: frame ? frame.slice(0, 300) : null,
+    stderr: stderr.trim() ? redactGitOutput(stderr.trim()).slice(0, 500) : null,
+  };
+}
 
 export type GitRestorePointExpirationOptions = {
   storage: StorageService;
@@ -74,7 +101,7 @@ async function restorePointBoundary(cwd: string, repoUrl: string, headOnRemote: 
 }
 
 /** Re-read the whole tree and every runtime/recovery consumer immediately before deletion. */
-function expirationScope(workspace: Workspace) {
+export function expirationScope(workspace: Workspace) {
   return sql`
     WITH RECURSIVE tree AS (
       SELECT id, status, completed_at, cancelled_at, updated_at FROM ${issues}
@@ -98,6 +125,21 @@ function expirationScope(workspace: Workspace) {
     )`;
 }
 
+function issueUsesWorkspace(workspace: Pick<Workspace, "id" | "sourceIssueId">) {
+  return sql`(${issues.id} = ${workspace.sourceIssueId} OR ${issues.executionWorkspaceId} = ${workspace.id}
+    OR (${issues.workspaceSelection}->'selection'->>'kind' = 'existing'
+      AND ${issues.workspaceSelection}->'selection'->>'workspaceId' = ${workspace.id})
+    OR (${issues.workspacePendingSelection}->'intent'->'selection'->>'kind' = 'existing'
+      AND ${issues.workspacePendingSelection}->'intent'->'selection'->>'workspaceId' = ${workspace.id}))`;
+}
+
+export async function listIssuesUsingGitWorkspace(db: Db | Tx, workspace: Pick<Workspace, "id" | "companyId" | "sourceIssueId">, issueIds: string[]) {
+  if (issueIds.length === 0) return new Set<string>();
+  const rows = await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, workspace.companyId), inArray(issues.id, issueIds), issueUsesWorkspace(workspace)));
+  return new Set(rows.map(row => row.id));
+}
+
 export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspace): Promise<Date | null> {
   if (!workspace.sourceIssueId) return null;
   const rows = await db.execute<{ at: string | Date | null }>(sql`${expirationScope(workspace)}
@@ -110,21 +152,33 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
   return at ? new Date(at) : null;
 }
 
-export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date) {
+export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date,
+  options: { closedSiblingsAllowed?: boolean } = {}) {
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
+  const siblingBlocks = options.closedSiblingsAllowed
+    ? sql`AND (other.status NOT IN ('archived', 'cleanup_failed') OR other.closed_at IS NULL
+        OR other.metadata->${TASK_DIRECTORY_RETENTION_KEY}->>'removed' = 'false')`
+    : sql``;
   const closedTree = idleCutoff ? sql`
       NOT EXISTS (SELECT 1 FROM tree WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
       AND NOT EXISTS (SELECT 1 FROM bound WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
       AND NOT EXISTS (SELECT 1 FROM relevant_runs WHERE greatest(created_at, started_at, finished_at) > ${idleCutoff.toISOString()}::timestamptz)` : sql`
-      NOT EXISTS (SELECT 1 FROM tree WHERE status NOT IN ('done', 'cancelled')
-        OR coalesce(CASE WHEN status = 'done' THEN completed_at ELSE cancelled_at END, updated_at) > ${new Date(now.getTime() - DAY_MS).toISOString()}::timestamptz)
+      NOT EXISTS (SELECT 1 FROM ${issues} WHERE ${issues.companyId} = ${workspace.companyId}
+        AND ${issues.id} IN (SELECT id FROM tree) AND ${issueUsesWorkspace(workspace)}
+        AND (${issues.status} NOT IN ('done', 'cancelled')
+          OR coalesce(CASE WHEN ${issues.status} = 'done' THEN ${issues.completedAt} ELSE ${issues.cancelledAt} END, ${issues.updatedAt}) > ${new Date(now.getTime() - DAY_MS).toISOString()}::timestamptz))
       AND NOT EXISTS (SELECT 1 FROM ${issues} WHERE company_id = ${workspace.companyId}
         AND execution_workspace_id = ${workspace.id} AND status NOT IN ('done', 'cancelled'))`;
+  const recoveryActionBlocks = idleCutoff ? sql`true` : sql`(cause = 'native_workspace_finalization_owner_unverified'
+          OR evidence->'systemRecovery'->>'state' IN ('scheduled', 'running', 'awaiting_evidence'))`;
+  const finalizationBlocks = idleCutoff
+    ? sql`(f.phase <> 'committed' OR f.lease_owner IS NOT NULL OR f.recovery_state IS NOT NULL)`
+    : sql`(f.lease_owner IS NOT NULL OR f.phase NOT IN ('committed', 'terminal_failure'))`;
   const rows = await tx.execute<{ allowed: boolean }>(sql`${expirationScope(workspace)}
     SELECT CASE WHEN
       EXISTS (SELECT 1 FROM ${executionWorkspaces} other WHERE other.id <> ${workspace.id}
         AND (other.cwd = ${workspace.cwd} OR other.provider_ref = ${workspace.cwd}
-          OR left(other.cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/'))
+          OR left(other.cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/') ${siblingBlocks})
       OR EXISTS (SELECT 1 FROM ${projectWorkspaces} WHERE cwd = ${workspace.cwd}
         OR left(cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/')
     THEN false ELSE (
@@ -133,10 +187,11 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
       AND NOT EXISTS (SELECT 1 FROM relevant_runs WHERE status NOT IN ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
         OR finished_at IS NULL OR controller_lease_expires_at > now())
       AND NOT EXISTS (SELECT 1 FROM ${issueRecoveryActions} WHERE company_id = ${workspace.companyId}
-        AND source_issue_id IN (SELECT id FROM tree) AND status IN ('active', 'escalated'))
+        AND source_issue_id IN (SELECT id FROM tree) AND status IN ('active', 'escalated')
+        AND ${recoveryActionBlocks})
       AND NOT EXISTS (SELECT 1 FROM ${nativeRunFinalizations} f WHERE f.company_id = ${workspace.companyId}
         AND (f.issue_id IN (SELECT id FROM tree) OR f.run_id IN (SELECT id FROM relevant_runs))
-        AND (f.phase <> 'committed' OR f.lease_owner IS NOT NULL OR f.recovery_state IS NOT NULL))
+        AND ${finalizationBlocks})
       AND NOT EXISTS (SELECT 1 FROM ${environmentLeases} l WHERE l.company_id = ${workspace.companyId}
         AND (l.execution_workspace_id = ${workspace.id} OR l.heartbeat_run_id IN (SELECT id FROM relevant_runs))
         AND (l.status = 'pending_cleanup' OR l.cleanup_status = 'failed' OR l.metadata ? 'nativeWorkspaceExportResume'
@@ -205,10 +260,11 @@ function managedCheckoutProver(db: Db, workspace: Workspace, auth: GitRemoteAuth
     const source = selectRestoredProjectRepositories(await rows, readGitCacheRestoration(workspace)?.contents).find(row => row.repoUrl
       && managedProjectCheckoutName({ id: row.id, repoUrl: row.repoUrl, repoRef: row.repoRef, cwd: row.cwd }) === name);
     if (!source?.repoUrl) throw new Error("unknown_managed_checkout");
-    try { await assertReproducibleManagedCheckout(checkoutPath, { repoUrl: source.repoUrl, resolveGitAuth: auth, signal }); }
+    const baseCandidates = nestedRepositoryBaseCandidates({ companyId: workspace.companyId, projectId: workspace.projectId, repoUrl: source.repoUrl });
+    try { await assertReproducibleManagedCheckout(checkoutPath, { repoUrl: source.repoUrl, resolveGitAuth: auth, signal, baseCandidates }); }
     catch (error) {
       if (!restorePoints || !CHECKOUT_RESTORE_POINT_RELAXABLE.has(skipReason(error))) throw error;
-      const { headOnRemote } = await assertReproducibleManagedCheckout(checkoutPath, { repoUrl: source.repoUrl, resolveGitAuth: auth, signal, restorePoint: true });
+      const { headOnRemote } = await assertReproducibleManagedCheckout(checkoutPath, { repoUrl: source.repoUrl, resolveGitAuth: auth, signal, restorePoint: true, baseCandidates });
       restorePoints.set(name, { headOnRemote, path: checkoutPath, repoUrl: source.repoUrl });
     }
     checkouts.set(name, await readManagedCheckoutContents(checkoutPath, name, { ...source, repoUrl: source.repoUrl }, signal));
@@ -271,7 +327,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
           if (options.expireBase) {
             try { result.candidateBytes += await inspectBase(db, { ...workspace,
               metadata: { ...workspace.metadata, [GIT_CACHE_RESTORATION_KEY]: recipe } }, options.signal, present); }
-            catch (error) { result.skipReason = skipReason(error); }
+            catch (error) { recordSkip(result, error); }
           }
           return result;
         }
@@ -294,7 +350,9 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
             } else if (!headOnRemote) throw new Error("upstream_commit_unverified");
             for (const [name, need] of [...checkoutRestorePoints.entries()].sort(([a], [b]) => a.localeCompare(b))) {
               const storedCheckout = await storeGitRestorePoint({ db, storage: options.restorePoint!.storage, workspace: owner,
-                cwd: need.path, checkout: name, generation, headOnRemote: need.headOnRemote, limits: options.restorePoint!.limits,
+                cwd: need.path, checkout: name, generation, headOnRemote: need.headOnRemote,
+                resolvePreserveCommits: async () => (await provenManagedCheckoutHistory(need.path, need.repoUrl, auth, options.signal)).preserve,
+                limits: options.restorePoint!.limits,
                 signal: options.signal, upstreamCommits: await restorePointBoundary(need.path, need.repoUrl, need.headOnRemote, auth, options.signal) });
               if (!storedCheckout) {
                 if (!need.headOnRemote) throw new Error("unpushed_managed_checkout");
@@ -333,7 +391,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
           await persist();
         }
         await recoverGitCacheExpirationLocks(workspace!);
-        const lockLocations = gitCacheExpirationLockLocations(workspace!);
+        const lockLocations = await gitCacheExpirationLockLocations(workspace!);
         await options.beforeDelete?.(workspace!);
         if (!await isGitWorkspaceExpirationEligible(tx, workspace, options.now, options.idleCutoff)) throw new Error("live_or_unresolved_consumer");
         if (!state.workspaceRemoved && present) {
@@ -414,7 +472,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
               result.reclaimedBytes += bytes;
               result.baseExpired = true;
             }
-          } catch (error) { result.skipReason = skipReason(error); }
+          } catch (error) { recordSkip(result, error); }
         }
         state.completed = recipe.sourceKind !== "isolated_remote" || !options.expireBase || (result.baseExpired || !await exists(recipe.sourcePath)) && (!state.baseTrash || !await exists(state.baseTrash));
         await persist();
@@ -423,7 +481,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
   } catch (error) {
     for (const ledgerId of pendingRestorePoints) await abandonGitRestorePoint(db, ledgerId).catch(() => undefined);
     options.signal?.throwIfAborted();
-    result.skipReason = error instanceof RestorePointSkip ? error.reason : skipReason(error);
+    recordSkip(result, error);
     return result;
   }
 }

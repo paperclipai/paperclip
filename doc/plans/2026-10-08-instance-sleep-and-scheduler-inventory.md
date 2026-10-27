@@ -613,12 +613,15 @@ Longer polling intervals alone do not complete an item.
   artifacts, deliveries, and ownership before deleting resources. Source:
   [execution-workspaces.ts](../../server/src/services/execution-workspaces.ts).
 
-- [ ] **JOB-17 — Sandbox cleanup and orphan spools.** Current: **30s** scans even
-  when attempts have longer staleness/backoff. Change: durable cleanup queue with
-  next retry, immediate failed-release activation, and provider/fleet backstop.
-  **Complete when:** idle scans stop without leaking paid sandboxes or ignoring
-  malformed/unpersisted spool entries. Source:
-  [heartbeat.ts](../../server/src/services/heartbeat.ts), `sweepPendingCleanupLeases`.
+- [ ] **JOB-17 — Sandbox cleanup and orphan spools (partially migrated).**
+  Pending lease cleanup now uses commit signals and saved retry/claim deadlines.
+  Deferred orphan buffers wake the worker without a DB connection; startup loads
+  the existing spool. Historical provider verification stops when matching proof
+  is complete. Empty maintenance passes no longer call these sweeps. Discovery of
+  orphaned active leases and legacy shutdown workspace settlement still belong
+  to the broader run-recovery loop. No Cloud sleep exemptions changed. See
+  [idle-environment-cleanup.md](../idle-environment-cleanup.md) for producer scope,
+  recovery, tests, and remaining limits.
 
 - [x] **JOB-18 — Adapter login and setup-token reapers.** Replaced the default
   **30s** empty scans with commit-aware workers, session/promotion expiry

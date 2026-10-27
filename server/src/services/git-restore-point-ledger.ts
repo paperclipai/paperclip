@@ -77,7 +77,9 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
       eq(executionWorkspaceRestorePoints.status, "active"),
       eq(executionWorkspaceRestorePoints.reviewGeneration, row.reviewGeneration),
     );
-    const deleteAfter = !tree.exists || tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
+    const retainedFrom = tree.closedAt && row.activatedAt && row.objectKey.includes("/task-directory/")
+      ? Math.max(tree.closedAt.getTime(), row.activatedAt.getTime()) : tree.closedAt?.getTime();
+    const deleteAfter = !tree.exists || tree.open || retainedFrom === undefined ? null : new Date(retainedFrom + retentionMs);
     if (!tree.exists || (deleteAfter && deleteAfter.getTime() <= at.getTime())) {
       const claimed = await db.update(executionWorkspaceRestorePoints)
         .set({ status: tree.exists ? "expiring" : "delete_requested", lastError: null, updatedAt: at })

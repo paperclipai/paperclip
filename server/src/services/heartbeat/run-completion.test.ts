@@ -9,6 +9,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
+import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -77,15 +78,19 @@ it("constructs completion handlers without querying or starting work", () => {
 });
 
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("heartbeat run completion boundary", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     // Keep the accounting transaction real without reading provider receipt files.
     vi.spyOn(usageReceipts, "indexPendingUsageReceipts").mockResolvedValue(new Map());
     vi.spyOn(usageReceipts, "recoverPendingRunUsageReceipts").mockResolvedValue([]);
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
-    db = createDb(database.connectionString);
+    const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
+      db = createDb(database.connectionString);
+    }
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.restoreAllMocks(); });
@@ -332,6 +337,18 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     await f.completion.failRun(f.failure(new Error("transport ended")));
     expect((await read(f.run.id)).errorCode).toBe("native_result_missing");
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+  });
+
+  it("persists a project denial without provider work or an automatic retry", async () => {
+    const f = await fixture();
+    const projectId = randomUUID();
+    await f.completion.failRunSetup(f.setup(new ProjectAccessDeniedError(projectId)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "project_access_denied",
+      resultJson: { projectAccessDenied: { projectId }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {

@@ -32,6 +32,9 @@ const subject = "user_test";
 const originRejectionContract = JSON.parse(readFileSync(
   new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
 )) as { status: number; body: { error: string } };
+const refreshReauthorizationContract = JSON.parse(readFileSync(
+  new URL("./fixtures/cloud-connector-refresh-reauthorization.json", import.meta.url), "utf8",
+)) as { status: number; body: { error: string } };
 
 function rawPrivateKey(key: KeyObject): string {
   const jwk = key.export({ format: "jwk" }) as { d?: string };
@@ -140,6 +143,24 @@ describe("Paperclip Cloud connector", () => {
       code: "REAUTHORIZATION_REQUIRED", status: 409,
       message: "Paperclip Cloud connector rejected the request (operation=session, status=409, reason=UNKNOWN_BROKER_ERROR)",
     });
+  });
+
+  it("asks for reconnection when the provider rejects a refresh grant", async () => {
+    const connector = createPaperclipCloudConnector({
+      config: config().config,
+      request: vi.fn(async () => Response.json(refreshReauthorizationContract.body, {
+        status: refreshReauthorizationContract.status,
+      })) as typeof fetch,
+    });
+    const error = await connector.refresh({
+      subject, companyId, profile: "gmail.read", refreshToken: "refresh-secret",
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(PaperclipCloudConnectorError);
+    expect(error).toMatchObject({
+      code: "REAUTHORIZATION_REQUIRED", status: 409,
+      message: "Paperclip Cloud connector rejected the request (operation=refresh, status=409, reason=PROVIDER_REAUTHORIZATION_REQUIRED)",
+    });
+    expect(JSON.stringify(error)).not.toContain("refresh-secret");
   });
 
   it("keeps the original status when the error body stream fails", async () => {

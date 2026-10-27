@@ -276,6 +276,7 @@ export async function setupFirstTaskFixtures(input: {
   daytonaImage?: string;
   deadlineAt?: number;
   observe: (fixtures: LiveFixtureValues) => void;
+  onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<FirstTaskFixtureValues> {
   const { page, api, execution, nonce } = input;
   await api.patch("/api/instance/settings/experimental", {
@@ -296,6 +297,7 @@ export async function setupFirstTaskFixtures(input: {
   const companies = await api.get<Row[]>("/api/companies");
   const company = companies.find((c) => c.name === `First task ${nonce}`);
   if (!company) throw new Error("Onboarding fixture company missing");
+  await input.onCompanyCreated?.(company.id);
   const fixtures = await provisionFirstTaskFixtures({
     api,
     execution,

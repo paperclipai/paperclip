@@ -57,6 +57,15 @@ Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx)
 
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
+For a repository-free isolated task, complete an explicitly fresh retry, save a
+marker, then send ordinary new input. It must retain the bound attempt directory
+and marker. A later explicitly fresh retry must use a separate clean sibling.
+The [production preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and real private directories; it also rejects changed bindings.
+The [directory boundary suite](../../server/src/services/isolated-task-directory.test.ts)
+checks namespace, missing-directory and symlink refusal. Neither suite proves a
+hosted provider turn.
+
 For slow source preparation, configure a short PostgreSQL idle-transaction
 timeout in a disposable instance. Hold preparation beyond that interval and
 verify it retains its source lock, rejects competing preparation, and leaves

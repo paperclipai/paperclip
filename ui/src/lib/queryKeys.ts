@@ -222,6 +222,7 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
+    projectAccess: (id: string) => ["agents", "detail", id, "project-access"] as const,
     identity: (id: string) => ["agents", "identity", id] as const,
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,

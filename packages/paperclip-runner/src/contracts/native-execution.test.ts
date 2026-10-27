@@ -194,6 +194,13 @@ describe("NativeExecutionInputV1", () => {
     });
     expect(withEffort.provider).toMatchObject({ kind: "codex", reasoningEffort: "ultra" });
     expect(parseNativeExecutionInput(withEffort)).toEqual(withEffort);
+    const disabledSearch = parseNativeExecutionInput({ ...withEffort, provider: { ...withEffort.provider, webSearch: "disabled" } });
+    expect(disabledSearch.provider).toHaveProperty("webSearch", "disabled");
+    expect(parseNativeExecutionInput(JSON.parse(JSON.stringify(disabledSearch)))).toEqual(disabledSearch);
+    for (const webSearch of [true, false, "live", "cached", null]) {
+      expect(() => parseNativeExecutionInput({ ...withEffort, provider: { ...withEffort.provider, webSearch } })).toThrow("webSearch");
+    }
+
     expect(() => parseNativeExecutionInput({
       ...withEffort,
       provider: { kind: "codex", model: "gpt-6-astra", approvalPolicy: "on-request", reasoningEffort: "impossible" },

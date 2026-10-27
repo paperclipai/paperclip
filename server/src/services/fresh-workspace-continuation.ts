@@ -56,6 +56,10 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
     sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,mode}' = 'fresh_isolated_workspace'`,
+    // Historical sibling holds also record the continuation, but only the
+    // recovery generation owns its committed fresh attempt. Select that proof.
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,freshAttemptRunId}' = ${run.id}`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,sourceRunId}'`,
     sql`${issueRecoveryActions.evidence}->>'runId' = ${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,readiness,sourceRunId}'`,
   )).limit(1);
   if (!action) {
@@ -113,8 +117,9 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
   const parsed = freshReadinessSchema.safeParse(authorization?.readiness);
   if (!parsed.success) return null;
   const readiness = parsed.data;
-  if (action?.evidence.runId !== readiness.sourceRunId ||
-      readSystemRecovery(action.evidence)?.freshAttemptRunId !== run.id) return null;
+  const recovery = readSystemRecovery(action.evidence);
+  if (action.evidence.runId !== readiness.sourceRunId || recovery?.sourceRunId !== readiness.sourceRunId ||
+      recovery.freshAttemptRunId !== run.id) return null;
   const [wake] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.id, readiness.retryIntentId),
     eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),

@@ -111,11 +111,27 @@ describe("remote restart lifecycle evidence", () => {
     expect(gradeRemoteRestart(missingPrefix)[1]!.passed).toBe(false);
   });
 
-  it.each(["replacement", "second submission", "duplicate tool receipt", "missing terminal"])("rejects %s at completion", fault => {
+  it("rejects failed native tool calls even when the original turn eventually succeeds", () => {
+    const { evidence, event } = fixture();
+    const rows = [...fixture().afterRows, event(6, "tool.execution.completed", { executionId: "failed-write", status: "failed", output: "private timeout" }),
+      event(7, "turn.completed"), event(8, "run.result.accepted", {}, "control_plane", 1), event(9, "run.terminal", {}, "control_plane", 2)];
+    evidence.final.events = projectRemoteRestartEvents(evidence.final.run, rows);
+    expect(gradeRemoteRestart(evidence).every(check => check.passed)).toBe(false);
+  });
+
+  it("accepts identical activity receipt redelivery without treating it as another submission", () => {
+    const { evidence } = fixture();
+    evidence.final.events.push({ ...evidence.final.events[1]!, seq: 10, sourceSeq: 10, sourceEventId: "runner:run:10" },
+      { ...evidence.final.events[3]!, seq: 11, sourceSeq: 11, sourceEventId: "runner:run:11" });
+    expect(gradeRemoteRestart(evidence).every(check => check.passed)).toBe(true);
+  });
+
+  it.each(["replacement", "second submission", "changed tool receipt", "changed start receipt", "missing terminal"])("rejects %s at completion", fault => {
     const { evidence } = fixture();
     if (fault === "replacement") evidence.final.run.id = "replacement";
     if (fault === "second submission") evidence.final.events.push({ ...evidence.final.events[0]!, seq: 10, sourceSeq: 10, sourceEventId: "runner:run:10" });
-    if (fault === "duplicate tool receipt") evidence.final.events.push({ ...evidence.final.events[3]!, seq: 10, sourceSeq: 10, sourceEventId: "runner:run:10" });
+    if (fault === "changed tool receipt") evidence.final.events.push({ ...evidence.final.events[3]!, seq: 10, sourceSeq: 10, sourceEventId: "runner:run:10", payloadSha256: "0".repeat(64) });
+    if (fault === "changed start receipt") evidence.final.events.push({ ...evidence.final.events[1]!, seq: 10, sourceSeq: 10, sourceEventId: "runner:run:10", payloadSha256: "0".repeat(64) });
     if (fault === "missing terminal") evidence.final.events.pop();
     expect(gradeRemoteRestart(evidence)[1]!.passed).toBe(false);
   });

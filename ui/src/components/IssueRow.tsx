@@ -2,7 +2,7 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useState, type CSSProperties, type ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { Archive, Flag } from "lucide-react";
+import { Archive, Flag, CircleAlert } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -42,6 +42,8 @@ export interface IssueRowProps {
   appearance?: IssueRowAppearance;
   /** Refreshed task rows share their anatomy at either density. */
   density?: IssueRowDensity;
+  /** Reserve collection geometry while optional diagnostics arrive. */
+  stableLayout?: boolean;
   /** Opt-in complete column contract for refreshed task lists. */
   columnValues?: TaskRowColumnValues;
   /** Interactive disclosure or selection control before the canonical status glyph. */
@@ -135,6 +137,7 @@ export function IssueRow({
   presentation = "legacy",
   appearance = "default",
   density = "comfortable",
+  stableLayout = false,
   columnValues,
   leadingControl,
   statusSlot,
@@ -294,6 +297,8 @@ export function IssueRow({
           onMouseLeave={refreshed ? () => { clearHoveredCell(); setTitleFocused(false); } : undefined}
           role={refreshed && columnValues ? "row" : undefined}
           data-slot="task-row"
+          data-issue-id={issue.id}
+          data-issue-row-details={issue.id}
           data-unread={isUnread ? "true" : undefined}
           data-appearance={refreshed ? "refreshed" : undefined}
           data-density={refreshed ? density : undefined}
@@ -310,6 +315,7 @@ export function IssueRow({
             selected ? "bg-accent/50 hover:bg-accent/50" : "hover:bg-accent/50",
             checklistCurrentStep && "bg-primary/5",
             refreshed && "task-row-refreshed",
+            stableLayout && !refreshed && "task-row-stable",
             className,
           )}
         >
@@ -377,7 +383,21 @@ export function IssueRow({
               >
                 {issue.title}{titleSuffix}
               </span>}
-              {recoveryIndicator}
+              {stableLayout ? (
+                <span data-slot="task-row-recovery">
+                  <span className="hidden sm:inline">{recoveryIndicator}</span>
+                  {recoveryIndicator ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span tabIndex={0} aria-label="Task recovery status" className="relative z-10 inline-flex text-muted-foreground sm:hidden">
+                          <CircleAlert className="h-4 w-4" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{recoveryIndicator}</TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                </span>
+              ) : recoveryIndicator}
               {mobileTitleMeta ? (
                 <span className="ml-auto shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground sm:hidden">
                   {mobileTitleMeta}
@@ -404,7 +424,9 @@ export function IssueRow({
               </>
             ) : (
               <>
-                {externalObjectSummary ? (
+                {stableLayout ? (
+                  <span data-slot="task-row-external"><ExternalObjectStatusSummary summary={externalObjectSummary} compact /></span>
+                ) : externalObjectSummary ? (
                   <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
                 ) : null}
                 {metadata ? <span data-slot="task-row-metadata" data-marquee-cell={refreshed ? "metadata" : undefined} className="min-w-0">{refreshed ? <CellMarquee cell="metadata">{metadata}</CellMarquee> : metadata}</span> : null}
@@ -431,6 +453,7 @@ export function IssueRow({
 
   return (
     <div
+      data-issue-row-details={issue.id}
       onMouseEnter={onMouseEnter}
       className={cn(
         // No color transition on the row band: hover/selection must snap

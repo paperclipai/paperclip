@@ -1,3 +1,4 @@
+import { writeEnvironmentCleanup, notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { and, desc, eq, inArray, lte } from "drizzle-orm";
@@ -594,7 +595,7 @@ export function environmentCustomImageService(
   ): Promise<EnvironmentCustomImageSetupSession> {
     const status = normalizePersistedStatus(providerSession.status, fallbackStatus);
     const now = new Date();
-    const row = await db
+    const row = await writeEnvironmentCleanup(db, tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         providerLeaseId: providerSession.providerLeaseId ?? null,
@@ -607,7 +608,7 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, session.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
   }
@@ -619,7 +620,7 @@ export function environmentCustomImageService(
     metadata?: Record<string, unknown> | null;
   }): Promise<EnvironmentCustomImageSetupSession> {
     const now = new Date();
-    const row = await db
+    const row = await writeEnvironmentCleanup(db, tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         status: input.status,
@@ -630,7 +631,7 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, input.sessionId))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
   }
@@ -1018,6 +1019,7 @@ export function environmentCustomImageService(
                 supersededRows.map((row) => row.id),
               ));
           }
+          await notifyEnvironmentCleanup(tx);
           await tx
             .update(environmentCustomImageSetupSessions)
             .set({

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import type { Duplex } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agentApiKeys, companyMemberships, instanceUserRoles, heartbeatRuns, projects } from "@paperclipai/db";
 import type { DeploymentMode, LiveEvent } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "../middleware/logger.js";
@@ -45,7 +45,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
 };
 
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
-import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 import { canActorReadCase } from "../services/case-access.js";
 
 interface UpgradeContext {
@@ -301,12 +301,22 @@ export function setupLiveEventsWebSocketServer(
       const payload = event.payload;
       const issueId = typeof payload.issueId === "string" ? payload.issueId
         : payload.entityType === "issue" && typeof payload.entityId === "string" ? payload.entityId : null;
+      const runId = typeof payload.runId === "string" ? payload.runId
+        : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
+      const readBindings: Parameters<typeof getHeartbeatRunReadDecisions>[3][number][] = [];
       if (issueId) {
-        const [issue] = await db.select({ id: issues.id }).from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, event.companyId))).limit(1);
-        if (!issue || !(await access.decide({ actor: context!.actor, action: "issue:read",
-          resource: { type: "issue", companyId: event.companyId, issueId } })).allowed) return null;
+        readBindings.push({ companyId: event.companyId, scopeKind: "issue", issueId });
       }
+      if (runId) {
+        const [run] = await db.select({
+          companyId: heartbeatRuns.companyId,
+          scopeKind: heartbeatRuns.scopeKind,
+          issueId: heartbeatRuns.issueId,
+        }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
+        if (!run) return null;
+        readBindings.push(run);
+      }
+      if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
       if (["company_skill", "company_skill_source"].includes(String(payload.entityType)) && typeof payload.entityId === "string") {
         try {
           const skills = skillAccessService(db, context!.actor);
@@ -319,12 +329,6 @@ export function setupLiveEventsWebSocketServer(
           .where(and(eq(projects.id, payload.entityId), eq(projects.companyId, event.companyId))).limit(1);
         if (!project || !(await access.decide({ actor: context!.actor, action: "project:read",
           resource: { type: "project", companyId: event.companyId, projectId: project.id } })).allowed) return null;
-      }
-      const runId = typeof payload.runId === "string" ? payload.runId
-        : payload.entityType === "heartbeat_run" && typeof payload.entityId === "string" ? payload.entityId : null;
-      if (runId) {
-        const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, event.companyId)));
-        if (!run || !(await canActorReadHeartbeatRun(db, access, context!.actor, run))) return null;
       }
       if (event.type.startsWith("heartbeat.run.")) return runId ? event : null;
       if (event.type === "agent.session.goal.changed") return issueId ? event : null;

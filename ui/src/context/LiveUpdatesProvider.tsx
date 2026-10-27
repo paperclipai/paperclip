@@ -7,6 +7,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import {
@@ -87,6 +88,13 @@ interface LiveEventSubscription {
 const LiveEventSubscriptionContext =
   createContext<LiveEventSubscription | null>(null);
 
+const CompanyLiveConnectionContext = createContext<string | null>(null);
+
+export function useHasCompanyLiveConnection(companyId: string | null | undefined): boolean {
+  const connectedCompanyId = useContext(CompanyLiveConnectionContext);
+  return Boolean(companyId && connectedCompanyId === companyId);
+}
+
 function dispatchLiveEventToSubscribers(
   subscribers: Set<CompanyLiveEventHandler>,
   expectedCompanyId: string,
@@ -124,6 +132,51 @@ export function useCompanyLiveEvent(handler: CompanyLiveEventHandler): void {
       handlerRef.current(event);
     });
   }, [subscription]);
+}
+
+export function useTaskRunLiveUpdates(scope: {
+  companyId: string | null | undefined;
+  issueId: string | null | undefined;
+  issueQueryRef: string;
+  assigneeAgentId: string | null | undefined;
+}): boolean {
+  const connected = useHasCompanyLiveConnection(scope.companyId);
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  const refreshOwner = useRef<{ active: boolean } | null>(null);
+  const refreshRuns = useCallback((coveredByVisibleRoute = false) => {
+    const owner = refreshOwner.current;
+    if (!owner?.active) return;
+    for (const queryKey of [queryKeys.issues.liveRuns(scope.issueQueryRef), queryKeys.issues.activeRun(scope.issueQueryRef)]) {
+      const query = queryClient.getQueryCache().find({ queryKey });
+      if (query?.state.fetchStatus === "fetching") {
+        void (query.promise ?? queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }))
+          .catch(() => undefined).then(() => {
+            if (owner.active) return queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+          });
+      } else if (!coveredByVisibleRoute) {
+        void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+      }
+    }
+  }, [queryClient, scope.issueQueryRef]);
+  useEffect(() => {
+    const owner = { active: true };
+    refreshOwner.current = owner;
+    if (connected && scope.issueId && scope.assigneeAgentId) refreshRuns();
+    return () => { owner.active = false; };
+  }, [connected, refreshRuns, scope.companyId, scope.issueId, scope.assigneeAgentId]);
+  useCompanyLiveEvent((event) => {
+    if (event.companyId !== scope.companyId || !scope.issueId ||
+      (event.type !== "heartbeat.run.queued" && event.type !== "heartbeat.run.status")) return;
+    const issueId = readString(event.payload.issueId);
+    const matches = issueId
+      ? issueId === scope.issueId || issueId === scope.issueQueryRef
+      : true;
+    if (!matches) return;
+    const visible = resolveVisibleIssueRouteContext(queryClient, location.pathname);
+    refreshRuns(Boolean(visible?.issueRefs.has(scope.issueQueryRef) && runEventMatchesVisibleIssue(visible, event.payload)));
+  });
+  return connected && Boolean(scope.issueId && scope.assigneeAgentId);
 }
 
 function readString(value: unknown): string | null {
@@ -476,6 +529,13 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   );
 }
 
+function runEventMatchesVisibleIssue(context: VisibleIssueRouteContext, payload: Record<string, unknown>): boolean {
+  const runId = readString(payload.runId);
+  const agentId = readString(payload.agentId);
+  return (runId !== null && context.runIds.has(runId)) ||
+    Boolean(agentId && context.assigneeAgentId && agentId === context.assigneeAgentId);
+}
+
 function invalidateVisibleIssueRunQueries(
   queryClient: QueryClient,
   pathname: string,
@@ -490,13 +550,7 @@ function invalidateVisibleIssueRunQueries(
   if (!context) return false;
 
   const runId = readString(payload.runId);
-  const agentId = readString(payload.agentId);
-  const matchesVisibleIssue =
-    (runId !== null && context.runIds.has(runId)) ||
-    (!!agentId &&
-      !!context.assigneeAgentId &&
-      agentId === context.assigneeAgentId);
-  if (!matchesVisibleIssue) return false;
+  if (!runEventMatchesVisibleIssue(context, payload)) return false;
 
   const status = readString(payload.status);
   if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
@@ -1791,14 +1845,14 @@ function handleLiveEvent(
     event.createdAt,
     event.type,
   );
-  if (liveStatusPatch) {
-    applyRunLiveStatusPatchToCaches(
-      queryClient,
-      expectedCompanyId,
-      pathname,
-      liveStatusPatch,
-    );
-  }
+  const liveStatusPatched = liveStatusPatch
+    ? applyRunLiveStatusPatchToCaches(
+        queryClient,
+        expectedCompanyId,
+        pathname,
+        liveStatusPatch,
+      )
+    : false;
   if (event.type === "heartbeat.run.log") {
     return;
   }
@@ -1831,7 +1885,7 @@ function handleLiveEvent(
 
   if (event.type === "heartbeat.run.progress") {
     invalidateHeartbeatProgressQueries(queryClient, expectedCompanyId, payload);
-    invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
+    if (!liveStatusPatched) invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     return;
   }
 
@@ -1942,6 +1996,7 @@ export const __liveUpdatesTestUtils = {
   buildRunStatusToast,
   closeSocketQuietly,
   dispatchLiveEventToSubscribers,
+  handleLiveEvent,
   LiveEventSubscriptionContext,
   applyRunLiveStatusPatchToCaches,
   hydrateVisibleIssueComment,
@@ -1987,7 +2042,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const currentUserId = session?.user?.id ?? session?.session?.userId ??
     (health?.deploymentMode === "local_trusted" ? "local-board" : null);
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const [connectedScopeKey, setConnectedScopeKey] = useState<string | null>(null);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
+  const socketScopeKey = JSON.stringify([liveCompanyId, socketAuthKey]);
   const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;
   const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
     userId: currentUserId,
@@ -2103,6 +2160,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
+        setConnectedScopeKey(socketScopeKey);
         stopPolling();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
@@ -2154,6 +2212,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       nextSocket.onerror = () => {
+        if (closed || socket !== nextSocket) return;
+        setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
         // Wait for onclose to drive the reconnect. Self-closing here is what
         // produces the "closed before connection established" browser noise.
       };
@@ -2162,6 +2222,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (socket !== nextSocket) return;
         socket = null;
         if (closed) return;
+        setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
         startPolling();
         scheduleReconnect();
       };
@@ -2174,6 +2235,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     return () => {
       closed = true;
+      setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
       window.clearTimeout(connectTimer);
       clearReconnect();
       stopPolling();
@@ -2190,11 +2252,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     pushToast,
     canConnectSocket,
     socketAuthKey,
+    socketScopeKey,
   ]);
 
   return (
-    <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
-      {children}
-    </LiveEventSubscriptionContext.Provider>
+    <CompanyLiveConnectionContext.Provider value={
+      visible && canConnectSocket && connectedScopeKey === socketScopeKey ? liveCompanyId : null
+    }>
+      <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
+        {children}
+      </LiveEventSubscriptionContext.Provider>
+    </CompanyLiveConnectionContext.Provider>
   );
 }

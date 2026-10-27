@@ -1,6 +1,8 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { TaskAttachmentPanel } from "./TaskAttachmentPanel";
 import { useTaskBrowsers } from "@/hooks/useTaskBrowsers";
+import { taskPluginPanelId, type TaskPluginPanel } from "@/hooks/useTaskPluginPanels";
+import { PluginSlotMount } from "@/plugins/slots";
 import { TaskBrowserPanel } from "./TaskBrowserPanel";
 import {
   useCallback,
@@ -19,6 +21,7 @@ import {
 } from "@paperclipai/shared";
 import {
   Globe,
+  AppWindow,
   Box,
   FileCode2,
   FileText,
@@ -75,6 +78,7 @@ import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelBrowserTab,
+  taskPanelPluginTab,
   taskPanelAgentTasksTab,
   taskPanelArtifactsTab,
   taskPanelAttachmentTab,
@@ -94,6 +98,9 @@ import { TaskSkillPanel } from "./TaskSkillPanel";
 
 export interface TaskSidePanelProps {
   issue: Issue;
+  pluginPanels?: TaskPluginPanel[];
+  openedPluginPanelKeys?: Set<string>;
+  dismissedPluginPanelKeys?: Set<string>;
   openBrowserId?: string | null;
   onBrowserOpened?: () => void;
   accountScope: string;
@@ -128,10 +135,12 @@ export interface TaskSidePanelProps {
 }
 
 const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
+const EMPTY_PLUGIN_PANELS: TaskPluginPanel[] = [];
 
 function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
   switch (tab.payload.kind) {
     case "browser": return <Globe />;
+    case "plugin-panel": return <AppWindow />;
     case "properties": return <SlidersHorizontal />;
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
@@ -238,6 +247,9 @@ function useTaskSidePanelFileRouting() {
 }
 
 export function TaskSidePanel({
+  pluginPanels = EMPTY_PLUGIN_PANELS,
+  openedPluginPanelKeys,
+  dismissedPluginPanelKeys,
   openBrowserId,
   onBrowserOpened,
   issue,
@@ -341,6 +353,26 @@ export function TaskSidePanel({
     });
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
+  const localOpenedPluginPanels = useRef(new Set<string>());
+  const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
+  const localDismissedPluginPanels = useRef(new Set<string>());
+  const dismissedPluginPanels = dismissedPluginPanelKeys ?? localDismissedPluginPanels.current;
+  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]), [accountScope, issue.companyId, issue.id]);
+  useEffect(() => {
+    const ids = new Set(pluginPanels.map(taskPluginPanelId));
+    for (const tab of controller.tabs) {
+      if (tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
+    }
+    for (const panel of pluginPanels) {
+      const key = pluginPanelKey(panel);
+      if (dismissedPluginPanels.has(key)) continue;
+      const firstArrival = !openedPluginPanels.has(key);
+      openedPluginPanels.add(key);
+      if (controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
+      if (firstArrival) setLauncherOpen(false);
+      controller.openTab(taskPanelPluginTab(panel), firstArrival);
+    }
+  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
   const browsersQuery = useTaskBrowsers(issue.id);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
@@ -531,6 +563,10 @@ export function TaskSidePanel({
     markInteracted();
     if (tabId === "subtasks") subtasksDismissedRef.current = true;
     const tab = controller.tabs.find((candidate) => candidate.id === tabId);
+    if (tab?.payload.kind === "plugin-panel") {
+      const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === tabId);
+      if (panel) dismissedPluginPanels.add(pluginPanelKey(panel));
+    }
     controller.closeTab(tabId);
     if (tabId === controller.activeTabId && (tab?.payload.kind === "workspace-file" || tab?.payload.kind === "files-browser")) {
       viewer.close();
@@ -591,6 +627,7 @@ export function TaskSidePanel({
     for (const [index, browser] of (browsersQuery.data ?? []).entries()) {
       primary.push({ id: `browser:${browser.id}`, label: (browsersQuery.data?.length ?? 0) > 1 ? `Browser ${index + 1}` : "Browser", description: browser.status, icon: <Globe />, alreadyOpen: controller.tabs.some(tab => tab.id === `browser:${browser.id}`) });
     }
+    for (const panel of pluginPanels) primary.push({ id: taskPluginPanelId(panel), label: panel.slot.displayName, icon: <AppWindow />, alreadyOpen: controller.tabs.some(tab => tab.id === taskPluginPanelId(panel)) });
     if (fileTabsEnabled) {
       primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
     }
@@ -638,11 +675,18 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [pluginPanels, browsersQuery.data, conversationAgentId, taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
     if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
+    else if (item.id.startsWith("plugin:")) {
+      const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === item.id);
+      if (panel) {
+        dismissedPluginPanels.delete(pluginPanelKey(panel));
+        controller.openTab(taskPanelPluginTab(panel));
+      }
+    }
     else if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
     else if (item.id === "subtasks") {
       subtasksDismissedRef.current = false;
@@ -729,6 +773,11 @@ export function TaskSidePanel({
     content = <SidePanelLauncher sections={launcherSections} onSelect={selectLauncherItem} />;
   } else if (activeTab.payload.kind === "browser") {
     content = null; // Mounted below independently of the selected tab.
+  } else if (activeTab.payload.kind === "plugin-panel") {
+    const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === activeTab.id);
+    content = panel ? (
+      <PluginSlotMount key={panel.runId} slot={panel.slot} context={{ companyId: issue.companyId, projectId: issue.projectId, entityId: panel.entityId, entityType: "agent" }} />
+    ) : null;
   } else if (activeTab.payload.kind === "properties") {
     content = (
       <IssueProperties

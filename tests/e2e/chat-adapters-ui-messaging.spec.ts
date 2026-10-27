@@ -1042,7 +1042,7 @@ test.describe("Board send delivery refresh", () => {
       );
       await page.route(
         new RegExp(
-          `/api/issues/(${issue.id}|${issue.identifier})/comments(?:\\?|$)`,
+          `/api/issues/(${issue.id}|${issue.identifier})/(?:recent-comments|comments)(?:\\?|$)`,
         ),
         async (route) => {
           if (
@@ -1050,9 +1050,7 @@ test.describe("Board send delivery refresh", () => {
             route.request().url().includes(`/issues/${issue.identifier}/`)
           )
             canonicalCommentReadsAfterSend += 1;
-          await fulfill(
-            route,
-            sends
+          const comments = sends
               ? [
                   {
                     id: publicationId,
@@ -1066,8 +1064,10 @@ test.describe("Board send delivery refresh", () => {
                     updatedAt: new Date().toISOString(),
                   },
                 ]
-              : [],
-          );
+              : [];
+          await fulfill(route, route.request().url().includes("/recent-comments")
+            ? { comments, latestCommentId: comments.at(-1)?.id ?? null, hasMore: false }
+            : comments);
         },
       );
       await page.route(

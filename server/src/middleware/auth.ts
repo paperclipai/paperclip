@@ -429,7 +429,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
       if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
+        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
+          { readScope: "request_authentication" });
         identityRun.activeIdentityContextId = captured.context?.id ?? null;
         identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
       }

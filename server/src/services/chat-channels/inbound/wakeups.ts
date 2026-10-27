@@ -5,13 +5,13 @@ import { enqueueFastResponse } from "../../fast-responses.js";
 import { and, eq, sql } from "drizzle-orm";
 import { retryChatControlAdmission } from "../../chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
-import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt } from "../../durable-chat-wakeup.js";
+import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner } from "../../durable-chat-wakeup.js";
 import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints } from "@paperclipai/db";
 import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
 import { isGitHubAutomaticDelivery, acknowledgeGitHubWakeup } from "../github/wake-authority.js";
-import type { createInboundWakeAuthority } from "./wakeup-authorization.js";
+import { inboundWakeScope, type createInboundWakeAuthority } from "./wakeup-authorization.js";
 import type { createInboundAttachments } from "../inbound-attachments.js";
 import type { IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
 type InboundAttachmentResult = Awaited<ReturnType<ReturnType<typeof createInboundAttachments>["ingestAttachments"]>>;
@@ -425,5 +425,46 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       return denied;
     }
   }
-  return { stageInboundWakeup, acceptInboundWakeup, settleRejectedInboundWakeups, processInboundWakeup };
+  const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope) => {
+    const action = await db.select().from(chatActions).where(and(
+      eq(chatActions.id, scope.requestId), eq(chatActions.companyId, scope.companyId),
+      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+    )).then(rows => rows[0] ?? null);
+    if (!action || action.payload.agentId !== scope.agentId || action.payload.issueId !== scope.issueId) return;
+    const [receipt] = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.id, action.id), eq(agentWakeupRequests.companyId, scope.companyId),
+      eq(agentWakeupRequests.agentId, scope.agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    ));
+    if (!receipt || receipt.runId) return;
+    const authorize = async (tx: Db) => {
+      const [source] = await tx.select().from(chatActions).where(and(
+        eq(chatActions.id, action.id), eq(chatActions.companyId, scope.companyId),
+        eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      ));
+      if (!source || inboundWakeScope(source) !== inboundWakeScope(action))
+        throw forbidden("The saved chat source changed", { code: "chat_action_authorization_changed" });
+      const current = await authorizeInboundWorkStart(tx, source);
+      if (current.delivery.state !== "processed") throw new Error("chat_inbound_wakeup_acceptance_not_committed");
+      return current;
+    };
+    // The same authority used at ingress checks the live endpoint, principal,
+    // immutable action source, conversation generation and original comment.
+    const context = await db.transaction(tx => authorize(tx as unknown as Db));
+    const request = createDurableChatWakeupRequest({
+      id: action.id, companyId: scope.companyId, agentId: scope.agentId, issueId: scope.issueId,
+      commentId: String(action.payload.commentId),
+      requestedByActorType: action.payload.requestedByActorType as "user" | "system",
+      requestedByActorId: String(action.payload.requestedByActorId), requestedAt: action.createdAt,
+      resumeDeferred: true, authorize: async tx => { await authorize(tx); },
+    });
+    assertDurableChatWakeupReceipt(request, receipt);
+    await queueIssueAssignmentWakeup({ heartbeat: options.heartbeat, issue: context.issue,
+      reason: "External chat message received", mutation: "chat_message_received",
+      contextSource: `chat:${context.endpoint.provider}`, taskKey: context.issue.identifier,
+      requestedByActorType: request.requestedByActorType, requestedByActorId: request.requestedByActorId,
+      wakeCommentId: request.commentId, chatConversationId: context.conversation.id,
+      attachmentOmissionReasons: action.payload.attachmentOmissionReasons as Record<string, number> | undefined,
+      durableChatRequest: request, rethrowOnError: true });
+  });
+  return { stageInboundWakeup, acceptInboundWakeup, settleRejectedInboundWakeups, processInboundWakeup, unregisterDeferredWakeOwner };
 }

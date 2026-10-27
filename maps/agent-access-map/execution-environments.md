@@ -176,6 +176,15 @@ The task API does not transfer files or reveal guest filesystem paths.
 This source update does not qualify live agent access, warm retention, or a provider.
 See the [execution contract](../../doc/plugins/PLUGIN_RUNNER_EXECUTION.md).
 
+Same-run checkpoint recovery also uses the saved lease path after a turn omits
+its completion result. It requires verified prior termination, retained session
+state, and matching company, agent, workspace, and complete Runner identity.
+The [executor regression](../../server/src/services/native-runtime/native-session-executor.test.ts)
+checks checkpoint retrieval and identity/termination denials. The
+[lease authority fixture](../../server/src/__tests__/environment-task-authority.integration.test.ts)
+checks the same-run read through the database-backed task API. These are
+controlled regressions; live provider acceptance remains separate.
+
 ## `images`
 
 Capability ID: `execution-environments/images`.

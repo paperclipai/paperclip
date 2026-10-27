@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -23,7 +24,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   };
 });
 
-import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.ts";
+import { emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -102,6 +103,55 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
         expect.objectContaining({ agentId, state }),
       );
     }
+  });
+
+  it("emits the same event from a small scoped run read without loading execution payloads", async () => {
+    await seedCompanyAndAgent();
+    const payload = randomBytes(128 * 1024).toString("base64");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+      startedAt: new Date("2020-01-01T00:00:00Z"), finishedAt: new Date("2020-01-01T00:00:07Z"),
+      contextSnapshot: { issueId: randomUUID(), prompt: payload }, runnerProfileJson: { instructions: payload },
+      stdoutExcerpt: payload, resultJson: { stdout: payload }, usageJson: { model: "fixture", inputTokens: 12, outputTokens: 34, cachedInputTokens: 5 },
+    }).returning();
+    await emitAgentTaskRun(db, run);
+    const expected = mockTrackAgentTaskRun.mock.calls[0];
+    mockTrackAgentTaskRun.mockClear();
+    const reads: unknown[][] = [];
+    const recorded = new Proxy(db, { get(target, key) {
+      if (key !== "select") return Reflect.get(target, key);
+      return (...fields: Parameters<Db["select"]>) => {
+        const builder = target.select(...fields), from = builder.from.bind(builder);
+        builder.from = ((...args: Parameters<typeof from>) => {
+          const query = from(...args);
+          if (args[0] === heartbeatRuns) {
+            const execute = query.execute.bind(query);
+            query.execute = async (...executeArgs: Parameters<typeof execute>) => {
+              const rows = await execute(...executeArgs); reads.push(rows); return rows;
+            };
+          }
+          return query;
+        }) as typeof builder.from;
+        return builder;
+      };
+    }});
+    await emitAgentTaskRunById(recorded, { companyId, runId: run.id });
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledExactlyOnceWith(...expected);
+    expect(reads).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(reads))).toBeLessThan(1024);
+    await emitAgentTaskRunById(recorded, { companyId: randomUUID(), runId: run.id });
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+  });
+
+  it.each([null, [], 42, { issueId: 42 }, { issueId: "  fixture-task  " }, { issueId: "" }].map(context => ({ context })))("preserves telemetry task identity for $context", async ({ context }) => {
+    await seedCompanyAndAgent();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed",
+      contextSnapshot: context as Record<string, unknown> | null }).returning();
+    await emitAgentTaskRun(db, run);
+    const expected = mockTrackAgentTaskRun.mock.calls[0];
+    mockTrackAgentTaskRun.mockClear();
+    await emitAgentTaskRunById(db, { companyId, runId: run.id });
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledExactlyOnceWith(...expected);
   });
 
   it("omits durationSeconds when the run has no startedAt", async () => {

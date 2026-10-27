@@ -100,6 +100,30 @@ describe("remote native artifact preparation", () => {
     expect(f.requests.some(request => request.command === "npm")).toBe(false);
   });
 
+  it("reads installed pack metadata in the existing final runner probe", async () => {
+    const f = await fixture();
+    const installation = { root: "/opt/paperclip-runner/provider-pack", manifest: { digest: "selected" }, immutable: true };
+    await writeFile(f.runnerSource, `#!/bin/sh\n[ "$1" = --build-metadata ] || exit 17\nprintf '%s\\n' '${JSON.stringify({ ...metadata, providerPacks: [installation, { ...installation, root: "/unrequested" }] })}'\n`, { mode: 0o700 });
+    const artifacts = createRemoteNativeArtifactPreparation({ ...f.options, providerPackRoots: [installation.root] });
+    await artifacts.prepare("listen_ws");
+    expect(artifacts.providerPackInventory()).toEqual([installation]);
+    const probes = f.requests.filter(request => request.command === f.runnerTarget && request.args?.[0] === "--build-metadata");
+    expect(probes).toHaveLength(1);
+    expect(probes[0].args).toEqual(["--build-metadata", "--provider-pack-root", installation.root]);
+    expect(f.requests.some(request => request.args?.includes("--version") && request.command.includes("provider-pack"))).toBe(false);
+  });
+
+  it("reattaches an older runner without the optional pack metadata argument", async () => {
+    const f = await fixture();
+    await writeFile(f.runnerSource, `#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = --build-metadata ] || exit 17\nprintf '%s\\n' '${JSON.stringify(metadata)}'\n`, { mode: 0o700 });
+    const artifacts = createRemoteNativeArtifactPreparation({ ...f.options, providerPackRoots: ["/opt/paperclip-runner/provider-pack"] });
+    await artifacts.verifyRemoteRunner("listen_ws", f.runnerSource, true);
+    expect(artifacts.providerPackInventory()).toEqual([]);
+    expect(f.requests.map(request => request.args)).toEqual([
+      ["--build-metadata", "--provider-pack-root", "/opt/paperclip-runner/provider-pack"], ["--build-metadata"],
+    ]);
+  });
+
   it("keeps providers without concurrent sync support serial", async () => {
     const f = await fixture({ concurrent: false });
     await createRemoteNativeArtifactPreparation(f.options).prepare("listen_ws");

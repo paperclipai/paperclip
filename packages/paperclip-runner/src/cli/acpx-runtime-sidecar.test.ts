@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -93,6 +94,22 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("gives native Claude HTTP tools the Runner lease budget without changing sibling providers", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("        environment:");
+    const end = source.indexOf("        expectedIdentity:", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const create = new Function("process", "params", "createAcpxSidecarHostEnvironment", `return ({ ${source.slice(start, end)} }).environment;`);
+    const original = { MCP_TOOL_TIMEOUT: "1000", ANTHROPIC_API_KEY: "selected-key", UNRELATED_SECRET: "private" };
+    const claude = create({ env: original }, { agent: "claude", normalizedSessionId: "session" }, createAcpxSidecarHostEnvironment);
+    expect(createSanitizedAcpxSpawnInput(claude, "claude").env).toMatchObject({ MCP_TOOL_TIMEOUT: "3600000", ANTHROPIC_API_KEY: "selected-key" });
+    expect(createSanitizedAcpxSpawnInput(claude, "claude").env).not.toHaveProperty("UNRELATED_SECRET");
+    expect(original.MCP_TOOL_TIMEOUT).toBe("1000");
+    const codex = create({ env: original }, { agent: "codex", normalizedSessionId: "session" }, createAcpxSidecarHostEnvironment);
+    expect(codex).toBe(original);
+    expect(createSanitizedAcpxSpawnInput(codex, "codex").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+  });
+
   it("projects the actual sidecar terminal diagnostic block without authoritative accounting", () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("      try {", source.indexOf("      const usageAfter = await readSidecarHostStatusWithin(activeHost);"));
@@ -277,6 +294,42 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(events[0]).toMatchObject({ payload: { category: "paperclip_semantic_tool_receipt_v2", provenance: { sessionId: "session-a", turnId: "turn-a" } } });
     active = false; captured(receipt); expect(events).toHaveLength(1);
     for (const agent of ["cursor", "codex", "pi"]) expect(create({ agent, tools: [] }, evidence, () => undefined).captureSemanticReceipt).toBeUndefined();
+  });
+
+  it("keeps a native tool pending through controller downtime without a duplicate side effect", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("        semanticTools: {");
+    const end = source.indexOf("        onGoalUpdate:", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const create = new Function("params", "activeCopilotEvidence", "waitForTool", `return ({ ${source.slice(start, end)} }).semanticTools;`);
+    let admitted!: () => void, complete!: (value: unknown) => void;
+    const started = new Promise<void>(resolve => { admitted = resolve; });
+    const result = new Promise(resolve => { complete = resolve; });
+    let signal: AbortSignal | undefined;
+    const handler = vi.fn((call: RunnerToolCall) => { signal = call.signal; admitted(); return result; });
+    const bridge = await startRunnerToolBridge(create({ agent: "claude", tools: [{ name: "register_deliverable", inputSchema: { type: "object" } }] }, undefined, handler));
+    const call = () => fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "saved-call", method: "tools/call", params: { name: "register_deliverable", arguments: {} } }) }).then(response => response.json());
+    let first: Promise<any> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      first = call();
+      await started;
+      await vi.advanceTimersByTimeAsync(125_000);
+      expect(signal?.aborted).toBe(false);
+      // The same pending invocation can be read again after reconnect. It must
+      // share the original result rather than create another external write.
+      const duplicate = call();
+      complete({ artifactId: "saved-artifact" });
+      expect(await first).toMatchObject({ result: { content: [{ text: '{"artifactId":"saved-artifact"}' }] } });
+      expect(await duplicate).toEqual(await first);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      complete({ artifactId: "saved-artifact" });
+      await first?.catch(() => undefined);
+      await bridge.close();
+      vi.useRealTimers();
+    }
   });
 
   it.each(["forwarded", "emit-failed"])("binds native v2 receipts to actual sidecar-normalized input: %s", async mode => {

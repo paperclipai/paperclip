@@ -1,3 +1,4 @@
+import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming, summarizeCampaignTiming, summarizeWorkerPhaseTiming } from "./campaign-timing.js";
 import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
 import { reportBrowserScript } from "./report-browser.js";
@@ -8,6 +9,10 @@ import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
 import { STARTUP_REUSE_LAYERS, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
+import { summarizeCampaignFeedback } from "./feedback.js";
+import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
+import { renderEvalOperationsReport } from "./operations-report.js";
+import { renderBraintrustExperiment } from "./braintrust-experiment.js";
 import {
   discoverReportCatalog,
   type ReportExecution,
@@ -20,6 +25,7 @@ import type {
 } from "./types.js";
 import {
   aggregateCampaignBilling,
+  billingCoverageLabel,
   summarizeExecutionBilling,
 } from "./billing.js";
 
@@ -146,6 +152,7 @@ function renderCase(
   const outcome = entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : "";
   const passed = state === "passed" && entry?.result.status === "passed";
   const firstTaskChecks = entry?.result.firstTask?.checks;
+  const productChecks = entry?.result.productJourney?.checks;
   const notReached = firstTaskChecks?.filter((c) => c.notReached).length ?? 0;
   const matcherResults = firstTaskChecks?.length
     ? firstTaskChecks.filter((c) => !c.notReached).map((c) => ({
@@ -153,7 +160,10 @@ function renderCase(
         passed: c.passed,
         detail: c.detail,
       }))
-    : entry?.result.matcherResults ?? [];
+    : productChecks?.length ? productChecks.map(c => ({
+        matcher: { kind: "json_path" as const, path: `productJourney.checks.${c.id}`, expected: true },
+        passed: c.passed, detail: c.id.replaceAll("-", " "),
+      })) : entry?.result.matcherResults ?? [];
   const passedMatchers = matcherResults.filter(
     (result) => result.passed,
   ).length;
@@ -265,6 +275,7 @@ function renderCase(
     ? `<div class="billing-strip" aria-label="Billing for ${html(execution.id)}">
         <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
         <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
+        ${(billing.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div><span>LLM estimate</span><strong>${html(billingCoverageLabel(usdLabel(billing.llm.estimatedCostUsd ?? 0), billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount))}</strong><small>Estimated from captured usage</small></div>` : ""}
         <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
         ${billing.assistant ? `<div><span>External assistant</span><strong>${html(usdLabel(billing.assistant.estimatedCostUsd))} est.</strong><small>${html(billing.assistant.model)} · ${billing.assistant.requests} requests · ${html(tokenLabel(billing.assistant.inputTokens + billing.assistant.cachedInputTokens))} in / ${html(tokenLabel(billing.assistant.outputTokens))} out</small></div>` : ""}
       </div>`
@@ -297,6 +308,9 @@ function renderCase(
       <summary><span>Test details</span><span class="case-detail-summary">${matcherResults.length ? `${passedMatchers}/${matcherResults.length} checks${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded"}${entry ? ` · ${html(durationLabel(entry.result.durationMs))}` : ""}</span></summary>
     ${passed ? outcome : ""}
     ${billingStrip}
+    ${entry ? `<p class="detail">Worker phase timing: ${entry.result.workerTiming ? html(entry.result.workerTiming.status === "unavailable" ? `unavailable (${entry.result.workerTiming.reason})` : entry.result.workerTiming.status) : "not captured"}. ${entry.result.workerTiming?.status === "partial" ? "Only completed phases have observed durations." : ""}</p>` : ""}
+    ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items; see campaign feedback review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json or snapshots/agent-feedback-recovered.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
+    ${entry?.result.tracing ? `<p class="detail">Braintrust worker export: ${html(entry.result.tracing.status)}; native configuration: ${html(entry.result.tracing.nativeConfiguration)}. ${entry.result.tracing.finalization ? `Supervisor outcome: ${html(entry.result.tracing.finalization.outcome)}; finalization export: ${html(entry.result.tracing.finalization.status)}.` : "Supervisor finalization was not captured."} Trace ${html(entry.result.tracing.traceId)} in project ${html(entry.result.tracing.projectId)}. Indexing and native-span correlation require independent verification.</p>` : ""}
     ${links}
     ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
@@ -320,7 +334,7 @@ function renderCase(
     ${latencyRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Event</th><th>Timing verdict</th><th>Possible latency</th><th>Target</th><th>Resolution</th></tr></thead><tbody>${latencyRows}</tbody></table></div>` : ""}
     ${startupReuseRows ? `<div class="matcher-wrap"><table class="matchers"><caption>Startup reuse evidence</caption><thead><tr><th>Run</th><th>Warmth</th><th>Environment/lease</th><th>Workspace</th><th>Runner</th><th>Provider process</th><th>Provider session</th><th>Provider launches</th></tr></thead><tbody>${startupReuseRows}</tbody></table></div>` : ""}
     ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
-    ${entry ? `<details class="usage"><summary>Usage and billing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null }, null, 2))}</pre></details>` : ""}
+    ${entry ? `<details class="usage"><summary>Usage, billing and timing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null, workerTiming: entry.result.workerTiming ?? null }, null, 2))}</pre></details>` : ""}
     </details>
   </article>`;
 }
@@ -338,7 +352,7 @@ function renderSuiteResults(input: {
     ? `<div class="suite-summary" aria-label="${html(suite.label)} current campaign summary">
         <div><span>Pass rate</span><strong>${summary.selected > 0 ? ((summary.passed / summary.selected) * 100).toFixed(1) : "0.0"}%</strong><small>${summary.passed}/${summary.selected} passed${summary.incomplete ? ` · ${summary.incomplete} incomplete` : ""}</small></div>
         <div><span>Tokens</span><strong>${html(tokenLabel(summary.billing.llm.totalTokens, summary.billing.llm))}</strong><small>${html(tokenLabel(summary.billing.llm.inputTokens, summary.billing.llm))} input · ${html(tokenLabel(summary.billing.llm.outputTokens, summary.billing.llm))} output</small></div>
-        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + runtime${summary.billing.judge ? " + judge" : ""} estimate</small></div>
+        <div><span>Known spend</span><strong>${html(summary.billing.llm.runsWithReportedCost > 0 || (summary.billing.llm.runsWithEstimatedCost ?? 0) > 0 || summary.billing.estimatedRuntimeCostUsd > 0 || summary.billing.judge || summary.billing.assistant ? `${usdLabel(summary.billing.observedAndEstimatedCostUsd)}${summary.billing.testsWithCompleteBilling < summary.billing.testCount ? " (partial)" : ""}` : "Unavailable")}</strong><small>reported LLM + model/runtime estimates${summary.billing.judge ? " + judge" : ""} estimate</small></div>
         <div><span>Agent time</span><strong>${html(durationLabel(summary.billing.agentRunDurationMs))}</strong><small>${html(durationLabel(summary.billing.leaseDurationMs))} lease</small></div>
         <div><span>Execution</span><strong>${summary.executed}/${summary.selected}</strong><small>${summary.retries} retries · cleanup ${summary.cleanupPassed ? "passed" : "failed"}</small></div>
       </div>`
@@ -382,15 +396,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     !entry.valid && isIncompleteFirstTaskResult(entry.result, entry.errors),
   ).length;
   const failed = input.expected.length - passed - incomplete;
-  const totalDuration = selectedEntries.reduce(
-    (total, entry) => total + entry.result.durationMs,
-    0,
-  );
+  const timing = summarizeCampaignTiming(selectedEntries.map(entry => entry.result), input.campaign?.accounting);
   const screenshotCount = selectedEntries.reduce(
     (total, entry) => total + resolveScreenshots(entry).length,
     0,
   );
-  const campaignBilling = aggregateCampaignBilling(
+  const campaignFeedback = summarizeCampaignFeedback(input.campaign?.accounting?.attempts ?? input.entries.map(entry => entry.result));
+  const campaignBilling = input.campaign?.billing ?? aggregateCampaignBilling(
     selectedEntries.map((entry) => entry.result),
   );
   const suites = [
@@ -830,7 +842,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
           <div class="metric"><strong>${passed}/${input.expected.length}</strong><span>Passed</span></div>
           <div class="metric"><strong>${failed}</strong><span>Failed</span></div>
           ${incomplete ? `<div class="metric"><strong>${incomplete}</strong><span>Incomplete</span></div>` : ""}
-          <div class="metric"><strong>${html(durationLabel(totalDuration))}</strong><span>Test time</span></div>
+          <div class="metric"><strong>${html(campaignAttemptTimeLabel(timing))}</strong><span>Summed attempt time</span></div>
         </div>
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
@@ -838,18 +850,23 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
+      <div class="billing-metric"><strong>${campaignFeedback.complaints} / ${campaignFeedback.suggestions}</strong><span>Complaints / suggestions · retained attempts</span><small>${campaignFeedback.review.length} distinct items · ${campaignFeedback.incomplete} attempts with incomplete collection · ${campaignFeedback.failedSubmissions} failed submissions · ${campaignFeedback.unknownSubmissions} unresolved submissions</small></div>
+      ${input.campaign?.accounting ? `<div class="billing-metric"><strong>${input.campaign.accounting.attempts.length}</strong><span>${input.campaign.accounting.scope === "retained_attempts" ? "Retained attempts" : "Selected results only"}</span><small>${input.campaign.accounting.missingAttempts} missing attempts · ${input.campaign.accounting.excludedArtifacts} out-of-scope artifacts</small></div>` : ""}
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.inputTokens, campaignBilling.llm))}</strong><span>Input tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.outputTokens, campaignBilling.llm))}</strong><span>Output tokens</span></div>
       <div class="billing-metric"><strong>${html(tokenLabel(campaignBilling.llm.cachedInputTokens, campaignBilling.llm))}</strong><span>Cached tokens</span></div>
       <div class="billing-metric"><strong>${html(llmCostLabel(campaignBilling.reportedLlmCostUsd, campaignBilling.llm))}</strong><span>LLM reported subtotal</span></div>
+      ${(campaignBilling.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div class="billing-metric"><strong>${html(billingCoverageLabel(usdLabel(campaignBilling.estimatedLlmCostUsd ?? 0), campaignBilling.llm.runsWithEstimatedCost ?? 0, campaignBilling.llm.runCount))}</strong><span>LLM estimated subtotal</span></div>` : ""}
       <div class="billing-metric"><strong>${html(usdLabel(campaignBilling.estimatedRuntimeCostUsd))}</strong><span>Daytona list estimate</span></div>
       ${campaignBilling.judge ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.judge.estimatedCostUsd))}</strong><span>Judge estimate · ${campaignBilling.judge.attempts} attempts · ${campaignBilling.judge.attemptsWithUnknownUsage} unknown usage</span><small>${html(tokenLabel(campaignBilling.judge.inputTokens))} in / ${html(tokenLabel(campaignBilling.judge.outputTokens))} out · $${campaignBilling.judge.reservedCostUsd.toFixed(6)} reserved</small></div>` : ""}
       ${campaignBilling.assistant ? `<div class="billing-metric"><strong>${html(usdLabel(campaignBilling.assistant.estimatedCostUsd))}</strong><span>External assistant estimate · ${campaignBilling.assistant.requests} requests</span><small>${html(tokenLabel(campaignBilling.assistant.inputTokens + campaignBilling.assistant.cachedInputTokens))} in / ${html(tokenLabel(campaignBilling.assistant.outputTokens))} out</small></div>` : ""}
+      <div class="billing-metric"><strong>${html(durationLabel(timing.observedWindowMs))}</strong><span>Observed attempt window</span><small>${timing.retainedAttempts} retained attempts · ${timing.missingAttempts} missing attempts</small></div>
+      <p class="billing-note">${html(campaignTimingScope)}</p>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.agentRunDurationMs))}</strong><span>Agent execution time</span></div>
       <div class="billing-metric"><strong>${html(durationLabel(campaignBilling.leaseDurationMs))}</strong><span>Daytona lease time</span></div>
       <div class="billing-metric"><strong>${campaignBilling.llm.runsWithReportedCost}/${campaignBilling.llm.runCount}</strong><span>Runs provider-priced</span></div>
-      <p class="billing-note">Model spend is the provider-reported subtotal; unpriced or unavailable runs are excluded, never counted as free. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
-    </section></details>
+      <p class="billing-note">Campaign costs include retained attempts, including failed retries. Result cards show the selected attempt. Provider-reported amounts and model estimates are separate; unpriced or unavailable runs are excluded, never counted as free. Coverage describes captured usage; unobserved setup, subscriptions, tools, CI and storage require additional accounting. Daytona runtime is a public-list-price estimate from captured lease time and pinned resources, before credits, discounts, storage allowance, or invoice adjustments. Local execution has no external runtime meter.</p>
+    </section>${renderWorkerPhaseTiming(summarizeWorkerPhaseTiming(selectedEntries.map(entry => entry.result), input.campaign?.accounting))}${input.campaign?.operations ? renderEvalOperationsReport(input.campaign.operations) : ""}${input.campaign ? renderCampaignFeedbackReview(input.campaign) + renderBraintrustExperiment(input.campaign) : ""}</details>
     </section>
     <div class="results-heading" id="results"><h2 data-results-title>All results</h2><span data-results-description></span></div>
     <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>

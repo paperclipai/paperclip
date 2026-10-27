@@ -627,6 +627,41 @@ execution identity, or an existing assistant/reasoning/tool item start or
 completion. Usage updates and empty deltas do not count. This is a first
 activity metric, not time to a finished answer.
 
+`task.time_to_first_token` measures the wait until text is deliverable to the
+task transcript for each native dispatch. The first qualifying event is a
+nonempty assistant or reasoning text delta, a completed assistant or reasoning
+item with text, or an accepted run result with a nonempty summary. Text released
+by redaction at item/turn/session completion also qualifies. Item identities and
+text fields follow the task transcript projection; item starts, tools, usage,
+empty text, result proposals, and duplicate PRP replay do not end the wait.
+
+The first-text milestone occurs after `task.prepare` and Runner startup. The
+timing span is a cumulative interval, not a separate preparation step:
+
+```text
+accepted ingress → queue → task.prepare → Runner startup → provider work → first text
+└────────────────────── task.time_to_first_token ──────────────────────────────────┘
+```
+
+The span starts at the native run trace's historical start:
+the accepted comment or attested question response when present, otherwise run
+creation from the queue span. Callers without preparation history start at native
+dispatch. The interval includes queueing, Core preparation, workspace preparation,
+Runner startup, provider latency, transport, and durable event ingestion. It ends
+in Core's commit callback, when the text is readable through the run-events API,
+using the Core clock rather than the provider event timestamp. Browser delivery
+and rendering are excluded. The name is retained for existing trace queries;
+this measures the first deliverable text, not an exact model token boundary.
+Only the first qualifying event in a dispatch emits a span. Its `eventKind` is
+`reasoning` for thinking text and `agentMessage` for assistant text or a result.
+A dispatch without deliverable text emits no sample, including an early failure.
+Same-run recovery retains the original historical start and can emit a new sample
+only for newly committed output; it does not reconstruct prior first-token timing.
+`task.time_to_first_token` is a child of `task.provider_session` that overlaps
+queueing, preparation and execution; do not add its duration to those phases.
+No text or provider event identifiers are exported. The existing duration attribute
+is `paperclip.native.span.duration_ms`.
+
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
 the tool complete. It can include provider buffering and transport. It is not
@@ -1035,6 +1070,20 @@ headers, cookies, bodies, user/stack IDs, or the original exception. Sentry
 receives a plain error with the existing generic message and default grouping.
 The context does not change the HTTP response, authentication, cookies, cache,
 deadline, or single-fetch behavior, and does not carry into unrelated events.
+
+A file storage provider failure has an event-local `storage_failure` context
+and `storage_operation` and `storage_error_code` tags. The S3 provider records
+the failed call (`put_object`, `get_object`, `head_object`, `delete_object`,
+`create_multipart_upload`, `upload_part`, or `complete_multipart_upload`),
+the provider's error code, the HTTP status, the provider-issued request ID,
+and the SDK attempt count. Values come from the SDK error's own data
+properties. A value that does not match its bounded format becomes `unknown`
+or `null`. The record never includes the bucket, object key, endpoint,
+credentials, error message, or provider response body (such as an S3
+`StringToSign`). Sentry receives the original error with default grouping,
+so existing issues keep collecting events. The record does not change
+storage behavior, not-found handling, or HTTP responses. It is attached only
+to the error that the failed call threw.
 
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured

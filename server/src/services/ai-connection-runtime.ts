@@ -384,6 +384,7 @@ export async function prepareManagedAiRuntime(
         companyId: input.companyId, connectionId: selection.connection.id, grantId: selection.grant.id,
         provider: selection.attribution.provider, name: selection.connection.name,
         ownerUserId: selection.grant.subjectUserId, credential: value,
+        session: credentialRef && freshness ? { secretId: credentialRef.secretId, epoch: freshness.epoch } : null,
       };
       attribution.subscriptionId = await subscriptionService(db).register(subscription);
       void refreshSubscriptionConnection(db, subscription, attribution.subscriptionId);

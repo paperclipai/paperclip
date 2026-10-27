@@ -302,6 +302,8 @@ impl AcpxSidecarTransport {
                 "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
                 "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
                 "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
             ]);
         }
         let pi_keys = if agent == "pi" {

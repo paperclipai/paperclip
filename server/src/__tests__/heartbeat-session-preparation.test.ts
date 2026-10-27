@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -79,6 +80,29 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     expect(resumed.input.context.paperclipSessionRotationReason).toBeUndefined();
     expect(resumed.input.context.paperclipPreviousSessionId).toBeUndefined();
     expect(resumed.finished.sessionIdBefore).toBe("saved-session");
+  });
+
+  it("keeps inherited project policy stable after binding a repository-free workspace", async () => {
+    const f = await seed();
+    const storage = await createPluginWorkspaceFixture(db, f.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, workspaceProvider: {
+      ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+    } } }).where(eq(plugins.id, storage.pluginId));
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Directory project" }).returning();
+    await db.update(issues).set({ projectId: project.id }).where(eq(issues.id, f.issueId));
+    try {
+      const first = await execute(f);
+      const [bound] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(bound.executionWorkspaceId).toEqual(expect.any(String));
+      const next = await execute(f);
+      expect(next.input.runtime.sessionId).toBe("saved-session");
+      expect(next.input.config.workspaceStrategy).toEqual(first.input.config.workspaceStrategy);
+      expect(next.finished.resultJson).toMatchObject({ configFreshness: {
+        session: { reset: false, taskSessionReused: true, changedCategories: [] },
+        workspace: { action: "reuse", workspaceReused: true, changedCategories: [], activeWorkspaceId: bound.executionWorkspaceId },
+      } });
+    } finally { await db.delete(plugins).where(eq(plugins.id, storage.pluginId)); }
   });
 
   it("starts fresh when effective model configuration changes and persists the reason", async () => {

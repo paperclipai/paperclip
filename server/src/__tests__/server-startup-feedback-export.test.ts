@@ -110,7 +110,7 @@ const {
       issueIds: [],
     })),
     reconcileResolvedDependencyWakes: vi.fn(async () => ({ healed: 0 })),
-    reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0 })),
+    reconcileTaskWatchdogs: vi.fn(async () => ({ triggered: 0, incomplete: 0, incompleteIssueIds: [] as string[] })),
     scanSilentActiveRuns: vi.fn(async () => ({ created: 0, escalated: 0 })),
     sweepStaleIssueLocks: vi.fn(async () => ({ cleared: 0 })),
     sweepPendingCleanupLeases: vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 })),
@@ -985,6 +985,27 @@ describe("startServer feedback export wiring", () => {
 
     expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
     expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports incomplete watchdog scans while continuing startup recovery", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.reconcileTaskWatchdogs.mockResolvedValueOnce({
+      triggered: 0,
+      incomplete: 1,
+      incompleteIssueIds: ["watched-issue"],
+    });
+
+    await expect(startServer()).resolves.toBeDefined();
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      { incomplete: 1, newIncompleteIssueIds: ["watched-issue"] },
+      "startup task-watchdog reconciliation found incomplete subtree scans",
+    );
+    expect(heartbeatServiceMock.scanSilentActiveRuns).toHaveBeenCalled();
+    expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalled();
   });
 
   it("continues startup recovery when task watchdog reconciliation fails", async () => {

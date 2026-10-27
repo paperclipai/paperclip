@@ -497,6 +497,7 @@ export const EXTERNAL_OBJECT_LIVENESS_STATES = [
   "fresh",
   "stale",
   "auth_required",
+  "rate_limited",
   "unreachable",
 ] as const;
 export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
@@ -1324,6 +1325,7 @@ export const PLUGIN_CAPABILITIES = [
   "companies.read",
   "projects.read",
   "projects.instance-secrets",
+  "projects.git-credentials",
   "project.workspaces.read",
   "execution.workspaces.read",
   "workspaces.manage",

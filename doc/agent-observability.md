@@ -28,9 +28,13 @@ requires the qualified executable version. Codex ACPX writes its isolated home.
 The legacy ACPX adapter keeps export configuration in a private home per agent
 and settings compatibility key, and shares conversation files with its stable managed home;
 export changes do not change its logical conversation fingerprint.
-Codex's bundled Rust OTLP exporter percent-decodes header values, so launch
-material encodes them once to preserve literal percent sequences. Credentials
-remain literal values in the company secret; environment interpolation is not used.
+Codex receives authentication through `OTEL_EXPORTER_OTLP_LOGS_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS` in its process environment. Its managed
+configuration and invocation profiles contain empty header maps, so exporting
+does not save the ingestion credential in those files. The bundled Rust OTLP
+exporter percent-decodes environment header values; launch material encodes
+them once to preserve literal percent sequences. Credentials remain literal
+values in the company secret; config-file environment interpolation is not used.
 A caller-owned/preconfigured Codex home cannot be automatically configured in
 this version: its files remain untouched and execution emits a diagnostic.
 Other harnesses, personal Codex desktop sessions and hosted claude_managed are
@@ -69,8 +73,8 @@ entered secrets. Revisions prevent another administrator's edit being silently
 overwritten. Credential values are excluded from task environment manifests,
 run/config snapshots, argv, activity records, recovery configuration and query
 cache data. Export credentials are necessarily accessible to the exporting
-harness itself. Claude Code supplies these headers through its process environment,
-which its tools can inherit or inspect. Codex can read its managed configuration.
+harness itself. Both Codex and Claude Code receive these headers through their
+process environment, which their tools can inherit or inspect.
 This feature does not isolate export credentials from agent code. Use a credential
 limited to telemetry ingestion for the selected destination; do not supply a broad
 organization administration key. A user-operated collector can hold upstream

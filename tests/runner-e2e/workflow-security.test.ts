@@ -15,6 +15,30 @@ const everydayOracleImage =
   "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285";
 
 describe("public repository paid workflow security", () => {
+  it("exposes Copilot only to selected cells in the protected, reauthorized paid jobs", async () => {
+    for (const [filename, jobName, nextJobName, stepName] of [
+      ["runner-full-stack-e2e.yml", "test", "report", "Run paid cell"],
+      ["runner-protocol-live-evals.yml", "eval_shard_0", "eval_shard_1", "Run one immutable direct protocol cell"],
+    ] as const) {
+      const workflow = await readFile(path.join(repositoryRoot, ".github/workflows", filename), "utf8");
+      const credentialSteps = workflow.split(/\n(?= {6}- )/u).filter(step => step.includes("secrets.COPILOT_GITHUB_TOKEN"));
+      expect(credentialSteps, filename).toHaveLength(1);
+      const credentialStep = credentialSteps[0]!;
+      expect(credentialStep, filename).toContain(`name: ${stepName}`);
+      expect(credentialStep, filename).toContain("COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}");
+      const jobStart = workflow.indexOf(`\n  ${jobName}:`);
+      const jobEnd = workflow.indexOf(`\n  ${nextJobName}:`, jobStart + 1);
+      expect(jobStart, filename).toBeGreaterThanOrEqual(0);
+      expect(jobEnd, filename).toBeGreaterThan(jobStart);
+      const paidJob = workflow.slice(jobStart, jobEnd);
+      expect(paidJob, filename).toContain("name: runner-e2e-paid");
+      expect(paidJob, filename).toContain(credentialStep);
+      const reauthorizationIndex = paidJob.indexOf("Reauthorize paid execution before provider access");
+      expect(reauthorizationIndex, filename).toBeGreaterThanOrEqual(0);
+      expect(reauthorizationIndex, filename).toBeLessThan(paidJob.indexOf("secrets.COPILOT_GITHUB_TOKEN"));
+    }
+  });
+
   it("keeps the manual hosted Linux image build credential-free and pins the authorized target", async () => {
     const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/docker-runner-check.yml"), "utf8");
     const manual = workflow.slice(workflow.indexOf("  authorize_manual:"));
@@ -93,7 +117,7 @@ describe("public repository paid workflow security", () => {
     const workflows = [
       {
         name: "runner-full-stack-e2e.yml",
-        expectedCachedSetupNodeSteps: 4,
+        expectedCachedSetupNodeSteps: 3,
       },
       {
         name: "pr-trusted.yml",
@@ -311,7 +335,7 @@ describe("public repository paid workflow security", () => {
     const everydayOraclePreparation = paidJob.indexOf(
       "- name: Prepare pinned Python artifact oracle image",
     );
-    const paidExecution = paidJob.indexOf("- name: Run paid cell");
+    const paidExecution = paidJob.indexOf("- name: Run bounded campaign and retain feedback review");
     expect(paidInstall).toBeGreaterThan(0);
     expect(daytonaPluginPreparation).toBeGreaterThan(paidInstall);
     expect(awsFfmpegInstall).toBeGreaterThan(daytonaPluginPreparation);
@@ -549,6 +573,7 @@ describe("public repository paid workflow security", () => {
       OPENROUTER_API_KEY: "matrix.credentialName == 'OPENROUTER_API_KEY'",
       XAI_API_KEY: "matrix.credentialName == 'XAI_API_KEY'",
       GROK_AUTH_JSON: "matrix.credentialName == 'GROK_AUTH_JSON'",
+      COPILOT_GITHUB_TOKEN: "matrix.credentialName == 'COPILOT_GITHUB_TOKEN'",
       DAYTONA_API_KEY: "matrix.environmentId == 'daytona'",
     })) {
       expect(fullStack).toContain(
@@ -576,7 +601,7 @@ describe("public repository paid workflow security", () => {
       );
       const providerSecretReferences = [
         ...contents.matchAll(
-          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY)['"]\])/g,
+          /secrets(?:\.(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY|COPILOT_GITHUB_TOKEN)\b|\[['"](?:OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|XAI_API_KEY|GROK_AUTH_JSON|DAYTONA_API_KEY|COPILOT_GITHUB_TOKEN)['"]\])/g,
         ),
       ];
       if (providerSecretReferences.length > 0) {
@@ -588,7 +613,7 @@ describe("public repository paid workflow security", () => {
     }
   });
 
-  it("runs paid scheduled campaigns only on Sundays", async () => {
+  it("uses bounded daily and weekly Product schedules while preserving Runner schedules", async () => {
     const workflows = await Promise.all(
       [
         "runner-full-stack-e2e.yml",
@@ -598,12 +623,20 @@ describe("public repository paid workflow security", () => {
         readFile(path.join(repositoryRoot, ".github/workflows", name), "utf8"),
       ),
     );
-    for (const workflow of workflows) {
-      const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(
-        (match) => match[1]!,
-      );
-      expect(crons).toHaveLength(1);
-      expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* 0$/);
+    for (const [index, workflow] of workflows.entries()) {
+      const crons = [...workflow.matchAll(/cron:\s*"([^"]+)"/g)].map(match => match[1]!);
+      if (index === 0) {
+        expect(crons).toEqual(["47 8 * * *", "47 9 * * 0"]);
+        expect(workflow).toContain("vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true'");
+        expect(workflow).toContain('test "$TARGET_SHA" = "$GITHUB_SHA"');
+        expect(workflow).toContain('echo "max_parallel=1"');
+        expect(workflow).toContain("--max-automatic-retries 0");
+        const paid = workflow.split("- name: Run bounded campaign and retain feedback review")[1]!.split("- name: Run paid cell")[0]!;
+        expect([...paid.matchAll(/secrets\.([A-Z_]+)/g)].map(match => match[1])).toEqual(["BRAINTRUST_API_KEY"]);
+      } else {
+        expect(crons).toHaveLength(1);
+        expect(crons[0]).toMatch(/^\d{1,2} \d{1,2} \* \* 0$/);
+      }
       expect(workflow).toContain("workflow_dispatch:");
     }
   });
@@ -720,18 +753,18 @@ describe("public repository paid workflow security", () => {
     );
   });
 
-  it("resolves each trusted reporting lockfile before frozen install and AWS credentials", async () => {
+  it("keeps reporting jobs on the committed lockfile without registry re-resolution", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8",
     );
     for (const jobName of ["report", "publish_history"]) {
       const job = workflow.split(`\n  ${jobName}:`)[1]!.split(/\n  [a-z_]+:/u)[0]!;
-      const resolve = job.indexOf("pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile");
-      const install = job.indexOf("pnpm install --frozen-lockfile");
+      const install = job.indexOf("pnpm install --frozen-lockfile --ignore-scripts");
       expect(job).toContain("ref: ${{ github.sha }}");
       expect(job).not.toContain("resolved-target-lockfile");
-      expect(resolve, jobName).toBeGreaterThan(-1);
-      expect(install, jobName).toBeGreaterThan(resolve);
+      expect(job, jobName).not.toContain("--no-frozen-lockfile");
+      expect(job, jobName).not.toContain("--lockfile-only");
+      expect(install, jobName).toBeGreaterThan(job.indexOf("ref: ${{ github.sha }}"));
       const credentials = job.indexOf("aws-actions/configure-aws-credentials@");
       if (credentials >= 0) expect(install).toBeLessThan(credentials);
     }
@@ -767,11 +800,12 @@ describe("public repository paid workflow security", () => {
       "PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e",
     );
     expect(report).toContain(
-      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL }}",
+      "PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL: ${{ needs.catalog.outputs.operations_cadence == '' && vars.RUNNER_E2E_HISTORY_PUBLIC_BASE_URL || '' }}",
     );
-    expect(report).toContain(
-      "PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}",
-    );
+    const historyPrefix = "${{ vars.RUNNER_E2E_HISTORY_PREFIX || 'runner-e2e' }}";
+    expect(report).toContain(`PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: ${historyPrefix}`);
+    expect(publisher).toContain(`RUNNER_E2E_HISTORY_PREFIX: ${historyPrefix}`);
+    expect(publisher).toContain("needs.catalog.outputs.operations_cadence == '' && needs.report.outputs.history_source_ready == 'true'");
     expect(
       report.indexOf("Select latest workflow attempt per cell"),
     ).toBeLessThan(report.indexOf("Collect blob reports"));
@@ -787,6 +821,64 @@ describe("public repository paid workflow security", () => {
     expect(publisher).toContain(
       "artifact_name: ${{ needs.publish_history.outputs.pages_artifact_name }}",
     );
+  });
+
+  it("keeps recurring reports private while preserving a content-free liveness receipt", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
+    const paid = workflow.split("\n  test:")[1]!.split("\n  report:")[0]!;
+    const manual = paid.split("\n  test_recurring:")[0]!;
+    const recurring = paid.split("\n  test_recurring:")[1]!;
+    expect(manual).not.toContain("id-token: write");
+    expect(manual).toContain("if: needs.catalog.outputs.operations_cadence == ''");
+    expect(recurring).toContain("id-token: write");
+    expect(recurring).toContain("needs.authorize.outputs.target_sha == github.sha");
+    expect(recurring).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
+    expect(recurring).toContain("steps: *paid_test_steps");
+    expect(manual).toContain("steps: &paid_test_steps");
+    const report = workflow.split("\n  report:")[1]!.split("\n  publish_history:")[0]!;
+    const step = (source: string, name: string) => source.split(`      - name: ${name}\n`)[1]!.split(/\n      - /u)[0]!;
+    for (const [job, name] of [[paid, "Upload access-controlled packaged cell evidence"], [report, "Upload access-controlled merged report"]]) {
+      expect(step(job!, name!)).toContain("if: always() && needs.catalog.outputs.operations_cadence == ''");
+    }
+    expect(step(report, "Download cell evidence")).toContain("if: needs.catalog.outputs.operations_cadence == ''");
+    expect(step(paid, "Run bounded campaign and retain feedback review")).not.toContain("AWS_");
+    for (const job of [paid, report]) {
+      const credentials = step(job, "Obtain scoped private history credentials");
+      expect(credentials).toContain("output-env-credentials: false");
+      expect(credentials).toContain("disable-retry: true");
+      expect(credentials).toContain("RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN");
+    }
+    expect(paid.indexOf("Verify private evidence retention before paid execution")).toBeLessThan(paid.indexOf("Run bounded campaign and retain feedback review"));
+    expect(report).toContain("report > runner-e2e-merged-report/report.log 2>&1");
+    const marker = step(report, "Retain report availability for the schedule monitor");
+    expect(marker).toContain("steps.private_report.outcome == 'success'");
+    expect(marker).toContain("path: private-report-status.json");
+    expect(report).toContain('echo \'{"version":1,"privateReportRetained":true}\' > private-report-status.json');
+    expect(marker).not.toMatch(/BUCKET|ROLE_ARN|private-report-reference/);
+  });
+
+  it("isolates private archive trust from workflows that execute target-branch code", async () => {
+    const workflows = path.join(repositoryRoot, ".github/workflows");
+    const source = await readFile(path.join(workflows, "runner-full-stack-e2e.yml"), "utf8");
+    const trust = await readFile(path.join(repositoryRoot, ".github/infra/runner-e2e-private-history.yml"), "utf8");
+    const environments = ["runner-e2e-private-paid", "runner-e2e-private-history"];
+    const subjects = [...trust.matchAll(/!Sub 'repo:\$\{GitHubRepository\}:environment:([^']+)'/gu)].map(match => match[1]);
+    expect(subjects).toEqual(environments);
+    const recurring = source.split("\n  test_recurring:")[1]!.split("\n  report:")[0]!;
+    const report = source.split("\n  report:")[1]!.split("\n  publish_history:")[0]!;
+    for (const [index, job] of [recurring, report].entries()) {
+      expect(job).toContain(`name: ${environments[index]}`);
+      expect(job).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");
+    }
+    expect(recurring).toContain("needs.authorize.outputs.target_sha == github.sha");
+    for (const filename of await readdir(workflows)) {
+      if (!/\.ya?ml$/u.test(filename) || filename === "runner-full-stack-e2e.yml") continue;
+      const other = await readFile(path.join(workflows, filename), "utf8");
+      for (const environment of environments) expect(other, filename).not.toContain(environment);
+    }
+    const protocol = await readFile(path.join(workflows, "runner-protocol-live-evals.yml"), "utf8");
+    expect(protocol).toContain("name: runner-e2e-paid");
+    expect(protocol).toContain("needs.authorize.outputs.target_sha");
   });
 
   it("uses environment-scoped OIDC for a no-delete history publisher", async () => {
@@ -826,5 +918,27 @@ describe("public repository paid workflow security", () => {
     expect(
       workflow.indexOf("pnpm test:e2e:runner:history:publish"),
     ).toBeLessThan(workflow.indexOf("actions/upload-pages-artifact@"));
+  });
+
+  it("does not restore dependency caches or run install scripts in OIDC-authorized jobs", async () => {
+    const workflow = await readFile(path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8");
+    const jobs = workflow.split(/\n(?=  [a-z_]+:)/u);
+    const paidSteps = workflow.split("steps: &paid_test_steps")[1]!.split("\n  test_recurring:")[0]!;
+    const oidcJobs = jobs.filter(job => job.includes("id-token: write"));
+    expect(oidcJobs.length).toBeGreaterThanOrEqual(3);
+    for (const job of oidcJobs) {
+      const steps = job + (job.includes("steps: *paid_test_steps") ? paidSteps : "");
+      expect(steps, job.split("\n")[0]).not.toMatch(/cache:\s*(?:pnpm|npm|yarn)\b/u);
+      expect(steps).not.toMatch(/actions\/cache(?:\/restore)?@/u);
+      for (const install of steps.matchAll(/\bpnpm install[^\n]*/gu)) {
+        expect(install[0]).toContain("--ignore-scripts");
+      }
+    }
+    for (const name of ["report", "publish_history"]) {
+      const job = jobs.find(value => value.startsWith(`  ${name}:`))!;
+      const installs = [...job.matchAll(/\bpnpm install[^\n]*/gu)];
+      expect(installs).toHaveLength(1);
+      for (const install of installs) expect(install[0]).toContain('--store-dir "${{ runner.temp }}/eval-');
+    }
   });
 });

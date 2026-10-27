@@ -14,6 +14,57 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 
+const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
+  "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
+const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync"] as const;
+const blockerContextColumn = sql<Record<string, unknown> | null>`case
+  when ${heartbeatRuns.contextSnapshot} is null then null else (
+    select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
+    from jsonb_each(case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+      then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end) as field(key, value)
+    where field.key in (${sql.join(blockerContextKeys.map(key => sql`${key}`), sql`, `)})
+  ) end`;
+const blockerProfileColumn = sql<Record<string, unknown> | null>`case
+  when ${heartbeatRuns.runnerProfileJson} is null then null else (
+    select coalesce(jsonb_object_agg(field.key, case field.key
+      when 'adapterDispatch' then jsonb_build_object('adapterType', field.value->'adapterType')
+      when 'nativeExecutionInput' then case when jsonb_typeof(field.value) = 'object' then (
+        select coalesce(jsonb_object_agg(input_field.key, input_field.value), '{}'::jsonb)
+        from jsonb_each(field.value) as input_field(key, value)
+        where input_field.key in ('schema', 'binding', 'provider', 'workspace')
+      ) else field.value end
+      else field.value end), '{}'::jsonb)
+    from jsonb_each(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+      then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) as field(key, value)
+    where field.key in (${sql.join(blockerProfileKeys.map(key => sql`${key}`), sql`, `)})
+  ) end`;
+const blockerRunFields = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status,
+  startedAt: heartbeatRuns.startedAt,
+  finishedAt: heartbeatRuns.finishedAt,
+  error: heartbeatRuns.error,
+  errorCode: heartbeatRuns.errorCode,
+  issueId: heartbeatRuns.issueId,
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  nativeSessionId: heartbeatRuns.nativeSessionId,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
+  driverKind: heartbeatRuns.driverKind,
+  processPid: heartbeatRuns.processPid,
+  processGroupId: heartbeatRuns.processGroupId,
+  processStartedAt: heartbeatRuns.processStartedAt,
+  sessionIdAfter: heartbeatRuns.sessionIdAfter,
+  controllerBootId: heartbeatRuns.controllerBootId,
+  controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+  executionStage: heartbeatRuns.executionStage,
+  resultJson: heartbeatRuns.resultJson,
+  contextSnapshot: blockerContextColumn,
+  runnerProfileJson: blockerProfileColumn,
+};
+
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
   const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
@@ -99,7 +150,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
   const runId = parsedRunId.success ? parsedRunId.data : null;
-  const [run] = runId ? await db.select().from(heartbeatRuns).where(and(
+  const [run] = runId ? await db.select(blockerRunFields).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
   )).limit(1) : [];
   const withoutWorkspace = Boolean(run?.driverKind === "grok_bot_mcp" && nativeRunHasNoWorkspaceAccess(run));

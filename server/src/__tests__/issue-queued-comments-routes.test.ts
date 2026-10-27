@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeState,
@@ -79,7 +80,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await tempDb?.cleanup();
   });
 
-  function app(companyId: string, userId = "queue-owner", agentActor?: { agentId: string; runId: string }) {
+  function app(companyId: string, userId = "queue-owner", agentActor?: { agentId: string; runId: string }, database = db) {
     const testApp = express();
     testApp.use(express.json());
     testApp.use((req, _res, next) => {
@@ -94,7 +95,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       };
       next();
     });
-    testApp.use("/api", issueRoutes(db, {} as any, {}));
+    testApp.use("/api", issueRoutes(database, {} as any, {}));
     testApp.use(errorHandler);
     return testApp;
   }
@@ -191,6 +192,104 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     })));
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
+
+  it.each([false, true])("polls queued comments without transferring run snapshots (agent fallback: %s)", async fallback => {
+    const f = await seedQueue(), payload = "saved-execution-input🙂".repeat(25_000);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, prompt: payload },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner", adapterConfig: { instructions: payload } } },
+      stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).where(eq(heartbeatRuns.id, f.runId));
+    if (fallback) await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const response = await request(app(f.companyId, "queue-owner", undefined, observed))
+        .get(`/api/issues/${f.issueId}/queued-comments`).expect(200);
+      expect(response.body.queueId).toBe(f.wakeId);
+      expect(response.body.targetRunId).toBe(f.runId);
+      expect(response.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual(f.commentIds);
+      capture.flush();
+      const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(2048);
+      await request(app(randomUUID(), "queue-owner", undefined, observed))
+        .get(`/api/issues/${f.issueId}/queued-comments`).expect(404);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(before);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
+  it.each(["deferred", "queued"])("reads only queue display inputs from large %s wake payloads", async state => {
+    const f = await seedQueue();
+    if (state === "queued") await promoteQueue(f);
+    const client = app(f.companyId);
+    const path = `/api/issues/${f.issueId}/queued-comments`;
+    const expected = await request(client).get(path).expect(200);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const payload = "saved-wake-input🙂".repeat(30_000);
+    const context = wake.payload?._paperclipWakeContext as Record<string, unknown>;
+    await db.update(agentWakeupRequests).set({ payload: {
+      ...wake.payload, prompt: payload,
+      _paperclipWakeContext: { ...context, prompt: payload, nativeExecutionInput: { instructions: payload } },
+    } }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, prompt: payload },
+      runnerProfileJson: { instructions: payload }, resultJson: { output: payload },
+    }).where(eq(heartbeatRuns.companyId, f.companyId));
+    const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { agentWakeupRequests, heartbeatRuns }, capture);
+    try {
+      const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
+      expect(response.body).toEqual(expected.body);
+      capture.flush();
+      const reads = events.filter(event => ["agent_wakeup_requests", "heartbeat_runs"].includes(String(event.table)) && event.operation === "select");
+      expect(reads.some(event => event.table === "agent_wakeup_requests")).toBe(true);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId)))[0]).toEqual(before);
+      await request(app(randomUUID(), "queue-owner", undefined, observed)).get(path).expect(404);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
+  it.each(["deferred", "queued"])("filters unrelated task wakes before reading the %s comment queue", async state => {
+    const f = await seedQueue();
+    if (state === "queued") await promoteQueue(f);
+    const path = `/api/issues/${f.issueId}/queued-comments`;
+    const expected = await request(app(f.companyId)).get(path).expect(200);
+    const unrelated = Array.from({ length: 80 }, (_, index) => ({
+      companyId: f.companyId, agentId: f.agentId, source: "issue_comment",
+      status: index % 2 ? "queued" : "deferred_issue_execution",
+      requestedAt: new Date("2020-01-01T00:00:00Z"),
+      payload: { issueId: randomUUID(), _paperclipWakeContext: {
+        wakeCommentIds: Array.from({ length: 60 }, () => randomUUID()),
+      } },
+    }));
+    const malformed = [null, [f.issueId], { id: f.issueId }, f.issueId.toUpperCase()];
+    await db.insert(agentWakeupRequests).values([
+      ...unrelated,
+      ...malformed.map(issueId => ({ companyId: f.companyId, agentId: f.agentId,
+        source: "issue_comment", status: "deferred_issue_execution",
+        requestedAt: new Date("2020-01-01T00:00:00Z"),
+        payload: { issueId, _paperclipWakeContext: { wakeCommentIds: f.commentIds } },
+      })),
+    ]);
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { agentWakeupRequests }, capture);
+    try {
+      const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
+      expect(response.body).toEqual(expected.body);
+      capture.flush();
+      const reads = events.filter(event => event.table === "agent_wakeup_requests" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+      expect(reads.reduce((rows, event) => rows + Number(event.rows), 0)).toBe(1);
+      expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(85);
+      await request(app(randomUUID(), "queue-owner", undefined, observed)).get(path).expect(404);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
 
   it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
     const seeded = await seedQueue();

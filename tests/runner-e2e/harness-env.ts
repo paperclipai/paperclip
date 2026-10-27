@@ -11,6 +11,9 @@ const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_AGENT_API_KEY",
   "PAPERCLIP_TASK_BRIDGE_TOKEN",
+  "PAPERCLIP_E2E_GATEWAY_TOKEN",
+  "PAPERCLIP_E2E_GATEWAY_PHASE_PATH",
+  "PAPERCLIP_E2E_OTLP_RELAY_URL",
   "PAPERCLIP_SETUP_TOKEN",
   "PAPERCLIP_SECRETS_MASTER_KEY",
   "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
@@ -28,7 +31,25 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+
+export function applyEvalGatewayEnvironment(env: NodeJS.ProcessEnv, credential: string, gateway: {
+  token: string; baseUrl: string; phasePath: string; observability?: { token: string; baseUrl: string };
+}) {
+  for (const name of Object.keys(env)) {
+    if (CREDENTIAL_NAMES.includes(name as typeof CREDENTIAL_NAMES[number])
+      || PROVIDER_SECRET_KEY.test(name) && /KEY|TOKEN|SECRET|PASSWORD/.test(name)) delete env[name];
+  }
+  delete env.PAPERCLIP_E2E_OTLP_RELAY_URL;
+  env[credential] = gateway.token;
+  env.PAPERCLIP_E2E_GATEWAY_BASE_URL = gateway.baseUrl;
+  env.PAPERCLIP_E2E_GATEWAY_TOKEN = gateway.token;
+  env.PAPERCLIP_E2E_GATEWAY_PHASE_PATH = gateway.phasePath;
+  if (gateway.observability) {
+    env.BRAINTRUST_API_KEY = gateway.observability.token;
+    env.PAPERCLIP_E2E_OTLP_RELAY_URL = gateway.observability.baseUrl;
+  }
+}
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -110,6 +131,8 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
+  delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
   result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;

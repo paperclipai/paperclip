@@ -661,6 +661,54 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("returns a JSON-RPC reconciliation error instead of repeating an unverifiable legacy write", async () => {
+    const company = await createCompany(db);
+    const remote = await startFakeRemoteMcpServer(({ body }) => ({
+      body: { jsonrpc: "2.0", id: body?.id, result: { content: [{ type: "text", text: "saved" }] } },
+    }));
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, { url: remote.url });
+      const toolName = expectedConnectedToolName({ applicationKey: application.applicationKey,
+        connectionId: connection.id, toolName: catalogEntry.toolName });
+      const [profile] = await db.insert(toolProfiles).values({ companyId: company.id,
+        profileKey: `legacy-${randomUUID()}`, name: "Legacy write test", defaultAction: "deny" }).returning();
+      await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile.id,
+        selectorType: "tool_name", effect: "include", toolName });
+      await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fixture writes",
+        policyType: "allow", selectors: { toolName } });
+      const gateway = createTestToolGatewayService(db);
+      const named = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "Legacy write test", profileId: profile.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id,
+        gatewayId: named.id, body: { name: "Test" } });
+      const app = createGatewayRouteApp(db, gateway);
+      const parameters = { key: "large-note", value: `${"x".repeat(500)}original` };
+      await request(app).post(named.endpointPath).set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: "initial-write", method: "tools/call", params: { name: toolName, arguments: parameters } }).expect(200);
+      const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+      expect(invocation.status).toBe("succeeded");
+      const oldHash = invocation.argumentsSummary!.sha256!;
+      const scope = { companyId: invocation.companyId, runId: invocation.runId, issueId: invocation.issueId,
+        applicationId: invocation.applicationId, connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId, toolName: invocation.toolName, argumentsHash: oldHash };
+      const oldKey = `side_effect:${createHash("sha256").update(JSON.stringify(Object.fromEntries(
+        Object.entries(scope).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+      ))).digest("hex")}`;
+      await db.update(toolInvocations).set({ argumentsHash: oldHash, idempotencyKey: oldKey })
+        .where(eq(toolInvocations.id, invocation.id));
+      const requestCount = remote.requests.length;
+      const replay = await request(app).post(named.endpointPath).set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: "legacy-write", method: "tools/call", params: { name: toolName, arguments: parameters } }).expect(409);
+      expect(replay.body).toMatchObject({ jsonrpc: "2.0", id: "legacy-write", error: {
+        code: -32000, data: { reasonCode: "legacy_tool_idempotency_unverifiable", invocationId: invocation.id },
+      } });
+      expect(replay.body.error.message).toContain("Reconcile");
+      expect(remote.requests).toHaveLength(requestCount);
+    } finally {
+      await remote.close();
+    }
+  });
+
   it("exposes a named gateway with scoped bearer-token auth and revocation", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(async ({ body }) => ({

@@ -18,7 +18,14 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
 - `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
+
+The [Cloud Product onboarding journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
+defines portal workspace creation, API-key connection, native Codex creation,
+and a first downloadable artifact with an independent oracle. Its dependent
+task-properties journey reuses onboarding state. This is a scripted coverage
+recipe, not a claim of a completed Cloud run or strict browser-only discovery.
 
 ## How to get to it (user POV)
 

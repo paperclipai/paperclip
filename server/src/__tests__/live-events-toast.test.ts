@@ -14,7 +14,10 @@ vi.mock("../realtime/task-toast-eligibility.js", () => ({ taskToastEligible: vi.
 vi.mock("../services/authorization.js", () => ({
   authorizationService: () => ({ decide: async ({ resource }: { resource: { issueId: string } }) => ({ allowed: resource.issueId !== "hidden" }) }),
 }));
-vi.mock("../services/heartbeat-run-privacy.js", () => ({ canActorReadHeartbeatRun: async () => false }));
+vi.mock("../services/heartbeat-run-privacy.js", () => ({
+  getHeartbeatRunReadDecisions: async (_db: unknown, _access: unknown, _actor: unknown, runs: { issueId?: string }[]) =>
+    runs.map(run => run.issueId !== "hidden"),
+}));
 vi.mock("../services/case-access.js", () => ({
   canActorReadCase: async (_db: unknown, _actor: unknown, record: { id: string }) => record.id !== "hidden-case",
 }));

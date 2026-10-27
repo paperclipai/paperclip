@@ -18,7 +18,7 @@ import { execFile, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { promisify } from "node:util";
 import { getCACertificates } from "node:tls";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -1441,7 +1441,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it("uses the native system channel, selected skill tree, instruction root, and assigned MCP gateway", async () => {
+  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and assigned MCP gateway after startup retry=%s", async (retryStartup) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-context-"));
     const workspace = await mkdtemp(
@@ -1465,6 +1465,7 @@ describe("OpenCodeServerDriver", () => {
     ]);
     const systemInstructions = `${PAPERCLIP_EXECUTION_PROMPT}\n\nRead sibling.md\n\nRead-only instruction sibling root: ${instructionRoot}`;
     let submittedPrompt: Record<string, unknown> | null = null;
+    let startupFailurePending = retryStartup;
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
       runtimeDirectory: root,
@@ -1479,6 +1480,10 @@ describe("OpenCodeServerDriver", () => {
         PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
       },
       fetch: async (input, init) => {
+        if (startupFailurePending && String(input).endsWith("/session") && init?.method === "POST") {
+          startupFailurePending = false;
+          return new Response("Fixture startup failure", { status: 503 });
+        }
         if (String(input).endsWith("/prompt_async"))
           submittedPrompt = JSON.parse(String(init?.body));
         return fetch(input, init);
@@ -1503,15 +1508,17 @@ describe("OpenCodeServerDriver", () => {
       PAPERCLIP_EXECUTION_PROMPT,
     );
     const sessionRoot = join(root, "context");
-    const isolatedHomes = (await readdir(sessionRoot)).filter((entry) =>
-      entry.startsWith("home-"),
+    const runtimeEnvironment = JSON.parse(
+      await readFile(join(sessionRoot, "data", "fake-environment.json"), "utf8"),
     );
-    expect(isolatedHomes).toHaveLength(1);
+    const isolatedHome = runtimeEnvironment.home;
+    expect(startupFailurePending).toBe(false);
+    expect(dirname(isolatedHome)).toBe(join(sessionRoot, "homes"));
+    expect(basename(isolatedHome)).toMatch(/^home-/);
     await expect(
       readFile(
         join(
-          sessionRoot,
-          isolatedHomes[0]!,
+          isolatedHome,
           ".claude",
           "skills",
           "assigned",
@@ -1546,6 +1553,59 @@ describe("OpenCodeServerDriver", () => {
       readFile(join(instructionRoot, "sibling.md"), "utf8"),
     ).resolves.toBe("instruction sibling\n");
     await session.close({ reason: "test" });
+    await expect(readdir(join(sessionRoot, "homes"))).resolves.toEqual([]);
+  });
+
+  it("removes isolated homes left by earlier launches when a session reopens", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-legacy-home-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-legacy-home-workspace-"),
+    );
+    const skillRoot = join(root, "skill-source");
+    const instructionRoot = join(root, "instruction-source");
+    roots.push(root, workspace);
+    await Promise.all([
+      mkdir(skillRoot, { recursive: true }),
+      mkdir(instructionRoot, { recursive: true }),
+    ]);
+    await writeFile(join(skillRoot, "SKILL.md"), "# Assigned\n");
+    await writeFile(join(instructionRoot, "AGENTS.md"), "instructions\n");
+    const sessionRoot = join(root, "legacy");
+    const legacyHome = join(sessionRoot, "home-AbC123");
+    const sealedSkill = join(legacyHome, ".claude", "skills", "assigned");
+    await mkdir(sealedSkill, { recursive: true });
+    await mkdir(join(legacyHome, ".npm", "_cacache"), { recursive: true });
+    await writeFile(join(legacyHome, ".npm", "_cacache", "entry"), "cache");
+    await writeFile(join(sealedSkill, "SKILL.md"), "# Assigned\n");
+    await chmod(join(sealedSkill, "SKILL.md"), 0o444);
+    await chmod(sealedSkill, 0o555);
+    await mkdir(join(sessionRoot, "data", "opencode"), { recursive: true });
+    await writeFile(join(sessionRoot, "data", "opencode", "opencode.db"), "history");
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      runtimeContext: runtimeContext(skillRoot, instructionRoot),
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-legacy-home",
+      normalizedSessionId: "legacy",
+      workingDirectory: workspace,
+    });
+    await expect(lstat(legacyHome)).rejects.toMatchObject({ code: "ENOENT" });
+    await session.close({ reason: "test" });
+    expect(
+      (await readdir(sessionRoot)).filter((entry) => entry.startsWith("home-")),
+    ).toEqual([]);
+    await expect(readdir(join(sessionRoot, "homes"))).resolves.toEqual([]);
+    await expect(
+      readFile(join(sessionRoot, "data", "opencode", "opencode.db"), "utf8"),
+    ).resolves.toBe("history");
   });
 
   it("resends system instructions without repeating the task envelope on recovery", async () => {
@@ -2124,12 +2184,13 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it.each([true, false])("resolves an omitted continuation through the real OpenCode MCP boundary only with a saved monitor: %s", async eligible => {
+  it.each(["monitor", "response_wake"] as const)("resolves an omitted %s through the real OpenCode MCP boundary only from current server state", async kind => {
+    for (const eligible of [true, false]) {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-monitor-"));
     const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-monitor-workspace-"));
     roots.push(root, workspace);
-    const continuation = { kind: "monitor", summary: "Wait for the saved task monitor.", idempotencyKey: "task-monitor:saved" };
+    const continuation = { kind, summary: "Wait for the saved task path.", idempotencyKey: "task-wait:saved" };
     const reads: string[] = [];
     const accepted: unknown[] = [];
     const driver = new OpenCodeServerDriver({
@@ -2156,7 +2217,29 @@ describe("OpenCodeServerDriver", () => {
         expect(events.filter(event => event.eventType === "run.result.proposed")).toEqual([]);
         expect((await session.snapshot()).semanticResult).toBeNull();
       }
-    } finally { await session.close({ reason: "monitor default test complete" }); }
+    } finally { await session.close({ reason: "saved wait default test complete" }); }
+    }
+  });
+
+  it("keeps assigned discovery operation IDs at the authenticated MCP and controller boundary", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-assigned-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const calls: string[] = [];
+    const operation = "paperclip_search_assigned_tools";
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+      dynamicTools: [{ name: operation, inputSchema: { type: "object" } }],
+      dynamicToolHandler: async call => { calls.push(call.tool); if (call.tool !== operation) throw new Error("unauthorized operation"); return { tools: [] }; },
+    });
+    const session = await driver.openSession({ runId: "assigned-name", normalizedSessionId: "assigned-name", workingDirectory: workspace });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Discover assigned tools." } });
+      const events = await collectTurnEvents(session.events());
+      expect(calls).toEqual([operation]);
+      expect(events.some(event => event.eventType === "item.completed" && (event.payload as { item?: { is_error?: boolean } }).item?.is_error)).toBe(false);
+    } finally { await session.close({ reason: "assigned operation identity test" }); }
   });
 
   it("normalizes a structured block result", async () => {

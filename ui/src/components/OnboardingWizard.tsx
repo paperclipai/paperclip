@@ -9,11 +9,13 @@ import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { AiConnectionField, aiProviderForAdapter } from "./ai-connections/AiConnectionField";
+import { useConnectionModelsState } from "./ai-connections/useConnectionModels";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
+import { OnboardingGatewaySetup } from "./onboarding/OnboardingGatewaySetup";
 import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
 import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
@@ -29,7 +31,7 @@ import type {
   InstanceSettings,
 } from "@paperclipai/shared";
 import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
-import { AdapterLoginPanel } from "./AgentConfigForm";
+import { AdapterLoginPanel, ModelDropdown } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
   OnboardingCardField,
@@ -640,6 +642,9 @@ function OnboardingWizardInner({
   const [setupNameConflict, setSetupNameConflict] = useState<string | null>(null);
   const isCopilot = adapterType === "paperclip_runner";
   const [copilotConnection, setCopilotConnection] = useState<AiConnectionBinding>();
+  const [gatewayConnection, setGatewayConnection] = useState<{
+    companyId: string; adapterType: string; binding: AiConnectionBinding;
+  }>();
   const savedNativeRunnerDraft = saved?.adapterType === "paperclip_runner" && !(saved?.onboardingCopilot === true && copilotOnboardingQualified);
   const [cwd, setCwd] = useState((saved?.cwd as string) ?? "");
   const [model, setModel] = useState(
@@ -790,6 +795,7 @@ function OnboardingWizardInner({
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (isCopilot) return copilotConnection;
+    if (credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType) return gatewayConnection.binding;
     const restoredBinding = restoredSetup?.companyId === createdCompanyId
       && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, {})
       ? restoredSetup.runtimeConfig?.aiConnection as AiConnectionBinding | undefined : undefined;
@@ -805,6 +811,17 @@ function OnboardingWizardInner({
         ? apiKeySecretRef.current.aiConnection : undefined);
     return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
   }
+  const connectionModelState = useConnectionModelsState(
+    effectiveOnboardingOpen && step === 4 && credentialMode === "api" ? createdCompanyId : null,
+    managedBindingForStep(), adapterType,
+  );
+  const connectionModels = connectionModelState.connectionModels;
+  const hasGatewaySelection = credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType;
+  const gatewayLookupFailed = hasGatewaySelection && !connectionModelState.refreshing
+    && Boolean(connectionModelState.error || (!connectionModels && !connectionModelState.loading));
+  const connectionModelReady = (!hasGatewaySelection && !connectionModels) || Boolean(connectionModels
+    && (!hasGatewaySelection || (!connectionModelState.error && !connectionModelState.refreshing))
+    && model.trim() && (connectionModels.models.length === 0 || connectionModels.models.some(entry => entry.id === model.trim())));
   createdCompanyIdRef.current = createdCompanyId;
 
   // The step the request wants, mirrored for the same reason. `initialStep` is
@@ -834,6 +851,7 @@ function OnboardingWizardInner({
   function clearCompanyScopedState() {
     setRestoredSetup(null);
     setCopilotConnection(undefined);
+    setGatewayConnection(undefined);
     setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
     setCompanyName("");
@@ -1292,7 +1310,7 @@ function OnboardingWizardInner({
   const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
     && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
-  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
+  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady) && connectionModelReady;
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
@@ -1744,7 +1762,7 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     if (adapterEnvErrorSelectionRef.current !== adapterSetupSelectionRef.current) setAdapterEnvError(null);
-  }, [step, adapterType, runner, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id, createdCompanyId, copilotConnection, resolvedLoginEnvironmentId, runner === "auto" ? runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner : undefined]);
+  }, [step, adapterType, runner, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, savedSubscription?.id, createdCompanyId, copilotConnection, gatewayConnection, resolvedLoginEnvironmentId, runner === "auto" ? runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner : undefined]);
 
   /**
    * Leaving the step puts the row back to a question.
@@ -2332,6 +2350,10 @@ function OnboardingWizardInner({
   async function handleGiveHeartbeat() {
     if (!createdCompanyId) return;
     if (!setupPrepared && !createdAgentId) return;
+    if (!connectionModelReady) {
+      setError("Choose a model for this gateway connection before connecting your agent.");
+      return;
+    }
     if (isCopilot && (!copilotOnboardingEnabled || !sourceSelected || !copilotModelReady)) {
       setError("Connect GitHub Copilot and select an available model before creating this agent.");
       return;
@@ -3135,15 +3157,17 @@ function OnboardingWizardInner({
                       </OnboardingLoginCard>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
+                        instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                        {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                          setGatewayConnection(undefined);
+                          if (connectionModels) setModel("");
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
                           setApiKey("");
-                        }} />
-                        {!selectedApiKey && <OnboardingCardField
+                        }} />}
+                        {!selectedApiKey && !hasGatewaySelection && !connectionModels && <OnboardingCardField
                           label="API key"
                           placeholder="Enter API key here"
                           masked
@@ -3158,6 +3182,32 @@ function OnboardingWizardInner({
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
+                        {hasGatewaySelection && (gatewayLookupFailed ? <>
+                          <p role="alert" className="text-sm text-destructive">Your saved gateway connection could not be loaded. Retry to choose a model and connect your agent.</p>
+                          <Button type="button" variant="outline" disabled={loading || adapterEnvLoading} onClick={() => { void connectionModelState.refresh(); }}>
+                            Retry loading connection
+                          </Button>
+                        </> : <p role="status" className="text-sm text-muted-foreground">{connectionModelState.refreshing
+                          ? "Loading your saved gateway connection…"
+                          : "Gateway connection saved. Choose a model, then Connect to test it and finish setting up your agent."}</p>)}
+                        {connectionModels && <ModelDropdown models={connectionModels.models} value={model}
+                          onChange={setModel} open={modelOpen} onOpenChange={setModelOpen}
+                          allowDefault={false} required groupByProvider={false}
+                          creatable={connectionModels.models.length === 0} presentation="native" />}
+                        {createdCompanyId && (adapterType === "codex_local" || adapterType === "claude_local") && <OnboardingGatewaySetup
+                          companyId={createdCompanyId} agentId={setupAgentId ?? undefined} environmentId={resolvedLoginEnvironmentId ?? undefined}
+                          adapterType={adapterType} disabled={loading || adapterEnvLoading}
+                          onComplete={binding => {
+                            setGatewayConnection({ companyId: createdCompanyId, adapterType, binding });
+                            setApiKey("");
+                            setModel("");
+                            setError(null);
+                          }} />}
+                        {(hasGatewaySelection || connectionModels) && <Button type="button" variant="ghost" disabled={loading || adapterEnvLoading} onClick={() => {
+                          setGatewayConnection(undefined);
+                          setSelectedSavedKey({ companyId: createdCompanyId!, envKey: apiKeyEnvKeyFor(adapterType), id: "" });
+                          setModel("");
+                        }}>Use a different API key</Button>}
                       </OnboardingLoginCard>
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&

@@ -5,6 +5,7 @@ import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { stableHash, descriptorHash } from "../../tool-catalog-hash.js";
 import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
@@ -115,7 +116,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     const existingByName = new Map(
       existingRows.map((entry) => [entry.toolName, entry]),
     );
-    const nativeProvider = Boolean(nativeProviderCatalogFor(connection));
+    const nativeProvider = Boolean(nativeProviderCatalogFor(connection) || restConnectorFor(connection));
     if (connection.config.sourceTemplateKey === "google-workspace"
       || nativeProvider || isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
       const discoveredNames = new Set(descriptors.map((descriptor) => descriptor.name));

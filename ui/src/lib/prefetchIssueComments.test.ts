@@ -88,6 +88,17 @@ describe("prefetchIssueComments", () => {
     expect(issuesApi.listComments).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["index", "rows"] as const)("fetches the full task when navigating from a %s projection", async (listProjection) => {
+    const issue = createIssue();
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.listComments).mockResolvedValue([]);
+    await prefetchIssueDetailForNavigation(queryClient, issue.identifier!, {
+      issue: { ...issue, listProjection, description: null },
+    });
+    expect(issuesApi.get).toHaveBeenCalledWith(issue.identifier!);
+    expect(queryClient.getQueryData(queryKeys.issues.detail(issue.id))).toEqual(issue);
+  });
+
   it("seeds both the detail snapshot and the first comments page for navigation", async () => {
     const issue = createIssue();
     const firstPage = [createComment({ id: "c1" })];

@@ -1,4 +1,4 @@
-import { agentHarnessType } from "@paperclipai/shared";
+import { agentHarnessType, normalizeClaudeRunnerOptions } from "@paperclipai/shared";
 import { resolveClaudeEffort, resolveQualifiedAcpxProfile } from "../../vendor/paperclip-runner/index.js";
 import {
   isPaperclipRunnerProvider,
@@ -84,6 +84,7 @@ export type PaperclipRunnerNativeProviderInput =
       homeMode?: "isolated" | "preconfigured";
       codexApprovalPolicy: "never" | "on-request" | "untrusted";
       codexReasoningEffort?: string;
+      codexWebSearch?: "disabled";
     }
   | {
       provider: "opencode";
@@ -385,6 +386,7 @@ export function assertAgentCoreProfileRecoveryBinding(input: {
 }
 
 export function claudeRunnerUnsupportedSettings(config: Record<string, unknown>): string[] {
+  config = normalizeClaudeRunnerOptions(config).config;
   const unsupported = ["chrome", "agentCommand", "acpAgentCommand", "stateDir", "acpStateDir", "warmHandleIdleMs", "acpWarmHandleIdleMs", "extraArgs", "args", "filesystemScope", "filesystemExtraPaths", "filesystemSandboxCommand", "networkScope", "networkAllowlist", "maxTurnsPerRun", "permissionMode", "acpPermissionMode"]
     .filter(key => config[key] !== undefined && config[key] !== false && config[key] !== "" && config[key] !== 0 && !(Array.isArray(config[key]) && config[key].length === 0));
   if (config.command && config.command !== "claude") unsupported.push("command");
@@ -842,5 +844,6 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       config.codexPermissionMode,
     ) as "never" | "on-request" | "untrusted",
     ...(typeof effort === "string" && effort ? { codexReasoningEffort: effort } : {}),
+    ...(config.search === false ? { codexWebSearch: "disabled" as const } : {}),
   };
 }

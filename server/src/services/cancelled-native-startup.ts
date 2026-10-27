@@ -7,7 +7,12 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 
-type Run = typeof heartbeatRuns.$inferSelect;
+type Run = Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
+  "runtimeModeResolvedAt" | "errorCode" | "error" | "resultJson" | "runnerProfileJson" |
+  "contextSnapshot" | "processPid" | "processGroupId" | "processStartedAt" |
+  "sessionIdAfter" | "nativeIssueId" | "nativeSessionId" | "executionStage" |
+  "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 
 /** Candidate for explicit user Retry only, never automatic replay after Stop. */

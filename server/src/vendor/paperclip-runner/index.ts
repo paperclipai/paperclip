@@ -107,6 +107,10 @@ export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
   runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
 export const acpxRuntimeSessionDirectoryName =
   runner.acpxRuntimeSessionDirectoryName;
+export const OPENCODE_ISOLATED_HOMES_DIRECTORY =
+  runner.OPENCODE_ISOLATED_HOMES_DIRECTORY;
+export const opencodeRuntimeSessionDirectoryName =
+  runner.opencodeRuntimeSessionDirectoryName;
 export const canonicalNativeRuntimeContextDigest =
   runner.canonicalNativeRuntimeContextDigest;
 export const createNativeSessionBackend = runner.createNativeSessionBackend;
@@ -162,6 +166,7 @@ export const completeTerminatedLocalNativeSessionCleanup = runner.completeTermin
 export const probeAcpxClaudeInstallation = runner.probeAcpxClaudeInstallation;
 export const probeAcpxGrokInstallation = runner.probeAcpxGrokInstallation;
 export const probeAcpxPiInstallation = runner.probeAcpxPiInstallation;
+export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;
 

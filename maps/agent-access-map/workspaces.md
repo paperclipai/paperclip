@@ -49,6 +49,12 @@ those APIs with their admitted run token. These paths do not require a project.
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
 
+Ordinary input may reuse the exact currently bound private task directory after
+an explicitly fresh retry. Preparation rechecks company, source task, current
+binding and canonical path; missing directories, symlinks and foreign roots are
+rejected. This preserves files without granting new access or replaying the
+previous turn. An explicitly fresh retry still creates a clean sibling.
+
 Task workspace writes require `issue:mutate`, an active owned task/run for agents,
 and current source visibility. Shared physical roots also require source-project
 workspace write authority. Accepting a new pending choice advances its binding

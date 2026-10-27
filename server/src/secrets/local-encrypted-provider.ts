@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
@@ -19,8 +19,12 @@ interface LocalEncryptedMaterial extends StoredSecretVersionMaterial {
   ciphertext: string;
 }
 
-function resolveMasterKeyFilePath() {
-  const fromEnv = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+export type LocalEncryptedKeyEnv = Partial<Record<
+  "PAPERCLIP_SECRETS_MASTER_KEY" | "PAPERCLIP_SECRETS_MASTER_KEY_FILE", string | undefined
+>>;
+
+function resolveMasterKeyFilePath(env: LocalEncryptedKeyEnv = process.env) {
+  const fromEnv = env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
   return resolveDefaultSecretsKeyFilePath();
 }
@@ -46,8 +50,8 @@ function decodeMasterKey(raw: string): Buffer | null {
   return null;
 }
 
-function loadOrCreateMasterKey(allowCreate = true): Buffer {
-  const envKeyRaw = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = process.env): Buffer {
+  const envKeyRaw = env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
     const fromEnv = decodeMasterKey(envKeyRaw);
     if (!fromEnv) {
@@ -58,7 +62,7 @@ function loadOrCreateMasterKey(allowCreate = true): Buffer {
     return fromEnv;
   }
 
-  const keyPath = resolveMasterKeyFilePath();
+  const keyPath = resolveMasterKeyFilePath(env);
   if (existsSync(keyPath)) {
     enforceKeyFilePermissionsBestEffort(keyPath);
     const raw = readFileSync(keyPath, "utf8");
@@ -86,7 +90,13 @@ function loadOrCreateMasterKey(allowCreate = true): Buffer {
   } finally {
     unlinkSync(temporaryPath);
   }
-  return loadOrCreateMasterKey(false);
+  return loadOrCreateMasterKey(false, env);
+}
+
+/** Derive a purpose-specific instance secret without exposing or reusing the vault key. */
+export function deriveLocalEncryptedInstanceSecret(purpose: string, env: LocalEncryptedKeyEnv = process.env): string {
+  return Buffer.from(hkdfSync("sha256", loadOrCreateMasterKey(true, env), Buffer.alloc(0),
+    `paperclip:instance-secret:v1\0${purpose}`, 32)).toString("base64url");
 }
 
 function enforceKeyFilePermissionsBestEffort(keyPath: string) {

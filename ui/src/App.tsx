@@ -53,12 +53,16 @@ const AssistantConnectionsPage = lazy(() => import("./pages/McpConnect").then((m
 const ProductionLayout = lazy(() => import("./components/Layout.production").then((module) => ({ default: module.Layout })));
 
 const TaskChatLab = lazy(() => import("./pages/TaskChatLab").then((module) => ({ default: module.TaskChatLab })));
-const Issues = lazy(() => import("./pages/Issues").then((module) => ({ default: module.Issues })));
-const loadIssueDetail = () => import("./pages/IssueDetail").then((module) => ({ default: module.IssueDetail }));
+const loadIssues = () => import("./pages/Issues").then((module) => ({ default: module.Issues }));
+const Issues = lazy(loadIssues);
+let issueDetailLoad: Promise<{ default: typeof import("./pages/IssueDetail").IssueDetail }> | undefined;
+const loadIssueDetail = () =>
+  (issueDetailLoad ??= import("./pages/IssueDetail").then((module) => ({ default: module.IssueDetail })));
 const IssueDetail = lazy(loadIssueDetail);
 const AgentChat = lazy(() => import("./pages/AgentChat").then((module) => ({ default: module.AgentChat })));
 const IssueChatLongThreadPerf = lazy(() => import("./pages/IssueChatLongThreadPerf").then((module) => ({ default: module.IssueChatLongThreadPerf })));
-const Inbox = lazy(() => import("./pages/Inbox").then((module) => ({ default: module.Inbox })));
+const loadInbox = () => import("./pages/Inbox").then((module) => ({ default: module.Inbox }));
+const Inbox = lazy(loadInbox);
 const BootstrapSetupUxLab = lazy(() => import("./pages/BootstrapSetupUxLab").then((module) => ({ default: module.BootstrapSetupUxLab })));
 const ResponsibleUserDenialUxLab = lazy(() => import("./pages/ResponsibleUserDenialUxLab").then((module) => ({ default: module.ResponsibleUserDenialUxLab })));
 const CrossIssueCollaborationUxLab = lazy(() => import("./pages/CrossIssueCollaborationUxLab").then((module) => ({ default: module.CrossIssueCollaborationUxLab })));
@@ -761,9 +765,10 @@ export function App() {
   const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   useEffect(() => {
-    if (/^\/[^/]+\/(issues|tasks|inbox)(?:\/|$)/.test(pathname)) {
-      void loadIssueDetail().catch(() => undefined);
-    }
+    // Download the requested collection while access/company checks run. Detail
+    // code is already prefetched by row intent; don't compete with the cold list.
+    if (/^\/[^/]+\/inbox(?:\/|$)/.test(pathname)) void loadInbox().catch(() => undefined);
+    else if (/^\/[^/]+\/(issues|tasks)\/?$/.test(pathname)) void loadIssues().catch(() => undefined);
   }, [pathname]);
 
   return (

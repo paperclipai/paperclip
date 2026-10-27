@@ -1,3 +1,4 @@
+import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
@@ -55,7 +56,7 @@ export async function preserveNativeWorkspaceExportLease(db: Db, run: typeof hea
   )).for("update").limit(1);
   if (!lease || lease.status !== "active") return;
   const requestId = randomUUID(), now = new Date();
-  await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+  await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
     failureReason: "workspace_export_stop_pending", releasedAt: now, updatedAt: now,
     metadata: { ...lease.metadata, remoteExecutionTermination: undefined,
       [NATIVE_WORKSPACE_EXPORT_RESUME_KEY]: { schema: "paperclip.workspace-export-resume.v2", requestId,
@@ -64,7 +65,7 @@ export async function preserveNativeWorkspaceExportLease(db: Db, run: typeof hea
         pluginId: lease.metadata?.pluginId },
       pendingCleanupAttemptId: requestId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupRetryCapWarned: false },
-  }).where(eq(environmentLeases.id, lease.id));
+  }).where(eq(environmentLeases.id, lease.id)));
 }
 
 /** Only verified copyback plus commitment permits the original ephemeral
@@ -106,7 +107,7 @@ export async function settleNativeWorkspaceExportResume(db: Db, lease: Lease, op
   const receipt = remoteTerminationReceipt(lease, options.receipt);
   const stopped = receipt?.state === "stopped";
   const now = new Date();
-  const [row] = await db.update(environmentLeases).set({
+  const [row] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: stopped ? options.status ?? "released" : "pending_cleanup", cleanupStatus: stopped ? "success" : "failed",
     releasedAt: now, lastUsedAt: now, updatedAt: now,
     metadata: sql`(${environmentLeases.metadata} - 'remoteExecutionTermination'
@@ -120,6 +121,6 @@ export async function settleNativeWorkspaceExportResume(db: Db, lease: Lease, op
     sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.attemptId}`,
     sql`${environmentLeases.metadata}->'nativeWorkspaceExportResume'->>'requestId' = ${marker.requestId}`,
     sql`${environmentLeases.metadata}->>'pluginId' = ${marker.pluginId}`,
-  )).returning();
+  )).returning());
   return row ?? null;
 }

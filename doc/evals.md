@@ -1,10 +1,35 @@
 # Paperclip evaluation guide
 
+The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
+two natural-language task scenarios into local native Product E2E cells. They
+verify saving an unstarted task and delegating a saved announcement back to chat,
+using ordinary production instructions, real browser messages and independent
+state/provenance checks. The broader YAML catalog remains planning inventory.
+
+The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
+extends the existing native restart oracle to a 125-second controller outage,
+using the recorded Claude and Codex models in disposable development fixtures.
+It requires same-process adoption, saved files and finalization without replay;
+local regression checks and catalog discovery are separate from live acceptance.
+
+The explicit-only [GitHub review bot journey](../tests/runner-e2e/GITHUB-REVIEW-JOURNEY.md)
+converts the Ponytail walkthrough into attended App setup, scoped installation,
+automatic PR review, and independent two-service checks. It supports attached
+self-hosted/Cloud targets and separately selected local/Daytona agents. Account
+and credential bindings stay in the private eval repo; registration and oracle
+tests do not establish a completed live pass or unattended CI qualification.
+
 The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
 checks one essential input, the rendered prompt and context, the real answer,
 one bound continuation, and an exact saved confirmation. Its four development
 cells use the recorded Codex and Claude models. Registration and calibration do
 not establish Slack, staging authentication, warm lifecycle, or live qualification.
+
+[Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
+deployment targets and starting-state recipes. The shared task-properties
+journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
+fleet operations and trusted CI remain private. Local eval gateway qualification
+does not qualify Cloud routes, and these selections stay outside `--all`.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
 contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task
@@ -64,6 +89,12 @@ behavior.
   provider, and (where selected) Daytona, using an isolated instance and
   grading oracle. See [`tests/runner-e2e`](../tests/runner-e2e/README.md) and
   [Everyday Workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md).
+
+The [chat scenario catalog](../tests/runner-e2e/chat-scenarios/README.md) is a
+planning inventory within Product E2E: natural user requests, assumed context and
+expected outcomes linked to the feature and agent-access maps. It includes
+conditional setup, permission, approval and recovery journeys. Its YAML files
+are not registered runnable cells and contribute no passing coverage or scores.
 
 Runner Evals answer whether a real runner/provider can perform a bounded
 protocol operation against the expected control-plane contract. Product E2E
@@ -505,3 +536,8 @@ covers projectless task files, deferred repository acquisition, controller resta
 and nested Git/dirty-file persistence on legacy local, native local and native
 Daytona OpenCode. Its three configured cells use independent filesystem, public
 API and download oracles; no live qualification is implied by fixture registration.
+
+The explicit-only [feedback persistence case](../tests/runner-e2e/README.md#feedback-persistence-explicit-only)
+checks real native complaint/suggestion submissions and retained bodies with
+run-attributed tool receipts. It is manual, uses the normal Product E2E report,
+and keeps synthetic feedback distinct from actionable product findings.

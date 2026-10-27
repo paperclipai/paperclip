@@ -58,6 +58,7 @@
 import os from "node:os";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
@@ -115,6 +116,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       ...(reference.companyId ? { company_id: reference.companyId } : {}),
       ...(reference.agentId ? { agent_id: reference.agentId } : {}),
     } : {};
+    const storageFailure = storageFailureDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -130,6 +132,14 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       sentryHandle.captureException(exception, {
         tags: { ...tags, error_code: "cloud_portfolio_failure" },
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (storageFailure) {
+      // The original error keeps its default grouping; only the normalized
+      // record is added, never the provider's request or response.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
+        contexts: { storage_failure: { ...storageFailure } },
         fingerprint: ["{{ default }}"],
       });
     } else if (reference) {

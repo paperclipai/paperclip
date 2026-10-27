@@ -379,6 +379,33 @@ describe("IssuesList", () => {
     container.remove();
   });
 
+  it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
+    const first = createIssue({ id: "child-one", parentId: "parent-one", title: "First nested task" });
+    const second = createIssue({ id: "child-two", parentId: "parent-two", title: "Second nested task" });
+    let resolveAncestors: (rows: Issue[]) => void = () => undefined;
+    mockIssuesApi.list.mockImplementation((_company, filters) => filters.ids && filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { resolveAncestors = resolve; }) : Promise.resolve([]));
+    const view = (rows: Issue[]) => <IssuesList issues={rows} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-issues" enableAgentCreatedVisibilityFilter rowPresentation="task"
+      onUpdateIssue={() => undefined} />;
+    const { root, queryClient } = renderWithQueryClient(view([first]), container);
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one"], projection: "index" }), expect.anything()));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    const parent = createIssue({ id: "parent-one", title: "First parent" });
+    await act(() => resolveAncestors([parent]));
+    await waitForAssertion(() => expect(container.textContent).toContain("First nested task"));
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>{view([first, second])}</TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one", "parent-two"], projection: "index" }), expect.anything()));
+    expect(container.textContent).toContain("First parent");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => resolveAncestors([parent, createIssue({ id: "parent-two", title: "Second parent" })]));
+    await waitForAssertion(() => expect(container.textContent).toContain("Second nested task"));
+    act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("uses the master list and legacy persistence when Streamlined UI is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -624,6 +651,29 @@ describe("IssuesList", () => {
     });
   });
 
+  it("shows a retryable external-status filter error instead of a false empty task list", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new Error("Status lookup unavailable"));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[createIssue({ id: "issue-failed", title: "Matching task after retry" })]}
+      agents={[]} projects={[]} viewStateKey="paperclip:test-issues" rowPresentation="task"
+      onUpdateIssue={() => undefined}
+    />, container);
+    await waitForAssertion(() => expect(container.textContent).toContain("Unable to filter tasks by external status"));
+    expect(container.textContent).not.toContain("No tasks match");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {
+      "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] },
+    } });
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry external statuses")!.click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Matching task after retry"));
+    expect(container.textContent).not.toContain("Unable to filter tasks by external status");
+    expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("renders server search results instead of filtering the full issue list locally", async () => {
     const localIssue = createIssue({ id: "issue-local", identifier: "PAP-1", title: "Local issue" });
     const serverIssue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
@@ -645,6 +695,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         limit: 200,
       }, { signal: expect.any(AbortSignal) });
@@ -679,6 +730,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         parentId: "parent-1",
         limit: 200,
@@ -1577,7 +1629,7 @@ describe("IssuesList", () => {
     let holdNextRead = false;
     let releaseRead: (() => void) | undefined;
     mockIssuesApi.list.mockImplementation(async (_companyId, filters) => {
-      if (filters.parentId !== parent.id) return [];
+      if (!filters.parentIds?.includes(parent.id)) return [];
       const rows = children.slice(filters.offset ?? 0, (filters.offset ?? 0) + filters.limit);
       if (holdNextRead) {
         holdNextRead = false;

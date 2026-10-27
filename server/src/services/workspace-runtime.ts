@@ -115,6 +115,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { collectNestedRepositoryWorktrees, releaseNestedRepositoryWorktrees } from "./nested-repository-worktrees.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -3909,7 +3910,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   const restoreContents = async () => {
     if (!restoration?.contents || !input.workspace.id) return;
     await restoreGitWorkspaceContents({ cwd, companyId: input.agent.companyId, workspaceId: input.workspace.id,
-      contents: restoration.contents, resolveGitAuth: async url => {
+      projectId: input.workspace.projectId, contents: restoration.contents, resolveGitAuth: async url => {
         const auth = await input.resolveGitAuth?.(url);
         if (!auth) return null;
         const source = auth.source;
@@ -4292,6 +4293,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   // Callers can require the workspace to match an assessed snapshot before
   // cleanup begins. Destructive paths recheck immediately before removal.
   await input.assertSafeToCleanup?.();
+  const nestedWorktrees = workspacePath ? await collectNestedRepositoryWorktrees(workspacePath).catch((err) => {
+    warnings.push(`Could not inspect nested repository worktrees: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }) : [];
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -4467,6 +4472,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   const cleaned =
     !workspacePath ||
     !(await directoryExists(workspacePath));
+  if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
   return {
     cleanedPath: workspacePath,

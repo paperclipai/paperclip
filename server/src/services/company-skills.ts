@@ -1,4 +1,5 @@
 import { ensureSkillCacheDirectory, touchSkillVersionCache, withSkillVersionCacheLock } from "./skill-version-cache.js";
+import { verifyExistingBundledSkillRelease } from "./bundled-skill-release-validation.js";
 import { retainProjectSkillAccess, skillAccessService } from "./skill-access.js";
 import type { AuthorizationActor } from "./authorization.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
@@ -600,7 +601,7 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
   return candidate;
 }
 
-function buildSkillRuntimeName(key: string, slug: string) {
+export function buildSkillRuntimeName(key: string, slug: string) {
   if (key.startsWith("paperclipai/paperclip/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
 }
@@ -3094,30 +3095,22 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const fileInventory = serializeVersionFileInventory(
         await collectVersionFileInventoryFromDirectory(release.releaseDir),
       );
-      const existing = await db
-        .select()
-        .from(companySkillVersions)
-        .where(and(
-          eq(companySkillVersions.companyId, companyId),
-          eq(companySkillVersions.companySkillId, paperclipSkill.id),
-          eq(companySkillVersions.releaseId, release.id),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        const existingInventory = toCompanySkillVersion(existing).fileInventory;
-        const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
-          path: entry.path,
-          sha256: sha256Buffer(entry.content),
-        })));
-        if (existingHash !== registryHash) {
-          throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
-        }
-        continue;
-      }
+      const registryHash = buildInventoryContentHash(fileInventory.map((entry) => ({
+        path: entry.path,
+        sha256: sha256Buffer(entry.content),
+      })));
+      if (await verifyExistingBundledSkillRelease({ db, companyId, skillId: paperclipSkill.id, releaseId: release.id,
+        expectedInventoryHash: registryHash, validateInventory: existing => {
+          const existingInventory = toCompanySkillVersion(existing).fileInventory;
+          const existingHash = buildInventoryContentHash(existingInventory.map((entry) => ({
+            path: entry.path,
+            sha256: sha256Buffer(entry.content),
+          })));
+          if (existingHash !== registryHash) {
+            throw new Error(`Bundled skill release ${release.id} does not match its seeded snapshot.`);
+          }
+        },
+      })) continue;
       const releasedAt = new Date(release.releasedAt);
       if (Number.isNaN(releasedAt.getTime())) {
         throw new Error(`Invalid bundled skill release date: ${release.releasedAt}`);
@@ -6245,6 +6238,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
+      /** Managed plugin namespaces may share a slug while retaining separate canonical records. */
+      allowSlugCollision?: boolean;
     },
   ): Promise<ImportPackageSkillResult[]> {
     await ensureSkillInventoryCurrent(companyId);
@@ -6293,7 +6288,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const normalizedSlug = normalizeSkillSlug(importedSkill.slug) ?? importedSkill.slug;
       const existingByIncomingKey = existingByKey.get(importedSkill.key) ?? null;
       const existingByIncomingSlug = existingBySlug.get(normalizedSlug) ?? null;
-      const conflict = existingByIncomingKey ?? existingByIncomingSlug;
+      const conflict = existingByIncomingKey ?? (options?.allowSlugCollision ? null : existingByIncomingSlug);
 
       if (!conflict || conflictStrategy === "replace") {
         const skillToPersist = conflict && conflict.key !== importedSkill.key

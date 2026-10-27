@@ -840,7 +840,11 @@ function asAwsSecretsManagerMaterial(value: StoredSecretVersionMaterial): AwsSec
 function classifyAwsProviderError(message: string): SecretProviderClientErrorCode {
   if (/ResourceExistsException|AlreadyExists/i.test(message)) return "conflict";
   if (/ResourceNotFoundException|NotFound/i.test(message)) return "not_found";
-  if (/AccessDeniedException|AccessDenied|UnrecognizedClientException|InvalidClientTokenId|not authorized/i.test(message)) {
+  if (
+    /AccessDeniedException|AccessDenied|CredentialsProviderError|Could not load credentials|credential provider chain|UnrecognizedClientException|InvalidClientTokenId|ExpiredTokenException|InvalidSignatureException|SignatureDoesNotMatch|not authorized/i.test(
+      message,
+    )
+  ) {
     return "access_denied";
   }
   if (/Throttl|TooManyRequests|RequestLimitExceeded|Rate exceeded/i.test(message)) return "throttled";
@@ -870,6 +874,9 @@ function awsProviderSafeMessage(code: SecretProviderClientErrorCode): string {
 }
 
 function normalizeAwsError(operation: string, error: unknown): never {
+  if (error instanceof SecretProviderClientError) {
+    throw error;
+  }
   const rawMessage = error instanceof Error ? error.message : String(error);
   const code = classifyAwsProviderError(rawMessage);
   throw new SecretProviderClientError({

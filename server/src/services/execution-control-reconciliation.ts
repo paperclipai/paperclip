@@ -14,6 +14,7 @@ import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -233,8 +234,10 @@ export async function reconcileAbandonedExecutionControl(
             ["done", "cancelled"].includes(task.status) ||
             (task.executionRunId && task.executionRunId !== run.id) ||
             (task.checkoutRunId && task.checkoutRunId !== run.id)
-          )
+          ) {
+            if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
             return true;
+          }
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
@@ -261,6 +264,7 @@ export async function reconcileAbandonedExecutionControl(
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
           });
+          if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
           return true;
         });
         if (repaired) surfaced += 1;

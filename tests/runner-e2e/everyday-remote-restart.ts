@@ -12,7 +12,8 @@ const digest = (value: unknown) => createHash("sha256").update(canonicalJson(val
 export interface RemoteRestartEvent {
   seq: number; sourceSeq: number; sourceEventId: string; eventType: string;
   sourceKind: "runner" | "control_plane"; turnId: string | null;
-  toolExecutionId: string | null; toolCompleted: boolean; sha256: string;
+  toolExecutionId: string | null; toolCompleted: boolean; toolFailed: boolean;
+  payloadSha256: string; sha256: string;
 }
 export interface RemoteRestartBoundary {
   identity: { runId: string; companyId: string; agentId: string; issueId: string;
@@ -78,6 +79,8 @@ export function projectRemoteRestartEvents(run: StoryRun, rows: readonly Row[]):
       turnId: id(event.turnId) ? event.turnId : null,
       toolExecutionId: id(payload.executionId) ? payload.executionId : null,
       toolCompleted: event.eventType === "tool.execution.completed" && payload.status === "completed",
+      toolFailed: event.eventType === "tool.execution.completed" && payload.status !== "completed",
+      payloadSha256: digest(payload),
       sha256: digest(event) };
   });
 }
@@ -132,12 +135,23 @@ export function gradeRemoteRestart(evidence: RemoteRestartEvidence | undefined):
   const events = final?.events ?? [];
   const turnId = before?.events.find(event => event.eventType === "turn.started")?.turnId;
   const once = (kind: string, source: RemoteRestartEvent["sourceKind"]) => events.filter(event => event.eventType === kind && event.sourceKind === source).length === 1;
-  const completedTools = events.filter(event => event.toolCompleted).map(event => event.toolExecutionId);
+  // Reattachment can redeliver an already-observed activity notification. Its
+  // stable identity and exact payload must agree; a new submission, changed
+  // result or failed tool is not receipt replay and must never pass this cell.
+  const starts = events.filter(event => event.eventType === "turn.started" && event.sourceKind === "runner");
+  const tools = events.filter(event => event.toolCompleted);
+  const toolResults = new Map<string, string>();
+  let consistentToolResults = true;
+  for (const event of tools) {
+    if (!event.toolExecutionId || (toolResults.has(event.toolExecutionId) && toolResults.get(event.toolExecutionId) !== event.payloadSha256)) consistentToolResults = false;
+    else toolResults.set(event.toolExecutionId, event.payloadSha256);
+  }
   const nativeCompletion = finalIdentity && Boolean(before && after && retainsPrefix(after.events, events))
-    && once("turn.submitted", "runner") && once("turn.started", "runner") && once("turn.completed", "runner")
+    && once("turn.submitted", "runner") && starts.length > 0 && new Set(starts.map(event => event.payloadSha256)).size === 1
+    && once("turn.completed", "runner")
     && once("run.result.accepted", "control_plane") && once("run.terminal", "control_plane")
     && events.filter(event => event.eventType.startsWith("turn.")).every(event => event.turnId === turnId || (event.eventType === "turn.submitted" && event.turnId === null))
-    && new Set(completedTools).size === completedTools.length;
+    && consistentToolResults && !events.some(event => event.toolFailed);
   const operations = final?.operations ?? [];
   const saved = finalIdentity && run?.status === "succeeded" && run.nativePhase === "committed"
     && run.resultJson?.finalizationPhase === "committed" && run.resultJson.workspaceFinalizeStatus === "succeeded"

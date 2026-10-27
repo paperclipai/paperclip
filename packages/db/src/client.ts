@@ -4,6 +4,8 @@ import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { installDatabaseWorkSignals } from "./work-signals.js";
+import { installDatabaseResponseCapture } from "./response-capture.js";
+import { installPreparedQueries } from "./prepared-queries.js";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -128,13 +130,6 @@ export type MigrationState =
     };
 
 export interface DatabaseClientOptions {
-  /**
-   * postgres.js `prepare`. Set false when connecting through a
-   * transaction-mode pooler (pgbouncer / Neon `-pooler` endpoints /
-   * Supabase Supavisor transaction ports) so the client does not rely on
-   * session-scoped prepared statements. Defaults to the driver default
-   * (enabled), preserving existing behavior on direct connections.
-   */
   prepare?: boolean;
   /** postgres.js `max` — connection pool size (driver default: 10). */
   maxConnections?: number;
@@ -300,6 +295,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
 
 function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
   const sql = postgres(url, postgresJsOptions(resolved));
+  if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
   // A disconnect can lose the response after a statement has committed.
@@ -307,6 +303,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // message cannot establish that replay is safe. Leave retries to callers
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
+  installDatabaseResponseCapture(db, schema);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }, db));

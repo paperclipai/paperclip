@@ -7,6 +7,7 @@ import {
   connectionGrants,
   createDb,
   externalObjects,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
@@ -30,7 +31,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-github-events-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -46,7 +47,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     await tempDb?.cleanup();
   });
 
-  it("applies a normalized merged PR once while retaining undecryptable siblings for retry", async () => {
+  it.each([false, true])("applies a normalized merged PR once while retaining undecryptable siblings for retry (active setup=%s)", async activeSetup => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;
     const applicationId = randomUUID();
@@ -151,8 +152,21 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
     const service = githubConnectionEventService(db, { connector, now: () => currentTime });
 
+    if (activeSetup) {
+      // An existing personal connection can leave a long empty-queue backoff
+      // before a new dedicated App starts its signed-ping verification.
+      for (const delay of [0, 10_000, 20_000, 40_000, 80_000]) {
+        currentTime = new Date(currentTime.getTime() + delay);
+        vi.mocked(connector.leaseEvents).mockResolvedValueOnce(null);
+        await service.pollOnce();
+      }
+      currentTime = new Date(currentTime.getTime() + 5_000);
+      await expect(service.pollOnce()).resolves.toMatchObject({ leased: 0 });
+      expect(connector.leaseEvents).toHaveBeenCalledTimes(5);
+    }
+
     const warning = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
+    await expect(service.pollOnce({ forSetup: activeSetup })).resolves.toMatchObject({ leased: 2, processed: 1, duplicate: 0, failed: 1 });
     expect(warning.mock.calls).toEqual([[{
       deliveryId: "undecryptable-delivery", reason: "inner_event_authentication_failed",
     }, "GitHub connector event retained for retry"]]);

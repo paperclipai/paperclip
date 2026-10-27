@@ -1,0 +1,83 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: instance-operations
+status: planned
+scenarios:
+  - id: instance-operations.update-instance
+    capabilities:
+      - instance-operations/install-update
+    context: >-
+      The person asks from Agent Chat; applying an installed release update or rollback is an
+      operator action on an owned instance.
+    query: >-
+      Update this Paperclip instance to the supported release.
+    expected_outcome: >-
+      The agent directs the operator to inspect the installation channel and supported update
+      path, preserving a concrete rollback option where offered. The journey verifies the
+      installed version and service health after the authorized operation. Ordinary chat does
+      not execute arbitrary installer commands or claim the newest version from memory.
+  - id: instance-operations.restart-service
+    capabilities:
+      - instance-operations/server-service
+    context: >-
+      The selected instance is an owned development fixture and restarting it will interrupt
+      this chat connection.
+    query: >-
+      Restart this test instance and bring my conversation back.
+    expected_outcome: >-
+      The operator uses the supported service control for the exact fixture, and the browser
+      returns to persisted conversation state after readiness. The journey checks actual service
+      stop/start rather than a listening port alone. The agent cannot promise it will keep
+      responding while its own server is offline.
+  - id: instance-operations.instance-settings
+    capabilities:
+      - instance-operations/configuration
+    context: >-
+      Experimental settings, binding and storage configuration require instance authority that
+      the chat agent lacks.
+    query: >-
+      Enable Agent Chat on this instance.
+    expected_outcome: >-
+      The response identifies the supported instance setting and operator path without granting
+      the agent administration rights. The human journey verifies saved configuration and actual
+      route availability. Unsupported deployment choices or a disabled gate produce clear state
+      instead of an agent claiming a successful setting change.
+  - id: instance-operations.diagnose-health
+    capabilities:
+      - instance-operations/diagnostics
+    context: >-
+      The fixture's HTTP port is listening but its database readiness check fails.
+    query: >-
+      Is this Paperclip instance healthy enough to run work?
+    expected_outcome: >-
+      The agent uses permitted health evidence or guides the operator through doctor output and
+      distinguishes liveness from readiness. It identifies the failing prerequisite rather than
+      reporting healthy from an HTTP connection alone. Any restricted local check is clearly
+      assigned to the operator path.
+  - id: instance-operations.backup-and-restore
+    capabilities:
+      - instance-operations/backup
+    context: >-
+      The operator owns a disposable source instance and a separate empty restore target; board
+      backup authority is required.
+    query: >-
+      Back up this test instance and check that we can restore it.
+    expected_outcome: >-
+      The authorized backup creates an inspectable archive and restoration is verified only in
+      the separate disposable target. Chat distinguishes backup creation from verified recovery
+      and reports the restore result. No production database is overwritten and backup contents
+      or secrets are not published as ordinary chat attachments.
+  - id: instance-operations.provision-runtime
+    capabilities:
+      - instance-operations/runtime-setup
+    context: >-
+      The operator owns a published installation that lacks its release-matched Pi runtime
+      assets.
+    query: >-
+      Install the Pi runtime this Paperclip release needs.
+    expected_outcome: >-
+      The supported operator runtime path uses verified release-matched assets for the intended
+      installation and checks runtime readiness. The agent does not fetch an arbitrary latest
+      binary or read another operator's private cache. A package download alone is not treated
+      as a qualified running agent.

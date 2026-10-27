@@ -49,6 +49,7 @@ import {
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
 
 type ToolAccessContext = {
   companyId: string;
@@ -293,8 +294,9 @@ function trustRuleIsActive(policy: typeof toolPolicies.$inferSelect, now = new D
   return true;
 }
 
-function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string): string {
-  return `side_effect:${sha256({
+function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string, version: 1 | 2 = 2): string {
+  return `side_effect:${version === 2 ? "v2:" : ""}${sha256({
+    ...(version === 2 ? { actorType: ctx.actorType, actorId: ctx.actorId, agentId: ctx.agentId } : {}),
     companyId: ctx.companyId,
     runId: ctx.heartbeatRunId,
     issueId: ctx.issueId,
@@ -313,7 +315,7 @@ function auditOutcome(accessDecision: ToolAccessDecision): "pending" | "success"
   return "denied";
 }
 
-function summarizeAndRedact(value: unknown): RedactionResult {
+function summarizeAndRedact(value: unknown, normalizeSensitiveKeys = true): RedactionResult {
   const redactedFields: string[] = [];
   const visit = (current: unknown, path: string): unknown => {
     if (typeof current === "string") {
@@ -328,7 +330,7 @@ function summarizeAndRedact(value: unknown): RedactionResult {
     const out: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(current)) {
       const nestedPath = path ? `${path}.${key}` : key;
-      if (SENSITIVE_KEY_RE.test(key)) {
+      if (SENSITIVE_KEY_RE.test(normalizeSensitiveKeys ? key.replace(/([a-z0-9])([A-Z])/g, "$1_$2") : key)) {
         redactedFields.push(nestedPath);
         out[key] = "[REDACTED]";
       } else {
@@ -351,6 +353,21 @@ function summarizeAndRedact(value: unknown): RedactionResult {
       redactedFields,
     },
   };
+}
+
+function completeLegacyArguments(invocation: typeof toolInvocations.$inferSelect): { arguments: unknown } | null {
+  const summary = invocation.argumentsSummary;
+  if (!summary || summary.redactedFields?.length) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(summary.summary); } catch { return null; }
+  // Historical previews did not record array truncation separately. At the
+  // preview cap, even valid JSON cannot prove that no entries were omitted.
+  const mayBeTruncated = (value: unknown): boolean => typeof value === "string"
+    ? value.includes("...[truncated]")
+    : Array.isArray(value) ? value.length >= 50 || value.some(mayBeTruncated)
+      : isRecord(value) && Object.values(value).some(mayBeTruncated);
+  return !mayBeTruncated(parsed) && sha256(parsed) === invocation.argumentsHash
+    ? { arguments: parsed } : null;
 }
 
 function decision(
@@ -766,7 +783,7 @@ function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessC
   return selectorMatches(selectors, ctx);
 }
 
-export function toolAccessPolicyService(db: Db) {
+export function toolAccessPolicyService(db: Db, options: { toolActionSigningSecret?: string } = {}) {
   async function listPolicies(companyId: string) {
     return db
       .select()
@@ -1154,7 +1171,9 @@ export function toolAccessPolicyService(db: Db) {
         upstreamToolName,
         toolName: input.request.toolName,
         riskLevel,
-        argumentsHash: redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
+        argumentsHash: input.request.sideEffecting
+          ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
+          : redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
         arguments: input.request.arguments ?? {},
       },
     };
@@ -1635,15 +1654,58 @@ export function toolAccessPolicyService(db: Db) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
-    const argumentsHash = redaction.summary.sha256 ?? sha256(input.request.arguments ?? {});
+    const requestIdentityHash = input.request.sideEffecting || accessDecision.decision === "require_approval"
+      ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
+      : null;
+    const argumentsHash = input.request.sideEffecting ? requestIdentityHash! : ctx.argumentsHash;
     const idempotencyKey = input.request.idempotencyKey
-      ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
+      ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, requestIdentityHash!) : null);
     if (idempotencyKey) {
       const [existing] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
       if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+    }
+    if (input.request.sideEffecting && input.request.idempotencyKey == null) {
+      // Before complete request identities, default keys used shortened and
+      // redacted preview hashes. Check both historical key-redaction variants
+      // so upgrading cannot silently repeat a completed or uncertain write.
+      const legacyKeys = [...new Set([
+        requestIdentityHash!,
+        redaction.summary.sha256!,
+        summarizeAndRedact(input.request.arguments, false).summary.sha256!,
+      ].map(hash => sideEffectIdempotencyKey(ctx, hash, 1)))];
+      const legacyInvocations = legacyKeys.length ? await db.select().from(toolInvocations).where(and(
+        eq(toolInvocations.companyId, input.companyId),
+        inArray(toolInvocations.idempotencyKey, legacyKeys),
+      )) : [];
+      for (const legacy of legacyInvocations) {
+        if (legacy.actorType !== ctx.actorType || legacy.actorId !== ctx.actorId || legacy.agentId !== ctx.agentId) {
+          throw conflict("An earlier operation belongs to another actor. Reconcile it before retrying; use a new explicit idempotency key only for an intentional new operation.",
+            { reasonCode: "legacy_tool_idempotency_unverifiable" });
+        }
+        // An interim complete-identity row may still have the old key prefix.
+        // Its digest covers the full request when it differs from its preview.
+        if (legacy.argumentsSummary?.sha256 && legacy.argumentsHash === requestIdentityHash
+            && legacy.argumentsHash !== legacy.argumentsSummary.sha256) {
+          return { invocation: legacy, replayed: true, actionRequest: null };
+        }
+        const [actionRequest] = await db.select({ signedArguments: toolActionRequests.signedArguments })
+          .from(toolActionRequests).where(and(eq(toolActionRequests.companyId, input.companyId),
+            eq(toolActionRequests.invocationId, legacy.id))).limit(1);
+        const original = actionRequest?.signedArguments
+          ? readSignedToolArgumentsPayload({ signedArguments: actionRequest.signedArguments,
+            invocationId: legacy.id, toolName: legacy.toolName, signingSecret: options.toolActionSigningSecret })
+          : completeLegacyArguments(legacy);
+        if (!original) throw conflict(
+          "An earlier operation has incomplete saved arguments. Reconcile its result before retrying; use a new explicit idempotency key only for an intentional new operation.",
+          { reasonCode: "legacy_tool_idempotency_unverifiable", invocationId: legacy.id },
+        );
+        if (canonicalToolArguments(original.arguments) === canonicalToolArguments(input.request.arguments)) {
+          return { invocation: legacy, replayed: true, actionRequest: null };
+        }
+      }
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"
@@ -1689,7 +1751,7 @@ export function toolAccessPolicyService(db: Db) {
         invocationId: invocation.id,
         issueId: ctx.issueId,
         status: "pending",
-        canonicalArgumentsHash: invocation.argumentsHash ?? argumentsHash,
+        canonicalArgumentsHash: requestIdentityHash!,
         canonicalArgumentsSummary: redaction.summary,
         requestedByAgentId: ctx.actorType === "agent" ? ctx.agentId : null,
         requestedByUserId: ctx.actorType === "user" ? ctx.actorId : null,

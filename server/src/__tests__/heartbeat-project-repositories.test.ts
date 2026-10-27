@@ -797,6 +797,11 @@ suite("task project repository provisioning", () => {
       const expectedBytes = scenario === "fresh" || urlOnly ? "PRIVATE_DIRTY_SIBLING_BYTES" : "PRESERVED_EXISTING_SIBLING_BYTES";
       expect(await readFile(path.join(copy, "private.txt"), "utf8")).toBe(expectedBytes);
       if (urlOnly) await expect(readFile(path.join(copy, "uncommitted.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      if (urlOnly) {
+        const sharedBase = await realpath(resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName: scenario === "absolute_path" ? null : "private-sibling" }));
+        expect(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: copy, encoding: "utf8" }).trim()).toBe(path.join(sharedBase, ".git"));
+        expect(execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: copy, encoding: "utf8" }).trim()).toMatch(/^paperclip\/[a-f0-9]{12}\/main$/);
+      }
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionWorkspaceId).toBe(binding);
       const app = express();
       app.use(express.json());
@@ -823,6 +828,10 @@ suite("task project repository provisioning", () => {
       expect(detached.length).toBeGreaterThan(0);
       const retained = await Promise.all(detached.map(name => readFile(path.join(detachedRoot, name, "private.txt"), "utf8").catch(() => null)));
       expect(retained).toContain(expectedBytes);
+      for (const name of scenario === "occupied" ? [] : detached) {
+        expect(execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: path.join(detachedRoot, name), encoding: "utf8" }).trim())
+          .toBe(await realpath(path.join(detachedRoot, name)));
+      }
     } finally {
       vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", previousPrivacyMode);
     }

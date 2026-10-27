@@ -6,6 +6,8 @@ import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { accessService } from "../services/access.js";
 import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-dedupe.js";
 import { assertCompanyAccess } from "./authz.js";
+import { issueService } from "../services/issues.js";
+import { approvalReadSqlCondition, issueReadSqlCondition } from "../services/authorization.js";
 
 function buildDismissedAtByKey(
   dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
@@ -27,6 +29,7 @@ export function sidebarBadgeRoutes(db: Db) {
   const router = Router();
   const svc = sidebarBadgeService(db);
   const access = accessService(db);
+  const issues = issueService(db);
 
   router.get("/companies/:companyId/sidebar-badges", async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -77,15 +80,24 @@ export function sidebarBadgeRoutes(db: Db) {
         : new Map<string, number>();
 
     // Company health alerts belong in All, not the personal inbox badge.
+    // These IDs reconcile optimistic archives in the board UI. An agent's
+    // responsible user does not grant it access to that user's task collection.
+    const currentUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
+    const unreadIssueIds = currentUserId
+      ? await issues.unreadInboxIssueIds(companyId, currentUserId, await issueReadSqlCondition(db, req.actor))
+      : [];
     const badges = await svc.get(companyId, {
       currentUserId: req.actor.type === "board"
         ? req.actor.userId ?? null
         : req.actor.onBehalfOfUserId ?? null,
       dismissals: dismissedAtByKey,
       joinRequests: visibleJoinRequests,
+      unreadTouchedIssues: unreadIssueIds.length,
+      approvalReadCondition: await approvalReadSqlCondition(db, req.actor),
+      actor: req.actor,
     });
 
-    res.json(badges);
+    res.json({ ...badges, unreadIssueIds });
   });
 
   return router;

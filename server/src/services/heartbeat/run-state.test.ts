@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -19,6 +20,7 @@ import {
 import * as legacy from "../heartbeat.js";
 import * as extracted from "./run-state.js";
 import { readRunCancellation } from "../run-cancellation.js";
+import { decideQueuedCommentQueueSteering } from "../issue-queued-comment-queue.js";
 
 // SQL_ASCII needs a separate database cluster. Inspect its selected SQL here;
 // the PostgreSQL tests below exercise the session queries and transactions.
@@ -86,10 +88,56 @@ describe("heartbeat run state module", () => {
     expect(projectedSql(utf8.columns[0].resultJson)).toContain("pg_column_size");
     await asciiState.getRun("evidence", { includeExecutionEvidence: true });
     expect(projectedSql(ascii.columns[2].resultJson)).toContain("startupPreparationSettledAt");
+    await asciiState.getRunWorkspaceSettlement("settlement");
+    expect(projectedSql(ascii.columns[3].error)).toBe("NULL");
+    expect(ascii.execute).toHaveBeenCalledTimes(1);
     const raw = readingDatabase("SQL_ASCII");
     await extracted.createHeartbeatRunState(raw.db).getRun("raw", { unsafeFullResultJson: true });
     expect(raw.execute).not.toHaveBeenCalled();
     expect(raw.columns[0].resultJson).toBe(heartbeatRuns.resultJson);
+  });
+
+  it.each(["UTF8", "SQL_ASCII"])("keeps execution-wait reads company scoped with %s text handling", async encoding => {
+    const reader = readingDatabase(encoding), state = extracted.createHeartbeatRunState(reader.db);
+    expect(await state.getRunExecutionWait("company", "run")).toBeNull();
+    expect(await state.getRunExecutionWait("other-company", "run")).toBeNull();
+    expect(reader.scopes).toEqual([["company", "run"], ["other-company", "run"]]);
+    expect(reader.execute).toHaveBeenCalledTimes(1);
+    if (encoding === "UTF8") expect(reader.columns[0].error).toBe(heartbeatRuns.error);
+    else expect(new PgDialect().sqlToQuery((reader.columns[0].error as SQL.Aliased).sql).sql).toBe("NULL");
+    expect(new PgDialect().sqlToQuery((reader.columns[0].resultJson as SQL.Aliased).sql).sql).toContain("startupPreparationSettledAt");
+  });
+
+  it("loads current run status without large fields or an encoding probe", async () => {
+    const binding = { id: "run", companyId: "company", agentId: "agent", status: "running" };
+    const reader = readingDatabase("SQL_ASCII", [binding], []);
+    const state = extracted.createHeartbeatRunState(reader.db);
+    expect(await state.getRunStatus("run")).toEqual(binding);
+    expect(await state.getRunStatus("missing")).toBeNull();
+    expect(reader.execute).not.toHaveBeenCalled();
+    expect(reader.columns).toEqual(Array(2).fill({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+    }));
+    expect(reader.scopes).toEqual([["run"], ["missing"]]);
+  });
+
+  it("loads run read bindings without large fields or an encoding probe", async () => {
+    const binding = { id: "run", companyId: "company", scopeKind: "issue", issueId: "issue" };
+    const reader = readingDatabase("SQL_ASCII", [binding], []);
+    const state = extracted.createHeartbeatRunState(reader.db);
+    expect(await state.getRunReadAccess("run")).toEqual(binding);
+    expect(await state.getRunReadAccess("missing")).toBeNull();
+    expect(reader.execute).not.toHaveBeenCalled();
+    expect(reader.columns).toEqual(Array(2).fill({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      scopeKind: heartbeatRuns.scopeKind,
+      issueId: heartbeatRuns.issueId,
+    }));
+    expect(reader.scopes).toEqual([["run"], ["missing"]]);
   });
 });
 
@@ -121,6 +169,195 @@ describePostgres("heartbeat run state database wiring", () => {
     const [issue] = await db.insert(issues).values({ companyId, title: "Session task", assigneeAgentId: agent.id }).returning();
     return { companyId, agent, issue, state: extracted.createHeartbeatRunState(db) };
   }
+
+  it("reads current execution-wait evidence without transferring saved input or output", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const payload = randomBytes(128 * 1024).toString("base64");
+    const context = { issueId: issue.id, connectionIntentResolution: "existing_connection", source: "connection_intent.resolved",
+      interactionKind: "connection_intent", interactionStatus: "expired", mutation: "interaction", interactionId: randomUUID() };
+    const result = { startupCancellation: { beforeNativeSelection: true, futureProof: { version: 2 } },
+      startupPreparationSettledAt: "2020-01-01T00:00:00Z", cancellation: { source: "provider", expected: false,
+        initiator: { type: "provider" }, reason: "Cancelled", recordedAt: "2020-01-01T00:00:00Z" },
+      acpToolInventoryComplete: true, acpPendingToolCount: 0, stdout: payload };
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "cancelled", runtimeMode: "legacy",
+      startedAt: new Date("2020-01-01T00:00:00Z"), finishedAt: new Date("2020-01-01T00:01:00Z"),
+      contextSnapshot: { ...context, prompt: payload }, resultJson: result,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner", adapterConfig: { prompt: payload } }, savedInput: payload },
+      stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).returning();
+    const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const state = extracted.createHeartbeatRunState(observed);
+      const read = await state.getRunExecutionWait(companyId, run.id);
+      capture.flush();
+      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      expect(summary.completedQueries).toBe(2);
+      expect(summary.responseValueBytes).toBeLessThan(4096);
+      expect(read).toMatchObject({ id: run.id, companyId, agentId: agent.id, status: "cancelled", contextSnapshot: context,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        resultJson: { startupCancellation: result.startupCancellation, cancellation: result.cancellation,
+          acpToolInventoryComplete: true, acpPendingToolCount: 0 } });
+      expect(JSON.stringify(read)).not.toContain(payload.slice(0, 64));
+      expect(read).not.toHaveProperty("stdoutExcerpt");
+      expect(read).not.toHaveProperty("stderrExcerpt");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      await db.update(heartbeatRuns).set({ status: "running", resultJson: { ...result, acpPendingToolCount: 1 },
+        runnerProfileJson: { adapterDispatch: { adapterType: "process" }, savedInput: payload },
+      }).where(eq(heartbeatRuns.id, run.id));
+      expect(await state.getRunExecutionWait(companyId, run.id)).toMatchObject({ status: "running",
+        resultJson: { acpPendingToolCount: 1 }, runnerProfileJson: { adapterDispatch: { adapterType: "process" } } });
+      expect(await state.getRunExecutionWait(randomUUID(), run.id)).toBeNull();
+      expect(await state.getRunExecutionWait(companyId, randomUUID())).toBeNull();
+      for (const value of [null, false, 42, [], {}, { nested: true }, "task"]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...context, issueId: value },
+          runnerProfileJson: { adapterDispatch: { adapterType: value } },
+        }).where(eq(heartbeatRuns.id, run.id));
+        expect(await state.getRunExecutionWait(companyId, run.id)).toMatchObject({ contextSnapshot: { issueId: value },
+          runnerProfileJson: { adapterDispatch: { adapterType: value } } });
+      }
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
+  it("reads current workspace access without execution snapshots and retains JSON types", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const payload = randomBytes(128 * 1024).toString("base64"), workspaceId = randomUUID();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
+      contextSnapshot: { executionWorkspaceId: workspaceId, prompt: payload }, runnerProfileJson: { instructions: payload },
+      resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).returning();
+    const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const state = extracted.createHeartbeatRunState(observed);
+      expect(await state.getRunWorkspaceAccess(run.id)).toEqual({
+        id: run.id, companyId, scopeKind: "issue", issueId: issue.id, executionWorkspaceId: workspaceId,
+      });
+      capture.flush();
+      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      expect(summary.completedQueries).toBe(1);
+      expect(summary.responseValueBytes).toBeLessThan(1024);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      for (const value of [null, true, 42, " workspace-two ", [workspaceId], { id: workspaceId }]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { executionWorkspaceId: value, prompt: payload } }).where(eq(heartbeatRuns.id, run.id));
+        expect((await state.getRunWorkspaceAccess(run.id))?.executionWorkspaceId).toEqual(value);
+      }
+      expect(await state.getRunWorkspaceAccess(randomUUID())).toBeNull();
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
+  it("reads fresh issue control facts without transferring execution snapshots", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const payload = randomBytes(128 * 1024).toString("base64");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "running",
+      runtimeMode: "legacy", runtimeModeResolvedAt: null,
+      startedAt: new Date("2020-01-01T00:00:00Z"),
+      contextSnapshot: { issueId: issue.id, prompt: payload },
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner", adapterConfig: { prompt: payload } }, savedInput: payload },
+      resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).returning();
+    const observed = createDb(database.connectionString);
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const state = extracted.createHeartbeatRunState(observed);
+      const direct = await state.getRunIssueControl(run.id), active = await state.getActiveRunIssueControlForAgent(agent.id);
+      expect(active).toEqual(direct);
+      expect(direct).toEqual({ id: run.id, companyId, agentId: agent.id, status: "running", runtimeMode: "legacy",
+        runtimeModeResolvedAt: null, startedAt: run.startedAt, createdAt: run.createdAt,
+        contextSnapshot: { issueId: issue.id }, runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } });
+      capture.flush();
+      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      expect(summary.completedQueries).toBe(2);
+      expect(summary.responseValueBytes).toBeLessThan(2048);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, run.id));
+      expect((await state.getRunIssueControl(run.id))?.status).toBe("failed");
+      expect(await state.getActiveRunIssueControlForAgent(agent.id)).toBeNull();
+      expect(await state.getActiveRunIssueControlForAgent(randomUUID())).toBeNull();
+      expect(await state.getRunIssueControl(randomUUID())).toBeNull();
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
+  it("preserves native preparation, legacy steering, and typed issue context in issue control reads", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    for (const mode of ["native", "legacy"] as const) {
+      for (const value of [null, false, 42, [], {}, { nested: true }, "paperclip_runner", "process"]) {
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "running", runtimeMode: mode,
+          contextSnapshot: { issueId: value }, runnerProfileJson: { adapterDispatch: { adapterType: value } },
+        }).returning();
+        const narrow = await state.getRunIssueControl(run.id), full = await state.getRun(run.id);
+        expect(narrow?.contextSnapshot?.issueId).toEqual(value);
+        expect(narrow?.runnerProfileJson).toEqual({ adapterDispatch: { adapterType: value } });
+        for (const queueState of ["queued", "deferred", null] as const) {
+          const facts = { state: queueState, queueRunRuntimeMode: mode, assignedAgentAdapterType: "paperclip_runner", queuedCommentCount: 1 };
+          expect(decideQueuedCommentQueueSteering({ ...facts, activeRun: narrow }))
+            .toEqual(decideQueuedCommentQueueSteering({ ...facts, activeRun: full }));
+        }
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: issue.id }, runtimeModeResolvedAt: new Date("2020-01-01T00:00:00Z") })
+          .where(eq(heartbeatRuns.id, run.id));
+        const updated = await state.getRunIssueControl(run.id);
+        expect(updated?.contextSnapshot).toEqual({ issueId: issue.id });
+        expect(updated?.runtimeModeResolvedAt).toEqual(new Date("2020-01-01T00:00:00Z"));
+      }
+    }
+  });
+
+  it("reads cleanup and workspace settlement without transferring saved input or changing the run", async () => {
+    const { companyId, agent, issue, state } = await fixture();
+    const bulk = "cleanup-saved-input-sentinel🙂".repeat(40_000);
+    const sync = { schema: "paperclip.native-workspace-sync.v1", state: "prepared", resourceDisposition: "destroy" };
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, issueId: issue.id, runtimeMode: "native", status: "failed",
+      errorCode: "provider_transport_failed", error: "Retain saved files", nativePhase: "terminal_failure",
+      runnerProfileJson: { nativeWorkspaceSync: sync, savedInput: bulk },
+      resultJson: { workspaceExportRetry: { requestId: "retry-source" }, stdout: bulk },
+      contextSnapshot: { timerClaimWasFirstHeartbeat: true, savedInput: bulk },
+      stdoutExcerpt: bulk, stderrExcerpt: bulk,
+    }).returning();
+    await state.getRunWorkspaceSettlement(run.id);
+    const events: Array<Record<string, unknown>> = [];
+    const now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    expect(await state.getRunCleanupState(run.id)).toEqual({
+      id: run.id, companyId, agentId: agent.id, runtimeMode: run.runtimeMode,
+      status: run.status, errorCode: run.errorCode, nativePhase: run.nativePhase,
+    });
+    expect(await state.getRunWorkspaceSettlement(run.id)).toEqual({
+      id: run.id, status: run.status, error: run.error,
+      runnerProfileJson: { nativeWorkspaceSync: sync },
+      resultJson: { workspaceExportRetry: { requestId: "retry-source" } },
+      contextSnapshot: { timerClaimWasFirstHeartbeat: true },
+    });
+    capture.flush();
+    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    expect(summary.completedQueries).toBe(2);
+    expect(summary.responseValueBytes).toBeLessThan(2000);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+    expect(JSON.stringify(events)).not.toContain("cleanup-saved-input-sentinel");
+    expect(await state.getRunCleanupState(randomUUID())).toBeNull();
+    expect(await state.getRunWorkspaceSettlement(randomUUID())).toBeNull();
+  });
+
+  it("preserves JSON types in workspace settlement decisions", async () => {
+    const { companyId, agent, state } = await fixture();
+    for (const value of [null, false, true, "true", 0, [], { future: [1, "retained"] }]) {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id,
+        runnerProfileJson: { nativeWorkspaceSync: value },
+        resultJson: { workspaceExportRetry: value },
+        contextSnapshot: { timerClaimWasFirstHeartbeat: value },
+      }).returning({ id: heartbeatRuns.id });
+      const actual = await state.getRunWorkspaceSettlement(run.id);
+      expect(actual?.runnerProfileJson?.nativeWorkspaceSync).toEqual(value);
+      expect(actual?.resultJson?.workspaceExportRetry).toEqual(value);
+      expect(actual?.contextSnapshot?.timerClaimWasFirstHeartbeat).toEqual(value);
+    }
+  });
 
   it("retains the consumed queue identity in issue polling summaries", async () => {
     const { companyId, agent, issue, state } = await fixture();

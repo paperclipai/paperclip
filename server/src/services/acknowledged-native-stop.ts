@@ -37,7 +37,8 @@ export function isAcknowledgedNativeStop(run: Parameters<typeof hasAcknowledgedN
 }
 
 /** A Stop acknowledgement alone does not prove provider cleanup completed. */
-export async function acknowledgedNativeStopExecutionHasStopped(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+export async function acknowledgedNativeStopExecutionHasStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "nativeIssueId" | "status" | "resultJson" | "processPid" | "processGroupId">) {
   if (!isAcknowledgedNativeStop(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),

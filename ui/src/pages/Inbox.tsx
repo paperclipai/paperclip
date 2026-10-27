@@ -1,3 +1,5 @@
+import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
+import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -191,7 +193,7 @@ import {
 } from "../lib/task-date-groups";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
-const INBOX_ISSUE_LIST_LIMIT = 500;
+const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
 const INBOX_COLLECTION_KEY = "inbox";
 
@@ -394,6 +396,7 @@ export function FailedRunInboxRow({
         : interruption?.state === "waiting_for_user" ? ({
           approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
+          project_access: "Agent needs project access",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
@@ -846,7 +849,7 @@ function StreamlinedInbox({
   const location = useLocation();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);
-  const { data: experimentalSettings } = useQuery({
+  const { data: experimentalSettings, isLoading: isSettingsLoading } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     retry: false,
@@ -864,7 +867,7 @@ function StreamlinedInbox({
     () => loadInboxCollectionPreferences(selectedCompanyId).columns,
   );
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
-  const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
+  const { dismissedAtByKey, dismiss: dismissInboxItem, isLoading: isDismissalsLoading, error: dismissalsError } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
   const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
@@ -889,18 +892,18 @@ function StreamlinedInbox({
     [surfaceLabel, location.pathname, location.search, location.hash],
   );
 
-  const { data: session } = useQuery({
+  const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
 
-  const { data: agents } = useQuery({
+  const { data: agents, isLoading: isAgentsLoading } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
-  const { data: projects } = useQuery({
+  const { data: projects, isLoading: isProjectsLoading } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
     queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
@@ -912,7 +915,7 @@ function StreamlinedInbox({
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
-  const { data: executionWorkspaces = [] } = useQuery({
+  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
       : ["execution-workspaces", "__disabled__"],
@@ -955,6 +958,7 @@ function StreamlinedInbox({
   const {
     data: joinRequests = [],
     isLoading: isJoinRequestsLoading,
+    error: joinRequestsError,
   } = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
@@ -976,96 +980,104 @@ function StreamlinedInbox({
     companyId: selectedCompanyId,
     resourceKey: "dashboard",
     queryKey: dashboardQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && tab === "all",
   });
   const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && tab === "all",
   });
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
-  const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
-  const sharedInboxIssues = useSharedPollingQuery<Issue[]>({
-    companyId: selectedCompanyId,
-    resourceKey: "inbox:issues",
-    queryKey: inboxIssuesQueryKey,
-    enabled: !!selectedCompanyId,
-  });
-  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = useQuery({
-    queryKey: inboxIssuesQueryKey,
-    queryFn: () =>
-      issuesApi.listCompact(selectedCompanyId!, {
-        includeRoutineExecutions: true,
-        includeLiveDescendantSummary: true,
-        limit: INBOX_ISSUE_LIST_LIMIT,
-      }).then((rows) => rows as Issue[]),
-    enabled: !!selectedCompanyId,
-    refetchOnWindowFocus: false,
-    staleTime: INBOX_HOT_PATH_STALE_MS,
-  });
-  usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
   const {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
+    error: mineIssuesError,
     dataUpdatedAt: mineIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        projection: "index",
+        sortField: "updated",
+        sortDir: "desc",
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }).then((rows) => rows as Issue[]),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && tab === "mine",
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedMineIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
     resourceKey: "inbox:mine-issues",
     queryKey: mineIssuesQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && tab === "mine",
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
   const {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
+    error: touchedIssuesError,
     dataUpdatedAt: touchedIssuesUpdatedAt,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
+        projection: "index",
+        sortField: "updated",
+        sortDir: "desc",
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }).then((rows) => rows as Issue[]),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && (tab !== "mine" && tab !== "blocked" || normalizedSearchQuery.length > 0),
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
+  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
     resourceKey: "inbox:touched-issues",
     queryKey: touchedIssuesQueryKey,
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && (tab !== "mine" && tab !== "blocked" || normalizedSearchQuery.length > 0),
   });
   usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
-    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
-    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
+  const { data: heartbeatRuns, isLoading: isRunsLoading, error: runsError } = useQuery({
+    queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "inbox-failures", INBOX_HEARTBEAT_RUN_LIMIT],
+    queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true, latestFailuresOnly: true }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const contextIssueIds = useMemo(() => [...new Set([
+    ...(tab === "mine" ? mineIssuesRaw : touchedIssuesRaw).map((issue) => issue.parentId),
+    ...(heartbeatRuns ?? []).map(readIssueIdFromRun),
+  ].filter((id): id is string => Boolean(id)))].sort(), [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns]);
+  const { data: contextIssues = [], isLoading: isContextIssuesLoading, error: contextIssuesError } = useQuery<Issue[]>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", contextIssueIds],
+    placeholderData: (previous) => previous?.filter((issue) => issue.companyId === selectedCompanyId),
+    queryFn: async ({ signal }) => {
+      const result: Issue[] = [];
+      for (let offset = 0; offset < contextIssueIds.length; offset += 100) {
+        result.push(...await issuesApi.listCompact(selectedCompanyId!, {
+          ids: contextIssueIds.slice(offset, offset + 100), projection: "rows", limit: 100,
+          includeRoutineExecutions: true,
+        }, { signal }) as Issue[]);
+      }
+      return result;
+    },
+    enabled: !!selectedCompanyId && contextIssueIds.length > 0 && tab !== "blocked",
+  });
+  const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues]);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -1076,14 +1088,14 @@ function StreamlinedInbox({
     refetchInterval: false,
     leaderOnly: true,
   });
-  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+  const { data: liveRuns, isLoading: isLiveRunsLoading, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
     enabled: sharedLiveRuns.enabled,
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const { data: companyMembers } = useQuery({
+  const { data: companyMembers, isLoading: isMembersLoading } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -1118,6 +1130,22 @@ function StreamlinedInbox({
     () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
     [locallyArchivedIssueIds, touchedIssuesRaw],
   );
+  const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
+  const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = useQuery<Issue[]>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "inbox-source-search", normalizedSearchQuery, sourceSearchIds],
+    queryFn: async ({ signal }) => {
+      const matches: Issue[] = [];
+      for (let offset = 0; offset < sourceSearchIds.length; offset += 100) {
+        matches.push(...await issuesApi.listCompact(selectedCompanyId!, {
+          ids: sourceSearchIds.slice(offset, offset + 100), q: normalizedSearchQuery,
+          projection: "index", includeRoutineExecutions: true, limit: 100,
+        }, { signal }) as Issue[]);
+      }
+      return matches;
+    },
+    enabled: !!selectedCompanyId && normalizedSearchQuery.length > 0 && sourceSearchIds.length > 0,
+  });
+  const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches]);
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
@@ -1160,6 +1188,8 @@ function StreamlinedInbox({
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
     isReady: externalObjectSummariesReady,
+    error: externalObjectSummariesError,
+    refetch: retryExternalObjectSummaries,
   } = useIssueExternalObjectSummaries(
     selectedCompanyId,
     inboxIssueIdsForExternalObjectSummaries,
@@ -1402,6 +1432,7 @@ function StreamlinedInbox({
     return workItemsToRender.filter((item) => {
       if (item.kind === "issue") {
         return matchesInboxIssueSearch(item.issue, q, {
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1445,6 +1476,7 @@ function StreamlinedInbox({
     issueById,
     isolatedWorkspacesEnabled,
     normalizedSearchQuery,
+    sourceSearchMatchIds,
     projectWorkspaceById,
   ]);
 
@@ -1455,6 +1487,7 @@ function StreamlinedInbox({
           visibleIssues: visibleMineIssues,
           searchableIssues: visibleTouchedIssues,
           query: normalizedSearchQuery,
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1466,6 +1499,7 @@ function StreamlinedInbox({
       executionWorkspaceById,
       isolatedWorkspacesEnabled,
       normalizedSearchQuery,
+      sourceSearchMatchIds,
       projectWorkspaceById,
       tab,
       visibleMineIssues,
@@ -2390,10 +2424,6 @@ function StreamlinedInbox({
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
-  if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
-  }
-
   const hasRunFailures = failedRuns.length > 0;
   const showCompanyAlerts = shouldShowCompanyAlerts(tab) && showAlertsCategory;
   const showAggregateAgentError =
@@ -2424,16 +2454,46 @@ function StreamlinedInbox({
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
-  const allLoaded =
+  const initialSourcesSettled =
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
-    !isIssuesLoading &&
+    !isContextIssuesLoading &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
-    !isRunsLoading;
+    !isRunsLoading
+    && (!issueFilters.liveOnly || !isLiveRunsLoading)
+    && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady || !!externalObjectSummariesError);
+  const listError = sourceSearchError ?? (tab === "mine" ? mineIssuesError : touchedIssuesError)
+    ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
+  const optionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError;
+  const retryFailedSources = () => {
+    // Retry only failed reads for this company; settled rows stay visible.
+    void queryClient.refetchQueries({ predicate: (query) => query.state.status === "error"
+      && query.queryKey.includes(selectedCompanyId), type: "active" });
+  };
+
+  const revealScope = JSON.stringify([selectedCompanyId, tab, normalizedSearchQuery, issueFilters]);
+  const [revealedScope, setRevealedScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (initialSourcesSettled && !listError) setRevealedScope(revealScope);
+  }, [initialSourcesSettled, listError, revealScope]);
+  const allLoaded = initialSourcesSettled || revealedScope === revealScope;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
+  const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
+    selectedCompanyId, listRef,
+    groupedSections.map((group) => group.key + ":" + group.displayItems.map(getInboxWorkItemKey).join(",") + ":" + [...group.childrenByIssueId.values()].flat().map((issue) => issue.id).join(",")).join("|")
+      + ":" + [...collapsedInboxParents].join(",") + ":" + [...collapsedGroupKeys].join(","),
+    allLoaded && !listError && tab !== "blocked",
+    issues,
+  );
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+  }
+
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
   const unreadIssueIds = markAllReadIssues
@@ -2458,6 +2518,12 @@ function StreamlinedInbox({
       : null;
   return (
     <div className="space-y-6">
+      <IssueRowDetailsNotice
+        error={optionalSourceError ?? rowDetailsError}
+        message={optionalSourceError ? "Some inbox items couldn’t load. Showing available items." : undefined}
+        retryLabel={optionalSourceError ? "Retry missing items" : undefined}
+        onRetry={optionalSourceError ? retryFailedSources : () => void retryRowDetails()}
+      />
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
         ariaLabel={`${surfaceLabel} controls`}
@@ -2743,7 +2809,12 @@ function StreamlinedInbox({
         ) : null}
       />
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
+      {listError && (
+        <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
+          <p>Unable to load the inbox: {listError.message}</p>
+          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
+        </div>
+      )}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
@@ -2769,11 +2840,11 @@ function StreamlinedInbox({
         </div>
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
-        <PageSkeleton variant="inbox" />
+      {tab !== "blocked" && !allLoaded && !listError && (
+        <PageSkeleton variant="inbox" collectionHeading={groupBy !== "none" ? "group" : filterPreferences.showDateGroupSeparators ? "date" : null} />
       )}
 
-      {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
@@ -2790,7 +2861,7 @@ function StreamlinedInbox({
         />
       )}
 
-      {tab !== "blocked" && showWorkItemsSection && (
+      {tab !== "blocked" && allLoaded && !listError && showWorkItemsSection && (
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
@@ -2820,6 +2891,7 @@ function StreamlinedInbox({
                   collapseParentId?: string | null;
                   allowArchive?: boolean;
                 }) => {
+                  issue = enrichIssueRow(issue);
                   const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
                   const isFading = fadingOutIssues.has(issue.id);
                   const isArchiving = archivingIssueIds.has(issue.id);
@@ -2852,6 +2924,7 @@ function StreamlinedInbox({
                       key={`issue:${issue.id}`}
                       issue={issue}
                       presentation={streamlinedUiEnabled ? "task" : "legacy"}
+                      stableLayout
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
                       chevronInGuide={streamlinedUiEnabled && depth > 0 && hasChildren}
@@ -3322,7 +3395,7 @@ function StreamlinedInbox({
         </>
       )}
 
-      {showAlertsSection && (
+      {allLoaded && !listError && showAlertsSection && (
         <>
           {showSeparatorBefore("alerts") && <Separator />}
           <div>

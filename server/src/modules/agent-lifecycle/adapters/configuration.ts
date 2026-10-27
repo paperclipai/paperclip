@@ -21,10 +21,17 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   assertConfigurationFields(patch);
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
-  const invalidate = changed && ["preparing", "verifying", "resuming"].includes(current.lifecycleState);
+  const prepareSetup = changed && current.lifecycleHolds.length === 1 && current.lifecycleHolds[0] === "setup"
+    && ["paused", "preparing", "verifying"].includes(current.lifecycleState)
+    && await effects.setupRequiresPreparation(tx, current.companyId,
+      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId);
+  const invalidate = changed && (["preparing", "verifying", "resuming"].includes(current.lifecycleState) || prepareSetup);
   if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
     lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
+    ...(prepareSetup ? { lifecycleState: "preparing" as const } : {}),
+    ...(!prepareSetup && current.lifecycleHolds.includes("setup") && ["preparing", "verifying"].includes(current.lifecycleState)
+      ? { lifecycleState: "pausing" as const } : {}),
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,
       completedPluginIds: [], leaseOwner: undefined, leaseUntil: undefined, retryAt: undefined },
   } : {}) }).where(eq(agents.id, id)).returning();

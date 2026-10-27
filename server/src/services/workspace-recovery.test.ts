@@ -20,21 +20,29 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import express from "express";
+import request from "supertest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations } from "@paperclipai/db";
+import { agents, approvals, budgetPolicies, costEvents, completionContracts, issueApprovals, issueTreeHolds, issueTreeHoldMembers, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, agentWakeupRequests, workspaceOperations } from "@paperclipai/db";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { prepareNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
+import { nativeWorkspaceFinalizationLockKey } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { prepareStoppedSandboxForRecovery } from "./sandbox-stop-and-retain.js";
 import { recoverRetainedWorkspace, requestWorkspaceRecovery, scheduleRecoveredWorkspaceCleanup, reconcileRetainedWorkspaces, retainedWorkspaceCandidates } from "./workspace-recovery.js";
 import * as activity from "./activity-log.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerWorkspaceRecoveryWork } from "./workspace-recovery-work.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 import * as workerProof from "./native-runtime/native-workspace-platform-proof.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
@@ -51,14 +59,20 @@ describe("automatic retained workspace recovery", () => {
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "workspace-recovery-"));
     process.env.PAPERCLIP_HOME = path.join(root, "home"); process.env.PAPERCLIP_INSTANCE_ID = "recovery";
-    temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-"); db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RECOVERY_TEST_DATABASE_URL");
+    if (external) {
+      await applyPendingMigrations(external);
+      temporary = { connectionString: external, cleanup: async () => {} };
+    } else temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-");
+    db = createDb(temporary.connectionString);
+    if (external) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   }, 30_000);
   afterAll(async () => {
     await db?.$client.end(); await temporary?.cleanup(); await rm(root, { recursive: true, force: true });
     if (priorHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = priorHome;
     if (priorInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = priorInstance;
   });
-  async function seed(mode = "native", nativeDescriptor = true) {
+  async function seed(mode = "native", nativeDescriptor = true, resourceDisposition: "destroy" | "keep_running" = "destroy") {
     const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), actionId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Workspace recovery", defaultResponsibleUserId: "board", issuePrefix: `R${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
@@ -87,7 +101,7 @@ describe("automatic retained workspace recovery", () => {
     targets.set(lease.id, target);
     if (nativeDescriptor) {
       const prepared = await prepareNativeWorkspaceSync({ db, companyId, workspaceId: issueId, workspaceLocalDir: host,
-        runId, lease: lease as EnvironmentLease, target, resourceDisposition: "destroy" });
+        runId, lease: lease as EnvironmentLease, target, resourceDisposition });
       expect(prepared).not.toBeNull();
     } else {
       // Provider boundary only: real temporary files, no native baseline. The
@@ -122,6 +136,236 @@ describe("automatic retained workspace recovery", () => {
   }
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+
+  it("repairs an unregistered historical deadline failure through HTTP Retry without admitting work before verified stop", async () => {
+    const f = await seed("native", true, "keep_running");
+    const source = await run(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: null, errorCode: "execution_finalization_deadline_exceeded" })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(environmentLeases).set({ status: "active", leasePolicy: "reuse_by_environment",
+      releasedAt: null, cleanupStatus: null, metadata: f.lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
+      cause: "execution_finalization_deadline_exceeded", evidence: { runId: f.runId, providerOwnership: "unverified",
+        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    // Leave admission observable without substituting a fake model turn.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    let releaseStop!: () => void;
+    const stopped = new Promise<void>(resolve => { releaseStop = resolve; });
+    f.runtime.retryPendingSandboxTeardown.mockImplementation(async () => {
+      await stopped;
+      return { providerLeaseId: f.providerLeaseId, state: "stopped" };
+    });
+    const errors = vi.fn(), heartbeat = heartbeatService(db);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, heartbeat.resumeRemoteStopComments);
+    const successors = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    try {
+      await worker.ready;
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board" }; next(); });
+      app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
+      app.use(errorHandler);
+      const body = { idempotencyKey: randomUUID(), observedRunId: f.runId };
+      const retry = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202);
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202)).body.requestId).toBe(retry.body.requestId);
+      await expect.poll(() => f.runtime.retryPendingSandboxTeardown.mock.calls.length, { timeout: 20_000 }).toBe(1);
+      await heartbeat.resumeTaskRetry(f.companyId, retry.body.requestId);
+      expect(await successors()).toHaveLength(0);
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].metadata)
+        .not.toHaveProperty("remoteExecutionTermination");
+      await expect(readFile(path.join(f.host, "saved.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      releaseStop();
+      await expect.poll(async () => (await successors()).length, { timeout: 20_000 }).toBe(1);
+      const [successor] = await successors();
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+      expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+      expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject({ mode: "resume_preserved_workspace" });
+      await Promise.all([heartbeat.resumeTaskRetry(f.companyId, retry.body.requestId), heartbeat.resumeRemoteStopComments(await run(f.runId))]);
+      expect(await successors()).toHaveLength(1);
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+      expect((await run(f.runId)).status).toBe("failed");
+      const reloaded = await request(app).get(`/api/issues/${f.issueId}/recovery-actions`).expect(200);
+      expect(reloaded.body.active).toBeNull();
+      const records = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      expect(records.some(record => readSystemRecovery(record.evidence)?.state === "complete")).toBe(true);
+      expect(errors).not.toHaveBeenCalled();
+    } finally { releaseStop(); await coordinator.stop(); await worker.stop(); }
+  }, 40_000);
+
+  it("wakes physical preservation from HTTP Retry before passive history without replaying the provider", async () => {
+    for (let index = 0; index < 5; index++) {
+      const old = await seed();
+      await recoverRetainedWorkspace(old.input);
+      await db.update(issueRecoveryActions).set({
+        id: `00000000-000${index}-4000-8000-${randomUUID().slice(-12)}`,
+      }).where(eq(issueRecoveryActions.id, old.actionId));
+    }
+    const f = await seed();
+    await adoptSystemRecovery(db, f);
+    const before = await action(f.actionId);
+    const exhausted = failSystemRecovery(readSystemRecovery(before.evidence)!,
+      new SystemRecoveryFailure("source_binding_invalid", "service_required"));
+    await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted",
+      evidence: { ...before.evidence, systemRecovery: exhausted } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    const errors = vi.fn();
+    const competingCleanup = await retainedWorkspaceCandidates(db, undefined, false, true);
+    expect(competingCleanup).toHaveLength(5);
+    expect(competingCleanup.every(row => row.action.id.startsWith("00000000"))).toBe(true);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
+    const recovered = vi.fn(async () => {});
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, recovered);
+    try {
+      await worker.ready;
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.companyId, f.companyId));
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "board" }; next(); });
+      app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
+      app.use(errorHandler);
+      const body = { idempotencyKey: randomUUID(), observedRunId: f.runId };
+      const retry = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202);
+      const repeated = await request(app).post(`/api/issues/${f.issueId}/retry`).send(body).expect(202);
+      const coalesced = await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ ...body, idempotencyKey: randomUUID() }).expect(202);
+      expect(repeated.body.requestId).toBe(retry.body.requestId);
+      expect(coalesced.body.requestId).toBe(retry.body.requestId);
+      await expect.poll(async () => readSystemRecovery((await action(f.actionId)).evidence)?.state,
+        { timeout: 20_000 }).toBe("complete");
+      expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(0);
+      const reloaded = await request(app).get(`/api/issues/${f.issueId}/recovery-actions`).expect(200);
+      expect(JSON.stringify(reloaded.body)).toContain('"state":"complete"');
+      expect(errors).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await worker.stop(); }
+  }, 30_000);
+
+  it("reconstructs a resolved files-only preservation obligation at startup without replay", async () => {
+    const f = await seed("legacy");
+    await adoptSystemRecovery(db, f);
+    const before = await action(f.actionId);
+    const automaticRecovery = { policy: "preserve_without_replay_v1", runId: f.runId, replay: "blocked" };
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked",
+      evidence: { ...before.evidence, automaticRecovery } }).where(eq(issueRecoveryActions.id, f.actionId));
+    const errors = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, async () => {});
+    try {
+      await worker.ready;
+      await expect.poll(async () => readSystemRecovery((await action(f.actionId)).evidence)?.state,
+        { timeout: 20_000 }).toBe("complete");
+      expect((await action(f.actionId)).evidence.automaticRecovery).toEqual(automaticRecovery);
+      expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect(errors).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); await worker.stop(); }
+  }, 30_000);
+
+  it("fills a free export slot while another export is held and joins both at shutdown", async () => {
+    const held = await seed(), fast = await seed();
+    const fixtures = [held, fast];
+    const runtimeFor = (runId: string) => fixtures.find(fixture => fixture.runId === runId)!.environmentRuntime;
+    const runtime = { ...held.environmentRuntime,
+      resumeWorkspaceRecoveryLease: (input: Parameters<typeof held.environmentRuntime.resumeWorkspaceRecoveryLease>[0]) =>
+        runtimeFor(input.source.runId).resumeWorkspaceRecoveryLease(input),
+      retryPendingSandboxTeardown: (input: Parameters<typeof held.environmentRuntime.retryPendingSandboxTeardown>[0]) =>
+        runtimeFor(input.lease.heartbeatRunId!).retryPendingSandboxTeardown(input),
+    };
+    let active = 0, maximum = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const countExport = (fixture: typeof held, pause = false) => {
+      const resume = fixture.runtime.resumeRunLease.getMockImplementation()!;
+      fixture.runtime.resumeRunLease.mockImplementation(async input => {
+        active += 1; maximum = Math.max(maximum, active);
+        try { if (pause) await gate; return await resume(input); } finally { active -= 1; }
+      });
+    };
+    countExport(held, true); countExport(fast);
+    const errors = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: errors });
+    const worker = registerWorkspaceRecoveryWork(db, coordinator, runtime, async () => {});
+    try {
+      await expect.poll(() => held.runtime.resumeRunLease.mock.calls.length, { timeout: 20_000 }).toBe(1);
+      await expect.poll(async () => readSystemRecovery((await action(fast.actionId)).evidence)?.state,
+        { timeout: 20_000 }).toBe("complete");
+      const third = await seed(); fixtures.push(third); countExport(third);
+      await requestTaskRetry({ db, companyId: third.companyId, issueId: third.issueId, actorId: "board",
+        observedRunId: third.runId, idempotencyKey: randomUUID() });
+      await expect.poll(async () => readSystemRecovery((await action(third.actionId)).evidence)?.state,
+        { timeout: 20_000 }).toBe("complete");
+      expect(readSystemRecovery((await action(held.actionId)).evidence)?.state).toBe("running");
+      expect(maximum).toBeLessThanOrEqual(2);
+      expect(await readFile(path.join(third.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, third.companyId))).toHaveLength(1);
+      let stopped = false;
+      const stopping = Promise.all([coordinator.stop(), worker.stop()]).then(() => { stopped = true; });
+      await Promise.resolve(); expect(stopped).toBe(false);
+      release(); await stopping;
+      expect(readSystemRecovery((await action(held.actionId)).evidence)?.state).toBe("complete");
+      expect(errors).not.toHaveBeenCalled();
+    } finally { release(); await coordinator.stop(); await worker.stop(); }
+  }, 60_000);
+
+  it("rotates past due sources whose physical locks belong to other workers", async () => {
+    const blocked = [await seed(), await seed()], available = await seed();
+    for (const [index, fixture] of [...blocked, available].entries()) {
+      await adoptSystemRecovery(db, fixture);
+      const id = `00000001-000${index}-4000-8000-${randomUUID().slice(-12)}` as const;
+      await db.update(issueRecoveryActions).set({ id }).where(eq(issueRecoveryActions.id, fixture.actionId));
+      fixture.actionId = id; fixture.input.actionId = id;
+    }
+    let unlock!: () => void;
+    const gate = new Promise<void>(resolve => { unlock = resolve; });
+    const held = blocked.map(fixture => {
+      let ready!: () => void;
+      const acquired = new Promise<void>(resolve => { ready = resolve; });
+      const lock = db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${nativeWorkspaceFinalizationLockKey(fixture.companyId, fixture.runId)}, 0))`);
+        ready(); await gate;
+      });
+      return { acquired, lock };
+    });
+    try {
+      await Promise.all(held.map(item => item.acquired));
+      await Promise.all(await reconcileRetainedWorkspaces(db, available.environmentRuntime, async () => {}, true) ?? []);
+      expect(blocked.every(fixture => fixture.runtime.resumeRunLease.mock.calls.length === 0)).toBe(true);
+      await Promise.all(await reconcileRetainedWorkspaces(db, available.environmentRuntime, async () => {}, true) ?? []);
+      expect(readSystemRecovery((await action(available.actionId)).evidence)?.state).toBe("complete");
+      expect(await readFile(path.join(available.host, "saved.txt"), "utf8")).toBe("finished work\n");
+      expect(blocked.every(fixture => fixture.runtime.resumeRunLease.mock.calls.length === 0)).toBe(true);
+    } finally { unlock(); await Promise.all(held.map(item => item.lock)); }
+  }, 30_000);
+
+  it("coalesces Retry while preservation owns its physical operation", async () => {
+    const f = await seed();
+    await adoptSystemRecovery(db, f);
+    const resume = f.runtime.resumeRunLease.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    f.runtime.resumeRunLease.mockImplementation(async input => { await gate; return resume(input); });
+    const preserving = recoverRetainedWorkspace(f.input);
+    let requestId: string | null | undefined;
+    try {
+      await expect.poll(() => f.runtime.resumeRunLease.mock.calls.length).toBe(1);
+      const request = { db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
+        idempotencyKey: randomUUID(), observedRunId: f.runId };
+      const first = await requestTaskRetry(request);
+      requestId = first.requestId;
+      const second = await requestTaskRetry({ ...request, idempotencyKey: randomUUID() });
+      expect(second.requestId).toBe(first.requestId);
+    } finally { release(); await preserving; }
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.intentId).toBe(requestId);
+    expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
+    expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  }, 30_000);
 
   it("adopts only the exact historical infrastructure notice, preserving prose and user-action notices", async () => {
     const f = await seed("legacy", false);
@@ -285,7 +529,7 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
     await recoverRetainedWorkspace(f.input);
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+    expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.phase, "workspace_recovery")))).toHaveLength(1);
   }, 30_000);
 
@@ -304,9 +548,9 @@ describe("automatic retained workspace recovery", () => {
     expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
     expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+    expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
     await recoverRetainedWorkspace({ ...f.input, environmentRuntime: runtime });
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+    expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
   }, 30_000);
@@ -405,7 +649,7 @@ describe("automatic retained workspace recovery", () => {
     f.runtime.resumeRunLease.mockImplementationOnce(async () => { ready(); await gate; return { providerLeaseId: f.providerLeaseId, metadata: { remoteCwd: f.remote } }; });
     const first = recoverRetainedWorkspace(f.input);
     await started;
-    try { await recoverRetainedWorkspace(f.input); expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce(); }
+    try { await recoverRetainedWorkspace(f.input); expect(f.runtime.resumeRunLease.mock.calls.filter(([input]) => input.lease.id === f.lease.id)).toHaveLength(1); }
     finally { release(); await first; }
     expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
   }, 30_000);

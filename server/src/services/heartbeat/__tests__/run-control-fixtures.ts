@@ -13,6 +13,7 @@ import type { HeartbeatRunControlDependencies } from "../run-control.js";
 type TestCallbacks = HeartbeatRunControlDependencies & ReturnType<typeof createHeartbeatLifecycle> & {
   getRun: Mock<HeartbeatRunControlDependencies["getRun"]>;
   getAgent: Mock<HeartbeatRunControlDependencies["getAgent"]>;
+  getRunCleanupState: Mock<HeartbeatRunControlDependencies["getRunCleanupState"]>;
   setRunStatusFromLive: Mock<HeartbeatRunControlDependencies["setRunStatusFromLive"]>;
   getSchedulingSuppression: Mock<HeartbeatRunControlDependencies["getSchedulingSuppression"]>;
   options: { closeWarmNativeSessionsForRun: Mock<NonNullable<HeartbeatRunControlDependencies["options"]["closeWarmNativeSessionsForRun"]>> };
@@ -43,6 +44,7 @@ export function callbacks(db: Db): TestCallbacks {
     ...state,
     ...lifecycle,
     getRun: vi.fn(state.getRun),
+    getRunCleanupState: vi.fn(state.getRunCleanupState),
     getAgent: vi.fn(state.getAgent),
     setRunStatusFromLive: vi.fn(lifecycle.setRunStatusFromLive),
     setRunStatus: vi.fn(lifecycle.setRunStatus),

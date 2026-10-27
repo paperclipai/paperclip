@@ -23,7 +23,7 @@ export interface RunnerProviderLaunchRequirements {
   includeCollaborationModeInstructions: boolean;
   settings: Pick<CapabilityRunnerdCodexTransportOptions,
     "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
-    "piThinkingLevel" | "claudeEffort" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode">;
+    "piThinkingLevel" | "claudeEffort" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch">;
   instructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
 }
@@ -59,6 +59,7 @@ export function runnerProviderLaunchRequirements(
       piThinkingLevel: options.piThinkingLevel, claudeEffort: options.claudeEffort,
       managedProfile: options.managedProfile, agentCoreProfile: options.agentCoreProfile,
       opencodePermissionMode: options.opencodePermissionMode,
+      ...(options.disableCodexWebSearch === true ? { disableCodexWebSearch: true } : {}),
     },
     approvalPolicy: params.approvalPolicy === "on-request" || params.approvalPolicy === "untrusted"
       ? params.approvalPolicy : "never",
@@ -109,6 +110,14 @@ export function validatePreparedRunnerLaunch(
   if (descriptor.kind !== requirements.provider || descriptor.model !== requirements.model) reject();
   if (requirements.provider === "codex" && (descriptor.approvalPolicy !== requirements.approvalPolicy
     || Boolean(descriptor.readOnly) !== requirements.readOnly)) reject();
+  if (requirements.provider === "codex" && requirements.settings.disableCodexWebSearch === true) {
+    if (!Array.isArray(descriptor.args) || descriptor.args.some(arg => typeof arg !== "string")) reject();
+    const args = descriptor.args as string[];
+    const commandIndex = args.indexOf("app-server");
+    const boundary = commandIndex < 0 ? args.length : commandIndex;
+    if (args.some(arg => arg === "--" || arg === "--search" || arg.startsWith("--search=")) || (commandIndex >= 0 && commandIndex !== args.length - 1)
+      || args[boundary - 2] !== "-c" || args[boundary - 1] !== 'web_search="disabled"') reject();
+  }
   if (requirements.provider === "acpx") {
     const policy = descriptor.providerPolicy as Record<string, unknown> | undefined;
     if (descriptor.agent !== (requirements.settings.acpxAgent ?? "codex")
@@ -303,8 +312,9 @@ export function createRunnerProviderLaunch(
                   args:
                     provider === "opencode"
                       ? [opencodeProxyPath]
-                      : (input.options.codexArgs ??
-                        createRunnerdCodexAppServerArgs({
+                      : createRunnerdCodexAppServerArgs({
+                          args: input.options.codexArgs,
+                          disableWebSearch: settings.disableCodexWebSearch,
                           environment: input.options.environment,
                           codexHome,
                           workingDirectory: input.cwd,
@@ -326,7 +336,7 @@ export function createRunnerProviderLaunch(
                                 ]
                               : []),
                           ],
-                        })),
+                        }),
                   cwd: input.cwd,
                   model: requirements.model,
                   approvalPolicy:
@@ -408,12 +418,14 @@ export function createRunnerdCodexAppServerArgs(input: {
   readOnlyRoots?: string[];
   instructionWorkingCopyRoot?: string;
   disableProjectInstructions?: boolean;
+  disableWebSearch?: boolean;
+  args?: string[];
 }): string[] {
   // The filesystem policy denies HOME and CODEX_HOME to keep credentials and
   // runner state outside provider reach. Always bind those names to the actual
   // isolated runner home; a stale controller environment must never cause the
   // execution workspace itself to become an explicit deny root.
-  const args = [
+  const args = input.args ? [...input.args] : [
     ...(input.disableProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
     ...createIsolatedCodexAppServerArgs(
       {
@@ -426,8 +438,20 @@ export function createRunnerdCodexAppServerArgs(input: {
       usesPreconfiguredHome(input.environment) && input.runtimeStateRoot ? [input.runtimeStateRoot] : [],
     ),
   ];
-  if (usesPreconfiguredHome(input.environment) && input.workingDirectory) {
+  if (!input.args && usesPreconfiguredHome(input.environment) && input.workingDirectory) {
     args.unshift("-c", `projects={${JSON.stringify(input.workingDirectory)}={trust_level="trusted"}}`);
+  }
+  if (input.disableWebSearch) {
+    // Apply Core's restriction after host overrides. Keep the override before
+    // the Codex subcommand and after any earlier provider-home configuration.
+    const commandIndex = args.indexOf("app-server");
+    // Restricted launches use the owned app-server argument shape. Refuse
+    // trailing subcommand flags and option terminators rather than guessing
+    // whether another CLI spelling could override or neutralize this policy.
+    if (args.some(arg => arg === "--" || arg === "--search" || arg.startsWith("--search=")) || (commandIndex >= 0 && commandIndex !== args.length - 1)) {
+      throw new Error("runner_codex_web_search_policy_override");
+    }
+    args.splice(commandIndex < 0 ? args.length : commandIndex, 0, "-c", 'web_search="disabled"');
   }
   return args;
 }

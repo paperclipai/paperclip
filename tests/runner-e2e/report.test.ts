@@ -1,3 +1,4 @@
+import { createWorkerTiming } from "./worker-timing.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -20,6 +21,50 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("publishes retained passing results but exits unsuccessfully when the request journal is damaged", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-damaged-ledger-report-"));
+    cleanupDirectories.push(root);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility",
+      attempt: 1, status: "passed", profileId: "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: "codex", model: "fixture-model", runtimeMode: "native",
+      startedAt: "2026-10-20T00:00:00Z", finishedAt: "2026-10-20T00:00:01Z", durationMs: 1000, cleanup: "passed",
+    };
+    const phaseStart = Date.parse(result.startedAt);
+    const timing = await createWorkerTiming(path.join(directory, "worker-timing.json"), result, phaseStart);
+    await timing.enter("execution", phaseStart + 200);
+    await timing.enter("cleanup", phaseStart + 800);
+    await timing.enter("finalization", phaseStart + 900);
+    result.workerTiming = await timing.finish(phaseStart + 1000);
+    const original = JSON.stringify(result);
+    await writeFile(path.join(directory, "result.json"), original);
+    await writeFile(path.join(directory, "final-state.png"), "fake-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const journal = path.join(root, "journal.jsonl"), output = path.join(root, "merged");
+    await writeFile(journal, '{"damaged-journal":');
+    await expect(execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+        PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]), PAPERCLIP_E2E_OPERATIONS_LEDGER: journal },
+    })).rejects.toMatchObject({ code: 1 });
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized).toMatchObject({ passed: 1, failed: 0, operations: { status: "unavailable" } });
+    expect(normalized.results[0]).toMatchObject({ executionId, status: "passed" });
+    expect(normalized.accounting.attempts[0].workerTiming).toEqual(result.workerTiming);
+    expect(await readFile(path.join(output, "summary.md"), "utf8")).toContain("Worker setup time: 200ms.");
+    expect(await readFile(path.join(output, "index.html"), "utf8")).toContain("<strong>200ms</strong><span>Worker setup time</span>");
+    expect(await readFile(path.join(output, "index.html"), "utf8")).toContain("Worker phase timing: complete.");
+    expect(normalized.billing.agentRunDurationMs).toBeNull();
+    expect(await readFile(path.join(output, "index.html"), "utf8"))
+      .toContain("<strong>Unknown</strong><span>Agent execution time</span>");
+    for (const file of ["index.html", "summary.md"]) {
+      expect(await readFile(path.join(output, file), "utf8")).toContain("Request ledger accounting unavailable");
+    }
+    expect(await readFile(path.join(directory, "result.json"), "utf8")).toBe(original);
+  });
+
   it("corrects overconfident timing verdicts without changing retained bounds or original files", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-latency-report-"));
     cleanupDirectories.push(root);
@@ -331,13 +376,14 @@ describe("runner E2E report aggregation", () => {
       },
     });
     expect(normalized.billing).toMatchObject({
-      reportedLlmCostUsd: 0.0125,
+      reportedLlmCostUsd: 0.025,
       llm: {
-        inputTokens: 1_250,
-        outputTokens: 75,
-        runsWithReportedCost: 1,
+        inputTokens: 2_500,
+        outputTokens: 150,
+        runsWithReportedCost: 2,
       },
     });
+    expect(normalized.accounting.attempts).toHaveLength(2);
     expect(normalized.results[0]).toMatchObject({
       attempt: 2,
       evidenceValid: true,
@@ -353,6 +399,10 @@ describe("runner E2E report aggregation", () => {
       "utf8",
     );
     expect(dashboard).toContain("Runner Full-Stack E2E");
+    expect(dashboard).toMatch(/\$0\.0250*<\/strong><span>LLM reported subtotal/);
+    expect(dashboard).toContain("<strong>2s</strong><span>Summed attempt time</span>");
+    expect(dashboard).toContain("Carried-forward evidence can span older runs");
+    expect(await readFile(path.join(output, "summary.md"), "utf8")).toContain("Summed attempt time: 2s; 2 retained attempts; 0 missing attempts.");
     expect(dashboard).toContain(executionId);
     expect(dashboard).toContain("case-passed");
     expect(dashboard).not.toContain(
@@ -667,4 +717,46 @@ describe("runner E2E report aggregation", () => {
     expect(junit).not.toContain("<script>");
     expect(junit).not.toContain("<?xml-stylesheet");
   });
+});
+
+it("retains selector-approved successes and their spending when only failed workflow jobs rerun", async () => {
+  const { selectRerunArtifacts } = await import("./select-rerun-artifacts.js");
+  const root = await mkdtemp(path.join(os.tmpdir(), "runner-partial-rerun-"));
+  cleanupDirectories.push(root);
+  const artifactRoot = path.join(root, "downloaded"), selectedRoot = path.join(root, "selected");
+  const executions = ["core-compatibility.runner-codex.local.message-marker", "core-compatibility.runner-claude.local.message-marker"];
+  const source = { sha: "a".repeat(40), ref: "master", workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/12345" };
+  for (const [index, executionId] of executions.entries()) {
+    const workflowAttempt = index + 1;
+    const artifactName = `runner-e2e-12345-${workflowAttempt}-${executionId}`;
+    const directory = path.join(artifactRoot, artifactName, `gha-12345-${workflowAttempt}-${executionId}`, "attempt-1");
+    await mkdir(directory, { recursive: true });
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility", source,
+      accountingIdentity: { campaignId: `gha-12345-${workflowAttempt}`, attemptId: `attempt-${index}` },
+      attempt: 1, status: "passed", profileId: index ? "runner-claude" : "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: index ? "claude" : "codex", model: "fixture", runtimeMode: "native",
+      startedAt: "2026-10-20T00:00:00Z", finishedAt: "2026-10-20T00:00:01Z", durationMs: 1000, cleanup: "passed",
+      usage: { inputTokens: 100, outputTokens: 10, costUsd: 0.01 * workflowAttempt },
+    };
+    await writeFile(path.join(directory, "result.json"), JSON.stringify(result));
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    await writeFile(path.join(directory, "final-state.png"), "fixture-png");
+  }
+  await selectRerunArtifacts({ artifactRoot, selectedRoot, expectedExecutionIds: executions, workflowRunId: "12345", workflowRunAttempt: 2,
+    sourceSha: source.sha, sourceRef: source.ref, workflowRunUrl: source.workflowRunUrl,
+    jobs: { attempts: [{ run_attempt: 1, run_started_at: "2026-10-20T00:00:00Z" }, { run_attempt: 2, run_started_at: "2026-10-20T01:00:00Z" }],
+      jobs: [{ name: executions[0]!, run_attempt: 1, started_at: "2026-10-20T00:01:00Z" },
+        { name: executions[1]!, run_attempt: 1, started_at: "2026-10-20T00:01:00Z" },
+        { name: executions[1]!, run_attempt: 2, started_at: "2026-10-20T01:01:00Z" }] },
+  });
+  const output = path.join(root, "report");
+  await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+    cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_E2E_CAMPAIGN_ID: "gha-12345-2", PAPERCLIP_RUNNER_E2E_REPORT_ROOT: selectedRoot,
+      PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify(executions) },
+  });
+  const campaign = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+  expect(campaign).toMatchObject({ passed: 2, failed: 0, billing: { reportedLlmCostUsd: 0.03 }, accounting: { excludedArtifacts: 0 } });
+  expect(campaign.accounting.attempts).toHaveLength(2);
+  expect(campaign.results[0].accountingIdentity.campaignId).toBe("gha-12345-1");
 });

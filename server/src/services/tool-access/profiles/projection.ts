@@ -80,9 +80,15 @@ export type ProfileApplication = Pick<typeof toolApplications.$inferSelect, "id"
 
 export type ProfileConnection = Pick<typeof toolConnections.$inferSelect, "id" | "name">;
 
+export type ProfileEntryMatch = Pick<typeof toolProfileEntries.$inferSelect,
+  "selectorType" | "applicationId" | "connectionId" | "catalogEntryId" | "toolName" | "riskLevel">;
+
+export type ProfileCatalogMatch = Pick<typeof toolCatalogEntries.$inferSelect,
+  "id" | "applicationId" | "connectionId" | "toolName" | "riskLevel">;
+
 export function profileEntryMatchesCatalog(
-  entry: typeof toolProfileEntries.$inferSelect,
-  catalogEntry: ProfileCatalogEntry,
+  entry: ProfileEntryMatch,
+  catalogEntry: ProfileCatalogMatch,
 ): boolean {
   if (entry.selectorType === "application")
     return entry.applicationId === catalogEntry.applicationId;

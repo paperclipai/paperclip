@@ -23,6 +23,13 @@ visibility exception. Company/private-task access checks still apply. Collection
 preferences and hierarchy presentation are browser state, not additional authority.
 Source-reviewed behavior; live agent access verification remains separate.
 
+Collection projections `view=index` and `view=rows` use the same issue-list
+company/private-task checks. Optional `ids` and `parentIds` batches accept at most
+100 UUIDs and cannot be combined with blocked attention. They grant no new access.
+`listProjection` marks omitted task bodies so clients do not reuse them as detail.
+The sidebar count endpoint returns only readable unread Mine task IDs; failed-run
+counts apply the run read decision. No new agent execution or mutation path is added.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:

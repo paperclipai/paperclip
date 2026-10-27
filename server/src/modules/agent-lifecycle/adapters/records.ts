@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../../errors.js";
 import { agentRecordQueries, type CreateAgentOptions, type CreateAgentData } from "../../../lib/agent-records.js";
+import { isAgentSetupDraft } from "../domain/policy.js";
 
 export function agentRecords(db: Db, effects: LifecycleEffects) {
   const { getById } = agentRecordQueries(db);
@@ -25,7 +26,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           if (!existing) throw notFound("Agent setup not found");
           return existing;
         }
-        if (setup && (setup.lifecycleState !== "paused" || !setup.lifecycleHolds.includes("setup"))) {
+        if (setup && (!isAgentSetupDraft(setup) || setup.lifecycleState === "pausing" || !setup.lifecycleHolds.includes("setup"))) {
           throw conflict("Agent setup is no longer available");
         }
         if (options?.setupAgentId && !setup) throw notFound("Agent setup not found");
@@ -35,8 +36,9 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, companyId));
         const companyHolds = company?.status === "paused" ? ["company_paused"] : company?.status === "archived" ? ["company_archived"] : [];
         const holds = [...(status === "paused" ? [pauseReason ?? "manual"] : []), ...companyHolds];
+        const prepareSetup = options?.setupOnly && !companyHolds.length && await effects.setupRequiresPreparation(txDb, companyId, prepared.defaultEnvironmentId);
         const lifecycleState = status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated"
-          : status === "paused" ? "paused" : companyHolds.length ? "pausing" : "preparing";
+          : prepareSetup ? "preparing" : status === "paused" ? "paused" : companyHolds.length ? "pausing" : "preparing";
         if (lifecycleState === "preparing" || lifecycleState === "pausing") await effects.notifyWork(tx);
         const values: typeof agents.$inferInsert = {
           ...prepared,

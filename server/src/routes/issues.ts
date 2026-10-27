@@ -529,6 +529,8 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       live: 0,
       pendingFirstRun: 0,
       alreadyReviewed: 0,
+      incomplete: 0,
+      incompleteIssueIds: [],
       skipped: 0,
       watchdogIssueIds: [],
     }),
@@ -537,6 +539,8 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       failed: 0,
       triggered: 0,
       pendingFirstRun: 0,
+      incomplete: 0,
+      incompleteIssueIds: [],
       skipped: 0,
       watchdogIssueIds: [],
     }),
@@ -3190,6 +3194,42 @@ function decrementIssueListActorClientInflight(actorClientKey: string) {
   const next = (issueListActorClientInflight.get(actorClientKey) ?? 1) - 1;
   if (next <= 0) issueListActorClientInflight.delete(actorClientKey);
   else issueListActorClientInflight.set(actorClientKey, next);
+}
+
+const ISSUE_LIST_UUID_QUERY_PARAMS = [
+  "participantAgentId",
+  "projectId",
+  "workspaceId",
+  "executionWorkspaceId",
+  "parentId",
+  "parentIssueId",
+  "descendantOf",
+  "createdFromIssueId",
+  "labelId",
+] as const;
+
+type IssueListUuidQueryParam = (typeof ISSUE_LIST_UUID_QUERY_PARAMS)[number];
+
+function parseIssueListUuidQueryParams(
+  query: Record<string, unknown>,
+):
+  | { ok: true; values: Partial<Record<IssueListUuidQueryParam, string>> }
+  | { ok: false; error: string } {
+  const values: Partial<Record<IssueListUuidQueryParam, string>> = {};
+  for (const name of ISSUE_LIST_UUID_QUERY_PARAMS) {
+    const raw = query[name];
+    if (raw === undefined) continue;
+    if (typeof raw !== "string") {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    if (!isUuidLike(trimmed)) {
+      return { ok: false, error: `${name} must be a UUID` };
+    }
+    values[name] = trimmed;
+  }
+  return { ok: true, values };
 }
 
 async function coordinateIssueListGet(input: {
@@ -7213,18 +7253,20 @@ export function issueRoutes(
     id: string;
     assigneeAgentId: string | null;
     executionRunId?: string | null;
-  }) {
+  }, options?: { queueStateOnly: true }) {
     let runToInterrupt = issue.executionRunId
-      ? await heartbeat.getRun(issue.executionRunId)
+      ? options?.queueStateOnly
+        ? await heartbeat.getRunIssueControl(issue.executionRunId)
+        : await heartbeat.getRun(issue.executionRunId)
       : null;
 
     if (
       (!runToInterrupt || runToInterrupt.status !== "running") &&
       issue.assigneeAgentId
     ) {
-      const activeRun = await heartbeat.getActiveRunForAgent(
-        issue.assigneeAgentId,
-      );
+      const activeRun = options?.queueStateOnly
+        ? await heartbeat.getActiveRunIssueControlForAgent(issue.assigneeAgentId)
+        : await heartbeat.getActiveRunForAgent(issue.assigneeAgentId);
       const activeIssueId =
         activeRun &&
         activeRun.contextSnapshot &&
@@ -7251,9 +7293,9 @@ export function issueRoutes(
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
   type IssueQueueRun = typeof heartbeatRuns.$inferSelect;
   type IssueQueueState = {
-    wake: IssueQueueWake;
+    wake: Pick<IssueQueueWake, "id" | "companyId" | "payload" | "status" | "runId">;
     state: "deferred" | "queued";
-    queueRun: IssueQueueRun | null;
+    queueRun: Pick<IssueQueueRun, "runtimeMode"> | null;
   };
 
   async function findQueuedCommentWake(
@@ -7262,12 +7304,29 @@ export function issueRoutes(
   ): Promise<IssueQueueState | null> {
     if (!issue.assigneeAgentId) return null;
     const rows = await executor
-      .select()
+      .select({
+        id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+        status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
+        payload: sql<Record<string, unknown>>`jsonb_build_object(
+          'issueId', ${agentWakeupRequests.payload}->'issueId',
+          'mutation', ${agentWakeupRequests.payload}->'mutation',
+          'interactionId', ${agentWakeupRequests.payload}->'interactionId',
+          'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
+          'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
+          'executionWait', jsonb_build_object(
+            'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
+            'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
+          '_paperclipWakeContext', jsonb_build_object(
+            'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds',
+            'forceFreshSession', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'forceFreshSession')
+        )`,
+      })
       .from(agentWakeupRequests)
       .where(
         and(
           eq(agentWakeupRequests.companyId, issue.companyId),
           eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+          sql`${agentWakeupRequests.payload}->'issueId' = to_jsonb(${issue.id}::text)`,
           inArray(agentWakeupRequests.status, [
             "deferred_issue_execution",
             "queued",
@@ -7287,7 +7346,7 @@ export function issueRoutes(
       }
       if (!wake.runId) continue;
       const queueRun = await executor
-        .select()
+        .select({ runtimeMode: heartbeatRuns.runtimeMode })
         .from(heartbeatRuns)
         .where(
           and(
@@ -7308,7 +7367,7 @@ export function issueRoutes(
   async function queueCommentsForWake(
     executor: IssueQueueDb,
     issueId: string,
-    wake: IssueQueueWake | null,
+    wake: Pick<IssueQueueWake, "companyId" | "payload"> | null,
   ) {
     if (wake && queuedInteractionId(wake.payload)) {
       const response = await readQueuedInteractionResponse(executor as Db, wake.companyId, issueId, wake.payload);
@@ -7688,11 +7747,12 @@ export function issueRoutes(
     return commentCreatedAtMs >= activeRunStartedAtMs;
   }
   async function getClosedIssueExecutionWorkspace(issue: {
+    companyId: string;
     executionWorkspaceId?: string | null;
   }) {
     if (!issue.executionWorkspaceId) return null;
-    const workspace = await executionWorkspacesSvc.getById(
-      issue.executionWorkspaceId,
+    const workspace = await executionWorkspacesSvc.getStoredById(
+      issue.companyId, issue.executionWorkspaceId,
     );
     if (!workspace || !isClosedIsolatedExecutionWorkspace(workspace))
       return null;
@@ -8300,7 +8360,26 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact";
+    const compactView = view === "compact" || view === "index" || view === "rows";
+    const issueIds = typeof req.query.ids === "string" ? [...new Set(req.query.ids.split(","))] : undefined;
+    const parentIds = typeof req.query.parentIds === "string" ? [...new Set(req.query.parentIds.split(","))] : undefined;
+    const oneChildPerParent = parseOptionalBooleanQuery(req.query.oneChildPerParent);
+    if (oneChildPerParent === null || (oneChildPerParent && (view !== "index" || !parentIds))) {
+      res.status(400).json({ error: "oneChildPerParent must be a boolean and requires view=index with parentIds" });
+      return;
+    }
+    if (req.query.ids !== undefined && (!issueIds?.length || issueIds.length > 100 || issueIds.some((id) => !z.string().uuid().safeParse(id).success))) {
+      res.status(400).json({ error: "ids must contain one to 100 comma-separated UUIDs" });
+      return;
+    }
+    if (req.query.parentIds !== undefined && (!parentIds?.length || parentIds.length > 100 || parentIds.some((id) => !z.string().uuid().safeParse(id).success))) {
+      res.status(400).json({ error: "parentIds must contain one to 100 comma-separated UUIDs" });
+      return;
+    }
+    if ((issueIds || parentIds) && (attention || (view !== "index" && view !== "rows"))) {
+      res.status(400).json({ error: "ids and parentIds require view=index or view=rows without attention" });
+      return;
+    }
     const hasPlanDocument = parseOptionalBooleanQuery(
       req.query.hasPlanDocument,
     );
@@ -8367,8 +8446,8 @@ export function issueRoutes(
         .json({ error: "attention must be 'blocked' when provided" });
       return;
     }
-    if (view !== undefined && view !== "compact") {
-      res.status(400).json({ error: "view must be 'compact' when provided" });
+    if (view !== undefined && !["compact", "index", "rows"].includes(view)) {
+      res.status(400).json({ error: "view must be compact, index, or rows when provided" });
       return;
     }
     if (
@@ -8446,27 +8525,35 @@ export function issueRoutes(
       });
       return;
     }
+    const uuidQuery = parseIssueListUuidQueryParams(req.query);
+    if (!uuidQuery.ok) {
+      res.status(422).json({ error: uuidQuery.error });
+      return;
+    }
+    const uuidFilters = uuidQuery.values;
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
+      issueIds,
+      parentIds,
+      oneChildPerParent,
+      listProjection: view === "index" || view === "rows" ? view : undefined,
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: uuidFilters.projectId,
+      workspaceId: uuidFilters.workspaceId,
+      executionWorkspaceId: uuidFilters.executionWorkspaceId,
+      parentId: uuidFilters.parentId ?? uuidFilters.parentIssueId,
+      descendantOf: uuidFilters.descendantOf,
+      createdFromIssueId: uuidFilters.createdFromIssueId,
+      labelId: uuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -8506,14 +8593,16 @@ export function issueRoutes(
       companyId,
       normalizedQuery: {
         ...requestKeyFilters,
-        view: compactView ? "compact" : undefined,
+        view,
       },
     });
     const coordinated = await coordinateIssueListGet({
       req,
       companyId,
       requestKey,
-      allowTtlCache: compactView,
+      // The new collection projections must reflect read/archive/undo mutations
+      // immediately. Keep in-flight coalescing and ETags, without a stale TTL body.
+      allowTtlCache: view === "compact",
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
@@ -8521,6 +8610,10 @@ export function issueRoutes(
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
         const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
+        if (view === "index") {
+          const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
+          return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
+        }
         const issueIds = result.map((issue) => issue.id);
         const interruptions = await taskInterruptionPresentations(db, companyId, result);
         if (compactView) {
@@ -8545,12 +8638,12 @@ export function issueRoutes(
             }),
           );
           const compactResult = result.map((issue) =>
-            toCompactIssue({
+            ({ ...toCompactIssue({
               ...issue,
               activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
               interruption: interruptions.get(issue.id) ?? null,
               successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            }),
+            }), ...(view === "rows" ? { listProjection: "rows" as const } : {}) }),
           );
           return {
             kind: "compact",
@@ -8687,22 +8780,27 @@ export function issueRoutes(
       return;
     }
 
+    const countUuidQuery = parseIssueListUuidQueryParams(req.query);
+    if (!countUuidQuery.ok) {
+      res.status(422).json({ error: countUuidQuery.error });
+      return;
+    }
+    const countUuidFilters = countUuidQuery.values;
+
     const blockedCountFilters = {
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
-      participantAgentId: req.query.participantAgentId as string | undefined,
+      participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
-      projectId: req.query.projectId as string | undefined,
-      workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
-      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
-      labelId: req.query.labelId as string | undefined,
+      projectId: countUuidFilters.projectId,
+      workspaceId: countUuidFilters.workspaceId,
+      executionWorkspaceId: countUuidFilters.executionWorkspaceId,
+      parentId: countUuidFilters.parentId ?? countUuidFilters.parentIssueId,
+      descendantOf: countUuidFilters.descendantOf,
+      createdFromIssueId: countUuidFilters.createdFromIssueId,
+      labelId: countUuidFilters.labelId,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
       originId: req.query.originId as string | undefined,
@@ -8927,7 +9025,7 @@ export function issueRoutes(
         : null;
 
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
-      ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      ? executionWorkspacesSvc.getStoredById(issue.companyId, issue.executionWorkspaceId, { includeRuntimeServices: true })
       : Promise.resolve(null);
     const [
       { project, goal },
@@ -9254,6 +9352,13 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await timing.time("authorization", () => assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true })))) return;
+    // The cold-open read owns only the task row. Related objects and recovery
+    // projections retain their existing authorized detail path.
+    if (req.query.view === "core") {
+      res.setHeader("Server-Timing", timing.header());
+      res.json(issue);
+      return;
+    }
     const inboxArchiveFieldsPromise =
       req.actor.type === "board" && req.actor.userId
         ? timing.time("inbox", () => svc.getActiveInboxArchiveFields(issue, req.actor.userId!))
@@ -9294,7 +9399,7 @@ export function issueRoutes(
       inboxArchiveFieldsPromise,
       timing.time("channel", () => getExternalChannelBindingSummary(db, issue.companyId, issue.id)),
       timing.time("workspace", () => issue.executionWorkspaceId
-        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+        ? executionWorkspacesSvc.getStoredById(issue.companyId, issue.executionWorkspaceId, { includeRuntimeServices: true })
         : Promise.resolve(null)),
       timing.time("work_products", () => workProductsSvc.listForIssue(issue.id)),
       timing.time("created_from", () => resolveVisibleIssueCreationSource(req, issue)),
@@ -16211,6 +16316,24 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/issues/:id/recent-comments", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const [recent, human, firstInstruction] = await Promise.all([
+      svc.listComments(issue.id, { order: "desc", limit: 5 }),
+      svc.listComments(issue.id, { order: "desc", limit: 1, humanOnly: true }),
+      issue.description?.trim()
+        ? Promise.resolve([])
+        : svc.listComments(issue.id, { order: "asc", limit: 1, humanOnly: true }),
+    ]);
+    const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, {
+      comments,
+      latestCommentId: recent[0]?.id ?? null,
+      hasMore: recent.length > 4,
+    }));
+  });
+
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -16299,7 +16422,7 @@ export function issueRoutes(
     const queue = await buildQueuedCommentQueue({
       executor: db,
       issue,
-      activeRun: await resolveActiveIssueRun(issue),
+      activeRun: await resolveActiveIssueRun(issue, { queueStateOnly: true }),
       actor: getActorInfo(req),
     });
     res.json(

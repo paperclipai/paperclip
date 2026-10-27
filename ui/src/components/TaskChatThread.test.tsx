@@ -26,6 +26,7 @@ const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
   hydratedRunIds: undefined as Set<string> | undefined,
+  truncatedRunIds: new Set<string>(),
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -35,6 +36,7 @@ const nativeTranscriptState = vi.hoisted(() => ({
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
+  legacyReadLimits: [] as (number | undefined)[],
   native: [] as unknown[][],
 }));
 const sidebarState = vi.hoisted(() => ({ isMobile: false }));
@@ -51,12 +53,14 @@ const editorCallbacks = vi.hoisted(() => ({ change: (_value: string) => {} }));
 const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
 vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
-  useLiveRunTranscripts: ({ runs }: { runs: unknown[] }) => {
+  useLiveRunTranscripts: ({ runs, logReadLimitBytes }: { runs: unknown[]; logReadLimitBytes?: number }) => {
     transcriptHookRuns.legacy.push(runs);
+    transcriptHookRuns.legacyReadLimits.push(logReadLimitBytes);
     return {
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
       hydratedRunIds: transcriptState.hydratedRunIds,
+      truncatedRunIds: transcriptState.truncatedRunIds,
     };
   },
 }));
@@ -122,11 +126,13 @@ beforeEach(() => {
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
   transcriptState.hydratedRunIds = undefined;
+  transcriptState.truncatedRunIds.clear();
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
   nativeTranscriptState.terminalHydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
+  transcriptHookRuns.legacyReadLimits.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
   planState.data = null;
@@ -359,6 +365,37 @@ it.each([true, false])("defers hidden content until history is ready and keeps i
   ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   expect(container.querySelector('.task-chat-history-pending')).toBeNull();
+});
+
+it.each([true, false])("keeps cold-open messages readable while history is pending (mobile=%s)", (mobile) => {
+  sidebarState.isMobile = mobile;
+  render(<TaskChatThread issueId="cold-issue" compactHistory initialHistoryPending
+    comments={createLongThreadComments()} historyControl={<button>More messages</button>} onAdd={async () => {}} />);
+  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(container.textContent).toContain("Thread message 1");
+  expect(container.textContent).toContain("More messages");
+  expect(container.querySelector('[data-testid="mock-editor"]')).not.toBeNull();
+});
+
+it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
+  const onExpandHistory = vi.fn();
+  if (logBytes > 32_000) transcriptState.truncatedRunIds.add("legacy-run");
+  const props = {
+    issueId: "single-legacy-run", comments: [], onAdd: async () => {}, onExpandHistory,
+    linkedRuns: [{ runId: "legacy-run", agentId: "agent", status: "succeeded", adapterType: "claude_local", runtimeMode: "legacy" as const, createdAt: "2025-01-01T10:00:00Z", startedAt: "2025-01-01T10:00:00Z", logBytes }],
+  };
+  render(<TaskChatThread {...props} compactHistory />);
+  expect(container.textContent).not.toContain("More messages");
+  const outputControl = [...container.querySelectorAll("button")].find((button) => button.textContent === "More run output");
+  expect(Boolean(outputControl)).toBe(logBytes > 32_000);
+  expect(transcriptHookRuns.legacyReadLimits.at(-1)).toBe(32_000);
+  if (outputControl) {
+    act(() => outputControl.click());
+    expect(onExpandHistory).toHaveBeenCalledOnce();
+    render(<TaskChatThread {...props} compactHistory={false} />);
+    expect(container.textContent).not.toContain("More run output");
+    expect(transcriptHookRuns.legacyReadLimits.at(-1)).toBeUndefined();
+  }
 });
 
 it("defers initial history for a saved conversation with its own draft key", () => {
@@ -3525,7 +3562,7 @@ describe("TaskChatThread composer alignment", () => {
 
     const dock = container
       .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
+      ?.closest('[data-testid="task-chat-composer-dock"]') as HTMLElement | null;
 
     expect(dock?.className).toContain("w-full");
     expect(dock?.className).toContain("max-w-(--tc-shell-max-w)");
@@ -4309,26 +4346,22 @@ describe("TaskChatThread Paperclip Runner queue", () => {
   });
 });
 
-describe("TaskChatThread mobile composer dock (PAP-495)", () => {
-  it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
+describe("TaskChatThread mobile composer dock", () => {
+  it("scrolls messages independently of the composer on mobile", () => {
     sidebarState.isMobile = true;
 
     renderThread({
-      comments: [],
+      comments: createLongThreadComments(),
       onAdd: async () => {},
       draftKey: "task-chat-draft:issue-mobile",
     });
 
-    const dock = container
-      .querySelector('[data-testid="mock-editor"]')
-      ?.closest("div.sticky") as HTMLElement | null;
-
+    const dock = container.querySelector('[data-testid="task-chat-composer-dock"]');
+    const scroller = container.querySelector('[data-testid="task-chat-scroller"]');
     expect(dock).not.toBeNull();
-    // Bottom offset comes from --tc-composer-bottom (Layout raises it to the nav
-    // height while the nav is on screen) — NOT the raw safe-area dock, which is
-    // what let the nav occlude the action row before PAP-495.
-    expect(dock?.className).toContain("bottom-(--tc-composer-bottom)");
-    expect(dock?.className).not.toContain("bottom-(--sz-calc-8)");
+    expect(scroller).not.toBeNull();
+    expect(scroller?.textContent).toContain("Thread message 1");
+    expect(scroller?.contains(dock)).toBe(false);
   });
 });
 

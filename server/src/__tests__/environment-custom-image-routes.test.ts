@@ -92,6 +92,7 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
+  resolvePluginSandboxProviderConfigSchema: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),
   validatePluginSandboxProviderConfig: vi.fn(async ({ provider, config }) => ({
     normalizedConfig: config,

@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray, not } from "drizzle-orm";
+import { and, desc, eq, inArray, not, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, approvals, heartbeatRuns } from "@paperclipai/db";
-import { isHeartbeatRunVisibleInMine, type SidebarBadges } from "@paperclipai/shared";
+import { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent, type SidebarBadges } from "@paperclipai/shared";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { getHeartbeatRunReadDecisions } from "./heartbeat-run-privacy.js";
 
 const ACTIONABLE_APPROVAL_STATUSES = ["pending", "revision_requested"];
-const FAILED_HEARTBEAT_STATUSES = ["failed", "timed_out"];
 
 function normalizeTimestamp(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -23,6 +24,7 @@ function isDismissed(
 }
 
 export function sidebarBadgeService(db: Db) {
+  const authorization = authorizationService(db);
   return {
     get: async (
       companyId: string,
@@ -31,6 +33,8 @@ export function sidebarBadgeService(db: Db) {
         dismissals?: ReadonlyMap<string, number>;
         joinRequests?: Array<{ id: string; updatedAt: Date | string | null; createdAt: Date | string }>;
         unreadTouchedIssues?: number;
+        approvalReadCondition?: SQL<boolean>;
+        actor?: AuthorizationActor;
       },
     ): Promise<SidebarBadges> => {
       const actionableApprovals = await db
@@ -40,16 +44,21 @@ export function sidebarBadgeService(db: Db) {
           and(
             eq(approvals.companyId, companyId),
             inArray(approvals.status, ACTIONABLE_APPROVAL_STATUSES),
+            extra?.approvalReadCondition,
           ),
         )
         .then((rows) =>
           rows.filter((row) => !isDismissed(extra?.dismissals ?? new Map(), `approval:${row.id}`, row.updatedAt)).length
         );
 
-      const latestRunByAgent = await db
-        .selectDistinctOn([heartbeatRuns.agentId], {
+      const recentRuns = await db
+        .select({
           id: heartbeatRuns.id,
-          runStatus: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          companyId: heartbeatRuns.companyId,
+          scopeKind: heartbeatRuns.scopeKind,
+          issueId: heartbeatRuns.issueId,
+          status: heartbeatRuns.status,
           responsibleUserId: heartbeatRuns.responsibleUserId,
           createdAt: heartbeatRuns.createdAt,
         })
@@ -62,13 +71,16 @@ export function sidebarBadgeService(db: Db) {
             not(eq(agents.status, "terminated")),
           ),
         )
-        .orderBy(heartbeatRuns.agentId, desc(heartbeatRuns.createdAt));
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(200);
 
-      const failedRuns = latestRunByAgent.filter((row) =>
-        FAILED_HEARTBEAT_STATUSES.includes(row.runStatus)
-        && (extra?.currentUserId === undefined || isHeartbeatRunVisibleInMine(row, extra.currentUserId))
+      const failures = latestFailedRunsByAgent(recentRuns).filter((row) =>
+        (extra?.currentUserId === undefined || isHeartbeatRunVisibleInMine(row, extra.currentUserId))
         && !isDismissed(extra?.dismissals ?? new Map(), `run:${row.id}`, row.createdAt),
-      ).length;
+      );
+      const failedRuns = extra?.actor
+        ? (await getHeartbeatRunReadDecisions(db, authorization, extra.actor, failures)).filter(Boolean).length
+        : failures.length;
 
       const joinRequests = (extra?.joinRequests ?? []).filter((row) =>
         !isDismissed(

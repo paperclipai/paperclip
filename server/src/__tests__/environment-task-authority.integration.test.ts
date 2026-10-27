@@ -59,16 +59,41 @@ databaseSuite("environment task lease authority", () => {
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
     await expect(authorize()).rejects.toThrow("not authorized");
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
+    let sessionStateAvailable = false;
+    const operations: string[] = [];
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }),
       call: async (_id: string, _method: string, params: any) => ["read_state", "archive_state"].includes(params.operation.kind)
         ? { kind: "state", taskId: params.taskId, state: { schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended",
             ...(params.operation.identity ?? params.operation.priorIdentity) } }
+        : params.operation.kind === "status"
+          ? (operations.push("status"), { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true, sessionStateAvailable })
         : { kind: "accepted", taskId: params.taskId },
     } as unknown as PluginWorkerManager;
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
     const runner = { runnerId: "runner", leaseId: oldLeaseId, sessionId: "session", runId: nextRunId,
       turnId: "turn", itemId: "item", harness: "codex", protocolMin: 1, protocolMax: 3 };
     const checkpointIdentity = { ...priorIdentity, turnId: "prior-turn", itemId: "prior-item" };
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, oldLeaseId));
+    await db.update(environmentLeases).set({ metadata: { ...source.metadata, runnerTaskSessionRetained: false } }).where(eq(environmentLeases.id, oldLeaseId));
+    await expect(authorize()).rejects.toThrow("not authorized");
+    await expect(resolvePluginTaskResume(db, { companyId, leaseId: nextLeaseId, priorIdentity, inspectCheckpoint: true })).resolves.toBe("old-task");
+    const inspect = () => runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
+    } });
+    await expect(inspect()).rejects.toThrow("not authorized");
+    await expect(authorize()).rejects.toThrow("not authorized");
+    // Discovery cannot launch, and cannot bypass the original termination receipt.
+    await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
+      kind: "submit", preparedLaunchId: "fixture", projectIds: [], bootstrapTicket: "fixture", runner, resumeFrom: "old-task",
+    } })).rejects.toThrow("resume identity mismatch");
+    await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
+    await expect(inspect()).rejects.toThrow("not authorized");
+    expect(operations).toEqual(["status"]);
+    await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
+    sessionStateAvailable = true;
+    await expect(inspect()).resolves.toMatchObject({ kind: "state" });
+    expect(operations).toEqual(["status", "status"]);
+    await expect(authorize()).resolves.toBe("old-task");
     for (const operation of [
       { kind: "read_state" as const, identity: checkpointIdentity, resumeFrom: "old-task" },
       { kind: "archive_state" as const, priorIdentity: checkpointIdentity, archiveKey: "a".repeat(24), resumeFrom: "old-task" },
@@ -111,6 +136,12 @@ databaseSuite("environment task lease authority", () => {
     const retryLeaseId = randomUUID();
     await db.insert(environmentLeases).values({ id: retryLeaseId, companyId, environmentId, heartbeatRunId: thirdRunId,
       status: "active", provider: prior.provider, providerLeaseId: "retry-task", metadata: pin });
+    const retryIdentity = { ...checkpointIdentity, runId: thirdRunId, turnId: "turn", itemId: "item" };
+    await expect(resolvePluginTaskResume(db, { companyId, leaseId: retryLeaseId,
+      priorIdentity: retryIdentity })).resolves.toBe("third-task");
+    await expect(runtime.task({ companyId, leaseId: retryLeaseId, operation: {
+      kind: "read_state", identity: retryIdentity, resumeFrom: "third-task",
+    } })).resolves.toMatchObject({ kind: "state", state: { ...retryIdentity, lifecycle: "suspended" } });
     await expect(runtime.task({ companyId, leaseId: retryLeaseId, operation: { ...submit, projectIds: [], resumeFrom: "third-task" } })).resolves.toMatchObject({ kind: "accepted" });
     const [retry] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, retryLeaseId));
     await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),

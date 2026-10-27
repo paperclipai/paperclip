@@ -180,6 +180,10 @@ export const updateAgentSchema = objectWithoutDefaults(
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
+export const qualifyAgentRunnerSchema = z.object({
+  expectedEnvironmentId: z.string().uuid(),
+}).strict();
+
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
   adapterConfigKey: z.string().trim().min(1).optional(),
@@ -317,6 +321,10 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const addAgentProjectAccessSchema = z.object({
+  projectIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
 
 export const resolveAgentInstructionCandidateSchema = z.object({
   baseRevisionId: z.string().uuid().nullable(),

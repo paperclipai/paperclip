@@ -56,6 +56,11 @@ while keeping the harness, selected model, account bindings, instructions, and
 history. Unsupported settings produce an actionable error without changing the
 saved agent. Future runs start fresh sessions.
 
+Qualifying an existing agent's sandbox for that upgrade uses the same agent
+configuration permission as saving the upgrade. The server checks the saved
+computer and its company binding. Company owners do not need instance-admin
+access for this step; general instance environment management remains restricted.
+
 Paperclip supports several ways to run an agent's heartbeat:
 
 1. **Local CLI/session adapters** — Paperclip starts or resumes local coding-tool sessions such as Claude Code, Codex, Gemini, OpenCode, Pi, and Cursor, then tracks the run.
@@ -135,6 +140,16 @@ participation. Open requests addressed to the person also admit the task until
 resolution. Ordinary human-created tasks keep their creator's participation.
 These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
 Approvals retain their existing recipient and permission rules.
+
+An advisory PR review does not require human completion approval because its
+rating is low, CI is pending or failing, or the PR is unmerged. After publication,
+the bot may stay in review with an authorized provider-event wait or a saved
+monitor. Neither wait enrolls a person in Mine. Human requests are for concrete
+dependencies of the assigned review, such as missing repository access.
+A later published review with no human dependency withdraws the same bot's
+earlier completion request for a published review when its result commits and
+independent gates are clear. Finish-report validation is read-only. Independent approval gates
+and requests without that review evidence remain unchanged.
 
 New inbound comments retain their provider in `metadata.sourceChannel`. Historical
 imports use inbound message links or the stored provider-sender metadata. These

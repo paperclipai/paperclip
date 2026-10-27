@@ -98,7 +98,7 @@ describe("heartbeat run-control module boundary", () => {
   it("retains leases while native execution ownership is unverified", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
-    deps.getRun.mockResolvedValue({ runtimeMode: "native", status: "running", nativePhase: "terminal_failure", errorCode: "native_execution_ownership_unverified" } as Run);
+    deps.getRunCleanupState.mockResolvedValue({ runtimeMode: "native", status: "running", nativePhase: "terminal_failure", errorCode: "native_execution_ownership_unverified" } as Run);
     await createHeartbeatRunControl(database.db, deps).releaseEnvironmentLeasesForRun({ runId: "held", companyId: "company", agentId: "agent", status: "failed", providerResourceDisposition: "destroy" });
     expect(database.access).not.toHaveBeenCalled();
     expect(deps.options.closeWarmNativeSessionsForRun).not.toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe("heartbeat run-control module boundary", () => {
   it("uses the persisted terminal outcome when choosing warm resource retention", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
-    deps.getRun.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
+    deps.getRunCleanupState.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
     await createHeartbeatRunControl(database.db, deps).releaseEnvironmentLeasesForRun({ runId: "failed", companyId: "company", agentId: "agent", status: "succeeded", providerResourceDisposition: "keep_running" });
     expect(deps.envOrchestrator.releaseForRun).toHaveBeenCalledWith(expect.objectContaining({ heartbeatRunId: "failed", status: "failed", providerResourceDisposition: "stop_and_retain" }));
     expect(database.access).not.toHaveBeenCalled();
@@ -117,7 +117,7 @@ describe("heartbeat run-control module boundary", () => {
   it("defers destruction when a warm session remains busy", async () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
-    deps.getRun.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
+    deps.getRunCleanupState.mockResolvedValue({ status: "failed", runtimeMode: "legacy" } as Run);
     deps.options.closeWarmNativeSessionsForRun.mockResolvedValue({ closed: 0, busy: 1, failed: 0 });
     await createHeartbeatRunControl(database.db, deps).releaseEnvironmentLeasesForRun({ runId: "busy", companyId: "company", agentId: "agent", status: "failed", providerResourceDisposition: "destroy" });
     expect(deps.options.closeWarmNativeSessionsForRun).toHaveBeenCalledWith({ runId: "busy", reason: "terminal heartbeat run destroyed its environment lease" });
@@ -427,6 +427,38 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     await issueService(db).update(f.issue.id, { status: "done" });
     expect((await db.select().from(cases).where(eq(cases.id, f.caseRow.id)))[0])
       .toMatchObject({ status: "done", phase: "done", completedAt: expect.any(Date) });
+  });
+
+  it.each(["confirmed", "missing", "wrong_allocation", "unacknowledged", "still_running", "wrong_intent"] as const)("publishes native Stop acknowledgement only after exact remote containment: %s", async proof => {
+    const { company, agent } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Save work after Stop", assigneeAgentId: agent.id }).returning();
+    const runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId: company.id, agentId: agent.id,
+      nativeIssueId: issue.id, runtimeMode: "native", status: proof === "still_running" ? "running" : "cancelled", finishedAt: proof === "still_running" ? null : new Date(),
+      resultJson: { executionCancellation: { state: "requested", requestedAt: new Date().toISOString() },
+        cancelledByActorType: "user", cancelledByUserId: "operator", nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", runId: proof === "wrong_intent" ? randomUUID() : runId, companyId: company.id, issueId: issue.id,
+          scope: "run", reasonCode: "cancellation_run_only", dispatchState: proof === "unacknowledged" ? "pending" : "acknowledged", dispatched: true,
+          intentAuditId: randomUUID(), acknowledgementAuditId: randomUUID(),
+        }, workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+          schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId],
+        } },
+    }).returning();
+    const receipt = { schema: "paperclip.remote-termination.v1", companyId: company.id, runId, leaseId,
+      provider: "daytona", providerLeaseId: proof === "wrong_allocation" ? randomUUID() : providerLeaseId,
+      state: "stopped", confirmedAt: new Date().toISOString() };
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: company.id, issueId: issue.id, heartbeatRunId: runId,
+      provider: "daytona", providerLeaseId, status: proof === "missing" ? "active" : "released", leasePolicy: "retain_on_failure",
+      releasedAt: proof === "missing" ? null : new Date(), cleanupStatus: proof === "missing" ? null : "success",
+      metadata: proof === "missing" ? {} : { remoteExecutionTermination: receipt } });
+    const control = createHeartbeatRunControl(db, callbacks(db));
+    await control.acknowledgeRemoteStop(run.id, company.id);
+    await control.acknowledgeRemoteStop(run.id, company.id);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(stopped.resultJson?.executionCancellation).toMatchObject({ state: proof === "confirmed" ? "acknowledged" : "requested" });
+    if (proof === "confirmed") expect(stopped.resultJson?.executionCancellation).toMatchObject({ proof: "provider_termination_receipt" });
+    expect(stopped.resultJson?.workspaceRestoreFailure).toBe("restore_failed");
+    expect(stopped.resultJson?.workspaceRestoreRecovery).toMatchObject({ leaseIds: [leaseId] });
   });
 
   it("keeps pre-Stop input pending until a later user message authorizes one continuation", async () => {
