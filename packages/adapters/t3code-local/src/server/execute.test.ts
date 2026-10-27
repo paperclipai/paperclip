@@ -269,6 +269,29 @@ describe("t3code_local execute", () => {
     expect(await env.calls()).toEqual([]);
   });
 
+  it("launches no turn when Stop arrives while the invocation is being logged", async () => {
+    const env = await setup({ "thread start": [{ stdout: result({ status: "completed" }) }] });
+    const controller = new AbortController();
+    const res = await execute(makeContext(env, {
+      signal: controller.signal,
+      onMeta: async () => { controller.abort(); },
+    }));
+
+    expect(await env.calls()).toEqual([]);
+    expect(res).toMatchObject({ errorCode: "cancelled" });
+  });
+
+  it("does not probe for a stop when the T3 Code server cannot be reached", async () => {
+    const env = await setup({
+      "thread start": [{ stderr: "Could not reach the T3 Code server at http://127.0.0.1:3773.\n", exit: 1 }],
+    });
+    const res = await execute(makeContext(env));
+
+    expect((await env.calls()).map((call) => call.args.slice(0, 2).join(" "))).toEqual(["thread start"]);
+    expect(res.errorCode).not.toBe("t3code_stop_unverified");
+    expect(res.exitCode).not.toBe(0);
+  });
+
   it("ends a running project add as soon as Stop arrives", async () => {
     const env = await setup({
       "thread start": [

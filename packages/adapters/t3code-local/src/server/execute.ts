@@ -72,7 +72,7 @@ function exitedCleanly(proc: RunProcessResult): boolean {
 /** The CLI fails these before it launches or messages a thread. */
 function failedBeforeLaunch(proc: RunProcessResult): boolean {
   return exitedCleanly(proc) && (
-    /No running T3 Code server/i.test(proc.stderr) || isT3ProjectNotFound(proc.stderr) || isT3ThreadNotFound(proc.stderr)
+    isT3ServerUnavailable(proc.stderr) || isT3ProjectNotFound(proc.stderr) || isT3ThreadNotFound(proc.stderr)
   );
 }
 
@@ -267,6 +267,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptMetrics: { promptChars: prompt.length, instructionsChars: instructionsPrefix.length },
       context,
     });
+    // Stop may have arrived while onMeta was writing; no child exists yet to stop.
+    if (signal?.aborted) return null;
     const markStopped = providerStop.beginInvocation();
     const proc = await runT3(args, { stdin: prompt });
     return { proc, result: parseT3RunResult(proc.stdout), threadId, markStopped };
