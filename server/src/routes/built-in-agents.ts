@@ -189,7 +189,6 @@ export function builtInAgentRoutes(db: Db) {
       if (req.body.budgetMonthlyCents !== undefined) assertBoard(req);
       const result = await svc.provision(companyId, key, req.body, {
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-        ...(actor.runId ? { sourceRunId: actor.runId } : {}),
         requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
       });
       const { state, approval } = result;
