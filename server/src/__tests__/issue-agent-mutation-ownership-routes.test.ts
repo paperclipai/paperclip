@@ -880,6 +880,64 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.list).not.toHaveBeenCalled();
   });
 
+  describe("task bridge issue creation in a scoped project", () => {
+    const scopedProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const otherProjectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    function bridgeActor(projectIds: string[]) {
+      return peerActor({
+        keyId: "99999999-9999-4999-8999-999999999999",
+        keyScope: { kind: "task_bridge", projectIds },
+      });
+    }
+
+    beforeEach(() => {
+      mockProjectService.getById.mockImplementation(async (id: string) => ({
+        id, companyId, visibility: "open",
+      }) as never);
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+        const allowed = input.action !== "project:read";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_scope",
+          explanation: allowed ? "Allowed by test default." : "Task bridge keys cannot use project APIs.",
+        };
+      });
+    });
+
+    it("creates an issue in a project the key is scoped to without evaluating project:read", async () => {
+      const res = await request(await createApp(bridgeActor([scopedProjectId])))
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ title: "Bridge-created task", projectId: scopedProjectId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "project:read" }));
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign",
+        resource: expect.objectContaining({ projectId: scopedProjectId }),
+      }));
+      expect(mockIssueService.create).toHaveBeenCalledWith(
+        companyId,
+        expect.objectContaining({ title: "Bridge-created task", projectId: scopedProjectId }),
+      );
+    });
+
+    it("still hides a project outside the key's project scope", async () => {
+      const res = await request(await createApp(bridgeActor([scopedProjectId])))
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ title: "Bridge-created task", projectId: otherProjectId });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(404);
+      expect(res.body.error).toBe("Project not found");
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "project:read",
+        resource: { type: "project", companyId, projectId: otherProjectId },
+      }));
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+    });
+  });
+
   it("uses the company-scope fast path on the issue list route", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
       if (input.action === "company_scope:read") {

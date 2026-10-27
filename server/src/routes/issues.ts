@@ -5260,6 +5260,12 @@ export function issueRoutes(
     );
   }
 
+  function taskBridgeKeyScopesProject(req: Request, projectId: string) {
+    if (!isTaskBridgeKeyActor(req) || req.actor.keyScope?.kind !== "task_bridge") return false;
+    const scope = req.actor.keyScope;
+    return scope.projectId === projectId || (scope.projectIds ?? []).includes(projectId);
+  }
+
   function isSkillTestScopedActor(req: Request) {
     return (
       req.actor.type === "agent" && req.actor.keyScope?.kind === "skill_test"
@@ -13563,14 +13569,16 @@ export function issueRoutes(
         res.status(404).json({ error: "Project not found" });
         return;
       }
-      const projectDecision = await access.decide({
-        actor: req.actor,
-        action: "project:read",
-        resource: { type: "project", companyId, projectId: selectedProject.id },
-      });
-      if (!projectDecision.allowed) {
-        res.status(404).json({ error: "Project not found" });
-        return;
+      if (!taskBridgeKeyScopesProject(req, selectedProject.id)) {
+        const projectDecision = await access.decide({
+          actor: req.actor,
+          action: "project:read",
+          resource: { type: "project", companyId, projectId: selectedProject.id },
+        });
+        if (!projectDecision.allowed) {
+          res.status(404).json({ error: "Project not found" });
+          return;
+        }
       }
     }
       const createAssignmentScope = {
