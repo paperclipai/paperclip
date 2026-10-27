@@ -23,6 +23,7 @@ export type FooterPrimaryIcon = "arrow" | "spinner" | "none";
  */
 export function FooterNav({
   onBack,
+  onSkip,
   primaryLabel,
   primaryDisabled,
   loading,
@@ -31,6 +32,7 @@ export function FooterNav({
   onPrimary,
 }: {
   onBack?: () => void;
+  onSkip?: () => void;
   primaryLabel: string;
   primaryDisabled?: boolean;
   loading?: boolean;
@@ -50,27 +52,34 @@ export function FooterNav({
 
   return (
     <div className="flex items-center justify-between pt-9">
-      {onBack ? (
-        // Same size as the primary, not a tier down. Back is ghost until you
-        // point at it, and a shorter pill made the hover surface read as a
-        // different kind of control sitting slightly low in the row rather than
-        // the other half of a pair.
-        //
-        // The padding stays asymmetric against size="lg"'s symmetric px-4: the
-        // arrow needs less room on its side than the word does on its own.
-        <Button
-          variant="ghost"
-          size="lg"
-          className="rounded-full has-[>svg]:pl-4 has-[>svg]:pr-5"
-          onClick={onBack}
-          disabled={loading}
-        >
-          <ArrowLeft className="mr-1 size-3.5" />
-          Back
-        </Button>
-      ) : (
-        <span />
-      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {onBack ? (
+          // Same size as the primary, not a tier down. Back is ghost until you
+          // point at it, and a shorter pill made the hover surface read as a
+          // different kind of control sitting slightly low in the row rather than
+          // the other half of a pair.
+          //
+          // The padding stays asymmetric against size="lg"'s symmetric px-4: the
+          // arrow needs less room on its side than the word does on its own.
+          <Button
+            variant="ghost"
+            size="lg"
+            className="rounded-full has-[>svg]:pl-4 has-[>svg]:pr-5"
+            onClick={onBack}
+            disabled={loading}
+          >
+            <ArrowLeft className="mr-1 size-3.5" />
+            Back
+          </Button>
+        ) : (
+          <span />
+        )}
+        {onSkip && (
+          <Button variant="ghost" size="lg" className="rounded-full" onClick={onSkip} disabled={loading}>
+            Skip for now
+          </Button>
+        )}
+      </div>
       {/*
         `layout` on the button and `popLayout` on its contents are what make the
         width ease rather than jump: the outgoing label leaves the flow at once,

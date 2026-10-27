@@ -1,3 +1,4 @@
+import { claimOnboardingOffer } from "../lib/onboarding-auto-open";
 import type { AiConnectionLoginIntent } from "@paperclipai/shared";
 import { cancelAdapterLoginSession, cancelPendingAdapterLogin, matchesAdapterLoginTarget } from "./useAdapterLoginCancellation";
 import { useQueryView } from "@/components/QueryView";
@@ -1850,6 +1851,18 @@ function OnboardingWizardInner({
     setRouteDismissed(true);
   }
 
+  function handleContinueWithoutAgent() {
+    if (!createdCompanyId || createdAgentId || setupAgentId || loading) return;
+    const companyId = createdCompanyId;
+    const prefix = createdCompanyPrefix;
+    claimOnboardingOffer(companyId);
+    setSelectedCompanyId(companyId, { source: "route_sync" });
+    handleClose();
+    if (routeOnboardingOptions !== null) {
+      navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
+    }
+  }
+
   /**
    * Whether the company an async handler started for is still the one in hand.
    *
@@ -3485,6 +3498,9 @@ function OnboardingWizardInner({
                   `canGoBackFromOnboardingStep` returns false for it. */}
               {(isAgentArcStep || step === 1) && (
                 <FooterNav
+                  onSkip={step === 3 && createdCompanyId && !createdAgentId && !setupAgentId && !loading
+                    ? handleContinueWithoutAgent
+                    : undefined}
                   onBack={
                     // On the connect step Back unwinds the sign-in first, and
                     // only means "the previous step" once nothing is running.
