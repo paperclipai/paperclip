@@ -80,12 +80,13 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(bubble).not.toBeNull();
     expect(bubble?.getAttribute("data-author")).toBe("human");
     expect(bubble?.className).toContain("items-end");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).toBeNull();
     const body = bubble?.querySelector(".bg-\\(--liveness-blue\\)");
     expect(body).not.toBeNull();
     expect(body?.textContent).toContain("Ship the widget by");
     // Markdown renders (bold), not raw asterisks.
     expect(body?.querySelector("strong")?.textContent).toBe("Friday");
+    expect(bubble?.querySelector('[data-testid="task-chat-description-edit"]')).toBeNull();
   });
 
   it("renders an agent-created task as the agent-side bubble with the avatar author header", () => {
@@ -93,7 +94,7 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     const bubble = container.querySelector('[data-testid="task-chat-description-bubble"]');
     expect(bubble?.getAttribute("data-author")).toBe("agent");
     expect(bubble?.className).toContain("items-start");
-    expect(bubble?.querySelector('[data-testid="task-chat-agent-avatar"]')).not.toBeNull();
+    expect(bubble?.querySelector('[data-slot="agent-avatar"]')).not.toBeNull();
     expect(bubble?.textContent).toContain("CEO");
     expect(bubble?.querySelector(".bg-\\(--bubble-agent\\)")).not.toBeNull();
     expect(bubble?.querySelector(".bg-\\(--liveness-blue\\)")).toBeNull();
@@ -106,8 +107,8 @@ describe("TaskChatDescriptionBubble (PAP-375)", () => {
     expect(container.textContent).not.toContain("Ship the widget");
   });
 
-  it("swaps to the InlineEditor on pencil click and returns to the bubble on Escape", () => {
-    render(makeBrief());
+  it("keeps the agent-side pencil editor and returns to the bubble on Escape", () => {
+    render(makeBrief({ author: "agent", authorName: "CEO" }));
     click(container.querySelector('[data-testid="task-chat-description-edit"]'));
 
     const editorWrap = container.querySelector('[data-testid="task-chat-description-editor"]');

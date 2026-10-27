@@ -11,18 +11,29 @@ vi.mock("./issues.js", () => ({
 
 type SelectRow = Record<string, unknown>;
 
-function createSelectChain(rows: SelectRow[]) {
+function createSelectChain(rows: SelectRow[] | ((table: unknown) => SelectRow[])) {
   return {
-    from() {
-      return {
+    from(table: unknown) {
+      let selectedRows = typeof rows === "function" ? rows(table) : rows;
+      const query = {
+        innerJoin() {
+          return query;
+        },
         where() {
-          return {
-            then(callback: (rows: SelectRow[]) => unknown) {
-              return Promise.resolve(callback(rows));
-            },
-          };
+          return query;
+        },
+        for() {
+          return query;
+        },
+        limit(count: number) {
+          selectedRows = selectedRows.slice(0, count);
+          return query;
+        },
+        then(callback: (rows: SelectRow[]) => unknown) {
+          return Promise.resolve(callback(selectedRows));
         },
       };
+      return query;
     },
   };
 }
@@ -41,7 +52,8 @@ function createFakeDb(args: {
   const db: any = {
     select: vi.fn(() => {
       selectCallCount += 1;
-      return createSelectChain(selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []));
+      const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
+      return createSelectChain(table => getTableName(table as never) === "issues" ? [{ status: "in_progress" }] : rows);
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
@@ -164,8 +176,12 @@ describe("issueThreadInteractionService", () => {
       updatedAt: new Date("2026-04-20T10:00:00.000Z"),
     };
 
+    let selectCallCount = 0;
     const db: any = {
-      select: vi.fn(() => createSelectChain([existingRow])),
+      select: vi.fn(() => {
+        selectCallCount += 1;
+        return createSelectChain(selectCallCount <= 2 ? [existingRow] : []);
+      }),
       insert: vi.fn(),
       update: vi.fn(),
     };
@@ -280,7 +296,7 @@ describe("issueThreadInteractionService", () => {
     ]);
   });
 
-  it("withdraws a pending interaction with attribution and rejects repeats", async () => {
+  it("withdraws an unlinked pending interaction with attribution and rejects repeats", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-withdraw", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
@@ -296,8 +312,7 @@ describe("issueThreadInteractionService", () => {
     expect(withdrawn.status).toBe("cancelled");
     expect(withdrawn.result).toEqual({ version: 1, outcome: "withdrawn", reason: "Replanning" });
     expect(withdrawn.resolvedByAgentId).toBe("agent-1");
-    expect(state.toolActionRequestUpdates).toHaveLength(1);
-    expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "cancelled", resolvedByAgentId: "agent-1" });
+    expect(state.toolActionRequestUpdates).toHaveLength(0);
     const resolvedState = createFakeDb({ interactionRow: { ...interactionRow, status: "accepted" } });
     const resolvedSvc = issueThreadInteractionService(resolvedState.db as never);
     await expect(resolvedSvc.withdrawInteraction(
@@ -376,7 +391,9 @@ describe("issueThreadInteractionService", () => {
       },
       result: null, resolvedAt: null, createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
     };
-    const state = createFakeDb({ interactionRow });
+    const state = createFakeDb({ interactionRow, parentRows: [{
+      id: "33333333-3333-4333-8333-333333333333", companyId: "company-1", interactionId: interactionRow.id,
+    }] });
     const svc = issueThreadInteractionService(state.db as never);
     const expired = await svc.expirePendingInteractionsForTerminalIssue(
       { id: interactionRow.issueId, companyId: "company-1", status: "cancelled" },

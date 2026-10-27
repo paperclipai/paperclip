@@ -1,7 +1,9 @@
 export type {
   AdapterAgent,
+  AgentRuntimeIdentity,
   AdapterRuntime,
   UsageSummary,
+  AdapterUsageCheckpoint,
   AdapterBillingType,
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
@@ -25,8 +27,6 @@ export type {
   AdapterSkillContext,
   AdapterSessionCodec,
   AdapterModel,
-  AdapterModelProfileKey,
-  AdapterModelProfileDefinition,
   HireApprovedPayload,
   HireApprovedHookResult,
   ConfigFieldOption,
@@ -89,7 +89,7 @@ export type {
   RuntimeStatusSink,
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
-export { inferOpenAiCompatibleBiller } from "./billing.js";
+export { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "./billing.js";
 export {
   ADAPTER_LOGIN_PANEL_MODES,
   ADAPTER_LOGIN_TIMEOUT_POLICIES,
@@ -117,10 +117,17 @@ export type {
 export {
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS,
   PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS,
+  PAPERCLIP_RUNNER_DEFAULT_MODELS,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   isPaperclipRunnerProvider,
   resolvePaperclipRunnerIdleTimeoutMs,
+  resolvePaperclipRunnerModel,
+  paperclipRunnerTransitionConfig,
+  normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
+  resolvePaperclipRunnerPiThinkingLevel,
 } from "./paperclip-runner-permissions.js";
 export {
   PAPERCLIP_RUNNER_INGRESS_PORT,

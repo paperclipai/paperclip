@@ -12,6 +12,7 @@ import {
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
+  nativeRunResults,
   statusDecisionEffects,
   statusDecisions,
   workAssessments,
@@ -22,6 +23,7 @@ import {
   materializeLegacyQuestionResponseWakeProjection,
   materializeNativeInteractionResponses,
   NativeInteractionBridgeError,
+  routePersistedNativeResultAttention,
 } from "../services/native-runtime/native-interaction-bridge.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
@@ -292,7 +294,7 @@ describe("P6-19 native interaction bridge", () => {
   });
 
   it.each([
-    [governedId, "native_interaction_governed_request_unsupported"],
+    [governedId, "native_interaction_governed_request_unresolved"],
     [selfApprovedId, "native_interaction_self_approval"],
   ])("fails closed for governed or self-approved interaction %s", async (interactionId, code) => {
     const error = await materializeNativeInteractionResponses({
@@ -821,4 +823,43 @@ describe("P6-19 native interaction bridge", () => {
       .from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.id, outsideInteractionId))).resolves.toEqual([{ summary: null }]);
   }, 30_000);
+
+  it("clears stale recovery state when replaying a committed attention decision", async () => {
+    const localIssueId = randomUUID();
+    const localRunId = randomUUID();
+    const localContractId = randomUUID();
+    const resultId = randomUUID();
+    const assessmentId = randomUUID();
+    const requestId = "attention:replayed";
+    await db.insert(issues).values({ id: localIssueId, companyId, title: "Replayed native attention",
+      status: "in_progress", assigneeAgentId: agentId, workMode: "standard" });
+    await db.insert(completionContracts).values({ id: localContractId, companyId, issueId: localIssueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v1", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "replay-v1", objective: "Replay attention", criteria: [{ id: "objective", requirement: "Replay" }] },
+      canonicalSha256: `replay-contract:${localContractId}`, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: localRunId, companyId, agentId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: localIssueId, nativeSessionId: localRunId, completionContractId: localContractId,
+      completionContractSha256: `replay-contract:${localContractId}`, contextSnapshot: { issueId: localIssueId } });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId: localIssueId, runId: localRunId,
+      completionContractId: localContractId, serverFingerprint: `fp-${resultId}`, schemaStatus: "accepted",
+      resultJson: { result: { attentionRequests: [{ id: requestId, requestedCapability: "context_lookup", summary: "Look up context" }] } },
+      canonicalSha256: `sha-${resultId}` });
+    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId: localIssueId, runId: localRunId,
+      contractId: localContractId, resultId, triggerKind: "native_attention", triggerRef: requestId,
+      triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 0,
+      policyVersion: "phase6-v1", assessmentJson: {}, inputDigest: `digest-${assessmentId}` });
+    const [decision] = await db.insert(statusDecisions).values({ companyId, issueId: localIssueId, runId: localRunId,
+      assessmentId, decisionVersion: 1, policyVersion: "phase6-v1", fromStatus: "in_progress", toStatus: "in_progress",
+      reasonCode: "attention_context", decisionJson: { effects: [] }, decisionDigest: `digest-${assessmentId}` }).returning();
+    await db.insert(nativeRunFinalizations).values({ runId: localRunId, companyId, issueId: localIssueId,
+      phase: "assessing", resultId, recoveryState: "resuming_session", recoveryRequestId: "restart-request" });
+
+    const receipts = await routePersistedNativeResultAttention({ db, runId: localRunId });
+
+    expect(receipts).toEqual([expect.objectContaining({ requestId, decisionId: decision!.id, replayed: true })]);
+    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, localRunId))).resolves.toEqual([
+      expect.objectContaining({ phase: "committed", decisionId: decision!.id, recoveryState: null, recoveryRequestId: null }),
+    ]);
+  });
 });

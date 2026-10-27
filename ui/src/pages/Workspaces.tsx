@@ -15,9 +15,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
 type ProjectWorkspaceGroup = {
-  projectId: string;
+  projectId: string | null;
   projectName: string;
-  projectRef: string;
+  projectRef: string | null;
   summaries: ProjectWorkspaceSummary[];
   lastUpdatedAt: Date;
   runningServiceCount: number;
@@ -46,7 +46,7 @@ function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSum
 }
 
 function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWorkspaceGroup[] {
-  const groups = new Map<string, ProjectWorkspaceGroup>();
+  const groups = new Map<string | null, ProjectWorkspaceGroup>();
   for (const item of items) {
     const existing = groups.get(item.projectId);
     const summary = overviewItemToSummary(item);
@@ -60,8 +60,8 @@ function buildProjectWorkspaceGroups(items: WorkspaceOverviewItem[]): ProjectWor
     }
     groups.set(item.projectId, {
       projectId: item.projectId,
-      projectName: item.projectName,
-      projectRef: projectRouteRef({ id: item.projectId, name: item.projectName, urlKey: item.projectUrlKey }),
+      projectName: item.projectName ?? "Task workspaces",
+      projectRef: item.projectId ? projectRouteRef({ id: item.projectId, name: item.projectName ?? "Project", urlKey: item.projectUrlKey }) : null,
       summaries: [summary],
       lastUpdatedAt: summary.lastUpdatedAt,
       runningServiceCount: summary.runningServiceCount,
@@ -133,15 +133,15 @@ export function Workspaces() {
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (
-            <section key={group.projectId} className="space-y-3">
+            <section key={group.projectId ?? "task-workspaces"} className="space-y-3">
               <div className="flex flex-wrap items-end justify-between gap-2">
                 <div className="min-w-0">
-                  <Link
+                  {group.projectRef ? <Link
                     to={`/projects/${group.projectRef}/workspaces`}
                     className="text-base font-semibold hover:underline"
                   >
                     {group.projectName}
-                  </Link>
+                  </Link> : <h3 className="text-base font-semibold">{group.projectName}</h3>}
                 </div>
                 <span className="text-xs text-muted-foreground">
                   {group.summaries.length} workspace{group.summaries.length === 1 ? "" : "s"}

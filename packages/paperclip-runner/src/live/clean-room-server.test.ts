@@ -234,7 +234,7 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
         interactionKind: "questions",
         title: "Which way should I take this?",
         prompt: "Pick a direction for the clean-room issue.",
-        payload: { questions: [{ id: "path", prompt: "Which path?", options: ["a", "b"] }] },
+        payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "path", prompt: "Which path?", required: true, answerMode: "single_select", options: [{ id: "a", label: "Path A" }, { id: "b", label: "Path B" }] }] } },
         continuationPolicy: "wake_assignee",
       });
     }
@@ -605,6 +605,79 @@ afterEach(async () => {
 });
 
 describe("Capability clean-room chat server", () => {
+  it.each(["claude", "codex"])("allows an unlisted %s model in the test-drive configuration", async acpxAgent => {
+    const { capabilityIssueThreadServerInternals: internals } = await import("../../scripts/capability-issue-thread-server.mjs");
+    const model = "custom/model[reasoning=medium]";
+    expect(internals.harnessConfiguration({ provider: "acpx", acpxAgent, model }))
+      .toMatchObject({ provider: "acpx", acpxAgent, model });
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent, model: " " }))
+      .toThrow("requires an explicit model");
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent: "unknown", model }))
+      .toThrow("ACPX agent must be");
+  });
+
+  it("validates the exact Claude Managed lab profile and canonical agent version", async () => {
+    const module = await import("../../scripts/capability-issue-thread-server.mjs");
+    const internals = module.capabilityIssueThreadServerInternals;
+    expect(internals.harnessConfiguration({
+      provider: "claude_managed",
+      model: "claude-sonnet-5",
+      managedProfileId: "managed-qualified",
+      maxSessionListCostUsd: 2,
+    })).toMatchObject({
+      provider: "claude_managed",
+      model: "claude-sonnet-5",
+      managedProfileId: "managed-qualified",
+      maxSessionListCostUsd: 2,
+    });
+    expect(() => internals.harnessConfiguration({
+      provider: "claude_managed",
+      model: "claude-opus-5",
+    })).toThrow("requires exact model claude-sonnet-5");
+
+    const keys = [
+      "PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_MANAGED_AGENT_ID",
+      "ANTHROPIC_MANAGED_AGENT_VERSION",
+      "ANTHROPIC_MANAGED_ENVIRONMENT_ID",
+    ] as const;
+    const prior = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      process.env.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID = "managed-qualified";
+      process.env.ANTHROPIC_API_KEY = "test-only-key";
+      process.env.ANTHROPIC_MANAGED_AGENT_ID = "agent-qualified";
+      process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID = "environment-qualified";
+      process.env.ANTHROPIC_MANAGED_AGENT_VERSION = "2147483647";
+      expect(internals.resolveManagedProfile({
+        provider: "claude_managed",
+        managedProfileId: "managed-qualified",
+        maxSessionListCostUsd: 2,
+      })).toEqual({
+        profileId: "managed-qualified",
+        anthropicAgentId: "agent-qualified",
+        agentVersion: "2147483647",
+        environmentId: "environment-qualified",
+        betaVersion: "managed-agents-2026-04-01",
+        maxSessionListCostUsd: 2,
+      });
+      for (const agentVersion of ["latest", "0", "01", "2147483648"]) {
+        process.env.ANTHROPIC_MANAGED_AGENT_VERSION = agentVersion;
+        expect(() => internals.resolveManagedProfile({
+          provider: "claude_managed",
+          managedProfileId: "managed-qualified",
+          maxSessionListCostUsd: 2,
+        })).toThrow("not fully qualified");
+      }
+    } finally {
+      for (const key of keys) {
+        const value = prior[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("opens a blank live thread with fresh mock identities and no canned evidence", async () => {
     const opened = await call("/api/capability/ui/cleanroom/session");
 
@@ -919,7 +992,7 @@ describe("Capability clean-room chat server", () => {
     expect(response.status).toBe(429);
     expect(body.error).toBe("turn_limit");
     expect(body.message).toContain("Start a new chat");
-  });
+  }, 30_000);
 
   it("streams the turn as frames while the POST is still open", async () => {
     const opened = await call("/api/capability/ui/cleanroom/session");

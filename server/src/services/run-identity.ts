@@ -1,0 +1,651 @@
+import { readTaskRetryIntent, readTaskRetryBoardMessageOrigin } from "./task-retry.js";
+import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import {
+  agentWakeupRequests,
+  heartbeatRuns,
+  heartbeatRunEvents,
+  issueComments,
+  issueThreadInteractions,
+  issues,
+  runIdentityContexts,
+  type Db,
+} from "@paperclipai/db";
+import { conflict, forbidden } from "../errors.js";
+import { boundRunIssueId, runTaskContextColumn } from "./run-task-binding.js";
+import { isUuidLike } from "@paperclipai/shared";
+import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+
+/** Resolve an explicit click from persisted receipts, never caller context or message authors. */
+export async function explicitOperatorRunIdentity(
+  executor: Pick<Db, "select">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "contextSnapshot" | "wakeupRequestId">,
+) {
+  const [request] = run.wakeupRequestId ? await executor.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+  )) : [];
+  if (request?.payload?.manualUserWake === true) {
+    if (request.requestedByActorType !== "user" || !request.requestedByActorId) {
+      throw forbidden("Manual wake requires an authenticated user");
+    }
+    return { actorId: request.requestedByActorId, cause: "manual_user_wake" };
+  }
+  const prefix = "queued-comment-interrupt:";
+  if (!request?.idempotencyKey?.startsWith(prefix)) return null;
+  const queueId = request.idempotencyKey.slice(prefix.length);
+  // The key only locates a candidate. The consumed queue, actor, run, company,
+  // agent, task, and delivered messages must all independently agree.
+  if (!isUuidLike(queueId)) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const [receipt] = await executor.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+    eq(agentWakeupRequests.status, "coalesced"),
+  ));
+  const marker = receipt?.payload?.queuedCommentInterrupt;
+  const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
+  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
+  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
+  if (typeof actorId !== "string" || !actorId || !ids.length ||
+      receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
+      !ids.every(id => deliveredIds.includes(id)) ||
+      request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  return { actorId, cause: "queued_comment_interrupt" };
+}
+
+export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
+type Executor = Pick<Db, "select" | "insert" | "update">;
+
+/**
+ * Lock the task before the run, matching task mutation ordering. Identity
+ * operations do not change parent keys: NO KEY UPDATE still serializes writers
+ * and steering, while allowing audit inserts to check their foreign keys.
+ * FOR UPDATE can deadlock with an append that holds KEY SHARE on the run and
+ * then checks the task while identity capture holds the task and waits on the run.
+ */
+async function lockIdentityTask(
+  executor: Pick<Db, "select">,
+  companyId: string,
+  runId: string,
+) {
+  const [run] = await executor
+    .select({
+      contextSnapshot: runTaskContextColumn,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: heartbeatRuns.issueId,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)),
+    );
+  const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  const legacyIssueId = run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  if ([issueId, legacyIssueId].some(id => id !== undefined && id !== null &&
+      (typeof id !== "string" || !isUuidLike(id)))) {
+    throw forbidden("Run task identity is invalid");
+  }
+  if (typeof issueId === "string")
+    await executor
+      .select({ id: issues.id })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .for("no key update");
+}
+
+async function append(
+  executor: Executor,
+  input: {
+    companyId: string;
+    runId: string;
+    responsibleUserId: string | null;
+    messageId?: string | null;
+    parentContextId?: string | null;
+    cause: string;
+    correlationId: string;
+    status?: "accepted" | "pending";
+  },
+) {
+  const [existing] = await executor
+    .select()
+    .from(runIdentityContexts)
+    .where(
+      and(
+        eq(runIdentityContexts.runId, input.runId),
+        eq(runIdentityContexts.correlationId, input.correlationId),
+      ),
+    );
+  if (existing) return existing;
+  const [last] = await executor
+    .select()
+    .from(runIdentityContexts)
+    .where(eq(runIdentityContexts.runId, input.runId))
+    .orderBy(desc(runIdentityContexts.revision))
+    .limit(1);
+  const [created] = await executor
+    .insert(runIdentityContexts)
+    .values({
+      ...input,
+      revision: (last?.revision ?? 0) + 1,
+      acceptedAt: input.status === "pending" ? null : new Date(),
+    })
+    .returning();
+  if (!created) throw new Error("Failed to persist run identity");
+  if (created.status === "accepted") await activate(executor, created);
+  return created;
+}
+
+async function activate(executor: Executor, context: RunIdentityContext) {
+  const [run] = await executor
+    .update(heartbeatRuns)
+    .set({
+      responsibleUserId: context.responsibleUserId,
+      activeIdentityContextId: context.id,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(heartbeatRuns.id, context.runId),
+        eq(heartbeatRuns.companyId, context.companyId),
+      ),
+    )
+    .returning({
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      issueId: heartbeatRuns.issueId,
+      contextSnapshot: runTaskContextColumn,
+    });
+  const issueId = run ? boundRunIssueId(run) : null;
+  if (typeof issueId === "string")
+    await executor
+      .update(issues)
+      .set({ continuationIdentityContextId: context.id })
+      .where(
+        and(eq(issues.id, issueId), eq(issues.companyId, context.companyId)),
+      );
+}
+
+/** Called only for newly dispatched runs. Historical rows are never backfilled. */
+export async function initializeRunIdentity(
+  db: Db,
+  input: {
+    companyId: string;
+    runId: string;
+    responsibleUserId: string | null;
+    messageIds?: string[];
+    issueId?: string | null;
+    interactionId?: string | null;
+    parentRunId?: string | null;
+    parentContextId?: string | null;
+    cause: string;
+  },
+) {
+  return db.transaction(async (tx) => {
+    await lockIdentityTask(tx, input.companyId, input.runId);
+    const [run] = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+        ),
+      )
+      .for("no key update");
+    if (!run) throw forbidden("Run identity does not belong to this company");
+    if (run.activeIdentityContextId) {
+      const [current] = await tx
+        .select()
+        .from(runIdentityContexts)
+        .where(eq(runIdentityContexts.id, run.activeIdentityContextId));
+      return current!;
+    }
+    const operatorIdentity = await explicitOperatorRunIdentity(tx, run);
+    let retryOrigin: string | null = null;
+    const retryId = run.contextSnapshot?.taskRetryRequestId;
+    if (typeof retryId === "string") {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, retryId), eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, run.agentId)));
+      const retry = readTaskRetryIntent(receipt?.payload);
+      if (run.contextSnapshot?.boardMessageRetry === true || retry?.boardMessageOrigin) {
+        if (!retry?.boardMessageOrigin) throw forbidden("This saved message can no longer be retried safely. Send a new message on the task to continue from saved work.");
+        const [dispatch] = run.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+          eq(agentWakeupRequests.status, "claimed"), eq(agentWakeupRequests.reason, "task_retry"),
+          eq(agentWakeupRequests.idempotencyKey, `task-retry-dispatch:${receipt!.id}`),
+          eq(agentWakeupRequests.requestedByActorType, "user"), eq(agentWakeupRequests.requestedByActorId, retry.actorId))) : [];
+        const [task] = input.issueId ? await tx.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.id, input.issueId), eq(issues.companyId, input.companyId), eq(issues.assigneeAgentId, run.agentId),
+          eq(issues.executionRunId, run.id))) : [];
+        const origin = input.issueId && run.status === "running" && task && dispatch &&
+          [run.issueId, run.nativeIssueId, run.contextSnapshot?.issueId, run.contextSnapshot?.taskId]
+            .every(id => id === null || id === undefined || id === input.issueId) && receipt!.runId === run.id && receipt!.status === "coalesced" &&
+          receipt!.reason === "task_retry" && receipt!.requestedByActorType === "user" &&
+          run.contextSnapshot?.previousRunId === retry.sourceRunId && retry.generationId === receipt!.id && !retry.chatActionId && !retry.canonicalIntentId &&
+          receipt!.payload?.issueId === input.issueId && retry.actorId === receipt!.requestedByActorId &&
+          await readTaskRetryBoardMessageOrigin(tx as unknown as Db, { companyId: input.companyId, issueId: input.issueId,
+            agentId: run.agentId, sourceRunId: retry.sourceRunId, actorId: retry.actorId });
+        if (!origin || origin.commentId !== retry.boardMessageOrigin.commentId ||
+            origin.identityContextId !== retry.boardMessageOrigin.identityContextId) {
+          throw forbidden("This saved message can no longer be retried safely. Send a new message on the task to continue from saved work.");
+        }
+        retryOrigin = origin.identityContextId;
+      }
+    }
+    const [parent] = input.parentRunId
+      ? await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, input.parentRunId),
+              eq(heartbeatRuns.companyId, input.companyId),
+            ),
+          )
+      : [];
+    const [interaction] =
+      input.interactionId && input.issueId
+        ? await tx
+            .select()
+            .from(issueThreadInteractions)
+            .where(
+              and(
+                eq(issueThreadInteractions.id, input.interactionId),
+                eq(issueThreadInteractions.companyId, input.companyId),
+                eq(issueThreadInteractions.issueId, input.issueId),
+              ),
+            )
+        : [];
+    const parentId = operatorIdentity ? null : (
+      retryOrigin ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+    );
+    const [origin] = parentId
+      ? await tx
+          .select()
+          .from(runIdentityContexts)
+          .where(
+            and(
+              eq(runIdentityContexts.id, parentId),
+              eq(runIdentityContexts.companyId, input.companyId),
+              eq(runIdentityContexts.status, "accepted"),
+            ),
+          )
+      : [];
+    if (parentId && !origin)
+      throw forbidden("Originating execution identity is unavailable");
+    let current = await append(tx, {
+      companyId: input.companyId,
+      runId: input.runId,
+      responsibleUserId: operatorIdentity?.actorId ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
+      parentContextId: origin?.id ?? null,
+      cause:
+        operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
+      correlationId: "dispatch",
+    });
+    const ids = [...new Set(input.messageIds ?? [])];
+    const comments =
+      ids.length && input.issueId
+        ? await tx
+            .select()
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, input.companyId),
+                eq(issueComments.issueId, input.issueId),
+                inArray(issueComments.id, ids),
+              ),
+            )
+        : [];
+    for (const id of ids) {
+      const comment = comments.find((c) => c.id === id);
+      if (!comment?.authorUserId) continue;
+      current = await append(tx, {
+        companyId: input.companyId,
+        runId: input.runId,
+        responsibleUserId: operatorIdentity?.actorId ?? comment.authorUserId,
+        messageId: id,
+        parentContextId: current.id,
+        cause: operatorIdentity?.cause ?? "instruction",
+        correlationId: `message:${id}`,
+      });
+    }
+    return current;
+  });
+}
+
+/** Caller holds the task and run row locks, in that order. Reserve before delivery so acquisitions cannot guess. */
+export async function prepareSteeredIdentity(
+  executor: Executor,
+  input: {
+    companyId: string;
+    runId: string;
+    messageId: string;
+    issueId: string;
+    source?: "comment" | "interaction";
+  },
+) {
+  const [run] = await executor
+    .select()
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+      ),
+    );
+  const [comment] = input.source === "interaction" ? [] : await executor
+    .select()
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.id, input.messageId),
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+      ),
+    );
+  const [interaction] = input.source === "interaction" ? await executor.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.id, input.messageId),
+    eq(issueThreadInteractions.companyId, input.companyId),
+    eq(issueThreadInteractions.issueId, input.issueId),
+    inArray(issueThreadInteractions.status, ["accepted", "answered", "rejected"]),
+  )) : [];
+  const responsibleUserId = interaction?.resolvedByUserId ?? comment?.authorUserId;
+  if (!run || !responsibleUserId)
+    throw forbidden("Steering requires an authenticated message author");
+  if (
+    run.status !== "running" ||
+    boundRunIssueId(run) !== input.issueId
+  ) {
+    throw conflict("Steering targets a different or inactive execution");
+  }
+  return append(executor, {
+    companyId: input.companyId,
+    runId: input.runId,
+    responsibleUserId,
+    messageId: input.messageId,
+    parentContextId: run.activeIdentityContextId,
+    cause: "steering",
+    correlationId: `${input.source === "interaction" ? "interaction" : "message"}:${input.messageId}`,
+    status: "pending",
+  });
+}
+
+export async function reserveSteeredIdentity(
+  db: Db,
+  input: Parameters<typeof prepareSteeredIdentity>[1],
+) {
+  return db.transaction(async (tx) => {
+    await lockIdentityTask(tx, input.companyId, input.runId);
+    const [run] = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+        ),
+      )
+      .for("no key update");
+    // Processes started before the broker rollout keep their original environment.
+    if (!run?.activeIdentityContextId) return null;
+    const [pending] = await tx
+      .select()
+      .from(runIdentityContexts)
+      .where(
+        and(
+          eq(runIdentityContexts.runId, run.id),
+          eq(runIdentityContexts.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (pending && pending.messageId !== input.messageId) {
+      if (await storedSteeringAcknowledgement(tx, pending))
+        await acceptSteeredIdentity(tx, pending);
+      else
+        throw conflict(
+          "A prior steering acknowledgement must be reconciled first",
+        );
+    }
+    const [existing] = await tx
+      .select()
+      .from(runIdentityContexts)
+      .where(
+        and(
+          eq(runIdentityContexts.runId, run.id),
+          eq(runIdentityContexts.messageId, input.messageId),
+          eq(runIdentityContexts.status, "accepted"),
+        ),
+      );
+    if (existing) return existing;
+    const context = await prepareSteeredIdentity(tx, input);
+    if (context.status === "rejected") {
+      await tx
+        .update(runIdentityContexts)
+        .set({ status: "pending" })
+        .where(eq(runIdentityContexts.id, context.id));
+      return { ...context, status: "pending" };
+    }
+    return context;
+  });
+}
+
+export async function rejectSteeredIdentity(
+  db: Db,
+  context: RunIdentityContext,
+) {
+  await db
+    .update(runIdentityContexts)
+    .set({ status: "rejected" })
+    .where(
+      and(
+        eq(runIdentityContexts.id, context.id),
+        eq(runIdentityContexts.status, "pending"),
+      ),
+    );
+}
+
+export async function acceptSteeredIdentity(
+  executor: Executor,
+  context: RunIdentityContext,
+) {
+  // A replay must not reactivate a historical identity after later instructions.
+  const [accepted] = await executor
+    .update(runIdentityContexts)
+    .set({ status: "accepted", acceptedAt: new Date() })
+    .where(
+      and(
+        eq(runIdentityContexts.id, context.id),
+        eq(runIdentityContexts.status, "pending"),
+      ),
+    )
+    .returning();
+  if (accepted) await activate(executor, accepted);
+}
+
+const runIdentityFields = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status, responsibleUserId: heartbeatRuns.responsibleUserId,
+  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+};
+
+export const runIdentityTaskFields = {
+  ...runIdentityFields, nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+      'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
+      'paperclipSkillTest', ${heartbeatRuns.contextSnapshot}->'paperclipSkillTest') else null end`,
+};
+
+export const runIdentityBrokerFields = {
+  ...runIdentityFields, invocationSource: heartbeatRuns.invocationSource,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'projectId', ${heartbeatRuns.contextSnapshot}->'projectId', 'routineId', ${heartbeatRuns.contextSnapshot}->'routineId',
+      'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'responsibleUserId',
+      'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'responsible_user_id',
+      'paperclipIssue', case when jsonb_typeof(${heartbeatRuns.contextSnapshot}->'paperclipIssue') = 'object'
+        then jsonb_build_object('id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'id',
+          'projectId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'projectId',
+          'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsibleUserId',
+          'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsible_user_id') else null end)
+    else null end`,
+};
+
+const runIdentityProjectFields = {
+  ...runIdentityTaskFields, runtimeMode: heartbeatRuns.runtimeMode,
+  runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+    then case when ${heartbeatRuns.runnerProfileJson} ? 'nativeExecutionInput'
+      then jsonb_build_object('nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput')
+      else '{}'::jsonb end else null end`,
+};
+
+type FullIdentityRun = typeof heartbeatRuns.$inferSelect;
+type IdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityFields>;
+type TaskIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityTaskFields>;
+type BrokerIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityBrokerFields>;
+type ProjectIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityProjectFields>;
+export type RunIdentityReadScope = "github_credentials" | "request_authentication" | "identity" | "task_authorization" | "token_broker" | "project_execution";
+export type RunIdentityCapture<Scope extends RunIdentityReadScope | undefined = undefined> = {
+  run: Scope extends "identity" ? IdentityRun : Scope extends "task_authorization" ? TaskIdentityRun :
+    Scope extends "token_broker" ? BrokerIdentityRun : Scope extends "project_execution" ? ProjectIdentityRun : FullIdentityRun;
+  context: RunIdentityContext | null;
+};
+
+export async function captureRunIdentity<Scope extends RunIdentityReadScope | undefined = undefined>(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+  options?: { readScope: Scope },
+): Promise<RunIdentityCapture<Scope>> {
+  // Lock acquisition serializes with steering delivery and its durable acknowledgement.
+  return db.transaction(async (tx) => {
+    await lockIdentityTask(tx, input.companyId, input.runId);
+    const [run] = await tx
+      .select(options?.readScope === "identity" ? runIdentityFields :
+        options?.readScope === "task_authorization" ? runIdentityTaskFields :
+        options?.readScope === "token_broker" ? runIdentityBrokerFields :
+        options?.readScope === "project_execution" ? runIdentityProjectFields :
+        options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
+        ...getTableColumns(heartbeatRuns),
+        contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+          then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+            'taskId', ${heartbeatRuns.contextSnapshot}->'taskId', 'projectId', ${heartbeatRuns.contextSnapshot}->'projectId',
+            'executionPolicy', ${heartbeatRuns.contextSnapshot}->'executionPolicy') else null end`,
+        runnerProfileJson: sql<Record<string, unknown> | null>`null`,
+        resultJson: sql<Record<string, unknown> | null>`null`,
+        stdoutExcerpt: sql<string | null>`null`, stderrExcerpt: sql<string | null>`null`,
+      } : getTableColumns(heartbeatRuns))
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+        ),
+      )
+      .for("no key update");
+    if (!run || run.status !== "running")
+      throw forbidden(
+        "Credential acquisition requires this agent's active run",
+      );
+    const [pending] = await tx
+      .select()
+      .from(runIdentityContexts)
+      .where(
+        and(
+          eq(runIdentityContexts.runId, run.id),
+          eq(runIdentityContexts.status, "pending"),
+        ),
+      )
+      .limit(1);
+    if (pending) {
+      const acknowledgement = await storedSteeringAcknowledgement(tx, pending);
+      if (!acknowledgement)
+        throw conflict(
+          "Message acceptance is being reconciled; retry credential acquisition",
+        );
+      await acceptSteeredIdentity(tx, pending);
+      run.activeIdentityContextId = pending.id;
+      run.responsibleUserId = pending.responsibleUserId;
+    }
+    const [context] = run.activeIdentityContextId
+      ? await tx
+          .select()
+          .from(runIdentityContexts)
+          .where(
+            and(
+              eq(runIdentityContexts.id, run.activeIdentityContextId),
+              eq(runIdentityContexts.runId, run.id),
+            ),
+          )
+      : [];
+    return { run, context: context ?? null } as RunIdentityCapture<Scope>;
+  });
+}
+
+export async function listRunIdentityContexts(
+  db: Db,
+  companyId: string,
+  runId: string,
+) {
+  return db
+    .select()
+    .from(runIdentityContexts)
+    .where(
+      and(
+        eq(runIdentityContexts.companyId, companyId),
+        eq(runIdentityContexts.runId, runId),
+      ),
+    )
+    .orderBy(asc(runIdentityContexts.revision));
+}
+
+/** Late native acknowledgements settle reservations even when the HTTP caller timed out. */
+export async function reconcileSteeredIdentity(
+  db: Db,
+  context: RunIdentityContext,
+) {
+  await db.transaction(async (tx) => {
+    await lockIdentityTask(tx, context.companyId, context.runId);
+    const [run] = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, context.runId),
+          eq(heartbeatRuns.companyId, context.companyId),
+        ),
+      )
+      .for("no key update");
+    if (!run) return;
+    await acceptSteeredIdentity(tx, context);
+  });
+}
+
+/** Only events validated and persisted by the native control-plane transport count. */
+export async function storedSteeringAcknowledgement(
+  executor: Pick<Db, "select">,
+  context: Pick<RunIdentityContext, "companyId" | "runId" | "messageId">,
+) {
+  if (!context.messageId) return null;
+  const [receipt] = await executor
+    .select({ payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents)
+    .where(
+      and(
+        eq(heartbeatRunEvents.companyId, context.companyId),
+        eq(heartbeatRunEvents.runId, context.runId),
+        eq(heartbeatRunEvents.eventType, "item.completed"),
+        sql`${heartbeatRunEvents.sourceEventId} is not null`,
+        sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind' = 'steering_acknowledgement'`,
+        sql`${heartbeatRunEvents.payload}->'prpEvent'->>'itemId' like ${`%:steer:${context.messageId}`}`,
+      ),
+    )
+    .limit(1);
+  const event = receipt?.payload?.prpEvent as { turnId?: string } | undefined;
+  return typeof event?.turnId === "string" ? { turnId: event.turnId } : null;
+}

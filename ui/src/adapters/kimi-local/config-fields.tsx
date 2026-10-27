@@ -1,3 +1,4 @@
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftInput,
@@ -11,6 +12,7 @@ const instructionsFileHint =
   "Absolute path to a markdown file (e.g. AGENTS.md) that defines this agent's behavior. Prepended to the Kimi prompt at runtime.";
 
 export function KimiLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -20,7 +22,7 @@ export function KimiLocalConfigFields({
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
   if (hideInstructionsFile) return null;
-  return (
+  return configFieldsForSection(section, (
     <>
       <Field label="Agent instructions file" hint={instructionsFileHint}>
         <div className="flex items-center gap-2">
@@ -47,5 +49,5 @@ export function KimiLocalConfigFields({
         </div>
       </Field>
     </>
-  );
+  ));
 }

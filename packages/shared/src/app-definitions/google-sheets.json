@@ -43,7 +43,8 @@
         "description": "Read spreadsheet values and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -52,7 +53,6 @@
       "defaults": {
         "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/spreadsheets.readonly"
         ]
       },
@@ -73,7 +73,8 @@
         "description": "Read spreadsheet values and structure."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -85,7 +86,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/spreadsheets.readonly"
         ],
         "oauthAuthorizationParams": {
@@ -116,7 +116,8 @@
         "description": "Read and update spreadsheet values, formulas, and dimensions."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -125,8 +126,6 @@
       "defaults": {
         "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/spreadsheets"
         ]
       },
@@ -148,7 +147,8 @@
         "description": "Read and update spreadsheet values, formulas, and dimensions."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -160,8 +160,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/spreadsheets"
         ],
         "oauthAuthorizationParams": {

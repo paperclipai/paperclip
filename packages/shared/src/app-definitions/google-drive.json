@@ -42,7 +42,8 @@
         "description": "Search and read files and metadata."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -71,7 +72,8 @@
         "description": "Search and read files and metadata."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -113,7 +115,8 @@
         "description": "Read files and create or copy files."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -144,7 +147,8 @@
         "description": "Read files and create or copy files."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"

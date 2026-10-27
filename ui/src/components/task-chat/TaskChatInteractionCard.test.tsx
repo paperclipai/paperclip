@@ -302,6 +302,40 @@ describe("TaskChatInteractionCard", () => {
     );
   });
 
+  it.each([createRequestConfirmation(), pendingRequestCheckboxConfirmationInteraction])(
+    "enables $kind acceptance when preparation clears on the same mounted card",
+    async (fixture) => {
+      const onAcceptInteraction = vi.fn();
+      const onRejectInteraction = vi.fn();
+      const render = (preparing: boolean) => flushSync(() => root.render(
+        <TooltipProvider><ThemeProvider>
+          <TaskChatInteractionCard
+            item={interactionItem({ ...fixture, acceptanceBlocker: preparing ? "workspace_sync_pending" : undefined })}
+            presentation="takeover"
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </ThemeProvider></TooltipProvider>,
+      ));
+      const approve = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.acceptLabel ?? "Approve"),
+      )!;
+      render(true);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Preparing approval…");
+      expect(approve().disabled).toBe(true);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).not.toHaveBeenCalled();
+      expect([...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent === (fixture.payload.rejectLabel ?? "Reject"),
+      )?.disabled).toBe(false);
+      render(false);
+      expect(container.textContent).not.toContain("Preparing approval…");
+      expect(approve().disabled).toBe(false);
+      await act(async () => approve().click());
+      expect(onAcceptInteraction).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("puts the primary CTA at the right edge of the compact action row", () => {
     flushSync(() => {
       root.render(
@@ -334,6 +368,95 @@ describe("TaskChatInteractionCard", () => {
     expect(
       container.querySelector('[data-testid="interaction-status-badge"]'),
     ).toBeNull();
+  });
+
+  it("stacks the confirmation prompt full-width and hides unlabeled custom target keys", () => {
+    const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
+      flushSync(() => {
+        root.render(
+          <TooltipProvider>
+            <ThemeProvider>
+              <TaskChatInteractionCard
+                item={interactionItem(
+                  createRequestConfirmation({
+                    payload: {
+                      version: 1,
+                      prompt: "The change is open as PR #16.\n\nMay the PR merge?",
+                      target,
+                    },
+                  }),
+                )}
+                presentation="takeover"
+              />
+            </ThemeProvider>
+          </TooltipProvider>,
+        );
+      });
+
+    render({ type: "custom", key: "github:paperclipai/paperclip-desktop:pull:16" });
+    expect(container.textContent).not.toContain("github:paperclipai");
+    const prompt = Array.from(container.querySelectorAll("p")).find((node) =>
+      node.textContent?.startsWith("The change is open"),
+    );
+    expect(prompt?.className).not.toContain("flex-1");
+    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.parentElement?.className).not.toContain("justify-between");
+
+    render({
+      type: "custom",
+      key: "github:paperclipai/paperclip-desktop:pull:16",
+      label: "PR #16",
+      href: "https://github.com/paperclipai/paperclip-desktop/pull/16",
+    });
+    const link = container.querySelector(
+      'a[href="https://github.com/paperclipai/paperclip-desktop/pull/16"]',
+    );
+    expect(link?.textContent).toBe("PR #16");
+    expect(container.textContent).not.toContain("github:paperclipai");
+  });
+
+  it("stacks the checkbox confirmation prompt full-width and hides unlabeled custom target keys", () => {
+    const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
+      flushSync(() => {
+        root.render(
+          <TooltipProvider>
+            <ThemeProvider>
+              <TaskChatInteractionCard
+                item={interactionItem({
+                  ...pendingRequestCheckboxConfirmationInteraction,
+                  payload: {
+                    ...pendingRequestCheckboxConfirmationInteraction.payload,
+                    prompt: "Pick the drafts to delete.\n\nUnchecked drafts stay.",
+                    target,
+                  },
+                })}
+                presentation="takeover"
+              />
+            </ThemeProvider>
+          </TooltipProvider>,
+        );
+      });
+
+    render({ type: "custom", key: "github:paperclipai/paperclip-desktop:pull:16" });
+    expect(container.textContent).not.toContain("github:paperclipai");
+    const prompt = Array.from(container.querySelectorAll("p")).find((node) =>
+      node.textContent?.startsWith("Pick the drafts"),
+    );
+    expect(prompt?.className).not.toContain("flex-1");
+    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.parentElement?.className).not.toContain("justify-between");
+
+    render({
+      type: "custom",
+      key: "github:paperclipai/paperclip-desktop:pull:16",
+      label: "PR #16",
+      href: "https://github.com/paperclipai/paperclip-desktop/pull/16",
+    });
+    const link = container.querySelector(
+      'a[href="https://github.com/paperclipai/paperclip-desktop/pull/16"]',
+    );
+    expect(link?.textContent).toBe("PR #16");
+    expect(container.textContent).not.toContain("github:paperclipai");
   });
 
   it("keeps the plan revision in the header and hides the prompt while requesting changes", async () => {
@@ -387,7 +510,7 @@ describe("TaskChatInteractionCard", () => {
     const requestChanges = Array.from(
       container.querySelectorAll<HTMLButtonElement>("button"),
     ).find((button) => button.textContent?.trim() === "Request changes");
-    await act(async () => requestChanges?.click());
+    flushSync(() => requestChanges?.click());
 
     expect(container.textContent).not.toContain("Do you accept this plan?");
     expect(container.textContent).toContain("What should change?");
@@ -400,8 +523,8 @@ describe("TaskChatInteractionCard", () => {
         .querySelector('[data-testid="mock-markdown-editor"]')
         ?.getAttribute("data-image-upload"),
     ).toBe("true");
-    expect(container.textContent).toContain("Attach image");
-    expect(container.textContent).toContain("drop/paste an image");
+    expect(container.textContent).not.toContain("Attach image");
+    expect(container.textContent).not.toContain("drop/paste an image");
     const reasonGroup = container.querySelector(
       '[data-testid="plan-revision-composer"]',
     )?.parentElement;
@@ -437,6 +560,14 @@ describe("TaskChatInteractionCard", () => {
         button.textContent?.includes("Only collapse hidden descendants"),
     );
     await act(async () => firstAnswer?.click());
+    expect(submit).not.toHaveBeenCalled();
+    // Answering stays on the question; Next is what moves on.
+    expect(container.textContent).toContain("1 of 2");
+    await act(async () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === "Next")
+        ?.click(),
+    );
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(
@@ -522,11 +653,22 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Resolved by:");
   });
 
-  it("collapses accepted confirmations and selections to one borderless row", () => {
+  it("collapses resolved confirmations and selections to one borderless row", () => {
     const acceptedConfirmation = createRequestConfirmation({
       status: "accepted",
       resolvedAt: new Date("2026-08-24T13:30:00.000Z"),
       result: { version: 1, outcome: "accepted" },
+    });
+    const continuedConfirmation = createRequestConfirmation({
+      id: "confirmation-continued",
+      status: "rejected",
+      resolvedAt: new Date("2026-08-24T13:30:30.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+      result: { version: 1, outcome: "rejected" },
     });
     const acceptedSelection = structuredClone(
       pendingRequestCheckboxConfirmationInteraction,
@@ -548,6 +690,9 @@ describe("TaskChatInteractionCard", () => {
                 item={interactionItem(acceptedConfirmation)}
               />
               <TaskChatInteractionCard
+                item={interactionItem(continuedConfirmation)}
+              />
+              <TaskChatInteractionCard
                 item={interactionItem(acceptedSelection)}
               />
             </>
@@ -559,11 +704,14 @@ describe("TaskChatInteractionCard", () => {
     const receipts = container.querySelectorAll<HTMLDetailsElement>(
       '[data-testid="task-chat-interaction-receipt"]',
     );
-    expect(receipts).toHaveLength(2);
+    expect(receipts).toHaveLength(3);
     expect(receipts[0]?.querySelector("summary")?.textContent).toBe(
       "Confirmed request",
     );
     expect(receipts[1]?.querySelector("summary")?.textContent).toBe(
+      "Selected “Continue work”",
+    );
+    expect(receipts[2]?.querySelector("summary")?.textContent).toBe(
       "Confirmed with no options selected",
     );
     for (const receipt of receipts) {
@@ -656,6 +804,38 @@ describe("TaskChatInteractionCard", () => {
         otherText: "3",
       },
     ]);
+  });
+
+  it.each(["canonical_text", "canonical_custom", "legacy_custom"])("preserves the %s answer mapping", async (mode) => {
+    const submit = vi.fn();
+    const interaction = structuredClone(pendingAskUserQuestionsInteraction);
+    interaction.payload.questions = [{
+      id: "draft", prompt: "Edit", selectionMode: "single", required: true,
+      options: [{ id: "preset", label: "Preset" }, { id: "other", label: "Custom answer", freeText: true }],
+    }];
+    interaction.payload.questionSet = mode === "legacy_custom" ? undefined : {
+      schema: "paperclip.question_set.v1",
+      questions: [mode === "canonical_text"
+        ? { id: "draft", prompt: "Edit", required: true, answerMode: "text", initialText: "Provider draft" }
+        : { id: "draft", prompt: "Edit", required: true, answerMode: "single_select", options: [{ id: "preset", label: "Preset" }], customAnswer: { enabled: true, label: "Custom answer" } }],
+    };
+    await act(async () => root.render(
+      <TooltipProvider><ThemeProvider>
+        <TaskChatInteractionCard item={interactionItem(interaction)} presentation="takeover" onSubmitInteractionAnswers={submit} />
+      </ThemeProvider></TooltipProvider>,
+    ));
+    if (mode !== "canonical_text") {
+      await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Custom answer"))!.click());
+    }
+    const edited = "\n  Operator 漢字 edit\nLiteral \\n stays literal.  \n";
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(container.querySelector("textarea")!, edited);
+      container.querySelector("textarea")!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.trim() === "Send answers" || button.textContent?.trim() === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledExactlyOnceWith(interaction, [{
+      questionId: "draft", optionIds: [], otherText: mode === "canonical_text" ? edited : edited.trim(),
+    }]);
   });
 
   it("paginates item verdicts instead of expanding the whole review set", async () => {
@@ -879,7 +1059,7 @@ describe("TaskChatThreadView interaction items", () => {
     expect(
       container
         .querySelector('[data-testid="task-chat-interaction"]')
-        ?.parentElement?.classList.contains("-mt-3"),
+        ?.parentElement?.classList.contains("mt-3"),
     ).toBe(true);
   });
 

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
 
@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   ACPX_IDENTITY_RECORD_SCHEMA,
+  acpxRuntimeSessionDirectoryName,
+  acpxProviderSessionIdentity,
   createAcpxIdentityRecord,
   createAcpxRecoveryBinding,
   verifyExpectedAcpxIdentity,
@@ -24,6 +26,145 @@ afterEach(async () => {
 });
 
 describe("ACPX recovery identity", () => {
+  it.each([
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v10-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v14-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v13-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v14-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v22-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v23-identity.json"],
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v7-identity.json"],
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v8-identity.json"],
+    ["cursor", "../../../test/fixtures/cursor-acp/profile-v9-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v7-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v8-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v9-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v10-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v11-identity.json"],
+    ["copilot", "../../../test/fixtures/copilot-profile-v12-identity.json"],
+    ["pi", "../../../test-fixtures/pi-acp/profile-v9-identity.json"],
+  ] as const)("rejects retained %s sessions after the execution identity changes", async (agent, path) => {
+    const fixture = await recoveryFixture();
+    const historical = JSON.parse(await readFile(new URL(path, import.meta.url), "utf8"));
+    const current = resolveQualifiedAcpxProfile(agent, agent === "pi" ? "openrouter/deepseek/deepseek-v4-flash-0731" : fixture.input.requestedModel);
+    const input = { ...fixture.input, requestedModel: current.qualificationModel, profile: current, ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}), ...(agent === "cursor" ? { mode: "agent" } : {}) };
+    const next = await createAcpxRecoveryBinding(input);
+    const prior = await createAcpxRecoveryBinding({ ...input, profile: { ...current,
+      agentProfileVersion: historical.declaration.agentProfileVersion, commandDigest: historical.commandDigest } });
+    const priorExpected = { ...fixture.expected, profileDigest: prior.commandDigest,
+      requestedModel: prior.requestedModel, effectiveModel: prior.effectiveModel,
+      ...(agent === "cursor" ? { mode: "agent" as const } : {}), ...(agent === "pi" ? { piThinkingLevel: "low" as const } : {}) };
+    const record = createAcpxIdentityRecord(priorExpected, prior);
+    expect(next.profileDigest).not.toBe(prior.profileDigest);
+    expect(next.profileSessionKey).not.toBe(prior.profileSessionKey);
+    expect(() => verifyExpectedAcpxIdentity({ ...priorExpected, profileDigest: next.commandDigest }, next, record)).toThrow(/persisted runtime record/);
+  });
+
+  it("binds Cursor mode on recovery and rejects missing or changed persisted mode", async () => {
+    const fixture = await recoveryFixture();
+    const input = { ...fixture.input, profile: resolveQualifiedAcpxProfile("cursor", fixture.input.requestedModel), mode: "agent" };
+    const agent = await createAcpxRecoveryBinding(input);
+    const plan = await createAcpxRecoveryBinding({ ...input, mode: "plan" });
+    expect(agent.mode).toBe("agent");
+    expect(plan.profileSessionKey).not.toBe(agent.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: plan.commandDigest, mode: "plan" as const };
+    const record = createAcpxIdentityRecord(expected, plan);
+    expect(acpxProviderSessionIdentity(record, plan).mode).toBe("plan");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, mode: undefined }, plan, record)).toThrow(/immutable session/);
+    expect(() => verifyExpectedAcpxIdentity(expected, agent, record)).toThrow(/immutable session/);
+    expect(() => verifyExpectedAcpxIdentity(expected, plan, { ...record, mode: undefined })).toThrow(/persisted runtime record/);
+    const customMode = await createAcpxRecoveryBinding({ ...fixture.input, mode: "provider-custom-mode" });
+    expect(customMode.mode).toBe("provider-custom-mode");
+  });
+
+  it("binds Claude effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("claude", "claude-opus-5-5");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, claudeEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, claudeEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, claudeEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).claudeEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, claudeEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, claudeEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+  it("binds Grok effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, grokEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, grokEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, grokEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).grokEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, grokEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, grokEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+
+  it("fences changed or omitted Grok search policy across recovery", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: "grok-4.7", grokDisableWebSearch: true };
+    const disabled = await createAcpxRecoveryBinding(input);
+    const enabled = await createAcpxRecoveryBinding({ ...input, grokDisableWebSearch: false });
+    expect(enabled.profileSessionKey).not.toBe(disabled.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: disabled.commandDigest, requestedModel: "grok-4.7", effectiveModel: "grok-4.7", grokDisableWebSearch: true };
+    const saved = createAcpxIdentityRecord(expected, disabled);
+    expect(() => verifyExpectedAcpxIdentity(expected, disabled, { ...saved, grokDisableWebSearch: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, enabled, saved)).toThrow("immutable");
+  });
+
+  it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, piThinkingLevel: "low" as const };
+    const low = await createAcpxRecoveryBinding(input);
+    const high = await createAcpxRecoveryBinding({ ...input, piThinkingLevel: "high" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: low.commandDigest, requestedModel: low.requestedModel, effectiveModel: low.effectiveModel, piThinkingLevel: "low" as const };
+    const persisted = createAcpxIdentityRecord(expected, low);
+    expect(acpxProviderSessionIdentity(persisted, low).piThinkingLevel).toBe("low");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, piThinkingLevel: undefined }, low, persisted)).toThrow(/immutable/);
+    expect(() => verifyExpectedAcpxIdentity(expected, low, { ...persisted, piThinkingLevel: undefined })).toThrow(/persisted/);
+    expect(() => verifyExpectedAcpxIdentity(expected, high, persisted)).toThrow(/immutable/);
+    await expect(createAcpxRecoveryBinding({ ...input, piThinkingLevel: undefined })).rejects.toThrow(/explicit/);
+  });
+
+  it("fences changes to home mode or provider home without binding ownership to that home", async () => {
+    const fixture = await recoveryFixture();
+    const common = { runtimeDirectory: join(temporaryDirectories.at(-1)!, "runtime"), normalizedSessionId: "session-1",
+      workingDirectory: fixture.workspace, profile: resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"),
+      requestedModel: "gpt-5.6-sol", permissionMode: "approve-reads" as const };
+    const isolated = await createAcpxRecoveryBinding(common);
+    const first = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/one" } });
+    const same = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/one" } });
+    const other = await createAcpxRecoveryBinding({ ...common, homeBinding: { HOME: "/users/two" } });
+    expect(first.profileSessionKey).toBe(same.profileSessionKey);
+    expect(first.profileSessionKey).not.toBe(isolated.profileSessionKey);
+    expect(first.profileSessionKey).not.toBe(other.profileSessionKey);
+    expect(first.runtimeRoot).toBe(isolated.runtimeRoot);
+  });
+
+  it("derives one stable, filesystem-safe runtime directory name", () => {
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toMatch(
+      /^session_1-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("...")).toMatch(
+      /^session-[0-9a-f]{16}$/,
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).toBe(
+      acpxRuntimeSessionDirectoryName("session/1"),
+    );
+    expect(acpxRuntimeSessionDirectoryName("session/1")).not.toBe(
+      acpxRuntimeSessionDirectoryName("session_1"),
+    );
+  });
+
   it("binds the canonical workspace, profile, model, policy, and session", async () => {
     const fixture = await recoveryFixture();
     expect(fixture.binding.runtimeRoot).toContain("session-1-");
@@ -41,9 +182,37 @@ describe("ACPX recovery identity", () => {
       normalizedSessionId: "session-1",
       permissionMode: "approve-reads",
     });
+    expect(acpxProviderSessionIdentity(record, fixture.binding)).toEqual({
+      kind: "acpx",
+      normalizedSessionId: "session-1",
+      acpxRecordId: fixture.expected.acpxRecordId,
+      backendSessionId: fixture.expected.backendSessionId,
+      agentSessionId: fixture.expected.agentSessionId,
+      profileDigest: fixture.binding.commandDigest,
+      workspaceDigest: fixture.binding.workspaceDigest,
+      requestedModel: fixture.binding.requestedModel,
+      effectiveModel: fixture.binding.effectiveModel,
+      permissionMode: "approve-reads",
+      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+    });
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, record),
     ).not.toThrow();
+  });
+
+  it("rejects restoration across task execution-policy changes", async () => {
+    const fixture = await recoveryFixture();
+    const readonly = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: true } });
+    const writable = await createAcpxRecoveryBinding({ ...fixture.input, providerPolicy: { readOnly: false } });
+    const record = createAcpxIdentityRecord(fixture.expected, readonly);
+    expect(readonly.profileSessionKey).not.toBe(writable.profileSessionKey);
+    expect(readonly.profileDigest).not.toBe(writable.profileDigest);
+    expect(() => verifyExpectedAcpxIdentity(fixture.expected, writable, record)).toThrow("persisted runtime record");
+    const changedRoots = await createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: true, protectedPaths: ["/another-protected-root"] } });
+    expect(changedRoots.profileSessionKey).not.toBe(readonly.profileSessionKey);
+    await expect(createAcpxRecoveryBinding({ ...fixture.input,
+      providerPolicy: { readOnly: "yes" as never } })).rejects.toThrow("valid task execution policy");
   });
 
   it("uses collision-resistant roots and policy-bound provider keys", async () => {
@@ -127,7 +296,7 @@ describe("ACPX recovery identity", () => {
         {
           ...fixture.expected,
           normalizedSessionId: otherBinding.normalizedSessionId,
-          profileDigest: otherBinding.profileDigest,
+          profileDigest: otherBinding.commandDigest,
           workspaceDigest: otherBinding.workspaceDigest,
         },
         otherBinding,
@@ -163,17 +332,6 @@ describe("ACPX recovery identity", () => {
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, earlyV1),
     ).toThrow(/persisted runtime record/);
-    expect(() =>
-      verifyExpectedAcpxIdentity(
-        {
-          ...fixture.expected,
-          profileDigest: fixture.input.profile.commandDigest,
-        },
-        fixture.binding,
-        earlyV1,
-      ),
-    ).toThrow(/immutable session configuration/);
-
     const changedBinding = await createAcpxRecoveryBinding({
       ...fixture.input,
       profile: {
@@ -184,11 +342,12 @@ describe("ACPX recovery identity", () => {
     expect(changedBinding.profileDigest).not.toBe(
       fixture.binding.profileDigest,
     );
+    expect(changedBinding.commandDigest).toBe(fixture.binding.commandDigest);
     expect(() =>
       verifyExpectedAcpxIdentity(
         {
           ...fixture.expected,
-          profileDigest: changedBinding.profileDigest,
+          profileDigest: changedBinding.commandDigest,
         },
         changedBinding,
         earlyV1,
@@ -207,7 +366,7 @@ describe("ACPX recovery identity", () => {
     expect(() =>
       verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, {
         ...createAcpxIdentityRecord(fixture.expected, fixture.binding),
-        schema: "paperclip.runner.acpx-identity.v2",
+        schema: "paperclip.runner.acpx-identity.v1",
       }),
     ).toThrow(/Unsupported ACPX identity record schema/);
     const missingPermissionMode = createAcpxIdentityRecord(
@@ -222,6 +381,24 @@ describe("ACPX recovery identity", () => {
         missingPermissionMode,
       ),
     ).toThrow(/permission mode is invalid/);
+    const missingFenceCandidates = createAcpxIdentityRecord(
+      fixture.expected,
+      fixture.binding,
+    ) as Partial<ReturnType<typeof createAcpxIdentityRecord>>;
+    delete missingFenceCandidates.providerLifetimeFenceCandidates;
+    expect(() =>
+      verifyExpectedAcpxIdentity(
+        fixture.expected,
+        fixture.binding,
+        missingFenceCandidates,
+      ),
+    ).toThrow(/lifetime fence candidates are invalid/);
+    expect(() =>
+      verifyExpectedAcpxIdentity(fixture.expected, fixture.binding, {
+        ...createAcpxIdentityRecord(fixture.expected, fixture.binding),
+        providerLifetimeFenceCandidates: [60_001, 60_002, 60_004],
+      }),
+    ).toThrow(/does not match the persisted runtime record/);
 
     await expect(
       createAcpxRecoveryBinding({
@@ -262,11 +439,12 @@ async function recoveryFixture() {
     acpxRecordId: "record-1",
     backendSessionId: "backend-1",
     agentSessionId: "agent-1",
-    profileDigest: binding.profileDigest,
+    profileDigest: binding.commandDigest,
     workspaceDigest: binding.workspaceDigest,
     requestedModel: binding.requestedModel,
     effectiveModel: binding.effectiveModel,
     permissionMode: binding.permissionMode,
+    providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
   };
   return { root, workspace, input, binding, expected };
 }

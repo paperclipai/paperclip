@@ -27,7 +27,7 @@ export const requestApprovalAction = {
   },
   "documentation": {
     "title": "Request approval",
-    "description": "Create a governed mock approval and waiting posture.",
+    "description": "Create a governed approval and waiting posture.",
     "note": null
   },
   "examples": {
@@ -70,7 +70,7 @@ export const requestApprovalAction = {
       "operationId": "request_approval",
       "version": 1,
       "title": "Request approval",
-      "description": "Create a governed mock approval and waiting posture.",
+      "description": "Create a governed approval and waiting posture.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:request"
@@ -111,7 +111,7 @@ export const requestApprovalAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -127,7 +127,7 @@ export const requestApprovalAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

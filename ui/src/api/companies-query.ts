@@ -40,6 +40,18 @@ export function companyListQueryOptions(userId: string | null) {
   } as const;
 }
 
+/** The administration directory has its own account-scoped cache and request. */
+export function companyDirectoryQueryOptions(userId: string | null) {
+  return {
+    queryKey: queryKeys.companies.directory(userId),
+    queryFn: async () => {
+      companiesApi.detachInflightDirectory();
+      return companiesApi.directory();
+    },
+    retry: false,
+  } as const;
+}
+
 const sessionQueryOptions = {
   queryKey: queryKeys.auth.session,
   queryFn: () => authApi.getSession(),
@@ -61,9 +73,9 @@ const sessionQueryOptions = {
  * So: settled on success only. A failed session lookup leaves the list unfetched
  * until the query recovers, which it does on the next refetch.
  */
-export function useAccountIdentity(): { userId: string | null; settled: boolean } {
-  const { data: session, isSuccess } = useQuery(sessionQueryOptions);
-  return { userId: session?.user.id ?? null, settled: isSuccess };
+export function useAccountIdentity(): { userId: string | null; settled: boolean; failed: boolean } {
+  const { data: session, isSuccess, isError } = useQuery(sessionQueryOptions);
+  return { userId: session?.user.id ?? null, settled: isSuccess, failed: isError };
 }
 
 /**

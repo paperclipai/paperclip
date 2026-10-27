@@ -5,7 +5,7 @@ import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local"
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
-import { listAdapterModels, listServerAdapters, refreshAdapterModels } from "../adapters/index.js";
+import { listAdapterModels, listServerAdapters, refreshAdapterModels, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
 
@@ -50,6 +50,7 @@ describe("adapter model listing", () => {
     expect(models).toEqual(codexFallbackModels);
     // The bare gpt-5.6 alias is intentionally not advertised (Codex has no metadata for it).
     expect(models.some((model) => model.id === "gpt-5.6")).toBe(false);
+    expect(models.some((model) => model.id === "gpt-6.1-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
@@ -63,13 +64,16 @@ describe("adapter model listing", () => {
 
     expect(models).toEqual(claudeFallbackModels);
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
-    // Newer flagship models are offered, but Opus 4.8 stays the default (first) option.
-    expect(models[0]?.id).toBe("claude-opus-4-8");
+    // Newest release of the most capable family leads the list (#14877).
+    expect(models[0]?.id).toBe("claude-fable-5-1");
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
+    expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
+    expect(models).toContainEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5" });
+    expect(models).toContainEqual({ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -92,6 +96,13 @@ describe("adapter model listing", () => {
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
     expect(first.some((model) => model.id === "claude-opus-4-8")).toBe(true);
+    expect(first.some((model) => model.id === "claude-opus-5-5")).toBe(true);
+    expect(first.some((model) => model.id === "claude-sonnet-5-5")).toBe(true);
+    // Discovered models take the curated order too: the API's order is not shown as-is.
+    const firstIds = first.map((model) => model.id);
+    expect(firstIds[0]).toBe("claude-fable-5-1");
+    expect(firstIds.indexOf("claude-opus-5-5")).toBeLessThan(firstIds.indexOf("claude-opus-4-8"));
+    expect(firstIds.indexOf("claude-opus-4-8")).toBeLessThan(firstIds.indexOf("claude-opus-4-8-20260529"));
   });
 
   it("refreshes cached claude models on demand", async () => {
@@ -130,14 +141,79 @@ describe("adapter model listing", () => {
     expect(models).toEqual(claudeFallbackModels);
   });
 
-  it("loads codex models dynamically and merges fallback options", async () => {
+  it.each([
+    ["claude-fable-5-1", "Claude Fable 5.1"],
+    ["claude-opus-5-5", "Claude Opus 5.5"],
+    ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
+  ])("does not duplicate %s when discovery returns the identical ID", async (id, displayName) => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id, display_name: displayName }],
+      }),
+    } as Response);
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.filter((model) => model.id === id)).toEqual([{ id, label: displayName }]);
+    // Curated fallbacks discovery did not return are still merged in.
+    expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
+    expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
+  });
+
+  it("exposes the Bedrock-native Fable 5.1 ID (never the direct ID) in Bedrock mode", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("claude_local");
+
+    // Fable 5.1 leads here too, using its documented dateless Bedrock ID.
+    expect(models[0]?.id).toBe("us.anthropic.claude-fable-5-1");
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
+      "us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5", "us.anthropic.claude-sonnet-5-5",
+      "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1", "us.anthropic.claude-opus-4-7",
+      "us.anthropic.claude-sonnet-4-6",
+    ]));
+    expect(models.some((model) => model.id === "claude-sonnet-5-5")).toBe(false);
+    expect(models.map((model) => model.id)).not.toEqual(expect.arrayContaining(["us.anthropic.claude-opus-4-8-v1"]));
+    expect(models.some((model) => model.id === "claude-fable-5-1")).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["gemini_local", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
+    ["grok_local", ["grok-build", "grok-4.7", "grok-4.6", "grok-4.5"]],
+    ["kimi_local", ["kimi-code/kimi-for-coding", "kimi-code/k3", "kimi-code/k3-256k"]],
+  ])("lists current %s models without a provider login", async (adapter, expectedIds) => {
+    const models = await listAdapterModels(adapter as string);
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(expectedIds as string[]));
+    expect(new Set(models.map((model) => model.id)).size).toBe(models.length);
+    if (adapter === "gemini_local") {
+      expect(models.some((model) => model.id.startsWith("gemini-2.0-"))).toBe(false);
+    }
+    if (adapter === "kimi_local") {
+      expect(models).toContainEqual({ id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" });
+    }
+  });
+
+  it("includes current Cursor fallbacks when runtime discovery is unavailable", async () => {
+    setCursorModelsRunnerForTests(() => ({ status: 1, stdout: "", stderr: "", hasError: true }));
+    const models = await listAdapterModels("cursor");
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining([
+      "composer-2.5", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5",
+      "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "grok-4.7", "gemini-3.8-flash", "muse-spark-1.3",
+    ]));
+  });
+
+  it("keeps general OpenAI API models out of the Codex catalog", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
       json: async () => ({
         data: [
-          { id: "gpt-5-pro" },
-          { id: "gpt-5" },
+          { id: "gpt-image-1" },
+          { id: "text-embedding-3-large" },
         ],
       }),
     } as Response);
@@ -145,40 +221,26 @@ describe("adapter model listing", () => {
     const first = await listAdapterModels("codex_local");
     const second = await listAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(first).toEqual(second);
-    expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
-    expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(first).toEqual(codexFallbackModels);
+    expect(second).toEqual(codexFallbackModels);
   });
 
-  it("refreshes cached codex models on demand", async () => {
+  it("keeps the curated Codex list when refreshing with an OpenAI key", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    const fetchSpy = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5" }],
-        }),
-      } as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          data: [{ id: "gpt-5.6-terra" }],
-        }),
-      } as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     const initial = await listAdapterModels("codex_local");
     const refreshed = await refreshAdapterModels("codex_local");
 
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    expect(initial.some((model) => model.id === "gpt-5")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
-    expect(refreshed.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(initial).toEqual(codexFallbackModels);
+    expect(refreshed).toEqual(codexFallbackModels);
   });
 
-  it("falls back to static codex models when OpenAI model discovery fails", async () => {
+  it("uses static Codex models without calling OpenAI model discovery", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 401,
       json: async () => ({}),
@@ -186,6 +248,33 @@ describe("adapter model listing", () => {
 
     const models = await listAdapterModels("codex_local");
     expect(models).toEqual(codexFallbackModels);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("uses a custom Codex adapter's model and refresh hooks", async () => {
+    const builtin = listServerAdapters().find((adapter) => adapter.type === "codex_local")!;
+    const customModels = [{ id: "plugin-codex", label: "Plugin Codex" }];
+    const listModels = vi.fn(async () => customModels);
+    const refreshModels = vi.fn(async () => customModels);
+    registerServerAdapter({ ...builtin, models: [], listModels, refreshModels });
+    try {
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(customModels);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(customModels);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(refreshModels).toHaveBeenCalledOnce();
+
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        codex_local: [{ id: "declared-codex", label: "Declared Codex" }],
+      });
+      const declared = [{ id: "declared-codex", label: "Declared Codex" }];
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(declared);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(declared);
+      expect(listModels).toHaveBeenCalledOnce();
+      expect(refreshModels).toHaveBeenCalledOnce();
+    } finally {
+      delete process.env.PAPERCLIP_ADAPTER_MODELS;
+      unregisterServerAdapter("codex_local");
+    }
   });
 
 
@@ -201,12 +290,13 @@ describe("adapter model listing", () => {
     expect(models).toEqual(cursorFallbackModels);
   });
 
-  it("returns opencode fallback models including gpt-5.4", async () => {
+  it("returns current provider-qualified OpenCode models when discovery is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND = "__paperclip_missing_opencode_command__";
 
     const models = await listAdapterModels("opencode_local");
 
     expect(models).toEqual(opencodeFallbackModels);
+    expect(models.map((model) => model.id)).toEqual(expect.arrayContaining(["openai/gpt-6-astra", "openai/gpt-6.1-sol", "openai/gpt-6-sol", "openai/gpt-6-luna", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna", "anthropic/claude-opus-5-5", "anthropic/claude-opus-5", "anthropic/claude-fable-5-1", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5", "google/gemini-3.8-flash", "xai/grok-4.7"]));
   });
 
   it("loads cursor models dynamically and caches them", async () => {
@@ -247,6 +337,16 @@ describe("adapter model listing", () => {
         { id: "tensorix/deepseek/deepseek-chat-v3.1", label: "DeepSeek v3.1" },
         { id: "tensorix/z-ai/glm-4.7", label: "tensorix/z-ai/glm-4.7" },
       ]);
+    });
+
+    it("uses declared Codex models for both listing and refresh", async () => {
+      process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+        codex_local: [{ id: "private-codex", label: "Private Codex" }],
+      });
+      const declared = [{ id: "private-codex", label: "Private Codex" }];
+
+      await expect(listAdapterModels("codex_local")).resolves.toEqual(declared);
+      await expect(refreshAdapterModels("codex_local")).resolves.toEqual(declared);
     });
 
     it("observes env changes between calls (memo keyed by raw env value)", async () => {

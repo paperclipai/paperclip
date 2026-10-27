@@ -193,6 +193,39 @@ export const storybookAgents: Agent[] = [
 
 export const storybookAgentMap = new Map(storybookAgents.map((agent) => [agent.id, agent]));
 
+/**
+ * The agent the onboarding hire returns.
+ *
+ * Kept out of `storybookAgents` deliberately: that list is what the company
+ * already has, and this one does not exist until the wizard's Connect step
+ * creates it. Putting it in the list would give the review step an agent it had
+ * not yet hired.
+ */
+export const storybookHiredAgent: Agent = {
+  id: "agent-storybook",
+  companyId: "company-storybook",
+  name: "Darnold",
+  urlKey: "darnold",
+  role: "general",
+  title: "Chief of Staff",
+  icon: "sparkles",
+  status: "idle",
+  reportsTo: null,
+  capabilities: "Runs the company's first workflows and hires the team behind them.",
+  adapterType: "claude_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 100_000,
+  spentMonthlyCents: 0,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: true },
+  lastHeartbeatAt: null,
+  metadata: null,
+  createdAt: recent(0),
+  updatedAt: recent(0),
+};
+
 export const storybookIssueLabels: IssueLabel[] = [
   {
     id: "label-ui",
@@ -977,7 +1010,7 @@ export const storybookContinuationHandoff: IssueDocument = {
     "",
     "Next action: run the Storybook build, inspect the issue management story, then request QA visual review if the build passes.",
     "",
-    "Important files: `ui/storybook/stories/issue-management.stories.tsx` and `ui/storybook/fixtures/paperclipData.ts`.",
+    "Important files: `ui/storybook/stories/tasks/issue-management.stories.tsx` and `ui/storybook/fixtures/paperclipData.ts`.",
   ].join("\n"),
   latestRevisionId: "revision-continuation-1",
   latestRevisionNumber: 1,
@@ -1085,6 +1118,8 @@ export const storybookApprovals: Approval[] = [
       windowKind: "calendar_month_utc",
       metric: "billed_cents",
       budgetAmount: 120_000,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 131_400,
       guidance: "Raise the project budget only after current release smoke checks are green.",
     },
@@ -1129,6 +1164,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 250_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 67_500,
     remainingAmount: 182_500,
     utilizationPercent: 27,
@@ -1151,6 +1188,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 120_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 103_100,
     remainingAmount: 16_900,
     utilizationPercent: 86,
@@ -1173,6 +1212,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 40_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 43_200,
     remainingAmount: 0,
     utilizationPercent: 108,

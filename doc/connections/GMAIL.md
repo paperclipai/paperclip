@@ -217,7 +217,7 @@ sequenceDiagram
     U->>P: Return to exact enrolled instance URL
     P->>C: Signed one-time claim
     C-->>P: Instance-encrypted token response
-    P->>V: Encrypt tokens and bind them to the user's grant
+    P->>V: Encrypt tokens and bind them to the chosen user or organization grant
 ```
 
 Before an instance can create a session:
@@ -232,8 +232,11 @@ Before an instance can create a session:
    initiating administrator must complete the return callback.
 3. Paperclip Cloud binds the account, opaque instance id, both public keys,
    deployment environment, and exact allowed browser return origins.
-4. Tailscale HTTPS origins are allowed only when explicitly enrolled. Loopback
-   HTTP is development-only. Other plaintext origins are rejected.
+4. On authenticated private instances, the setup request supplies its verified
+   same-origin HTTPS address and enrollment binds it automatically. This makes a
+   Tailscale HTTPS setup config-free while still rejecting a bare or mismatched
+   `Host` header. Loopback HTTP is development-only; other plaintext origins are
+   rejected.
 5. Create, claim, refresh, and supported revoke requests are signed, audience-bound,
    timestamped, and protected by a one-time `jti` replay cache.
 
@@ -296,9 +299,12 @@ keys before they deploy a binary that enables the Cloud connector.
 
 ## Paperclip access defaults
 
-The first Gmail release is personal-only:
+Gmail uses the same credential ownership choice as the rest of the Apps setup:
 
-- **Just me** is the only credential ownership choice.
+- **Just me** stores the Gmail credential on the connecting user's grant.
+- **Any human in the organization** stores it on the default organization grant
+  so a deliberately shared mailbox or Workspace account can back
+  organization-wide use.
 - The disclosure states that Gmail access can search/read mail and create
   drafts. Sending mail is not enabled.
 - A user grant does not automatically authorize an agent. The user must also
@@ -309,6 +315,20 @@ The first Gmail release is personal-only:
 - Draft creation and label changes require **Ask first**.
 - Trash, spam, destructive label changes, newly discovered tools, nested
   execution, and any future send tool remain blocked until separately reviewed.
+
+## Broker rejection diagnostics
+
+A rejected connector request includes its operation, HTTP status, and an
+allowlisted broker reason in the server error. For example,
+`RETURN_ORIGIN_NOT_ENROLLED` means the callback origin is not enrolled for that
+instance. Compare the current page/configured origin with the instance's enrolled
+origins; do not bypass origin checks or copy credentials to a different instance.
+
+Unknown codes, malformed bodies, oversized responses, and stalled diagnostic
+reads produce `UNKNOWN_BROKER_ERROR`. This is not proof of any specific rejection
+cause. Diagnostics read at most 4 KiB within 500 ms and retain no raw response
+messages, URLs, tokens, authorization state, or instance/customer identifiers.
+The existing error code, status, authorization, and retry behavior are unchanged.
 
 ## Verification checklist
 
@@ -366,6 +386,7 @@ seven-day testing-token expiry.
 | The managed method is unavailable | Confirm the exact profile is in `CLOUD_HARNESS_CONNECTOR_GOOGLE_ENABLED_PROFILES` and its client id and secret reference are configured. |
 | Login starts asking for Gmail | Stop the rollout. The login and Gmail clients or route namespaces have been mixed. |
 | Connector is unavailable | Keep the grant in `needs_reauthorization` or an actionable unavailable state. Never use a login token or another environment's client. |
+| Refresh reports `reason=PROVIDER_REAUTHORIZATION_REQUIRED` | The provider revoked, expired, or already rotated the grant, or the grant no longer matches the profile. Paperclip marks it `needs_reauthorization`; the user reconnects. `reason=PROVIDER_OPERATION_FAILED` is a provider or Cloud outage; retry later. |
 
 ## References
 

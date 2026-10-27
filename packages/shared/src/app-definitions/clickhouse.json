@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/clickhouse.svg"
+    "logoUrl": "/brands/apps/clickhouse.svg",
+    "darkLogoUrl": "/brands/apps/clickhouse-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.clickhouse.cloud/*"
@@ -25,7 +26,14 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.clickhouse.cloud/clickstack"
+        "serverUrl": "https://mcp.clickhouse.cloud/clickstack",
+        "scopesHint": [
+          "mcp:access",
+          "clickstack:access",
+          "openid",
+          "profile",
+          "email"
+        ]
       },
       "guidanceMd": "Connect ClickHouse in the browser. A ClickHouse Cloud ClickStack service and its service ID.",
       "riskTier": "S4",

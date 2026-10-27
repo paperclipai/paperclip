@@ -10,7 +10,7 @@ import type {
   CapabilityToolDisposition,
 } from "../../../src/issue-thread/types";
 import type { CapabilityDevtoolsSnapshot } from "../../../src/devtools";
-import { DevtoolsInspector, type CapabilityDevtoolsTab, type EvalInspectorReport } from "./DevtoolsInspector";
+import { DevtoolsInspector, EvalReportInspector, type CapabilityDevtoolsTab, type EvalInspectorReport } from "./DevtoolsInspector";
 import { Icon } from "./Icons";
 import { capabilitySemanticToolDescriptor } from "../../../src/semantic-tools/catalog";
 import {
@@ -114,6 +114,8 @@ export interface EvidencePanelProps {
   snapshot: CapabilityIssueThreadSnapshot;
   devtools?: CapabilityDevtoolsSnapshot | null;
   evalReport?: EvalInspectorReport | null;
+  devtoolsTab: CapabilityDevtoolsTab;
+  onDevtoolsTabChange: (tab: CapabilityDevtoolsTab) => void;
   onForkRevision?: (revision: number) => void;
   layout: "side" | "overlay" | "segment";
   width: number;
@@ -331,11 +333,12 @@ function Section({
 }
 
 export function EvidencePanel(props: EvidencePanelProps) {
-  const [devtoolsTab, setDevtoolsTab] = useState<CapabilityDevtoolsTab>(props.evalReport ? "eval" : "evidence");
   const {
     snapshot,
     devtools,
     evalReport,
+    devtoolsTab,
+    onDevtoolsTabChange,
     onForkRevision = () => undefined,
     layout,
     width,
@@ -392,9 +395,21 @@ export function EvidencePanel(props: EvidencePanelProps) {
       {devtools !== undefined ? (
         <>
           {devtools === null ? (
-            <p className="pit-muted pit-devtools-loading">Loading company state…</p>
+            evalReport ? <section className="pit-devtools">
+              <div className="pit-devtools-tabs" role="tablist" aria-label="Developer tools">
+                {(["eval", "evidence"] as const).map((tab) => <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={devtoolsTab === tab}
+                  className="pit-tab"
+                  onClick={() => onDevtoolsTabChange(tab)}
+                ><span className="pit-tab-glyph"><Icon name="evidence" /></span><span>{tab === "eval" ? "Eval" : "Evidence"}</span></button>)}
+              </div>
+              {devtoolsTab === "eval" ? <EvalReportInspector evalReport={evalReport} /> : null}
+            </section> : <p className="pit-muted pit-devtools-loading">Loading company state…</p>
           ) : (
-            <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={setDevtoolsTab} evalReport={evalReport} />
+            <DevtoolsInspector snapshot={devtools} onFork={onForkRevision} tab={devtoolsTab} onTabChange={onDevtoolsTabChange} evalReport={evalReport} />
           )}
         </>
       ) : null}

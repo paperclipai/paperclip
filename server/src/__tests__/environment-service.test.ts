@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
+import type { UpdateEnvironment } from "@paperclipai/shared";
+import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
 import {
   activityLog,
   agents,
@@ -129,6 +131,85 @@ describeEmbeddedPostgres("environmentService leases", () => {
     });
     return companyId;
   }
+
+  it("clears user metadata to null when no private platform proof exists", async () => {
+    const created = await svc.create({ name: "User metadata clear", driver: "sandbox", config: { provider: "daytona" }, metadata: { userNote: "remove" } });
+    expect((await svc.update(created.id, { metadata: null }))?.metadata).toBeNull();
+  });
+
+  it.each(["clear", "replace", "unrelated", "status", "config", "driver"] as const)(
+    "handles %s saves atomically after a concurrent platform probe record", async operation => {
+      const companyId = await seedCompany();
+      const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
+      const staleProof = { v: 1, marker: "old" };
+      const freshProof = { v: 1, marker: "new" };
+      const created = await svc.create({ name: "Concurrent metadata", driver: "sandbox", config,
+        metadata: { userNote: "old", _paperclipManagedArchiveToken: "old-archive-token",
+          [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } });
+      const patches: Record<typeof operation, UpdateEnvironment> = {
+        clear: { metadata: null },
+        replace: { metadata: { userNote: "replacement", [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: staleProof } } },
+        unrelated: { description: "unrelated save" },
+        status: { status: "active" },
+        config: { config: { ...config, image: `registry.example.test/runtime@sha256:${"b".repeat(64)}` } },
+        driver: { driver: "ssh", config: { host: "fixture.example.test", username: "fixture" } },
+      };
+      const delayedWriteDb = {
+        update(table: typeof environments) {
+          const prepared = db.update(table);
+          return {
+            set(values: Parameters<typeof prepared.set>[0]) {
+              const statement = prepared.set(values);
+              return {
+                where(condition: SQL) {
+                  const pending = statement.where(condition);
+                  return {
+                    async returning() {
+                      expect(await svc.recordSandboxPlatformProbe({
+                        environmentId: created.id, companyId, config, proof: freshProof,
+                      })).toBe(true);
+                      return pending.returning();
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      };
+      const saved = await svc.update(created.id, patches[operation], { db: delayedWriteDb as never });
+      if (operation === "config" || operation === "driver") {
+        expect(saved?.metadata).not.toHaveProperty(SANDBOX_PLATFORM_PROBE_METADATA_KEY);
+      } else {
+        expect(saved?.metadata?.[SANDBOX_PLATFORM_PROBE_METADATA_KEY]).toEqual({ [companyId]: freshProof });
+      }
+      if (operation === "clear") expect(saved?.metadata).toEqual({ [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { [companyId]: freshProof } });
+      else expect(saved?.metadata?.userNote).toBe(operation === "replace" ? "replacement" : "old");
+      if (operation !== "unrelated") expect(saved?.metadata).not.toHaveProperty("_paperclipManagedArchiveToken");
+    },
+  );
+
+  it.each(["expired", "retained"] as const)("keeps cleanup completion fenced and atomic for %s leases", async status => {
+    const { companyId, environmentId, runId } = await seedEnvironment();
+    const attemptId = randomUUID();
+    const lease = await svc.acquireLease({ companyId, environmentId, heartbeatRunId: runId,
+      provider: "fake", leasePolicy: "reuse_by_environment" });
+    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
+        pendingCleanupLeaseExpiresAtMs: Date.now() + 60_000, userNote: "preserve" },
+    }).where(eq(environmentLeases.id, lease.id));
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: randomUUID(),
+      cleanupStatus: "success" })).toBeNull();
+    expect(await svc.getLeaseById(lease.id)).toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed",
+      metadata: { pendingCleanupInFlight: true, pendingCleanupAttemptId: attemptId } });
+    expect(await svc.releaseLease(lease.id, "pending_cleanup", { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "failed" })).toMatchObject({ metadata: { pendingCleanupInFlight: true } });
+    expect(await svc.releaseLease(lease.id, status, { expectedPendingCleanupAttemptId: attemptId,
+      cleanupStatus: "success" })).toMatchObject({ status, cleanupStatus: "success", metadata: {
+      pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
+      userNote: "preserve",
+    } });
+  });
 
   it("acquires and releases a lease for a run", async () => {
     const { companyId, environmentId, runId } = await seedEnvironment();
@@ -634,6 +715,18 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const releasedImpact = await svc.getDeleteBlastRadius(environmentId);
     expect(releasedImpact?.canDelete).toBe(false);
     expect(releasedImpact?.reusableSandboxLeaseCount).toBe(1);
+    expect(await svc.removeIfDeletable(environmentId)).toBeNull();
+
+    // A failed run can release its reusable sandbox successfully without
+    // destroying it. The provider handle still needs environment-scoped cleanup.
+    await svc.releaseLease(lease.id, "failed", {
+      failureReason: "adapter_or_run_failure",
+      cleanupStatus: "success",
+    });
+    const failedImpact = await svc.getDeleteBlastRadius(environmentId);
+    expect.soft(failedImpact?.canDelete).toBe(false);
+    expect.soft(failedImpact?.deleteBlockedReasons).toContain("reusable_sandbox_lease");
+    expect.soft(failedImpact?.reusableSandboxLeaseCount).toBe(1);
     expect(await svc.removeIfDeletable(environmentId)).toBeNull();
 
     const rows = await db.select().from(environments).where(eq(environments.id, environmentId));
@@ -1389,6 +1482,90 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(activity.at(-1)?.action).toBe("environment.managed_stock_skipped");
   });
 
+  it("platformFullyManaged applies drift instead of preserving it, since no operator can edit this row", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      description: "Managed stock",
+      provider: "daytona",
+      config: { target: "us" },
+      stockVersion: "v1",
+      platformFullyManaged: true,
+    });
+    // Same drift shape as the plain "classifies operator drift" case above:
+    // from the reconciler's point of view, a row whose content matches
+    // neither the recorded binding hash nor the latest stock hash is
+    // indistinguishable between "an operator edited it" and "two
+    // platform-driven reconciliation passes disagreed" (e.g. a stock hash
+    // recorded by an older app build). `platformFullyManaged` asserts the
+    // caller's deployment rules out the former, so this must apply like any
+    // other stock-outdated row rather than freeze the row and only bump the
+    // binding's bookkeeping.
+    await db
+      .update(environments)
+      .set({
+        config: { provider: "daytona", target: "drifted" },
+      })
+      .where(eq(environments.id, created.environment.id));
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona v2",
+      description: "Managed stock v2",
+      provider: "daytona",
+      config: { target: "eu" },
+      stockVersion: "v2",
+      platformFullyManaged: true,
+    });
+
+    expect(reconciled).toMatchObject({
+      action: "updated",
+      stockStatus: "stock_update_available",
+      updateAvailable: false,
+    });
+    expect(reconciled.environment).toMatchObject({
+      name: "Daytona v2",
+      description: "Managed stock v2",
+      config: { provider: "daytona", target: "eu" },
+    });
+    const [bindingAfter] = await db
+      .select()
+      .from(builtInManagedResources)
+      .where(eq(builtInManagedResources.companyId, companyId));
+    expect(bindingAfter?.stockVersion).toBe("v2");
+    expect(bindingAfter?.stockHash).toBe(reconciled.stockHash);
+  });
+
+  it("platformFullyManaged still preserves an operator-reaffirmed archive decision", async () => {
+    const companyId = await seedCompany();
+    const created = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+      platformFullyManaged: true,
+    });
+    expect((await svc.archiveManagedSandboxEnvironment({ provider: "daytona" }))?.status)
+      .toBe("archived");
+    expect((await svc.update(created.environment.id, { status: "archived" }))?.status)
+      .toBe("archived");
+
+    const reconciled = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+      platformFullyManaged: true,
+    });
+    expect(reconciled).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+      environment: { status: "archived" },
+    });
+  });
+
   it("adopts the managed slot on a provider switch and drops the stale kubernetes marker", async () => {
     const companyId = await seedCompany();
     const kubernetes = await svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" });
@@ -1562,6 +1739,44 @@ describeEmbeddedPostgres("environmentService leases", () => {
       name: "Daytona",
       provider: "daytona",
       config: { target: "eu" },
+    });
+    expect(reconciliation).toMatchObject({
+      action: "skipped",
+      stockStatus: "operator_modified",
+      updateAvailable: true,
+    });
+    expect(reconciliation.environment.id).toBe(handMade.id);
+    expect(reconciliation.environment.config.target).toBe("us");
+    expect(reconciliation.environment.metadata?.managedByPaperclip).toBeUndefined();
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("platformFullyManaged never adopts an unbound same-name sandbox row", async () => {
+    // Same setup as the plain case above: a tenant-created sandbox row holds
+    // the desired name and has no stock binding. It reads as
+    // `operator_modified` too, but there is no prior platform pass for it to
+    // have drifted from — the bypass must require a binding for this exact
+    // row, or it would overwrite the tenant's config and stamp it managed.
+    const companyId = await seedCompany();
+    const handMade = await svc.create({
+      name: "Daytona",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "daytona", target: "us" },
+    });
+    expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
+
+    const reconciliation = await svc.ensureManagedSandboxEnvironment({
+      companyId,
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+      platformFullyManaged: true,
     });
     expect(reconciliation).toMatchObject({
       action: "skipped",

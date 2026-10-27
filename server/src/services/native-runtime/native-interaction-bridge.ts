@@ -3,6 +3,8 @@ import type { NativeInteractionResponseEnvelope } from "../../vendor/paperclip-r
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   agents,
+  toolActionRequests,
+  toolInvocations,
   heartbeatRuns,
   issues,
   issueThreadInteractions,
@@ -17,6 +19,7 @@ import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { nativeSha256 } from "./canonical.js";
 import { recordNativeAttentionAssessment } from "./work-assessments.js";
 import { formatDurableQuestionResponseSummary } from "../question-response-delivery.js";
+import { findSatisfiedToolConnection } from "../satisfied-connection-intents.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -161,7 +164,7 @@ export async function materializeNativeInteractionResponses(input: {
   if (requestedIds.size === 0) return [];
   const [interactions, issue] = await Promise.all([
     issueThreadInteractionService(input.db).listForIssue(input.issueId),
-    input.db.select({ status: issues.status }).from(issues).where(and(
+    input.db.select().from(issues).where(and(
       eq(issues.id, input.issueId),
       eq(issues.companyId, input.companyId),
     )).limit(1).then((rows) => rows[0] ?? null),
@@ -177,7 +180,41 @@ export async function materializeNativeInteractionResponses(input: {
         `Interaction ${interaction.id} is not bound to the native company and issue`,
       );
     }
+    if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
+      const action = interaction.payload.toolAction;
+      if (["accepted", "rejected"].includes(interaction.status) && (interaction.resolvedByAgentId || interaction.resolvedByRunId === input.runId)) {
+        throw new NativeInteractionBridgeError("native_interaction_self_approval", "Agents cannot resolve governed tool reviews");
+      }
+      const [request] = await input.db.select().from(toolActionRequests).where(and(eq(toolActionRequests.id, action.actionRequestId), eq(toolActionRequests.companyId, input.companyId), eq(toolActionRequests.issueId, input.issueId), eq(toolActionRequests.interactionId, interaction.id), eq(toolActionRequests.invocationId, action.invocationId)));
+      const [invocation] = await input.db.select().from(toolInvocations).where(and(eq(toolInvocations.id, action.invocationId), eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.issueId, input.issueId), eq(toolInvocations.agentId, input.agentId)));
+      if (!request || !invocation || request.requestedByAgentId !== input.agentId || request.canonicalArgumentsHash !== action.argumentsHash) {
+        throw new NativeInteractionBridgeError("native_interaction_governed_request_unresolved", "Tool review has no matching authoritative invocation");
+      }
+      if (["expired", "cancelled"].includes(request.status)) {
+        if (interaction.status !== request.status && !(interaction.status === "accepted" && interaction.result?.toolAction?.status === "expired")) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review lifecycle does not match its request");
+        responses.push({ interactionId: interaction.id, kind: interaction.kind, response: { status: interaction.status, result: structuredClone(interaction.result), executionStatus: request.status } });
+        continue;
+      }
+      if (!request.decidedByUserId || request.decidedByUserId !== interaction.resolvedByUserId || !["executed", "failed", "rejected"].includes(request.status) || (request.status === "rejected" ? interaction.status !== "rejected" : interaction.status !== "accepted")) {
+        throw new NativeInteractionBridgeError("native_interaction_governed_request_unresolved", "Tool review must have a human decision and an authoritative terminal execution outcome");
+      }
+      const expectedInvocationStatus = request.status === "executed" ? "succeeded" : request.status === "rejected" ? "denied" : "failed";
+      if (invocation.status !== expectedInvocationStatus || (request.status !== "rejected" && interaction.result?.toolAction?.status !== request.status)) throw new NativeInteractionBridgeError("native_interaction_governed_result_mismatch", "Tool review outcome does not match its invocation");
+    }
     const interactionResult = record(interaction.result);
+    if (interaction.kind === "connection_intent" && interaction.status === "expired"
+      && interactionResult.outcome === "expired" && typeof interactionResult.connectionId === "string") {
+      const [run] = await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.agentId, input.agentId)));
+      const ready = issue.assigneeAgentId === input.agentId && run?.responsibleUserId === interaction.addresseeUserId
+        ? await findSatisfiedToolConnection(input.db, issue, { ...interaction, addresseeUserId: interaction.addresseeUserId ?? null, status: "pending" }, input.runId) : null;
+      if (!ready || ready.id !== interactionResult.connectionId) {
+        throw new NativeInteractionBridgeError("native_interaction_unresolved", "The existing connection is no longer available");
+      }
+      responses.push({ interactionId: interaction.id, kind: interaction.kind,
+        response: { status: "expired", result: structuredClone(interaction.result) as unknown as Record<string, unknown> } });
+      continue;
+    }
     const supersessionOutcome = interaction.status === "expired"
       && ["superseded_by_newer_request", "superseded_by_comment", "stale_target"].includes(String(interactionResult.outcome));
     if (supersessionOutcome) {
@@ -239,12 +276,6 @@ export async function materializeNativeInteractionResponses(input: {
           `Agent ${input.agentId} cannot consume a confirmation it resolved`,
         );
       }
-      if (interaction.kind === "request_confirmation" && interaction.payload.toolAction !== undefined) {
-        throw new NativeInteractionBridgeError(
-          "native_interaction_governed_request_unsupported",
-          "Governed tool-action confirmations cannot enter a native model envelope",
-        );
-      }
       if (
         (interaction.status !== "accepted" && interaction.status !== "rejected")
         || !interaction.result
@@ -279,7 +310,7 @@ export async function materializeNativeInteractionResponses(input: {
       continue;
     }
 
-    if (interaction.kind === "suggest_tasks") {
+    if (interaction.kind === "suggest_tasks" || interaction.kind === "connection_intent") {
       if (
         (interaction.status !== "accepted" && interaction.status !== "rejected")
         || !interaction.result
@@ -602,6 +633,8 @@ export async function routePersistedNativeResultAttention(input: {
           decisionId: existingDecision.id,
           leaseOwner: null,
           leaseExpiresAt: null,
+          recoveryState: null,
+          recoveryRequestId: null,
           failureCode: nonEmptyText(finalizationError?.cause),
           failureDetail: finalizationError ? {
             originalFailureCode: finalizationError.cause,

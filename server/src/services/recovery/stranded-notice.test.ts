@@ -31,6 +31,90 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("Recovery action:");
   });
 
+  it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      pluginStatus: "error",
+    });
+    expect(seed.title).toBe("Configuration incomplete");
+    expect(seed.tone).toBe("danger");
+    expect(seed.body).toContain("`paperclip.kubernetes-sandbox-provider`");
+    expect(seed.body).toContain("`error`");
+    expect(seed.body).toContain("enable the plugin");
+    expect(seed.body).not.toContain("secret/env bindings");
+  });
+
+  it("asks for a capability review before enabling an upgrade_pending plugin, and names an operator disable", () => {
+    const upgrade = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "upgrade_pending",
+    });
+    expect(upgrade.body).toContain("review and approve the upgraded plugin's capabilities");
+    const disabled = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "disabled",
+    });
+    expect(disabled.body).toContain("an operator disabled it");
+  });
+
+  it("explains unsupported concurrent shared workspace placement instead of missing secrets", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported" });
+    expect(seed.title).toBe("Shared workspace unavailable");
+    expect(seed.body).toContain("cannot place concurrent agents in one physical shared folder");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("isolated task workspace");
+  });
+
+  it("explains a quiet holder that still owns the shared workspace", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "shared_realization_unsupported", holderStale: true });
+    expect(seed.title).toBe("Shared workspace still held");
+    expect(seed.body).toContain("no output for more than an hour");
+    expect(seed.body).not.toContain("secret/env bindings");
+    expect(seed.nextAction).toContain("stop it if it is stuck");
+  });
+
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
+  it("keeps the secret-binding copy for other configuration gaps", () => {
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
+      "secret/env bindings",
+    );
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
+  it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "workspace_base_ref_unresolved",
+      requestedRef: "main",
+      attemptedRefs: ["origin/main"],
+      fetchError: "fatal: couldn't find remote ref refs/heads/main",
+      missingBindings: [],
+    });
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed,
+      recoveryActionId: "base-ref-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
+    });
+    expect(notice.presentation.title).toBe("Workspace base ref unavailable");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).toContain("base ref");
+    expect(notice.body).not.toContain("secret/env bindings");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Next action",
+      value: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+    });
+  });
+
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
@@ -40,6 +124,18 @@ describe("stranded recovery notice seeds", () => {
 });
 
 describe("buildStrandedRecoveryEscalationNotice", () => {
+  it("names a workspace timeout and its repair instead of claiming generic continuation", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: "scan-recovery",
+      recoveryOwner: null,
+      sourceRun: { id: "failed-run", status: "failed", errorCode: "workspace_git_scan_timeout" },
+    });
+    expect(notice.presentation.title).toBe("Workspace scan timed out");
+    expect(notice.body).toContain("before the agent started");
+    expect(notice.body).not.toContain("retried continuation");
+    expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+  });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
   const sourceRun = {
@@ -204,4 +300,13 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
       noticeMetadataReferencesRecoveryAction(notice.metadata, "1f2e3d4c-5b6a-4798-8899-444444444444"),
     ).toBe(false);
   });
+});
+
+
+it("names the unavailable AI account instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_unavailable", provider: "openai" });
+  expect(notice.nextAction).toContain("Reconnect the selected AI account");
+  expect(notice.title).toBe("AI connection needs attention");
+  expect(notice.body).toContain("Reconnect the account");
+  expect(notice.body).not.toContain("secret/env");
 });

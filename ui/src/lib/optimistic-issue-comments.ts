@@ -153,6 +153,8 @@ export function mergeIssueComments(
     );
     if (matchingPersistedComment) {
       reconciledPersistedIds.add(matchingPersistedComment.id);
+      const acknowledged = { ...matchingPersistedComment, clientId: comment.clientId };
+      merged[merged.findIndex((entry) => entry.id === matchingPersistedComment.id)] = acknowledged;
       continue;
     }
 
@@ -271,7 +273,7 @@ export function applyOptimisticIssueCommentUpdate(
   if (!issue) return issue;
   const nextIssue: Issue = { ...issue };
 
-  if (params.reopen === true && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
+  if (params.reopen === true && !issue.executionBlocker && (issue.status === "done" || issue.status === "cancelled" || issue.status === "blocked")) {
     nextIssue.status = "todo";
   }
 

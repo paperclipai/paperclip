@@ -1,3 +1,5 @@
+import { VoiceCallProvider } from "./components/voice/VoiceCallProvider";
+import { useAccountIdentity } from "./api/companies-query";
 import * as React from "react";
 import { StrictMode } from "react";
 import * as ReactDOM from "react-dom";
@@ -13,11 +15,14 @@ import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
+import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
+import { DesignSandboxProvider } from "./context/DesignSandboxContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
+import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
@@ -30,6 +35,8 @@ initPluginBridge(React, ReactDOM);
 // DevTools performance tracks and never clears them; on a long-lived tab they
 // accumulate into millions of native objects (GBs). Reap them periodically.
 startPerfMeasureReaper();
+
+startChunkLoadRecovery();
 
 // Parked SPA tabs never navigate, so beyond registering the worker this also
 // re-checks /sw.js on tab focus and hourly, and applies a discovered update
@@ -57,6 +64,12 @@ function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNod
   return <BreadcrumbProvider companyName={selectedCompany?.name ?? null}>{children}</BreadcrumbProvider>;
 }
 
+function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
+  const { selectedCompanyId } = useCompany();
+  const { userId } = useAccountIdentity();
+  return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
+}
+
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
 
@@ -70,6 +83,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
             <CompanyProvider>
               <EditorAutocompleteProvider>
                 <ToastProvider>
+                  <PrimaryAgentProvider>
                   <LiveUpdatesProvider>
                     <TooltipProvider>
                       <CompanyAwareBreadcrumbProvider>
@@ -77,7 +91,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <App />
+                                <DesignSandboxProvider><CompanyVoiceCalls><App /></CompanyVoiceCalls></DesignSandboxProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>
@@ -85,6 +99,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                       </CompanyAwareBreadcrumbProvider>
                     </TooltipProvider>
                   </LiveUpdatesProvider>
+                  </PrimaryAgentProvider>
                 </ToastProvider>
               </EditorAutocompleteProvider>
             </CompanyProvider>

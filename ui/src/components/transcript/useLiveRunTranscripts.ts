@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { usePageVisibility } from "../../lib/page-visibility";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -7,6 +9,7 @@ import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
+import { tryCreateWebSocket } from "../../lib/websocket";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
@@ -18,6 +21,8 @@ import {
 // durable fix is server push (SSE/websocket) for transcript deltas so idle tabs
 // do no periodic work at all; the constants below only reduce the churn of the
 // current polling approach.
+const SOCKET_CONNECTING = 0;
+const SOCKET_OPEN = 1;
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
 // When realtime websocket updates are enabled, the frequent log poll is
@@ -41,6 +46,7 @@ const TASK_VIEW_MAX_BYTES_PER_RUN = 2_000_000;
 const RUN_ABSENCE_PRUNE_GRACE_MS = 20_000;
 
 export interface RunTranscriptSource {
+  createdAt?: string | Date;
   id: string;
   status: string;
   adapterType: string;
@@ -101,6 +107,7 @@ export function useLiveRunTranscripts({
 }: UseLiveRunTranscriptsOptions) {
   // Ticker consumers opt into the silent chunk-count cap; full task views use a
   // byte budget that collapses (not discards) the oldest output when exceeded.
+  const { visible } = usePageVisibility();
   const retentionBudget: ChunkRetentionBudget = useMemo(
     () =>
       typeof maxChunksPerRun === "number"
@@ -123,6 +130,12 @@ export function useLiveRunTranscripts({
   const normalizedRuns = useMemo(() => runs.map((run) => ({ ...run })), [runsKey]);
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
+  const [errorsByRun, setErrorsByRun] = useState<ReadonlyMap<string, Error>>(new Map());
+  const [retryGeneration, setRetryGeneration] = useState(0);
+  const retry = useCallback(() => {
+    missingTerminalLogRunIdsRef.current.clear();
+    setRetryGeneration((value) => value + 1);
+  }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
   // Highest sequenced chunk trimmed out of a run's retained window; older
   // records re-delivered by the other transport are dropped instead of being
@@ -130,6 +143,8 @@ export function useLiveRunTranscripts({
   const trimmedSeqFloorByRunRef = useRef(new Map<string, number>());
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
+  const logReadLimitByRunRef = useRef(new Map<string, number>());
+  const [truncatedRunIds, setTruncatedRunIds] = useState<ReadonlySet<string>>(new Set());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
   // PAP-462 B3: buffered runs that dropped out of the `runs` list, mapped to the
   // wall-clock deadline (ms) after which their buffer may be pruned. A run still
@@ -242,6 +257,15 @@ export function useLiveRunTranscripts({
       return next.size === prev.size ? prev : next;
     });
 
+    setErrorsByRun((previous) => {
+      const next = new Map([...previous].filter(([id]) => retainedRunIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    setTruncatedRunIds((previous) => {
+      const next = new Set([...previous].filter((id) => retainedRunIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+
     for (const key of pendingLogRowsByRunRef.current.keys()) {
       const runId = key.replace(/:records$/, "");
       if (!retainedRunIds.has(runId)) {
@@ -251,6 +275,7 @@ export function useLiveRunTranscripts({
     for (const runId of logOffsetByRunRef.current.keys()) {
       if (!retainedRunIds.has(runId)) {
         logOffsetByRunRef.current.delete(runId);
+        logReadLimitByRunRef.current.delete(runId);
       }
     }
     for (const runId of trimmedSeqFloorByRunRef.current.keys()) {
@@ -281,20 +306,65 @@ export function useLiveRunTranscripts({
   }, [normalizedRuns, pruneTick]);
 
   useEffect(() => {
+    if (!visible) return;
     const readableRuns = normalizedRuns.filter(canReadPersistedLog);
     if (readableRuns.length === 0) return;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const inFlightRunIds = new Set<string>();
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
-      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      inFlightRunIds.add(run.id);
+      let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
+      let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      let rewinding = false;
+      const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
+      if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
+        // Expanding a compact tail must reread the earlier range. Retain the
+        // visible chunks; merging by sequence deduplicates the overlapping tail.
+        const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
+        if (expandedOffset < offset) {
+          alignStartToRecord = true;
+          offset = expandedOffset;
+          rewinding = true;
+        }
+      }
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readTranscriptRequest(
+          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
+            signal,
+            ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
+          }),
+          controller.signal,
+        );
         if (cancelled) return;
 
+        // Commit the expanded window only after success so retries still align
+        // its first record and failed reads leave the previous parser intact.
+        if (previousReadLimit === undefined || rewinding) {
+          setTruncatedRunIds((previous) => {
+            if (previous.has(run.id) === (offset > 0)) return previous;
+            const next = new Set(previous);
+            if (offset > 0) next.add(run.id);
+            else next.delete(run.id);
+            return next;
+          });
+        }
+        logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
+        if (rewinding) {
+          pendingLogRowsByRunRef.current.delete(run.id);
+          pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+        }
+        setErrorsByRun((previous) => {
+          if (!previous.has(run.id)) return previous;
+          const next = new Map(previous);
+          next.delete(run.id);
+          return next;
+        });
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
@@ -305,10 +375,26 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setErrorsByRun((previous) => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.delete(run.id);
+            return next;
+          });
+          // A newly started run may not have created its log yet.
+          if (isTerminalStatus(run.status)) missingTerminalLogRunIdsRef.current.add(run.id);
+        } else {
+          setErrorsByRun((previous) => {
+            if (previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
+            return next;
+          });
         }
       } finally {
+        inFlightRunIds.delete(run.id);
         if (!cancelled) {
           setHydratedRunIds((prev) => {
             if (prev.has(run.id)) return prev;
@@ -340,12 +426,13 @@ export function useLiveRunTranscripts({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
 
   useEffect(() => {
-    if (!enableRealtimeUpdates) return;
+    if (!visible || !enableRealtimeUpdates) return;
     if (!companyId || activeRunIds.size === 0) return;
 
     let closed = false;
@@ -376,7 +463,11 @@ export function useLiveRunTranscripts({
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
-      socket = new WebSocket(url);
+      socket = tryCreateWebSocket(url);
+      if (!socket) {
+        scheduleReconnect();
+        return;
+      }
 
       socket.onopen = () => {
         if (closed) return;
@@ -462,19 +553,19 @@ export function useLiveRunTranscripts({
         socket.onmessage = null;
         socket.onerror = null;
         socket.onclose = null;
-        if (socket.readyState === WebSocket.CONNECTING) {
+        if (socket.readyState === SOCKET_CONNECTING) {
           // Defer the close until the handshake completes so the browser
           // does not emit a noisy "closed before the connection is established"
           // warning during rapid run teardown.
           socket.onopen = () => {
             socket?.close(1000, "live_run_transcripts_unmount");
           };
-        } else if (socket.readyState === WebSocket.OPEN) {
+        } else if (socket.readyState === SOCKET_OPEN) {
           socket.close(1000, "live_run_transcripts_unmount");
         }
       }
     };
-  }, [activeRunIds, companyId, enableRealtimeUpdates, runById]);
+  }, [visible, activeRunIds, companyId, enableRealtimeUpdates, runById]);
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();
@@ -519,6 +610,7 @@ export function useLiveRunTranscripts({
 
   return {
     transcriptByRun,
+    hydratedRunIds, truncatedRunIds, errorsByRun, retry,
     isInitialHydrating: normalizedRuns.some((run) => canReadPersistedLog(run) && !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;

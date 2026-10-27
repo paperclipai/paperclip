@@ -12,6 +12,7 @@ import {
   issues,
   pluginManagedResources,
   plugins,
+  principalPermissionGrants,
   projects,
   routineDocuments,
   routineRuns,
@@ -121,6 +122,7 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
     await db.delete(agentConfigRevisions);
     await db.delete(activityLog);
     await db.delete(pluginManagedResources);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(plugins);

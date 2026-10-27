@@ -11,6 +11,15 @@ interface PanelContextValue {
   closePanel: () => void;
   setPanelVisible: (visible: boolean) => void;
   togglePanelVisible: () => void;
+  /**
+   * One-shot maximize request (LOOA-2181): deep links with `viewer=full` ask
+   * the resizable panel host to open maximized. The request stays pending
+   * until the host consumes it (the panel may not be mounted yet when the
+   * deep link routes), so consumers must clear it after acting.
+   */
+  panelMaximizeRequested: boolean;
+  requestPanelMaximize: () => void;
+  clearPanelMaximizeRequest: () => void;
 }
 
 const PanelContext = createContext<PanelContextValue | null>(null);
@@ -36,6 +45,15 @@ export function PanelProvider({ children }: { children: ReactNode }) {
   const [panelContent, setPanelContent] = useState<ReactNode | null>(null);
   const [panelContentMode, setPanelContentMode] = useState<SidePanelContentMode>("padded");
   const [panelVisible, setPanelVisibleState] = useState(readPreference);
+  const [panelMaximizeRequested, setPanelMaximizeRequested] = useState(false);
+
+  const requestPanelMaximize = useCallback(() => {
+    setPanelMaximizeRequested(true);
+  }, []);
+
+  const clearPanelMaximizeRequest = useCallback(() => {
+    setPanelMaximizeRequested(false);
+  }, []);
 
   const openPanel = useCallback((content: ReactNode, options?: { contentMode?: SidePanelContentMode }) => {
     setPanelContent(content);
@@ -62,7 +80,18 @@ export function PanelProvider({ children }: { children: ReactNode }) {
 
   return (
     <PanelContext.Provider
-      value={{ panelContent, panelContentMode, panelVisible, openPanel, closePanel, setPanelVisible, togglePanelVisible }}
+      value={{
+        panelContent,
+        panelContentMode,
+        panelVisible,
+        openPanel,
+        closePanel,
+        setPanelVisible,
+        togglePanelVisible,
+        panelMaximizeRequested,
+        requestPanelMaximize,
+        clearPanelMaximizeRequest,
+      }}
     >
       {children}
     </PanelContext.Provider>

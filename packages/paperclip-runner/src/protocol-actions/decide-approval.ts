@@ -32,7 +32,7 @@ export const decideApprovalAction = {
   },
   "documentation": {
     "title": "Decide approval",
-    "description": "Decide a mock approval as an explicitly authorized approver.",
+    "description": "Decide an approval as an explicitly authorized approver.",
     "note": null
   },
   "examples": {
@@ -77,7 +77,7 @@ export const decideApprovalAction = {
       "operationId": "decide_approval",
       "version": 1,
       "title": "Decide approval",
-      "description": "Decide a mock approval as an explicitly authorized approver.",
+      "description": "Decide an approval as an explicitly authorized approver.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:decide"
@@ -102,7 +102,7 @@ export const decideApprovalAction = {
           },
           "approvalId": {
             "type": "string",
-            "description": "Mock approval id.",
+            "description": "Approval id.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -133,7 +133,7 @@ export const decideApprovalAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -149,7 +149,7 @@ export const decideApprovalAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

@@ -188,45 +188,6 @@ function readString(value: unknown) {
     : null;
 }
 
-interface ModelProfileSummary {
-  requested: string;
-  applied: string | null;
-  configSource: string | null;
-  fallbackReason: string | null;
-}
-
-function modelProfileForRun(run: RunForIssue): ModelProfileSummary | null {
-  const result = asRecord(run.resultJson);
-  const profile = asRecord(result?.modelProfile);
-  if (!profile) return null;
-  const requested = readString(profile.requested);
-  if (!requested) return null;
-  return {
-    requested,
-    applied: readString(profile.applied),
-    configSource: readString(profile.configSource),
-    fallbackReason: readString(profile.fallbackReason),
-  };
-}
-
-function modelProfileBadgeTone(summary: ModelProfileSummary) {
-  if (summary.applied === summary.requested) {
-    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-  }
-  if (summary.fallbackReason) {
-    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
-  }
-  return "border-border bg-background text-muted-foreground";
-}
-
-function modelProfileTitle(summary: ModelProfileSummary) {
-  const lines = [`Requested: ${summary.requested}`];
-  if (summary.applied) lines.push(`Applied: ${summary.applied}`);
-  if (summary.configSource) lines.push(`Source: ${summary.configSource}`);
-  if (summary.fallbackReason) lines.push(`Fallback: ${summary.fallbackReason}`);
-  return lines.join("\n");
-}
-
 function readNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -881,6 +842,7 @@ export function IssueRunLedgerContent({
               );
             }
             const run = item.run;
+            const nextAction = run.execution ? run.execution.nextAction : run.nextAction;
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
@@ -975,27 +937,6 @@ export function IssueRunLedgerContent({
                       {RUN_OUTPUT_SILENCE_COPY[run.outputSilence.level]?.label}
                     </span>
                   ) : null}
-                  {(() => {
-                    const profile = modelProfileForRun(run);
-                    if (!profile) return null;
-                    const label =
-                      profile.applied === profile.requested
-                        ? `Profile: ${profile.requested}`
-                        : profile.applied
-                          ? `Profile: ${profile.requested} → ${profile.applied}`
-                          : `Profile: ${profile.requested} (unavailable)`;
-                    return (
-                      <span
-                        className={cn(
-                          "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
-                          modelProfileBadgeTone(profile),
-                        )}
-                        title={modelProfileTitle(profile)}
-                      >
-                        {label}
-                      </span>
-                    );
-                  })()}
                   {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
                   <span className="ml-auto shrink-0">
                     {relativeTime(item.timestamp)}
@@ -1044,26 +985,6 @@ export function IssueRunLedgerContent({
                   </div>
                 ) : null}
 
-                {(() => {
-                  const profile = modelProfileForRun(run);
-                  if (
-                    !profile?.fallbackReason ||
-                    profile.applied === profile.requested
-                  )
-                    return null;
-                  return (
-                    <p className="min-w-0 break-words text-(length:--text-micro) leading-5 text-amber-700 dark:text-amber-300">
-                      {profile.requested === "cheap"
-                        ? "Cheap profile fell back to primary"
-                        : `${profile.requested} profile unavailable`}
-                      {": "}
-                      <span className="font-mono">
-                        {profile.fallbackReason}
-                      </span>
-                    </p>
-                  );
-                })()}
-
                 {run.livenessReason ? (
                   <p className="min-w-0 break-words text-xs leading-5 text-muted-foreground">
                     {run.livenessReason}
@@ -1081,13 +1002,13 @@ export function IssueRunLedgerContent({
                   />
                 ) : null}
 
-                {run.nextAction ? (
+                {nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">
                       Next action:{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
-                      {run.nextAction}
+                      {nextAction}
                     </span>
                   </div>
                 ) : null}

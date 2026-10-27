@@ -1,3 +1,4 @@
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -15,6 +16,7 @@ import { logActivity } from "../services/activity-log.js";
 import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -34,36 +36,30 @@ function resultContent(value: unknown) {
   };
 }
 
-export const RUNTIME_CONNECTION_TOOL_DEFINITIONS = [
-  {
-    name: "connections_search",
-    description: CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
-    inputSchema: {
-      type: "object",
-      properties: { query: { type: "string" } },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "connection_request",
-    description: CONNECTION_REQUEST_TOOL_DESCRIPTION,
-    inputSchema: {
-      type: "object",
-      properties: { service: { type: "string" } },
-      required: ["service"],
-      additionalProperties: false,
-    },
-  },
-] as const;
+export { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
+import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../services/connection-tool-definitions.js";
 
 /** Public, token-authenticated routes mounted before the general actor middleware. */
 export function runtimeConnectionIntentRoutes(db: Db) {
   const router = Router();
   const service = connectionIntentService(db);
 
+  router.post("/runtime-tools/github/credentials", async (req, res) => {
+    // This capability is never accepted as board/session authentication.
+    // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
+    if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
+    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
+      ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
+    if (!claims) throw unauthorized("Invalid GitHub runtime capability");
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await resolveGitHubOperationCredentials(db, {
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
+    }));
+  });
+
   router.get("/mcp/runtime-tools", async (req, res) => {
     await service.validate(runtimeClaims(req));
-    res.json({ name: "paperclip-runtime-tools", protocolVersion: "2025-03-26" });
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/mcp/runtime-tools", async (req, res) => {
@@ -107,13 +103,13 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       const name = typeof params.name === "string" ? params.name : "";
       if (name === "connections_search") {
         const input = connectionsSearchInputSchema.parse(params.arguments ?? {});
-        const result = await service.search(claims, input.query);
+        const result = await service.search(claims, input.query, { retryProviderChoice: input.retryProviderChoice });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
       if (name === "connection_request") {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service);
+        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
@@ -133,67 +129,18 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.post("/runtime-tools/connections/search", async (req, res) => {
     const input = connectionsSearchInputSchema.parse(req.body ?? {});
-    res.json(await service.search(runtimeClaims(req), input.query));
+    res.json(await service.search(runtimeClaims(req), input.query, { retryProviderChoice: input.retryProviderChoice }));
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service));
+    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames }));
   });
   return router;
 }
 
 type Heartbeat = ReturnType<typeof heartbeatService>;
 
-export async function wakeConnectionIntentAfterResolution(
-  heartbeat: Pick<Heartbeat, "wakeup">,
-  input: {
-    loaded: {
-      issue: { id: string; assigneeAgentId: string | null; status: string };
-      interaction: { id: string; resolvedAt?: string | Date | null };
-    };
-    status: string;
-    actorId: string;
-  },
-) {
-  const agentId = input.loaded.issue.assigneeAgentId;
-  if (!agentId || input.loaded.issue.status !== "in_progress") return;
-  const resolvedAt = input.loaded.interaction.resolvedAt;
-  const interactionResolvedAt = resolvedAt instanceof Date ? resolvedAt.toISOString() : resolvedAt;
-  await heartbeat.wakeup(agentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
-      issueId: input.loaded.issue.id,
-      interactionId: input.loaded.interaction.id,
-      interactionKind: "connection_intent",
-      interactionStatus: input.status,
-      mutation: "interaction",
-    },
-    idempotencyKey: `interaction:${input.loaded.interaction.id}:${input.status}`,
-    requestedByActorType: "user",
-    requestedByActorId: input.actorId,
-    contextSnapshot: {
-      issueId: input.loaded.issue.id,
-      taskId: input.loaded.issue.id,
-      interactionId: input.loaded.interaction.id,
-      interactionKind: "connection_intent",
-      interactionStatus: input.status,
-      mutation: "interaction",
-      wakeReason: "issue_commented",
-      source: "connection_intent.resolved",
-      ...(interactionResolvedAt
-        ? { interactionResolvedAt }
-        : {}),
-      forceFreshSession: true,
-    },
-    issueStateGuard: {
-      statuses: ["in_progress"],
-      assigneeAgentId: agentId,
-    },
-  });
-}
-
+export { wakeConnectionIntentAfterResolution } from "../services/connection-intent-delivery.js";
 export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   const router = Router();
   const service = connectionIntentService(db);
@@ -229,19 +176,14 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
     status: string;
     actorId: string;
   }) {
-    // The operator may park or reassign the issue while the connection work
-    // and activity write are in flight. Re-read immediately before enqueueing
-    // so the wake decision is not made from addressedIntent's stale snapshot.
-    const current = await service.loadIntent(input.loaded.interaction.id);
-    await wakeConnectionIntentAfterResolution(heartbeat, {
-      ...input,
-      loaded: current,
-    });
+    await connectionIntentDeliveryService(db, heartbeat).tryDeliver(input.loaded.interaction.id);
   }
 
   router.get("/connection-intents/:interactionId/setup-options", async (req, res) => {
-    await addressedIntent(req);
-    res.json(await service.setupOptions(req.params.interactionId as string));
+    const { loaded } = await addressedIntent(req);
+    res.json(await service.setupOptions(req.params.interactionId as string, {
+      canManageOrganizationGrant: await canManageCompanyConnections(req, loaded.issue.companyId),
+    }));
   });
 
   router.post("/connection-intents/:interactionId/phase", async (req, res) => {

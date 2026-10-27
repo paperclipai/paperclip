@@ -8,6 +8,23 @@ export interface ParsedCodexTurnDiffFile {
   diff: string | null;
 }
 
+export interface CodexTurnDiffSummary {
+  files: number;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export function summarizeCodexTurnDiff(
+  files: readonly Pick<ParsedCodexTurnDiffFile, "additions" | "deletions">[],
+): CodexTurnDiffSummary {
+  const unknown = files.some((file) => file.additions === null || file.deletions === null);
+  return {
+    files: files.length,
+    additions: unknown ? null : files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+    deletions: unknown ? null : files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+  };
+}
+
 const MAX_TURN_DIFF_FILES = 2_000;
 const MAX_TURN_DIFF_CHARS_PER_FILE = 256 * 1024;
 

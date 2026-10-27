@@ -41,7 +41,8 @@
         "description": "Read calendars, events, and availability."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -72,7 +73,8 @@
         "description": "Read calendars, events, and availability."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -116,7 +118,8 @@
         "description": "Create, update, respond to, and delete events."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -126,7 +129,6 @@
         "serverUrl": "https://calendarmcp.googleapis.com/mcp/v1",
         "scopesHint": [
           "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-          "https://www.googleapis.com/auth/calendar.events.freebusy",
           "https://www.googleapis.com/auth/calendar.events"
         ]
       },
@@ -148,7 +150,8 @@
         "description": "Create, update, respond to, and delete events."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -161,7 +164,6 @@
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
           "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-          "https://www.googleapis.com/auth/calendar.events.freebusy",
           "https://www.googleapis.com/auth/calendar.events"
         ],
         "oauthAuthorizationParams": {

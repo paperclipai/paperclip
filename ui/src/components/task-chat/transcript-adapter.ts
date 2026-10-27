@@ -20,6 +20,7 @@ import type {
   TaskChatRunResultItem,
   TaskChatMessageItem,
   TaskChatPlanDocumentItem,
+  TaskChatRuntimeRequestItem,
 } from "./task-chat-model";
 import {
   humanizeToolName,
@@ -376,10 +377,21 @@ function providerActivityItem(
       label: titleCaseKey(key),
       value: clip(
         value,
-        key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+        entry.family === "provider_notice" && (key === "summary" || key === "message")
+          ? 4000
+          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
+  }
+
+  if (entry.family === "provider_notice" && Array.isArray(entry.payload.details)) {
+    for (const raw of entry.payload.details.slice(0, 64)) {
+      const detail = objectRecord(raw);
+      if (typeof detail.name === "string" && typeof detail.value === "string") {
+        details.push({ label: clip(detail.name, 160), value: clip(detail.value, 4000), mono: false });
+      }
+    }
   }
 
   const steps =
@@ -559,6 +571,52 @@ interface TranscriptAdapterOptions {
   running: boolean;
 }
 
+/** Request authority follows the whole run, even when steering splits its display. */
+export function runtimeRequestSegmentContext(
+  entries: readonly TranscriptEntry[],
+  options: TranscriptAdapterOptions,
+) {
+  const requests = entries.filter(entry => entry.kind === "runtime_request");
+  const origins = new Map<string, TranscriptEntry>();
+  for (const entry of requests) {
+    if (!origins.has(entry.requestId)) origins.set(entry.requestId, entry);
+  }
+  const context = new Map<string, { item: TaskChatRuntimeRequestItem; origin: TranscriptEntry }>();
+  for (const item of transcriptToTaskChatItems(requests, options)) {
+    if (item.kind === "protocol" && item.surface === "runtime_request") {
+      context.set(item.id, { item, origin: origins.get(item.requestId)! });
+    }
+  }
+  return context;
+}
+
+/** Carry live requests to the tail; retain closed cards at their original position. */
+export function reconcileSegmentRuntimeRequests(
+  items: readonly TaskChatItem[],
+  entries: readonly TranscriptEntry[],
+  context: ReturnType<typeof runtimeRequestSegmentContext>,
+  carryPending = false,
+): TaskChatItem[] {
+  const owned = new Set(entries);
+  const retained = new Set<string>();
+  const result = items.flatMap<TaskChatItem>(item => {
+    if (item.kind !== "protocol" || item.surface !== "runtime_request") return [item];
+    const state = context.get(item.id);
+    if (!state || (state.item.status === "pending" ? !carryPending : !owned.has(state.origin))) return [];
+    retained.add(item.id);
+    return [state.item];
+  });
+  const carried: TaskChatItem[] = [];
+  if (carryPending) {
+    for (const { item } of context.values()) {
+      if (item.status === "pending" && !retained.has(item.id)) carried.push(item);
+    }
+  }
+  // A carried request predates this section. Keep newer requests last so the
+  // composer selects the latest input instead of reviving an older one.
+  return [...carried, ...result];
+}
+
 /**
  * Reduce a transcript into ordered items, coalescing consecutive thinking and
  * assistant deltas and threading tool_result/diff onto their tool_call. Mirrors
@@ -575,8 +633,10 @@ export function transcriptToTaskChatItems(
   let lastToolIndex = -1;
   let thinkingIndex = -1;
   let thinkingChannel: "summary" | "detail" | "unknown" | undefined;
+  let thinkingItemId: string | undefined;
   let messageIndex = -1;
   let messageChannel: "progress" | "final" | "unknown" | undefined;
+  let messageItemId: string | undefined;
 
   const finishThinking = () => {
     if (thinkingIndex >= 0) {
@@ -585,19 +645,38 @@ export function transcriptToTaskChatItems(
     }
     thinkingIndex = -1;
     thinkingChannel = undefined;
+    thinkingItemId = undefined;
   };
 
   const resetInline = () => {
     finishThinking();
     messageIndex = -1;
     messageChannel = undefined;
+    messageItemId = undefined;
   };
 
   for (const [i, entry] of entries.entries()) {
     switch (entry.kind) {
       case "thinking": {
         const lifecycleOnly = !entry.text;
-        if (thinkingIndex >= 0 && thinkingChannel === entry.channel) {
+        const openThinking =
+          thinkingIndex >= 0 ? items[thinkingIndex] : undefined;
+        const continuesAnonymousLifecycle =
+          entry.itemId === undefined &&
+          thinkingItemId === undefined &&
+          lifecycleOnly &&
+          entry.lifecycle === "completed" &&
+          openThinking?.kind === "thinking" &&
+          openThinking.lifecycleOnly === true;
+        const sameThinkingItem =
+          thinkingIndex >= 0 &&
+          thinkingChannel === entry.channel &&
+          ((entry.itemId !== undefined && entry.itemId === thinkingItemId) ||
+            (entry.itemId === undefined &&
+              thinkingItemId === undefined &&
+              entry.delta === true) ||
+            continuesAnonymousLifecycle);
+        if (sameThinkingItem) {
           const it = items[thinkingIndex];
           if (it.kind === "thinking") {
             if (entry.text) {
@@ -630,9 +709,11 @@ export function transcriptToTaskChatItems(
           });
           thinkingIndex = items.length - 1;
           thinkingChannel = entry.channel;
+          thinkingItemId = entry.itemId;
           thinkingStartTs.set(thinkingIndex, entry.ts);
           messageIndex = -1;
           messageChannel = undefined;
+          messageItemId = undefined;
         }
         if (entry.lifecycle === "completed") {
           finishThinking();
@@ -643,7 +724,14 @@ export function transcriptToTaskChatItems(
         if (!entry.text) break;
         finishThinking();
         const channel = entry.channel;
-        if (messageIndex >= 0 && messageChannel === channel) {
+        const sameMessage =
+          messageIndex >= 0 &&
+          messageChannel === channel &&
+          ((entry.itemId !== undefined && entry.itemId === messageItemId) ||
+            (entry.itemId === undefined &&
+              messageItemId === undefined &&
+              entry.delta === true));
+        if (sameMessage) {
           const it = items[messageIndex];
           if (it.kind === "message") {
             it.text += entry.text;
@@ -669,6 +757,7 @@ export function transcriptToTaskChatItems(
           });
           messageIndex = items.length - 1;
           messageChannel = channel;
+          messageItemId = entry.itemId;
         }
         break;
       }
@@ -786,6 +875,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        // Use producer classification, including the legacy generic Codex
+        // categories, never message-text matching. The run transcript still
+        // retains these diagnostics.
+        if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
+          ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
+            .includes(String(entry.payload.category)))) break;
         const key = `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
@@ -907,6 +1002,9 @@ export function transcriptToTaskChatItems(
           remainingWork: entry.remainingWork,
           blocker: entry.blocker,
           artifacts: entry.artifacts,
+          ...(entry.acceptedResponseWake
+            ? { acceptedResponseWake: entry.acceptedResponseWake }
+            : {}),
         });
         resetInline();
         break;
@@ -936,7 +1034,8 @@ export function transcriptToTaskChatItems(
         if (
           entry.subtype !== "paperclip_runner_usage" &&
           entry.subtype !== "paperclip_runner_session_usage"
-        ) break;
+        )
+          break;
         const inputTokens = entry.inputTokens || 0;
         const outputTokens = entry.outputTokens || 0;
         items.push({
@@ -1023,6 +1122,65 @@ export function settledRunChildren(
 }
 
 /**
+ * A provider can emit the same user-facing text first as progress and then as
+ * its durable response. Keep the chronological progress item while the answer
+ * is still unknown, but once that response exists let its dedicated bubble own
+ * the text. Only the last exact match is removed so intentional earlier
+ * repetition remains visible.
+ */
+export function omitProgressRepeatedByResponse(
+  items: readonly TaskChatItem[],
+  responseText: string | null | undefined,
+): readonly TaskChatItem[] {
+  return (
+    omitProgressRepeatedByResponseAcrossSegments([items], responseText)[0] ??
+    items
+  );
+}
+
+/**
+ * Run-wide form of omitProgressRepeatedByResponse for steered transcripts.
+ * Segmentation is a presentation concern, so it must not turn one dedupe into
+ * one removal per segment. Preserve all intentional earlier repetitions and
+ * remove only the final progress item matching the durable response.
+ */
+export function omitProgressRepeatedByResponseAcrossSegments(
+  segments: readonly (readonly TaskChatItem[])[],
+  responseText: string | null | undefined,
+): readonly (readonly TaskChatItem[])[] {
+  const normalizedResponse = responseText?.trim();
+  if (!normalizedResponse) return segments;
+  let redundantSegmentIndex = -1;
+  let redundantIndex = -1;
+  findRedundant: for (
+    let segmentIndex = segments.length - 1;
+    segmentIndex >= 0;
+    segmentIndex -= 1
+  ) {
+    const items = segments[segmentIndex];
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (
+        item.kind === "message" &&
+        item.interstitial &&
+        item.channel === "progress" &&
+        item.text.trim() === normalizedResponse
+      ) {
+        redundantSegmentIndex = segmentIndex;
+        redundantIndex = index;
+        break findRedundant;
+      }
+    }
+  }
+  if (redundantSegmentIndex < 0) return segments;
+  return segments.map((items, segmentIndex) =>
+    segmentIndex === redundantSegmentIndex
+      ? items.filter((_, index) => index !== redundantIndex)
+      : items,
+  );
+}
+
+/**
  * Keep the paperclip runner's expanded activity history focused on work the
  * user can act on. The normalized transcript remains lossless; this is only a
  * presentation filter for the new-runner turn surface. Legacy adapters keep
@@ -1072,12 +1230,20 @@ export function paperclipRunnerActivityItems(
         if (
           hasAggregateWorkspaceChange &&
           (normalizedName === "file_change" || normalizedName === "filechange")
-        ) return false;
+        )
+          return false;
         return normalizedName !== "paperclip_finish";
       }
       case "marker":
         return item.variant === "interrupted";
       case "protocol":
+        // Completion is already represented by task state and the final answer.
+        // Keep its event in the inspector, but omit it from feed rows and counts.
+        if (
+          item.surface === "provider_activity" &&
+          item.family === "tool_execution" &&
+          providerItemDetail(item, "Name") === "paperclip_finish"
+        ) return false;
         if (
           hasAggregateWorkspaceChange &&
           item.surface === "provider_activity" &&
@@ -1127,16 +1293,45 @@ export function paperclipRunnerTimelineItems(
   return parsed.filter(
     (item) =>
       activityIds.has(item.id) ||
+      (item.kind === "thinking" && Boolean(item.streaming)) ||
       item.kind === "plan_document" ||
       (item.kind === "protocol" && item.surface === "runtime_request"),
   );
 }
 
 /**
- * Resolve the durable response owned by a Paperclip Runner turn. Provider final
- * text wins when present; yielded control-plane runs fall back to the accepted
- * run-result summary because those runs intentionally do not post a comment.
+ * A response-wake can answer now while deliberately leaving the task open.
+ * Its marker is derived by the native event projector, never from final prose.
  */
+export function paperclipRunnerAcceptedResponseWake(
+  parsed: readonly TaskChatItem[],
+  runId: string | undefined,
+): TaskChatRunResultItem | undefined {
+  if (!runId) return undefined;
+  const results = parsed.filter(
+    (item): item is TaskChatRunResultItem =>
+      item.kind === "protocol" && item.surface === "run_result",
+  );
+  if (results.length !== 1) return undefined;
+  const result = results[0];
+  if (
+    result.disposition !== "yielded" ||
+    result.acceptedResponseWake?.runId !== runId ||
+    !result.acceptedResponseWake.sourceEventId.trim() ||
+    !result.summary.trim()
+  ) return undefined;
+  if (parsed.some((item) =>
+    item.kind === "protocol" &&
+    item.surface === "runtime_request" && item.status === "pending",
+  )) return undefined;
+  return parsed.some((item) =>
+    item.kind === "protocol" && item.surface === "run_terminal" &&
+    item.id === `${runId}:terminal` && item.runState === "succeeded" &&
+    item.turnState === "completed" && item.disposition === "yielded",
+  ) ? result : undefined;
+}
+
+/** Resolve a terminal reply without presenting ordinary yielded waits as answers. */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
   options?: {
@@ -1147,6 +1342,31 @@ export function paperclipRunnerFinalResponse(
     allowFallback?: boolean;
   },
 ): TaskChatMessageItem | undefined {
+  // A yielded result is a control-plane wait boundary, not an assistant reply.
+  // Some providers historically labeled their "waiting for input" prose as a
+  // final message, so disposition must take precedence over message channel.
+  const yielded = parsed.some(
+    (item) =>
+      item.kind === "protocol" &&
+      item.surface === "run_result" &&
+      item.disposition === "yielded",
+  );
+  if (yielded) {
+    const accepted =
+      options?.allowFallback === false
+        ? undefined
+        : paperclipRunnerAcceptedResponseWake(parsed, options?.runId);
+    if (!accepted) return undefined;
+    return {
+      id: `${accepted.id}:final-response`,
+      kind: "message",
+      author: "agent",
+      authorName: options?.agentName,
+      text: accepted.summary.trim(),
+      channel: "final",
+      streaming: false,
+    };
+  }
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
     if (
@@ -1169,7 +1389,12 @@ export function paperclipRunnerFinalResponse(
       item.channel !== "progress" &&
       item.text.trim()
     ) {
-      return { ...item, channel: "final", interstitial: false, streaming: false };
+      return {
+        ...item,
+        channel: "final",
+        interstitial: false,
+        streaming: false,
+      };
     }
   }
   const runResult = [...parsed]
@@ -1199,7 +1424,9 @@ export function paperclipRunnerFinalResponse(
  * Materialize a saved plan at the tool boundary that created its revision.
  * The document query and transcript stream update independently, so folding
  * the document into the parsed turn gives live, settling, and replay the same
- * stable owner and DOM position.
+ * stable owner and DOM position. If that boundary is temporarily unavailable,
+ * retain an explicitly marked end-of-turn fallback instead of dropping the
+ * canonical document.
  */
 export function embedPlanDocumentAtWriteBoundary(
   parsed: readonly TaskChatItem[],
@@ -1221,10 +1448,14 @@ export function embedPlanDocumentAtWriteBoundary(
     const normalizedName = name.replaceAll("-", "_").toLowerCase();
     if (normalizedName === "write_document") writeIndex = index;
   }
-  if (writeIndex < 0) return withoutPlan;
+  const placedPlan: TaskChatPlanDocumentItem = {
+    ...plan,
+    placement: writeIndex < 0 ? "fallback" : "write_boundary",
+  };
+  if (writeIndex < 0) return [...withoutPlan, placedPlan];
   return [
     ...withoutPlan.slice(0, writeIndex + 1),
-    plan,
+    placedPlan,
     ...withoutPlan.slice(writeIndex + 1),
   ];
 }
@@ -1469,8 +1700,8 @@ function phaseSummary(
  * Commentary starts a sticky phase. Consecutive diagnostic activity belongs
  * to that phase until the next commentary or runtime request. Request lifecycle
  * updates are coalesced to their latest state but emitted at the first request
- * slot; pending requests stay composer-only while still breaking activity
- * grouping at that slot.
+ * slot. Pending requests keep a compact feed entry so they remain reachable
+ * after their composer form is dismissed.
  */
 export function buildTurnTimelineRows(
   parsed: readonly TaskChatItem[],
@@ -1498,27 +1729,26 @@ export function buildTurnTimelineRows(
     }
     return current;
   };
-  const legacyReplyBoundary = [...parsed]
-    .reverse()
-    .find((item) => {
-      if (item.kind === "usage" || item.kind === "status") return false;
-      if (item.kind === "marker") {
-        return item.variant === "interrupted";
-      }
-      if (item.kind === "protocol") {
-        return (
-          item.surface === "provider_activity" ||
-          item.surface === "runtime_request"
-        );
-      }
-      return true;
-    });
+  const legacyReplyBoundary = [...parsed].reverse().find((item) => {
+    if (item.kind === "usage" || item.kind === "status") return false;
+    if (item.kind === "marker") {
+      return item.variant === "interrupted";
+    }
+    if (item.kind === "protocol") {
+      return (
+        item.surface === "provider_activity" ||
+        item.surface === "runtime_request"
+      );
+    }
+    return true;
+  });
   for (const item of parsed) {
     if (item.kind === "message") {
       // Explicit final-channel replies remain canonical even when a later
       // usage row makes them non-tail. Channel-less legacy transcripts retain
       // the last-visible fallback until the posted reply lands.
-      const explicitFinal = item.channel === "final" || item.interstitial === false;
+      const explicitFinal =
+        item.channel === "final" || item.interstitial === false;
       const legacyTrailingReply =
         (item.channel == null || item.channel === "unknown") &&
         item === legacyReplyBoundary;
@@ -1538,13 +1768,13 @@ export function buildTurnTimelineRows(
       seenRequests.add(key);
       current = null;
       const latest = latestRequestByKey.get(key);
-      if (
-        latest?.surface === "runtime_request" &&
-        latest.status !== "pending"
-      ) {
+      if (latest?.surface === "runtime_request") {
         rows.push(latest.id === item.id ? latest : { ...latest, id: item.id });
       }
-    } else if (item.kind === "protocol" && item.surface === "workspace_change") {
+    } else if (
+      item.kind === "protocol" &&
+      item.surface === "workspace_change"
+    ) {
       current = null;
       rows.push(item);
     } else if (item.kind === "plan_document") {
@@ -1779,6 +2009,7 @@ export function coalesceSettledTurns(
         held &&
         meta &&
         heldMeta &&
+        Boolean(item.historical) === Boolean(held.historical) &&
         meta.agentKey &&
         meta.agentKey === heldMeta.agentKey
       ) {
@@ -1841,6 +2072,7 @@ export function attachSettledTurns(
       item.settled &&
       prev?.kind === "message" &&
       prev.author === "agent" &&
+      prev.origin !== "fast_response" &&
       !prev.interstitial &&
       !prev.streaming &&
       prev.attachedTurn == null

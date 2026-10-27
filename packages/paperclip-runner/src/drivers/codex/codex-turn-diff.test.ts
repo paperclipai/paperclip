@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCodexTurnDiff } from "./codex-turn-diff.js";
+import { parseCodexTurnDiff, summarizeCodexTurnDiff } from "./codex-turn-diff.js";
 
 describe("Codex turn diff parser", () => {
+  it("summarizes parsed files for work-product metadata", () => {
+    expect(summarizeCodexTurnDiff([
+      { path: "a.ts", operation: "modify", previousPath: null, additions: 4, deletions: 2, binary: false, diff: "patch" },
+      { path: "b.ts", operation: "create", previousPath: null, additions: 3, deletions: 0, binary: false, diff: "patch" },
+    ])).toEqual({ files: 2, additions: 7, deletions: 2 });
+
+    expect(summarizeCodexTurnDiff([
+      { path: "logo.png", operation: "modify", previousPath: null, additions: null, deletions: null, binary: true, diff: null },
+    ])).toEqual({ files: 1, additions: null, deletions: null });
+  });
+
   it("parses a complete snapshot with bounded file statistics", () => {
     expect(parseCodexTurnDiff([
       "diff --git a/src/old.ts b/src/new.ts",

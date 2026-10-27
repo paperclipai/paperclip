@@ -1,0 +1,79 @@
+{
+  "schema": "paperclip.pi-provider-pack-offline-proof.v1",
+  "recordedAt": "2026-09-28T17:16:19.824Z",
+  "classification": "offline_candidate_admission",
+  "source": {
+    "runnerRevision": "1e0d11c482f8ef50b6afc1430cb736579114b266",
+    "distDigest": "sha256:70dcefa5e8a12d43c6b7fe2bda54b8dbd8e5706b17cb97a94f36a70a7974398c",
+    "bridgeDigest": "sha256:6f2f1e35c497cc480fa061ed8579c709f7f4732cd5cb8f7e27fef7fb992f3559",
+    "productionLockDigest": "sha256:67f4ff4c747a7bcad77cbdd7ed264d387a30e950def41a44dbd8664caa6a172b",
+    "note": "Integrated pack probe used the deployed generic installation registry and its immutable snapshot. Initialize steering and missing-credential assertions passed. Evidence serialization initially used an incorrect manifest member; this record was repaired from the actual artifacts entries after the provider was closed. No prompt was sent."
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeVersion": "24.19.0",
+    "execution": "local macOS ARM64; immutable guarded provider snapshot",
+    "packageManager": "pnpm@9.15.4"
+  },
+  "candidate": {
+    "agent": "pi",
+    "qualification": "pending",
+    "agentProfileVersion": 2,
+    "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "reportedModelId": null,
+    "modelVerification": "not_performed_authentication_missing",
+    "wrapperVersion": "0.0.33",
+    "runtimeVersion": "0.84.2",
+    "profileDigest": "sha256:b18deb44976b92e5e6b4f874f6e28dbbf23b34c917879ee3f7cdc03472919476",
+    "closureDigest": "sha256:2fde022b3714c497f352e628789c4dd47b6446351dc69779293b3a0eafcbc17f",
+    "assetTreeDigest": "sha256:48ac0fe511df6550cf7b3de06e78265dda1687bcb0f11f4bb72358a7e75d4173",
+    "distributionManifestDigest": "sha256:43a6ced3b8926dfefd8c46c67cfb113fdca531caadd79978053edacfdc8b70f2",
+    "wrapperDigest": "sha256:80c0e302e75b39d71404c69afb2d5182c468ccdee68bfe8b09f1f40e20a47fb4",
+    "helperDigest": "sha256:4333d284ff06ab1195e49630041f0b03a486a92fc678100525ad107e0982dba1",
+    "extensionDigest": "sha256:87f5348be5da3fb505baea1208de7b62e88ec714adcf0ac0a16a51952f57e2da"
+  },
+  "providerPack": {
+    "manifestDigest": "sha256:f859e30e51326ff875d616e2bb3fd4c0246ce1f58a5988968b91bae176a68281",
+    "portableNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "piNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "acpxSidecarDigest": "sha256:6a1f7cef751ac59c54bb9dbd3fa7bc03eee27a7ba2b551aa75cd520314f05391"
+  },
+  "observed": {
+    "closedSnapshotLaunch": true,
+    "acpInitialize": "passed",
+    "authMethods": [],
+    "capabilities": {
+      "version": 1,
+      "steering": true,
+      "queuedFollowUp": true,
+      "questions": [
+        "select",
+        "confirm",
+        "input",
+        "editor"
+      ],
+      "nativePermissions": true,
+      "promptUsage": true,
+      "nativePlan": false,
+      "pendingRequestRecovery": "live-process-only"
+    },
+    "sessionNew": "rejected_authentication_missing",
+    "expectedError": "Bind the configured OpenRouter API credential to this Paperclip runtime.",
+    "missingCredentialRejected": true,
+    "capabilityProvenance": "Unchanged pinned Pi closure from the previous complete capability receipt; integrated probe reasserted steering and missing-credential rejection."
+  },
+  "usage": {
+    "providerCalls": 0,
+    "promptRequests": 0,
+    "paidProviderCalls": 0,
+    "credentials": "none",
+    "spentUsd": 0
+  },
+  "limitations": [
+    "No provider authentication, model prompt, or reported currentModelId was verified.",
+    "Native tool execution, permissions, questions, and semantic MCP calls were not exercised by this pack-launch probe.",
+    "Linux x64, macOS x64, and Daytona execution were not exercised.",
+    "Production qualification remains pending."
+  ]
+}

@@ -12,6 +12,38 @@ import type {
   TaskChatProviderActivityFamily,
   TaskChatRuntimeRequestDecision,
 } from "./task-chat-model";
+import type { HeartbeatRunEvent, IssueWorkProduct } from "@paperclipai/shared";
+import { nativeRunEventsToTranscript } from "../transcript/native-run-events";
+import { transcriptToTaskChatItems } from "./transcript-adapter";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { RichWorkProductCard } from "./RichWorkProductCard";
+import { stateChipFor } from "./RichWorkProductCard";
+
+function workProduct(overrides: Partial<IssueWorkProduct> = {}): IssueWorkProduct {
+  return {
+    id: "work-product-1",
+    companyId: "company-1",
+    projectId: null,
+    issueId: "issue-1",
+    executionWorkspaceId: null,
+    runtimeServiceId: null,
+    type: "pull_request",
+    provider: "github",
+    externalId: "42",
+    title: "Ship rich work-product cards",
+    url: "https://github.com/paperclipai/paperclip/pull/42",
+    status: "merged",
+    reviewState: "none",
+    isPrimary: true,
+    healthStatus: "healthy",
+    summary: null,
+    metadata: null,
+    createdByRunId: null,
+    createdAt: new Date("2026-09-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-09-02T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 vi.mock("@/components/MarkdownEditor", () => ({
   MarkdownEditor: forwardRef(function MockMarkdownEditor(
@@ -85,6 +117,244 @@ describe("TaskChatProtocolCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("renders a rich deliverable card without a completed chip", () => {
+    const product = workProduct({
+      metadata: {
+        repo: "paperclipai/paperclip",
+        number: 42,
+        baseRef: "master",
+        headRef: "feat/rich-cards",
+        additions: 17,
+        deletions: 5,
+        changedFiles: 3,
+        state: "merged",
+        draft: false,
+      },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "pull request · merged",
+      href: product.url,
+      workProduct: product,
+    });
+
+    expect(container.querySelector('[data-testid="task-chat-rich-work-product-pull_request"]')).not.toBeNull();
+    expect(container.textContent).toContain("Open on GitHub");
+    expect(container.textContent).toContain("paperclipai/paperclip · #42 · master ← feat/rich-cards");
+    expect(container.textContent).toContain("+17 −5 · 3 files");
+    expect(container.textContent).toContain("Merged");
+    expect(container.textContent).not.toContain("Completed");
+
+    const action = container.querySelector('a[aria-label="Open on GitHub: Ship rich work-product cards"]');
+    expect(action?.querySelector("span")?.className).toContain("hidden @sm:inline");
+    const stats = Array.from(container.querySelectorAll("p")).find((node) => node.textContent === "+17 −5 · 3 files");
+    expect(stats?.className).toContain("whitespace-nowrap");
+  });
+
+  it("shows pending artifacts with a dashed Pending chip", () => {
+    const product = workProduct({
+      type: "artifact",
+      provider: "paperclip",
+      url: "/api/attachments/attachment-1/content",
+      status: "pending",
+      title: "demo.png",
+      metadata: { contentType: "image/png", byteSize: 2048 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "artifact · pending",
+      href: product.url,
+      workProduct: product,
+    });
+
+    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Pending");
+    expect(chip?.className).toContain("border-dashed");
+    expect(container.textContent).toContain("Image · 2.0 KB");
+    expect(container.textContent).toContain("Open gallery");
+  });
+
+  it.each([
+    ["image/png", "compact"], ["video/webm", "compact"],
+    ["image/png", "gallery"], ["video/webm", "gallery"],
+  ] as const)("opens %s artifacts from the %s presentation in the task gallery", (contentType, variant) => {
+    const openGallery = vi.fn(() => true);
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <IssueGalleryContext.Provider value={openGallery}>
+        <RichWorkProductCard
+          workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+          href={contentPath}
+          variant={variant}
+        />
+      </IssueGalleryContext.Provider>,
+    ));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Open gallery:"]');
+    expect(button).not.toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+    flushSync(() => button!.click());
+    expect(openGallery).toHaveBeenCalledWith(contentPath);
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("shows a branch summary and lets users inspect a work product without a remote URL", () => {
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({
+          type: "branch",
+          provider: "git",
+          title: "Company skill update entrypoint",
+          summary: "Uncommitted implementation changes are in the execution working tree on branch company-skill-update-entrypoint.",
+          url: null,
+          metadata: null,
+          status: "active",
+        })}
+        href={null}
+      />,
+    ));
+    expect(container.textContent).not.toContain("Uncommitted implementation changes");
+    expect(container.textContent).toContain("Branch · no remote link");
+    expect(container.querySelector("strong")?.className).toContain("line-clamp-2");
+    expect(container.querySelector("a")).toBeNull();
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
+    expect(button?.getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => button!.click());
+    const savedDescription = container.querySelector<HTMLDetailsElement>("details");
+    expect(savedDescription?.open).toBe(false);
+    expect(savedDescription?.textContent).toContain("Uncommitted implementation changes");
+    flushSync(() => savedDescription!.querySelector("summary")!.click());
+    expect(savedDescription?.open).toBe(true);
+    flushSync(() => savedDescription!.querySelector("summary")!.click());
+    expect(container.textContent).toContain("git · active · Updated");
+    expect(container.querySelector('button[aria-label^="Hide details:"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("strong")?.className).not.toContain("line-clamp-2");
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Hide details:"]')!.click());
+    expect(container.querySelector("details")).toBeNull();
+    expect(container.textContent).toContain("Branch · no remote link");
+    expect(container.querySelector('button[aria-label^="Show details:"]')?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.textContent).toContain("Download");
+    expect(container.textContent).not.toContain("Open preview");
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
+  it.each(["application/pdf", "text/plain", "text/markdown", "application/json", "text/csv"])("downloads %s artifacts through the download route", (contentType) => {
+    const contentPath = "/api/attachments/file/content";
+    const downloadPath = `${contentPath}?download=1`;
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType, contentPath, openPath: contentPath, downloadPath } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(downloadPath);
+  });
+
+  it("downloads a legacy attachment with only a content href", () => {
+    const contentPath = "/api/attachments/legacy-file/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", metadata: { contentType: "application/pdf" } })}
+        href={contentPath}
+      />,
+    ));
+    expect(container.querySelector('a[aria-label^="Download:"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+  });
+
+  it("opens standalone artifact media in a modal with a download", async () => {
+    const contentPath = "/api/attachments/media/content";
+    flushSync(() => root.render(
+      <RichWorkProductCard
+        workProduct={workProduct({ type: "artifact", title: "Screenshot", metadata: { contentType: "image/png", contentPath, originalFilename: "proof.png", downloadPath: `${contentPath}?download=1` } })}
+        href={contentPath}
+      />,
+    ));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open gallery: Screenshot"]')!.click());
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe(contentPath);
+    expect(document.querySelector('a[aria-label="Download proof.png"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+    await act(async () => document.querySelector<HTMLButtonElement>('button[title="Close"]')!.click());
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("keeps completed and approved states out of the state-chip policy", () => {
+    expect(stateChipFor("commit", "completed", "none")).toBeNull();
+    expect(stateChipFor("document", "approved", "approved")).toBeNull();
+    expect(stateChipFor("pull_request", "open", "none")).toMatchObject({ label: "Open", tone: "progress" });
+    expect(stateChipFor("pull_request", "merged", "none")).toMatchObject({ label: "Merged", tone: "success" });
+    expect(stateChipFor("pull_request", "closed", "none")).toMatchObject({ label: "Closed", tone: "neutral" });
+    expect(stateChipFor("artifact", "pending", "none")).toMatchObject({ label: "Pending", dashed: true });
+  });
+
+  it("shows the live open pull request state while preserving explicit review-state precedence", () => {
+    const product = workProduct({
+      status: "ready_for_review",
+      metadata: { state: "open" },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: "pull request · open",
+      href: product.url,
+      workProduct: product,
+    });
+
+    const chip = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Open");
+    expect(chip).toBeDefined();
+    expect(container.textContent).not.toContain("Review");
+    expect(stateChipFor("pull_request", "open", "needs_board_review")).toMatchObject({
+      label: "Review",
+      tone: "review",
+    });
+  });
+
+  it.each([
+    ["active", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["active", "unknown", [], ["Running", "Unhealthy"]],
+    ["open", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["closed", "unhealthy", ["Stopped"], ["Unhealthy"]],
+  ] as const)("renders %s runtime with %s health", (status, healthStatus, visible, absent) => {
+    const product = workProduct({
+      type: "runtime_service",
+      provider: "paperclip",
+      status,
+      healthStatus,
+      title: "Storybook",
+      metadata: { service: "storybook", port: 6006 },
+    });
+    renderCard(root, {
+      id: "resource:deliverable:work-product-1",
+      kind: "protocol",
+      surface: "resource",
+      resourceKind: "deliverable",
+      title: product.title,
+      subtitle: `runtime service · ${status}`,
+      href: product.url,
+      workProduct: product,
+    });
+
+    for (const label of visible) expect(container.textContent).toContain(label);
+    for (const label of absent) expect(container.textContent).not.toContain(label);
   });
 
   it("renders provider plan steps and status", () => {
@@ -241,6 +511,55 @@ describe("TaskChatProtocolCard", () => {
     expect(onDecision).toHaveBeenCalledWith({ action: "accept" });
   });
 
+  it("renders committed ACP permission choices and preserves its exact resolution binding", async () => {
+    const event: HeartbeatRunEvent = {
+      id: 1, seq: 1, companyId: "company-1", runId: "run-1", agentId: "agent-1",
+      eventType: "runtime_request.created", stream: "system", level: "info", color: null, message: null,
+      createdAt: new Date("2026-09-28T12:00:00Z"),
+      payload: { prpEvent: {
+        schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceEventId: "permission-1", sourceSeq: 1,
+        sourceKind: "runner", sourceInstanceId: "runner-1", runId: "run-1", normalizedSessionId: "session-1",
+        turnId: "turn-1", itemId: "item-1", eventType: "runtime_request.created", priority: 0,
+        emittedAt: "2026-09-28T12:00:00Z", payload: { request: {
+          schema: "paperclip.runtime_request.v2", requestKind: "permission_approval", type: "permission",
+          requestId: "permission-1", turnId: "turn-1", itemId: "item-1", status: "pending",
+          prompt: "Allow editing src/example.ts?",
+          choices: [{ key: "accept", label: "Allow once" }, { key: "decline", label: "Deny" }],
+          details: { toolCallId: "tool-1" },
+          origin: { adapter: "acpx-runtime-sidecar", provider: "acpx", method: "session/request_permission" },
+        } },
+      } },
+    };
+    const item = transcriptToTaskChatItems(nativeRunEventsToTranscript([event]), {
+      runId: "run-1", agentName: "ACP", running: true,
+    }).find(candidate => candidate.kind === "protocol" && candidate.surface === "runtime_request");
+    if (item?.kind !== "protocol" || item.surface !== "runtime_request") throw new Error("permission card missing");
+    expect(item).toMatchObject({ runId: "run-1", requestId: "permission-1", turnId: "turn-1", requestKind: "permission_approval", status: "pending" });
+    expect(item.choices.map(choice => choice.key)).toEqual(["accept", "decline"]);
+    const resolve = vi.fn().mockResolvedValue(undefined);
+    flushSync(() => root.render(<MemoryRouter><ThemeProvider>
+      <TaskChatProtocolCard item={item} onRuntimeRequestDecision={resolve} />
+    </ThemeProvider></MemoryRouter>));
+    expect(container.textContent).toContain("Allow editing src/example.ts?");
+    const allow = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Allow once");
+    expect(allow?.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Allow for session");
+    await act(async () => allow?.click());
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(item, { action: "accept" });
+    const delivered: HeartbeatRunEvent = { ...event, id: 2, seq: 2, eventType: "runtime_request.resolved", payload: { prpEvent: {
+      ...(event.payload!.prpEvent as Record<string, unknown>), sourceEventId: "permission-delivered", sourceSeq: 2,
+      eventType: "runtime_request.resolved", payload: { requestId: "permission-1", requestKind: "permission_approval",
+        turnId: "turn-1", itemId: "item-1", status: "delivered", action: "accept" },
+    } } };
+    const settled = transcriptToTaskChatItems(nativeRunEventsToTranscript([event, delivered]), {
+      runId: "run-1", agentName: "ACP", running: true,
+    }).find(candidate => candidate.kind === "protocol" && candidate.surface === "runtime_request");
+    if (settled?.kind !== "protocol" || settled.surface !== "runtime_request") throw new Error("receipt missing");
+    expect(settled).toMatchObject({ requestId: "permission-1", status: "resolved", resolvedAction: "accept" });
+    renderCard(root, settled, resolve);
+    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Allow once")).toBeUndefined();
+  });
+
   it("submits structured runtime input through the production card", async () => {
     const onDecision = vi.fn().mockResolvedValue(undefined);
     renderCard(
@@ -281,6 +600,35 @@ describe("TaskChatProtocolCard", () => {
       values: { environment: "production" },
     });
     expect(container.textContent).toContain("Submitting…");
+  });
+
+  it("keeps complete provider plan Markdown while making image references inert", () => {
+    const prefix = '# Release plan\n\n**Preserve every instruction.**\n\n![Evidence](https://provider.invalid/track.png "Provider image")\n\n![Local image](/api/attachments/untrusted/content)\n\n';
+    const suffix = '\n\n```mermaid\nflowchart LR\n  A@{ img: "https://provider.invalid/diagram.png" }\n```\n\nFINAL_PLAN_BOUNDARY';
+    const fullInstructions = "x".repeat(100_000 - prefix.length - suffix.length);
+    const description = prefix + fullInstructions + suffix;
+    expect(description).toHaveLength(100_000);
+    renderCard(root, {
+      id: "provider-plan", kind: "protocol", surface: "runtime_request", runId: "run-1",
+      requestId: "plan-revision-7", requestKind: "runtime", turnId: "turn-1",
+      requestType: "input", status: "pending", prompt: "Review the complete plan.", choices: [], fields: [],
+      questionSet: {
+        schema: "paperclip.question_set.v1", description,
+        questions: [{ id: "decision", prompt: "Accept this plan?", required: true, answerMode: "single_select",
+          options: [{ id: "accept", label: "Accept" }, { id: "reject", label: "Reject" }] }],
+      },
+    });
+
+    const context = container.querySelector('[role="region"][aria-label="Question context"]');
+    expect(context?.querySelector("h1")?.textContent).toBe("Release plan");
+    expect(context?.querySelector("strong")?.textContent).toBe("Preserve every instruction.");
+    expect(context?.textContent).toContain(fullInstructions);
+    expect(context?.textContent).toContain("FINAL_PLAN_BOUNDARY");
+    expect(context?.textContent).toContain("Evidence");
+    expect(context?.textContent).toContain("https://provider.invalid/track.png");
+    expect(context?.querySelector("img, video, audio, iframe, object, embed, image, link")).toBeNull();
+    expect(context?.querySelector('.language-mermaid')?.textContent).toContain('https://provider.invalid/diagram.png');
+    expect(context?.querySelector('.paperclip-mermaid')).toBeNull();
   });
 
   it("submits the canonical response from a v2 harness question set", async () => {
@@ -345,14 +693,24 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
+    // Selecting answers the question; every page waits for Next.
+    const nextButton = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.trim() === "Next",
+      );
+    expect(container.textContent).toContain("1 of 3");
+    await act(async () => nextButton()?.click());
+    expect(container.textContent).toContain("2 of 3");
+    expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       "Which regions should receive the release?",
     );
-    const progress = Array.from(
-      container.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((button) => button.textContent?.trim() === "Continue");
-    expect(progress).not.toBeUndefined();
-    await act(async () => progress?.click());
+    expect(
+      Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Continue",
+      ),
+    ).toBeUndefined();
+    await act(async () => nextButton()?.click());
     expect(container.textContent).toContain("Anything else we should know?");
     const submit = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Continue",

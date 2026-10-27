@@ -1,5 +1,7 @@
+import { decisionArchiveDeliveryService, type ArchiveNotificationBatch } from "./decision-archive-delivery.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -31,16 +33,7 @@ export const DEFAULT_DECISION_ARCHIVE_DAYS = 90;
 const DAY_MS = 86_400_000;
 
 export type DecisionRetentionState = typeof decisionRetention.$inferSelect;
-export type ArchiveNotificationBatch = {
-  companyId: string;
-  agentId: string;
-  items: Array<{
-    sourceKind: AttentionSourceKind;
-    sourceId: string;
-    archiveVersion: number;
-    issueId: string;
-  }>;
-};
+export type { ArchiveNotificationBatch } from "./decision-archive-delivery.js";
 
 function sourceKey(sourceKind: string, sourceId: string) {
   return `${sourceKind}:${sourceId}`;
@@ -371,6 +364,7 @@ export function decisionRetentionService(
         archived += 1;
         const origin = await resolveOrigin(txDb, input.companyId, item.sourceKind, item.subject.id);
         if (origin) {
+          await notifyDeliveryWork(txDb, DELIVERY_QUEUES.decisionArchiveDelivery);
           await txDb.insert(decisionArchiveNotificationOutbox).values({
             companyId: input.companyId,
             sourceKind: item.sourceKind,
@@ -394,80 +388,7 @@ export function decisionRetentionService(
     return archived;
   }
 
-  async function deliverNotifications(limit = 500) {
-    if (!options.notifyOriginAgent) return { notifiedAgents: 0, delivered: 0 };
-    const claimAt = new Date();
-    const staleClaimAt = new Date(claimAt.getTime() - 5 * 60_000);
-    await db.update(decisionArchiveNotificationOutbox).set({ status: "pending", updatedAt: claimAt })
-      .where(and(
-        eq(decisionArchiveNotificationOutbox.status, "delivering"),
-        or(isNull(decisionArchiveNotificationOutbox.lastAttemptAt), lte(decisionArchiveNotificationOutbox.lastAttemptAt, staleClaimAt)),
-      ));
-    const rows = await db.transaction(async (tx) => {
-      const pendingIds = await tx.select({ id: decisionArchiveNotificationOutbox.id })
-        .from(decisionArchiveNotificationOutbox)
-        .where(eq(decisionArchiveNotificationOutbox.status, "pending"))
-        .orderBy(asc(decisionArchiveNotificationOutbox.createdAt), asc(decisionArchiveNotificationOutbox.id))
-        .limit(limit)
-        .then((values) => values.map((value) => value.id));
-      if (pendingIds.length === 0) return [];
-      return tx.update(decisionArchiveNotificationOutbox).set({
-        status: "delivering",
-        lastAttemptAt: claimAt,
-        attemptCount: sql`${decisionArchiveNotificationOutbox.attemptCount} + 1`,
-        updatedAt: claimAt,
-      }).where(and(
-        inArray(decisionArchiveNotificationOutbox.id, pendingIds),
-        eq(decisionArchiveNotificationOutbox.status, "pending"),
-      )).returning();
-    });
-    const groups = new Map<string, typeof rows>();
-    for (const row of rows) {
-      const key = `${row.companyId}:${row.originAgentId}`;
-      const grouped = groups.get(key) ?? [];
-      grouped.push(row);
-      groups.set(key, grouped);
-    }
-    let notifiedAgents = 0;
-    let delivered = 0;
-    for (const grouped of groups.values()) {
-      const first = grouped[0]!;
-      try {
-        await options.notifyOriginAgent({
-          companyId: first.companyId,
-          agentId: first.originAgentId,
-          items: grouped.map((row) => ({
-            sourceKind: row.sourceKind as AttentionSourceKind,
-            sourceId: row.sourceId,
-            archiveVersion: row.archiveVersion,
-            issueId: row.originIssueId,
-          })),
-        });
-        const deliveredAt = new Date();
-        await db.update(decisionArchiveNotificationOutbox).set({
-          status: "delivered",
-          deliveredAt,
-          lastAttemptAt: deliveredAt,
-          updatedAt: deliveredAt,
-        }).where(and(
-          inArray(decisionArchiveNotificationOutbox.id, grouped.map((row) => row.id)),
-          eq(decisionArchiveNotificationOutbox.status, "delivering"),
-        ));
-        notifiedAgents += 1;
-        delivered += grouped.length;
-      } catch {
-        await db.update(decisionArchiveNotificationOutbox).set({
-          status: "pending",
-          lastAttemptAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(
-          inArray(decisionArchiveNotificationOutbox.id, grouped.map((row) => row.id)),
-          eq(decisionArchiveNotificationOutbox.status, "delivering"),
-        ));
-      }
-    }
-    return { notifiedAgents, delivered };
-  }
+  const archiveDelivery = decisionArchiveDeliveryService(db, options);
 
   return {
     syncItems,
@@ -477,6 +398,7 @@ export function decisionRetentionService(
     revive: (input: Omit<Parameters<typeof changeArchived>[0], "archived">) => changeArchived({ ...input, archived: false }),
     archiveReviewedManifest,
     autoArchive,
-    deliverNotifications,
+    deliverNotifications: archiveDelivery.deliver,
+    nextArchiveNotificationAt: archiveDelivery.next,
   };
 }

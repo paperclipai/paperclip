@@ -8,6 +8,7 @@
     "sandbox": "Sandbox resource measurements.",
     "workspace": "Workspace readiness.",
     "harness": "Provider harness startup, readiness, exit, and diagnostics.",
+    "auth": "Content-free harness credential changes observed by the runner.",
     "session": "Provider-neutral session open, resume, reconciliation, close, and failure.",
     "turn": "Model turn submission through terminal turn disposition.",
     "item": "Provider-neutral model/tool item lifecycle.",
@@ -46,14 +47,24 @@
   },
   "optionalGrantGroups": [
     {
+      "id": "feedback",
+      "description": "Internally attributed complaints and improvement suggestions; no additional grant required beyond active run authority.",
+      "operationIds": ["submit_complaint", "submit_suggestion"]
+    },
+    {
       "id": "discovery",
       "description": "Company-visible task, agent, project, and goal discovery.",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "set_task_title"]
+    },
+    {
+      "id": "projects",
+      "description": "Project creation and authorized repository discovery through the live company/run authority.",
+      "operationIds": ["create_project", "list_project_repositories"]
     },
     {
       "id": "delegation_dependencies",
-      "description": "Create delegated work and maintain dependency edges.",
-      "operationIds": ["create_task", "set_dependencies"]
+      "description": "Create or reassign delegated work and maintain dependency edges.",
+      "operationIds": ["create_task", "reassign_task", "set_dependencies", "hire_agent"]
     },
     {
       "id": "governance",
@@ -62,18 +73,18 @@
     },
     {
       "id": "cases",
-      "description": "Read and update case summaries without reusing issue-document authority.",
-      "operationIds": ["list_cases", "upsert_case"]
+      "description": "Read and update authorized case facts and revisioned documents, author company workflow prompts, and durably hand off the primary task. list_cases and upsert_case remain scenario mocks.",
+      "operationIds": ["list_cases", "upsert_case", "create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow", "handoff_case"]
     },
     {
       "id": "workspace_runtime",
-      "description": "Inspect and control the active issue workspace runtime.",
-      "operationIds": ["get_workspace_runtime", "control_workspace_service"]
+      "description": "Inspect and select task workspaces, prepare repositories, and control workspace runtime services.",
+      "operationIds": ["get_workspace_runtime", "control_workspace_service", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository"]
     },
     {
       "id": "wake_scheduling",
       "description": "Schedule a bounded continuation wake when the current task owns the future check.",
-      "operationIds": ["schedule_wake"]
+      "operationIds": ["schedule_wake", "set_task_monitor"]
     },
     {
       "id": "routines",
@@ -82,8 +93,8 @@
     },
     {
       "id": "company_skills",
-      "description": "Inspect company skills and synchronize the current agent's skills.",
-      "operationIds": ["list_company_skills", "sync_company_skills"]
+      "description": "Create, update, or inspect company skills and synchronize the current agent's skills.",
+      "operationIds": ["create_skill", "update_skill", "list_company_skills", "sync_company_skills"]
     },
     {
       "id": "secrets",
@@ -99,6 +110,14 @@
       "id": "test_escape_hatch",
       "description": "Controlled skill-test transport only; never product coverage.",
       "operationIds": ["generic_api_request"]
+    },
+    {
+      "id": "api_fallback",
+      "description": "Discover and invoke HTTP API operations unsupported by available dedicated tools. Production authority and route authorization remain required.",
+      "operationIds": [
+        "search_api",
+        "call_api"
+      ]
     }
   ],
   "behaviorGroups": [
@@ -107,7 +126,7 @@
       "legacyGroup": 1,
       "name": "Heartbeat",
       "owner": "control plane + always tools",
-      "operationIds": ["get_task_context"],
+      "operationIds": ["get_task_context", "set_task_title"],
       "controlPlaneOperationIds": ["select_work", "enforce_budget"],
       "realSurface": "agent identity, inbox-lite, heartbeat context, budget and active-issue services",
       "mockStateDomains": ["company", "actor", "wake", "task", "budget", "run"],
@@ -155,24 +174,24 @@
       "legacyGroup": 5,
       "name": "Search",
       "owner": "optional discovery tools",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"],
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "list_project_repositories"],
       "controlPlaneOperationIds": [],
       "realSurface": "company issue search and agent/project/goal list/get routes",
       "mockStateDomains": ["company", "task", "actor", "project", "goal"],
       "prpEvidence": "bounded redacted read projections through tool-result item events",
-      "gap": "Project and goal operations are scenario-only; every real service binding is unbound."
+      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher."
     },
     {
       "id": "su",
       "legacyGroup": 6,
       "name": "Subtasks",
       "owner": "optional delegation tools",
-      "operationIds": ["create_task"],
+      "operationIds": ["create_task", "reassign_task", "hire_agent", "handoff_case"],
       "controlPlaneOperationIds": ["route_wake"],
-      "realSurface": "company issue create, child issue, assignment, and wake services",
+      "realSurface": "company issue create, child issue, guarded reassignment, and wake services",
       "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
       "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
-      "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."
+      "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency. handoff_case is live-only: the dedicated case service moves the same primary task after source execution settles, or records completion intent subject to ordinary completion gates; legacy scenarios do not claim that coverage."
     },
     {
       "id": "bl",
@@ -190,13 +209,13 @@
       "id": "dp",
       "legacyGroup": 8,
       "name": "Documents and plans",
-      "owner": "always tools; restore optional; destructive lifecycle control-plane-only",
+      "owner": "always task-document tools; restore optional; destructive lifecycle control-plane-only",
       "operationIds": ["list_documents", "read_document", "list_document_revisions", "write_document"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "issue document list/read/upsert/revision/restore/lock/unlock/delete routes",
       "mockStateDomains": ["task", "documents", "interactions", "idempotency", "audit", "fault"],
       "prpEvidence": "bounded reads and revision-safe write/conflict/denial receipts with revision lineage",
-      "gap": "restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only."
+      "gap": "restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only. Case kickoff initialDocuments become ordinary task documents in the same transaction. Case reads roll up authorized task document metadata; historical case-document REST storage remains readable without dedicated native document tools."
     },
     {
       "id": "ix",
@@ -239,24 +258,24 @@
       "legacyGroup": 12,
       "name": "Errors and critical rules",
       "owner": "runner/control plane + optional workspace/wake tools",
-      "operationIds": ["get_workspace_runtime", "control_workspace_service", "schedule_wake", "inspect_operation_result"],
+      "operationIds": ["get_workspace_runtime", "control_workspace_service", "get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "schedule_wake", "inspect_operation_result"],
       "controlPlaneOperationIds": ["release_task", "enforce_budget", "persist_run", "replay_run", "reconcile_run"],
       "realSurface": "workspace runtime, monitor/recovery, budget, run persistence/replay, release, and terminal services",
       "mockStateDomains": ["workspace", "budget", "run", "wake", "audit", "idempotency", "fault"],
       "prpEvidence": "runtime/workspace/attention/run lifecycle, typed denials, replay facts, and terminal causality",
-      "gap": "Budget stop reasons and semantic denial/conflict receipts require additive v1 envelopes; inspect_operation_result remains scenario-only."
+      "gap": "Budget stop reasons and semantic denial/conflict receipts require additive v1 envelopes; inspect_operation_result remains scenario-only. Task workspace inspection, discovery, selection and repository preparation use live authenticated service contracts; the legacy scenarios do not claim coverage for these operations."
     },
     {
       "id": "rf",
       "legacyGroup": 13,
       "name": "Reference files",
-      "owner": "optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request"],
+      "owner": "always instruction tools + optional domain tools + test-only escape hatch",
+      "operationIds": ["list_cases", "upsert_case", "create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions", "submit_complaint", "submit_suggestion"],
       "controlPlaneOperationIds": ["append_audit_record"],
-      "realSurface": "case, routine, company-skill, secret, portability, and administration services",
+      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services, and run-attributed agent commentary",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage."
+      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only. Workflow definition tools are live-only company-scoped prompt authoring and bounded retrieval under the Cases flag. create_case, read_case and update_case are live-only authorized case creation, projections and fact mutations; list_cases and upsert_case remain scenario mocks. Other domain operations remain scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage."
     },
     {
       "id": "mh",
@@ -287,12 +306,12 @@
       "legacyGroup": 16,
       "name": "Wake situations",
       "owner": "control plane + always context/history tools",
-      "operationIds": ["get_task_context", "get_task_history", "schedule_wake"],
+      "operationIds": ["get_task_context", "get_task_history", "schedule_wake", "set_task_monitor"],
       "controlPlaneOperationIds": ["select_work", "route_wake"],
       "realSurface": "wakeup requests, heartbeat context, comment/interaction/approval/blocker wake routing, and scheduled wake services",
       "mockStateDomains": ["wake", "task", "comments", "interactions", "approvals", "blockers", "run"],
       "prpEvidence": "attention request routing/resolution plus resumed session/run causality",
-      "gap": "Production scheduling binding is unbound; control-plane routing remains non-callable."
+      "gap": "set_task_monitor binds the one-shot monitor scheduler in production; schedule_wake remains mock-backed. Control-plane routing remains non-callable."
     }
   ],
   "rules": {

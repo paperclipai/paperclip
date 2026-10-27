@@ -13,6 +13,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
+            verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         },
@@ -24,8 +25,15 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         normalized_session_id: "session-1".to_owned(),
         working_directory: std::env::temp_dir(),
         permission_mode: AcpxPermissionMode::ApproveReads,
+        mode: None,
+        pi_thinking_level: None,
+        claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         permission_mode_pinned: true,
+        provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
+        runtime_context: serde_json::Value::Null,
         tool_set: AuthorizedToolSet {
             schema: "paperclip.runner.authorized-tools.v1".to_owned(),
             schema_version: 1,
@@ -54,6 +62,33 @@ fn rejects_suspension_during_an_active_turn_without_closing_the_session() {
 
     let error = session.suspend("too early").unwrap_err().to_string();
     assert!(error.contains("safe suspension point"), "{error}");
+    assert_eq!(session.state().active_turn_id(), Some("turn-1"));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn reaps_an_active_provider_generation_at_the_suspension_boundary() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+
+    session
+        .terminate_active_turn_for_suspension("turn-1")
+        .unwrap();
+    assert!(session.shutdown("already terminated").is_ok());
+}
+
+#[test]
+fn idle_suspension_cannot_retire_an_active_turn() {
+    let mut session = AcpxProviderSession::start(&config("suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    let error = session.terminate_idle_for_suspension().unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("settled turn and no pending requests"));
     assert_eq!(session.state().active_turn_id(), Some("turn-1"));
     session.shutdown("test complete").unwrap();
 }

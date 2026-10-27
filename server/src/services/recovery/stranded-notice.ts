@@ -15,6 +15,7 @@ export type StrandedRecoveryNoticeSeed = {
   body: string;
   title: string;
   tone: IssueCommentPresentation["tone"];
+  nextAction?: string;
 };
 
 export type StrandedRecoveryEscalationNotice = {
@@ -46,6 +47,14 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
+const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
+  workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
+  workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
+  workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
+  workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
+  workspace_git_scan_cancelled: { title: "Workspace scan was cancelled", nextAction: "Inspect why workspace preparation was cancelled before retrying the task." },
+};
+
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
 }): StrandedRecoveryNoticeSeed {
@@ -71,7 +80,92 @@ export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNo
   };
 }
 
-export function buildConfigurationIncompleteRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+export const SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON = "sandbox_provider_plugin_not_ready";
+
+function readNonEmptyStringField(payload: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = payload?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * What the operator must do to bring a sandbox provider plugin back to
+ * `ready`, by the status the run observed. Enabling an `upgrade_pending`
+ * plugin also approves the capabilities the upgrade added, so that case asks
+ * for a review first.
+ */
+export function sandboxProviderPluginRemedy(pluginStatus: string): string {
+  switch (pluginStatus) {
+    case "upgrade_pending":
+      return "review and approve the upgraded plugin's capabilities, then enable it (Plugins → Enable)";
+    case "disabled":
+      return "enable the plugin again (Plugins → Enable); an operator disabled it";
+    default:
+      return "enable the plugin (Plugins → Enable); a server restart also re-activates a bundled plugin";
+  }
+}
+
+/**
+ * Seed for a `configuration_incomplete` escalation. `configurationIncomplete`
+ * is the structured payload the failed run recorded in `resultJson`; the body
+ * names the specific gap for the reasons this notice knows, and falls back to
+ * the secret/env-binding wording (the original and most common reason).
+ */
+export function buildConfigurationIncompleteRecoveryNoticeSeed(
+  configurationIncomplete?: Record<string, unknown> | null,
+): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_base_ref_unresolved") {
+    return {
+      title: "Workspace base ref unavailable",
+      body: "Paperclip stopped before the agent started because the configured workspace base ref could not be resolved to a Git commit. The task is blocked until its workspace configuration or repository access is repaired.",
+      nextAction: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "shared_realization_unsupported") {
+    if (configurationIncomplete?.holderStale === true) {
+      return {
+        title: "Shared workspace still held",
+        body: "Paperclip stopped before the agent started because another run still holds this task's shared workspace but has produced no output for more than an hour, and this execution environment cannot place concurrent agents in one physical shared folder.",
+        nextAction: "Check whether the other run is still working and stop it if it is stuck, or select an isolated task workspace, then retry the task.",
+        tone: "danger",
+      };
+    }
+    return {
+      title: "Shared workspace unavailable",
+      body: "Paperclip stopped before the agent started because this task allows concurrent agents in a shared workspace that another live run is using, and this execution environment cannot place concurrent agents in one physical shared folder.",
+      nextAction: "Select an isolated task workspace, use a local or SSH environment, or change shared workspace concurrency from `allow` so the task waits for the other run.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
+    return {
+      title: "Task couldn’t start",
+      body: "The task couldn’t start.",
+      nextAction: "Retry the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
+    return {
+      title: "AI connection needs attention",
+      body: "This task paused because its selected AI account is unavailable. Reconnect the account or choose an available connection to continue.",
+      nextAction: "Reconnect the selected AI account or choose an available connection, then continue the task.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
+    const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
+    const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
+    return {
+      body:
+        `Paperclip stopped before dispatching the adapter because the sandbox provider plugin \`${pluginKey}\` ` +
+        `is in status \`${pluginStatus}\` and cannot lease a sandbox. Runs will keep failing the same way until the ` +
+        `plugin is \`ready\` again. Moving it to \`blocked\` so an operator can ${sandboxProviderPluginRemedy(pluginStatus)} ` +
+        "before resuming.",
+      title: "Configuration incomplete",
+      tone: "danger",
+    };
+  }
   return {
     body:
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
@@ -121,11 +215,17 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     errorSummary?: string | null;
   } | null | undefined;
 }): StrandedRecoveryEscalationNotice {
+  const workspaceScan = WORKSPACE_SCAN_NOTICES[input.sourceRun?.errorCode ?? ""];
+  const seed = workspaceScan ? {
+    ...workspaceScan,
+    body: `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${workspaceScan.nextAction}`,
+    tone: "danger" as const,
+  } : input.seed;
   const fallbackBody = input.fallbackBody?.trim();
-  const body = input.seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
+  const body = seed?.body ?? (fallbackBody || DEFAULT_STRANDED_RECOVERY_NOTICE_BODY);
   const title =
     STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE[input.sourceRun?.errorCode?.trim() ?? ""] ??
-    input.seed?.title ??
+    seed?.title ??
     STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE[input.recoveryCause ?? ""] ??
     DEFAULT_STRANDED_RECOVERY_NOTICE_TITLE;
 
@@ -139,9 +239,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
         ),
     keyValueRow(
       "Next action",
-      input.recoveryOwner
+      seed?.nextAction ?? (input.recoveryOwner
         ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
-        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution",
+        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution"),
     ),
   ];
 
@@ -161,9 +261,12 @@ export function buildStrandedRecoveryEscalationNotice(input: {
 
   return {
     body,
-    presentation: systemNoticePresentation({ tone: input.seed?.tone ?? "danger", title }),
+    presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

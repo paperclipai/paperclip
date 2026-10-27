@@ -63,6 +63,8 @@ const DEFAULT_MAX_CONCURRENT_JOBS = 10;
  * Options for creating a PluginJobScheduler.
  */
 export interface PluginJobSchedulerOptions {
+  /** Suppress periodic database work while an unclaimed Cloud app stands by. */
+  isBackgroundWorkEnabled?: () => boolean;
   /** Drizzle database instance. */
   db: Db;
   /** Persistence layer for jobs and runs. */
@@ -244,6 +246,7 @@ export function createPluginJobScheduler(
    * A single scheduler tick. Queries for due jobs and dispatches them.
    */
   async function tick(): Promise<void> {
+    if (options.isBackgroundWorkEnabled?.() === false) return;
     // Prevent overlapping ticks (in case a tick takes longer than the interval)
     if (tickInProgress) {
       log.debug("skipping tick — previous tick still in progress");

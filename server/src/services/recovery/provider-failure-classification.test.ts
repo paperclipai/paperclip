@@ -1,10 +1,80 @@
+import { classifyRunLiveness } from "../run-liveness.js";
+import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { describe, expect, it } from "vitest";
 import {
   PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
   classifyAdapterFailureForRecovery,
+  classifyContinuationFailure,
 } from "./service.js";
+import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery.js";
+import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("does not automatically replay a project access denial", () => {
+    expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+  it("waits for model configuration changes instead of retrying a typed native model rejection", () => {
+    const run = { errorCode: "native_provider_model_rejected", error: "Fixed model configuration message", resultJson: null };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+    expect(isConfigurationIncompleteFailedRun(run)).toBe(true);
+    expect(isAiAuthenticationBlocked(run as never)).toBe(false);
+    const unknown = { ...run, errorCode: "adapter_failed", error: "native_provider_model_rejected" };
+    expect(classifyAdapterFailureForRecovery(unknown)).toBeNull();
+    expect(classifyContinuationFailure(unknown as never).kind).toBe("transient_infra");
+    expect(isConfigurationIncompleteFailedRun(unknown)).toBe(false);
+  });
+  it("retries a continuation whose host lost the controller lease before dispatch", () => {
+    expect(classifyContinuationFailure({ errorCode: "controller_lease_lost", error: "Legacy controller lease lost", resultJson: null } as never))
+      .toMatchObject({ kind: "transient_infra", maxAttempts: 3 });
+    expect(classifyContinuationFailure({ errorCode: "setup_failed", error: "Legacy controller lease lost", resultJson: null } as never).kind)
+      .toBe("non_retryable");
+  });
+  it.each(["acpx_auth_required", "claude_auth_required", "codex_auth_required", "adapter_auth_missing", "refresh_token_reused", "authentication_required"])("does not automatically retry provider authentication failure %s", (errorCode) => {
+    const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: true });
+    const run = { errorCode, ...classification };
+    expect(isAiAuthenticationBlocked(run)).toBe(true);
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
+  it.each(["kimi_auth_required", "acpx_auth_required", "gemini_auth_required"])("preserves recovery when %s did not produce an inline repair card", (errorCode) => {
+    const classification = classifyRunLiveness({ runStatus: "failed", issue: null, errorCode, authenticationRepairRequested: false });
+    const run = { errorCode, ...classification };
+    expect(isAiAuthenticationBlocked(run)).toBe(false);
+    expect(classifyContinuationFailure(run as never).kind).toBe("default");
+  });
+
+  it("uses a typed ACP quota reset without needing the provider's original message", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-07-15T21:30:00.000Z",
+        providerQuotaRetryNotBefore: "2026-07-15T21:30:00.000Z",
+      },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-07-15T21:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("uses the existing backoff for a typed ACP quota failure with no reset timestamp", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "provider_quota",
+      error: "ACP agent reported a terminal limit failure.",
+      resultJson: { errorFamily: "provider_quota" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("classifies usage-limit messages and parses the provider reset time", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
@@ -101,11 +171,33 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toBeNull();
   });
 
+  it("routes unavailable engines to a configuration blocker instead of retrying", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_engine_unavailable",
+      error: "Node v22.22.2 does not satisfy Codex ACP's Node >=24.11.0 prerequisite.",
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure({ errorCode: "adapter_engine_unavailable" } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy",
+      status: "failed",
+      errorCode: "adapter_engine_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    })).toBe(false);
+  });
+
   it("does not treat a generic capacity limit as provider quota", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",
       error: "Workspace storage capacity limit reached.",
       resultJson: null,
     })).toBeNull();
+  });
+  it("holds invalid provider definitions for repair even with stale transient metadata", () => {
+    const run = { errorCode: "provider_tool_definition_invalid", error: "Tool name is too long.",
+      resultJson: { errorFamily: "transient_upstream" } };
+    expect(classifyAdapterFailureForRecovery(run)).toEqual({ kind: "configuration_incomplete" });
+    expect(classifyContinuationFailure(run as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
   });
 });

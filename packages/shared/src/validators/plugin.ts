@@ -177,6 +177,11 @@ export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCap
 // validation error, not a silently dropped field. A misspelled capability name
 // (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
+  skillKeys: z.array(z.string().min(1).max(100)).max(100).optional(),
+  requiresAgent: z.boolean().optional(),
+  supportsTasks: z.boolean().optional(),
+  freshWorkspaceVersion: z.literal(1).optional(),
+  warmTaskVersion: z.literal(1).optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
@@ -184,6 +189,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   kind: z.enum(["environment_driver", "sandbox_provider"]).optional(),
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  defaultAcquireTimeoutMs: z.number().int().positive().max(86_400_000).optional(),
   supportsReusableLeases: z.boolean().optional(),
   sandboxCapabilities: sandboxProviderCapabilitiesSchema.optional(),
   supportsInteractiveSetup: z.boolean().optional(),
@@ -384,11 +390,17 @@ export const pluginUiSlotDeclarationSchema = z.object({
   displayName: z.string().min(1),
   exportName: z.string().min(1),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+  taskSidePanel: z.object({
+    availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
+  }).strict().optional(),
   routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
+  if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
+  }
   // context-sensitive slots require explicit entity targeting.
   const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
   if (
@@ -645,6 +657,7 @@ export const pluginApiRouteDeclarationSchema = z.object({
     message: "routeKey must be lowercase letters, digits, dots, colons, underscores, or hyphens",
   }),
   method: z.enum(PLUGIN_API_ROUTE_METHODS),
+  transport: z.literal("websocket").optional(),
   path: z.string().min(1).regex(/^\/[a-zA-Z0-9:_./-]*$/, {
     message: "path must start with / and contain only path-safe literal or :param segments",
   }).refine(
@@ -664,8 +677,13 @@ export const pluginApiRouteDeclarationSchema = z.object({
     z.object({ from: z.literal("body"), key: z.string().min(1) }),
     z.object({ from: z.literal("query"), key: z.string().min(1) }),
     z.object({ from: z.literal("issue"), param: z.string().min(1) }),
+    z.object({ from: z.literal("agent"), param: z.string().min(1) }),
   ]).optional(),
-});
+}).refine(route => !route.transport || (route.method === "GET" && route.auth === "board"), { message: "WebSocket routes require GET and board authentication" })
+  .refine(route => !route.transport || route.companyResolution?.from !== "body", {
+    message: "WebSocket routes cannot resolve company from a request body",
+    path: ["companyResolution"],
+  });
 
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
@@ -781,6 +799,19 @@ export const pluginManifestV1Schema = z.object({
     "minimumPaperclipVersion must follow semver (e.g. 1.0.0)",
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
+  agentLifecycle: z.literal(true).optional(),
+  workspaceProvider: z.object({
+    finalizationVersion: z.literal(1).optional(),
+    freshWorkspaceVersion: z.literal(1).optional(),
+    modes: z.array(z.enum(["shared_workspace", "isolated_workspace", "operator_branch"])).min(1).max(3),
+    strategies: z.array(z.enum(["project_primary", "git_worktree"])).min(1).max(2),
+    defaultForProjects: z.object({
+      mode: z.enum(["shared_workspace", "isolated_workspace", "operator_branch"]),
+      strategy: z.enum(["project_primary", "git_worktree"]),
+    }).strict().optional(),
+  }).strict().optional(),
+  resourceLifecycle: z.array(z.enum(["agent", "project", "agent_runtime"])).min(1).max(3).optional(),
+  aiConnectionRouter: z.object({ name: z.string().trim().min(1).max(100), description: z.string().trim().min(1).max(500) }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
     ui: z.string().min(1).optional(),
@@ -804,6 +835,24 @@ export const pluginManifestV1Schema = z.object({
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
+  if (manifest.environmentDrivers?.some(driver => driver.requiresAgent) && !manifest.agentLifecycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent-dependent environments require agent lifecycle participation", path: ["agentLifecycle"] });
+  }
+  if (manifest.agentLifecycle && !manifest.capabilities.includes("agents.lifecycle.manage")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent lifecycle participation requires agents.lifecycle.manage", path: ["capabilities"] });
+  }
+
+  if (manifest.workspaceProvider && (!manifest.capabilities.includes("workspaces.manage") || !manifest.resourceLifecycle?.includes("project"))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceProvider"], message: "Workspace providers require workspaces.manage and project resource lifecycle" });
+  }
+  const defaults = manifest.workspaceProvider?.defaultForProjects;
+  if (defaults && (!manifest.workspaceProvider!.modes.includes(defaults.mode) || !manifest.workspaceProvider!.strategies.includes(defaults.strategy))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspaceProvider", "defaultForProjects"], message: "Project defaults must use a declared workspace mode and strategy" });
+  }
+  if (manifest.resourceLifecycle && !manifest.capabilities.includes("events.subscribe")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Resource lifecycle delivery requires events.subscribe", path: ["capabilities"] });
+  }
+
   // ── Entrypoint ↔ UI slot consistency ──────────────────────────────────
   // Plugins that declare UI slots must also declare a UI entrypoint so the
   // host knows where to load the bundle from (PLUGIN_SPEC.md §10.1).
@@ -834,6 +883,10 @@ export const pluginManifestV1Schema = z.object({
   // declare every capability it needs up-front; silently having more features
   // than capabilities would cause runtime rejections.
 
+  if (manifest.aiConnectionRouter && !manifest.capabilities.includes("ai.connections.route")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "ai.connections.route is required for aiConnectionRouter", path: ["capabilities"] });
+  }
+
   // tools require agent.tools.register (PLUGIN_SPEC.md §11)
   if (manifest.tools && manifest.tools.length > 0) {
     if (!manifest.capabilities.includes("agent.tools.register")) {
@@ -853,6 +906,13 @@ export const pluginManifestV1Schema = z.object({
         message: "Capability 'environment.drivers.register' is required when environmentDrivers are declared",
         path: ["capabilities"],
       });
+    }
+  }
+
+  for (const [index, driver] of (manifest.environmentDrivers ?? []).entries()) {
+    const keys = driver.skillKeys ?? [];
+    if (new Set(keys).size !== keys.length || keys.some(key => !manifest.skills?.some(skill => skill.skillKey === key))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Environment skill keys must be unique references to this plugin's managed skills", path: ["environmentDrivers", index, "skillKeys"] });
     }
   }
 
@@ -926,6 +986,19 @@ export const pluginManifestV1Schema = z.object({
         path: ["capabilities"],
       });
     }
+  }
+
+  for (const [index, slot] of (manifest.ui?.slots ?? []).entries()) {
+    if (!slot.taskSidePanel) continue;
+    const route = manifest.apiRoutes?.find(route => route.path === slot.taskSidePanel!.availabilityPath && route.method === "GET");
+    if (!route || route.auth !== "board" || route.transport
+      || route.companyResolution?.from !== "agent" || route.companyResolution.param !== "entityId") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel availability requires a declared board GET route scoped to agent :entityId", path: ["ui", "slots", index, "taskSidePanel"] });
+    }
+  }
+
+  if (manifest.apiRoutes?.some(route => route.transport === "websocket") && !manifest.capabilities.includes("http.outbound")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "WebSocket routes require http.outbound", path: ["capabilities"] });
   }
 
   if (manifest.apiRoutes && manifest.apiRoutes.length > 0) {

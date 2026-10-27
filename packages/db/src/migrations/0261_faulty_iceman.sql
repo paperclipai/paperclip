@@ -1,0 +1,4 @@
+ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_provider_check";--> statement-breakpoint
+ALTER TABLE "chat_external_principals" DROP CONSTRAINT "chat_external_principals_provider_check";--> statement-breakpoint
+ALTER TABLE "chat_endpoints" ADD CONSTRAINT "chat_endpoints_provider_check" CHECK ("chat_endpoints"."provider" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram'));--> statement-breakpoint
+ALTER TABLE "chat_external_principals" ADD CONSTRAINT "chat_external_principals_provider_check" CHECK ("chat_external_principals"."provider" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram'));

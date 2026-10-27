@@ -21,8 +21,6 @@ async function newCompany(request: APIRequestContext, label: string): Promise<Se
   const res = await request.post("/api/companies", { data: { name: `prosumer MCP flow ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
-  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
     companyId: company.id,
     prefix: company.issuePrefix ?? company.prefix ?? company.urlKey ?? "E2E",
@@ -117,8 +115,13 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: /Connect your own tool/i }).click();
+  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  const customConnector = page
+    .getByRole("list", { name: "Connector list" })
+    .getByRole("listitem")
+    .filter({ hasText: "Connect your own tool" });
+  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
+  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -158,27 +161,57 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    // LinkKey step keeps the BYO connection heading. Mock doesn't
-    // require a key — leave the default "No" answer.
+    // There is no separate Access step: the link opens the key screen, which
+    // states the default access in one line. The mock needs no key, and a
+    // credential challenge from the server is what would ask for one.
     await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
 
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // The Access choice was captured before credentials. A successful generic
-    // probe now commits discovered actions and risk defaults transactionally,
-    // so the key check lands directly on success.
+    // A successful generic probe commits discovered actions and the stated
+    // access defaults transactionally, so the key check lands on success.
     await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
 
-    // The new connection should show up on /apps/connections.
-    await gotoApps(page, seed.prefix);
-    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
+    const connectionsResponse = await request.get(`/api/companies/${seed.companyId}/tools/connections`);
+    expect(connectionsResponse.ok(), `list connections failed ${connectionsResponse.status()}`).toBe(true);
+    const connectionsPayload = await connectionsResponse.json();
+    const savedConnection = connectionsPayload.connections.find(
+      (connection: { config?: { url?: string } }) => connection.config?.url === mock.url,
+    );
+    expect(savedConnection?.id).toBeTruthy();
+    const mockPort = new URL(savedConnection.config.url).port;
+    expect(mockPort).toBeTruthy();
+
+    // View the exact saved connection and confirm its discovered actions survive a reload.
+    await page.getByRole("button", { name: "View connection" }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    const savedHeading = page.getByRole("heading", { level: 1 });
+    await expect(savedHeading).toBeVisible();
+    const savedHeadingText = (await savedHeading.textContent())?.trim();
+    expect(savedHeadingText).toBeTruthy();
+    expect(savedHeadingText).toContain(mockPort);
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    await expect(page.getByRole("heading", { name: savedHeadingText, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-permissions.png`, fullPage: true });
   });
 
   test("Expired key → health sweep → Needs attention → reconnect → green", async ({ page, request }) => {
@@ -215,8 +248,8 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
-      await expect(page.getByText(/connection needs attention/i).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.
@@ -235,10 +268,12 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
         });
         expect(repatch.ok(), `patch url failed ${repatch.status()}: ${await repatch.text()}`).toBe(true);
 
-        const reconnect = await request.post(`/api/tool-connections/${connectionId}/reconnect`, {
-          data: { credentialValues: { "credentials.authorization": "fresh-key" } },
-        });
-        expect(reconnect.ok(), `reconnect failed ${reconnect.status()}: ${await reconnect.text()}`).toBe(true);
+        await page.reload();
+        await page.getByLabel("App key", { exact: true }).fill("fresh-key");
+        await page.getByRole("button", { name: "Check & reconnect", exact: true }).click();
+        await expect(page.getByText("Reconnected", { exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "This app needs reconnecting" })).toHaveCount(0);
+        await expect(page.getByText("Still not working", { exact: true })).toHaveCount(0);
 
         const after = await request.get(`/api/tool-connections/${connectionId}`);
         const afterBody = await after.json();
@@ -251,27 +286,15 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     }
   });
 
-  test("/apps/advanced still mounts both tabs", async ({ page, request }) => {
+  test("/apps/advanced mounts the paste-config path", async ({ page, request }) => {
     const seed = await newCompany(request, "advanced");
 
     await gotoAdvanced(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-09-advanced-default.png`, fullPage: true });
 
-    // M8a paste tab.
-    const pasteTab = page.getByRole("tab", { name: /Paste/i }).first();
-    if (await pasteTab.isVisible().catch(() => false)) {
-      await pasteTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
-    }
-
-    // M8b run-your-own tab.
-    const ownTab = page.getByRole("tab", { name: /Run your own|Self host|Stdio|Local/i }).first();
-    if (await ownTab.isVisible().catch(() => false)) {
-      await ownTab.click();
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-11-advanced-own-tab.png`, fullPage: true });
-    }
+    await expect(page.getByRole("link", { name: "Paste a config" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Run your own|Self host|Stdio|Local/i })).toHaveCount(0);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
   });
 });

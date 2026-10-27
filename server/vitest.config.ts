@@ -6,6 +6,12 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@paperclipai\/paperclip-runner\/live$/,
+        replacement: fileURLToPath(
+          new URL("../packages/paperclip-runner/src/live/index.ts", import.meta.url),
+        ),
+      },
+      {
         find: /^@paperclipai\/paperclip-runner$/,
         replacement: fileURLToPath(
           new URL("../packages/paperclip-runner/src/index.ts", import.meta.url),
@@ -15,7 +21,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     // Each server suite boots + tears down its own embedded Postgres in
     // beforeAll/afterAll. Under the loaded serial shard (maxWorkers=1) the
     // graceful shutdown can occasionally cross vitest's default 10s hookTimeout,
@@ -37,8 +43,10 @@ export default defineConfig({
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,
-    minWorkers: 1,
     pool: "forks",
+    // Server suites share process state and one embedded Postgres instance,
+    // so tests inside a file must run one at a time. Do not set
+    // sequence.concurrent to true.
     sequence: {
       concurrent: false,
       hooks: "list",

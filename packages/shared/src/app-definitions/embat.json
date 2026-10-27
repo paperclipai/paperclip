@@ -25,7 +25,13 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://tellme.embat.io/mcp"
+        "serverUrl": "https://tellme.embat.io/mcp",
+        "scopesHint": [
+          "email",
+          "offline_access",
+          "openid",
+          "profile"
+        ]
       },
       "guidanceMd": "Connect Embat in the browser. An Embat account; pilot the connection because provider setup documentation is sparse.",
       "riskTier": "S4",

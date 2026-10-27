@@ -19,6 +19,10 @@ import {
   issueWatchdogs,
 } from "@paperclipai/db";
 import {
+  normalizePaperclipWakePayload,
+  renderPaperclipWakePrompt,
+} from "@paperclipai/adapter-utils/server-utils";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
@@ -144,12 +148,17 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   }
 
-  async function seedWatchdog(companyId: string, issueId: string, agentId: string) {
+  async function seedWatchdog(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    instructions = "Verify stopped work.",
+  ) {
     const [row] = await db.insert(issueWatchdogs).values({
       companyId,
       issueId,
       watchdogAgentId: agentId,
-      instructions: "Verify stopped work.",
+      instructions,
       status: "active",
     }).returning();
     return row;
@@ -227,6 +236,46 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       waitsByIssueId: {},
     });
     expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("delivers board-supplied watchdog instructions all the way into the rendered mandate", async () => {
+    const boardInstructions =
+      "Escalate to Luna before any production deploy; you do not hold Level B authority.";
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INSTR", status: "done" });
+    const leafId = await seedIssue(companyId, {
+      parentId: sourceId,
+      identifier: "WDOG-INSTR-LEAF",
+      status: "todo",
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId, boardInstructions);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    expect(wakes).toHaveLength(1);
+
+    // The producer must place the instructions inside `taskWatchdog`, which is
+    // the only object the wake normalizer reads.
+    const snapshot = wakes[0]?.opts?.contextSnapshot;
+    expect(snapshot).toMatchObject({ taskWatchdog: { customInstructions: boardInstructions } });
+
+    // End-to-end: the text the agent actually receives.
+    const normalized = normalizePaperclipWakePayload(snapshot);
+    expect(normalized?.taskWatchdog?.customInstructions).toBe(boardInstructions);
+
+    const prompt = renderPaperclipWakePrompt(normalized);
+    expect(prompt).toContain("## Task Watchdog Mandate");
+    expect(prompt).toContain(boardInstructions);
+    expect(prompt).not.toContain("No board-supplied watchdog instructions");
+
+    // Same producer/normalizer contract: the stopped leaves the watchdog is
+    // asked to verify must reach the mandate too.
+    expect(normalized?.taskWatchdog?.terminalLeafSummaries).toEqual([
+      expect.objectContaining({ id: leafId, identifier: "WDOG-INSTR-LEAF", status: "todo" }),
+    ]);
+    expect(prompt).toContain("Terminal / stopped leaves to verify:");
+    expect(prompt).toContain("WDOG-INSTR-LEAF");
   });
 
   it("does not append duplicate review comments for an already-open same-fingerprint review", async () => {
@@ -386,6 +435,81 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
 
     expect(result).toMatchObject({ checked: 1, triggered: 1, live: 0 });
     expect(wakes).toHaveLength(1);
+  });
+
+  async function seedDeepSubtree() {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { status: "blocked", issueNumber: 1000 });
+    let boundaryId = sourceId;
+    for (let depth = 1; depth < 100; depth += 1) {
+      boundaryId = await seedIssue(companyId, {
+        parentId: boundaryId, status: "blocked", identifier: `DEEP-${depth}`, issueNumber: 1000 + depth,
+      });
+    }
+    const agentId = await seedAgent(companyId);
+    const watchdog = await seedWatchdog(companyId, sourceId, agentId);
+    return { companyId, sourceId, boundaryId, agentId, watchdog, ...createService() };
+  }
+
+  it("rejects an incomplete subtree before dispatching a stopped review", async () => {
+    const x = await seedDeepSubtree();
+    const omittedId = await seedIssue(x.companyId, {
+      parentId: x.boundaryId, status: "blocked", issueNumber: 1100,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: x.companyId, agentId: x.agentId, status: "running",
+      contextSnapshot: { issueId: omittedId },
+    });
+    expect(await x.service.reconcileTaskWatchdogs({ companyId: x.companyId }))
+      .toMatchObject({ checked: 1, triggered: 0, incomplete: 1, incompleteIssueIds: [x.sourceId], skipped: 0 });
+    expect(x.wakes).toHaveLength(0);
+    const [persisted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, x.watchdog.id));
+    expect(persisted!.watchdogIssueId).toBeNull();
+    expect(persisted!.lastObservedFingerprint).toBeNull();
+  });
+
+  it("allows a complete boundary leaf but revokes its scope when an omitted child appears", async () => {
+    const x = await seedDeepSubtree();
+    expect((await x.service.reconcileTaskWatchdogs({ companyId: x.companyId })).triggered).toBe(1);
+    const [persisted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, x.watchdog.id));
+    const scope = {
+      kind: "watchdog" as const, watchdogId: x.watchdog.id, companyId: x.companyId,
+      watchedIssueId: x.sourceId, stopFingerprint: persisted!.lastObservedFingerprint,
+    };
+    expect((await x.service.revalidateMutationScope(scope)).allowed).toBe(true);
+    const omittedId = await seedIssue(x.companyId, {
+      parentId: x.boundaryId, status: "blocked", issueNumber: 1100,
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId: x.companyId, agentId: x.agentId, status: "running",
+      contextSnapshot: { issueId: omittedId },
+    });
+    const incomplete = await x.service.revalidateMutationScope(scope);
+    expect(incomplete.allowed).toBe(false);
+    expect(incomplete.classification?.state).toBe("incomplete");
+    expect(incomplete.reason).toContain("incomplete");
+    expect(await x.service.reconcileForIssueAndAncestors(x.companyId, x.sourceId))
+      .toMatchObject({ triggered: 0, incomplete: 1, incompleteIssueIds: [x.sourceId], skipped: 0 });
+    expect(x.wakes).toHaveLength(1);
+    await db.update(issues).set({ parentId: x.sourceId }).where(eq(issues.id, omittedId));
+    const visible = await x.service.revalidateMutationScope(scope);
+    expect(visible.allowed).toBe(false);
+    expect(visible.classification?.state).toBe("live");
+  });
+
+  it("does not treat excluded boundary children as a truncated watched subtree", async () => {
+    const x = await seedDeepSubtree();
+    const hiddenId = await seedIssue(x.companyId, { parentId: x.boundaryId, issueNumber: 1100 });
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, hiddenId));
+    const harnessId = await seedIssue(x.companyId, { parentId: x.boundaryId, issueNumber: 1103 });
+    await db.update(issues).set({ harnessKind: "test" }).where(eq(issues.id, harnessId));
+    await seedIssue(x.companyId, {
+      parentId: x.boundaryId, issueNumber: 1101, originKind: "task_watchdog", originId: x.boundaryId,
+    });
+    const otherCompanyId = await seedCompany();
+    await seedIssue(otherCompanyId, { parentId: x.boundaryId, issueNumber: 1102 });
+    expect((await x.service.reconcileTaskWatchdogs({ companyId: x.companyId })).triggered).toBe(1);
+    expect(x.wakes).toHaveLength(1);
   });
 
   it("reconciles ancestor watchdogs for a descendant issue mutation", async () => {

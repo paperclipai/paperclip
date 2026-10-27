@@ -31,7 +31,7 @@ export const getAgentAction = {
   },
   "documentation": {
     "title": "Get company agent",
-    "description": "Read one redacted mock actor profile.",
+    "description": "Read one redacted actor profile.",
     "note": "Live-only single-actor read; the scenario suite covers actor discovery through list_agents."
   },
   "examples": {
@@ -54,7 +54,7 @@ export const getAgentAction = {
       "operationId": "get_agent",
       "version": 1,
       "title": "Get company agent",
-      "description": "Read one redacted mock actor profile.",
+      "description": "Read one redacted actor profile.",
       "exposure": "optional",
       "requiredClaims": [
         "discovery:agents:read"
@@ -70,7 +70,7 @@ export const getAgentAction = {
         "properties": {
           "actorId": {
             "type": "string",
-            "description": "Mock actor id.",
+            "description": "Actor id.",
             "minLength": 1,
             "maxLength": 200
           }

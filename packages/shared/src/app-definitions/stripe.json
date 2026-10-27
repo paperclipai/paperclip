@@ -25,7 +25,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.stripe.com"
+        "serverUrl": "https://mcp.stripe.com",
+        "scopesHint": [
+          "mcp"
+        ]
       },
       "guidanceMd": "Connect Stripe in the browser. A Stripe account; the server is public preview and payment actions require explicit approval.",
       "riskTier": "S4",
@@ -59,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "sk_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Account- and sandbox-specific writes selected during Stripe consent; financial approvals and restricted-key permissions remain. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

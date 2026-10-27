@@ -1,8 +1,33 @@
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "../openrouter-attribution.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
+import { createHash, randomBytes } from "node:crypto";
+import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
-import { dirname, join, resolve } from "node:path";
+import { constants as osConstants } from "node:os";
+import { Agent as HttpAgent, createServer as createHttpServer, request as requestHttp, type IncomingMessage } from "node:http";
+import { Agent as HttpsAgent, request as requestHttps } from "node:https";
+import { getCACertificates } from "node:tls";
+import { pipeline } from "node:stream/promises";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+
+import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
+import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
+import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
+import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -37,13 +62,19 @@ import {
   parseHarnessRuntimeRequestResolution,
   parsePaperclipQuestionSet,
 } from "../../contracts/harness-driver.js";
-import type { NativeSessionCapabilities, NativeUserMessage } from "../../contracts/types.js";
+import type {
+  NativeSessionCapabilities,
+  NativeUserMessage,
+} from "../../contracts/types.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import {
   createProviderTraceFileSink,
   type ProviderTraceFileSink,
 } from "../../contracts/provider-trace-file-sink.js";
-import type { PrpEvent, PrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import type {
+  PrpEvent,
+  PrpStructuredRunResult,
+} from "../../protocol/replay-contract.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import {
@@ -51,13 +82,84 @@ import {
   canonicalProviderEventsFromOpenCodePart,
   providerFamilyCapabilities,
 } from "../../provider-events.js";
-import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
+import {
+  canonicalOpenCodeMcpToolName,
+  startOpenCodeMcpBridge,
+  type OpenCodeMcpBridge,
+} from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
-import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
+import {
+  materializeNativeRuntimeSkills,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
-export const QUALIFIED_OPENCODE_VERSION = "1.18.17" as const;
-export const QUALIFIED_OPENCODE_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731" as const;
+export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
+export const QUALIFIED_OPENCODE_MODEL =
+  "openrouter/deepseek/deepseek-v4-flash-0731" as const;
+
+/** Resolve a declared, pinned native dependency without PATH or install fallback. */
+export function resolvePinnedOpenCodeCommand(
+  issuer: string | URL = import.meta.url,
+  target: { platform?: string; architecture?: string } = {},
+): string {
+  try {
+    const platform = target.platform ?? process.platform;
+    const architecture = target.architecture ?? process.arch;
+    const packageNames: Record<string, string[]> = {
+      "linux-x64": ["opencode-linux-x64-baseline"],
+      "darwin-arm64": ["opencode-darwin-arm64"],
+      "darwin-x64": ["opencode-darwin-x64-baseline"],
+    };
+    const candidates = packageNames[`${platform}-${architecture}`];
+    if (!candidates) {
+      throw new Error("OpenCode native target is not qualified");
+    }
+    const manifestPath = realpathSync(createRequire(issuer).resolve("opencode-ai/package.json"));
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest.name !== "opencode-ai" || manifest.version !== QUALIFIED_OPENCODE_VERSION) {
+      throw new Error(`OpenCode package version mismatch: expected opencode-ai@${QUALIFIED_OPENCODE_VERSION}`);
+    }
+    const dependencyRequire = createRequire(manifestPath);
+    for (const name of candidates) {
+      if (manifest.optionalDependencies?.[name] !== QUALIFIED_OPENCODE_VERSION) {
+        throw new Error("OpenCode platform dependency does not match its qualified version");
+      }
+      let platformManifest: string;
+      try {
+        platformManifest = realpathSync(dependencyRequire.resolve(`${name}/package.json`));
+      } catch (error) {
+        if (["MODULE_NOT_FOUND", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+          continue;
+        }
+        throw error;
+      }
+      const metadata = JSON.parse(readFileSync(platformManifest, "utf8"));
+      if (metadata.name !== name || metadata.version !== QUALIFIED_OPENCODE_VERSION
+        || !Array.isArray(metadata.os) || !metadata.os.includes(platform)
+        || !Array.isArray(metadata.cpu) || !metadata.cpu.includes(architecture)) {
+        throw new Error("OpenCode installed platform artifact identity mismatch");
+      }
+      const root = dirname(platformManifest);
+      const executable = realpathSync(resolve(root, "bin/opencode"));
+      const inside = relative(root, executable);
+      if (!inside || inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+        throw new Error("OpenCode executable escapes its qualified platform package");
+      }
+      if (!statSync(executable).isFile()) {
+        throw new Error("OpenCode executable is not a regular file");
+      }
+      accessSync(executable, constants.X_OK);
+      return executable;
+    }
+    throw new Error("OpenCode qualified platform dependency is missing");
+  } catch (error) {
+    throw new Error(
+      `Pinned OpenCode runtime unavailable: ${(error as Error).message}. Restore Paperclip's runtime dependencies.`,
+      { cause: error },
+    );
+  }
+}
 
 type DynamicToolHandler = (call: {
   tool: string;
@@ -67,19 +169,40 @@ type DynamicToolHandler = (call: {
   arguments: unknown;
 }) => Promise<unknown>;
 
+export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: {
+  tool: string;
+  callId: string;
+  threadId: string;
+  turnId: string;
+}) => Promise<string>;
+
 export interface OpenCodeServerDriverOptions {
   model: string;
   permissionMode?: "allow" | "ask" | "deny";
   taskEnvelope?: CodexTaskEnvelope;
+  conversationMode?: "task" | "prepared";
   runnerInstanceId?: string;
   command?: string;
+  /** Inherited runner-owned executable descriptor duplicated into the child. */
+  commandFd?: number;
+  /** Runner-owned executable path lifecycle used only by the macOS proxy. */
+  commandLifecycle?: {
+    beforeSpawn(): void;
+    afterSpawn(): void;
+    afterExit?(): void;
+  };
   runtimeDirectory: string;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: DynamicToolHandler;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  completionFeedback?: OpenCodeCompletionFeedback;
+  onSpawn?: (meta: {
+    pid: number;
+    processGroupId: number | null;
+    startedAt: string;
+  }) => Promise<void>;
   /** Keep false when an outer supervisor already owns the process group. */
   isolateProcessGroup?: boolean;
   onDiagnostic?: (message: string) => void;
@@ -96,11 +219,16 @@ interface OpenCodeRuntime {
   bridge: OpenCodeMcpBridge;
   trace: ProviderTraceFileSink | null;
   sensitiveValues: readonly string[];
-  close(input?: { finalizeTrace?: boolean; reason?: string | null }): Promise<void>;
+  performanceDiagnostics: Awaited<ReturnType<typeof startOpenCodePerformanceDiagnostics>> | null;
+  close(input?: {
+    finalizeTrace?: boolean;
+    reason?: string | null;
+  }): Promise<void>;
 }
 
 const CAPABILITIES: NativeSessionCapabilities = {
   resume: true,
+  toolRefreshOnResume: true,
   typedEvents: true,
   typedEventFamilies: providerFamilyCapabilities({
     tool_execution: "available",
@@ -137,21 +265,49 @@ export class OpenCodeServerDriver implements HarnessDriver {
       displayName: "OpenCode server",
       version: QUALIFIED_OPENCODE_VERSION,
       protocolVersion: "http+sse/v1",
-      runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" },
+      runtimeContextCapabilities: {
+        instructions: "native",
+        skills: "native",
+        mcp: "native",
+      },
       capabilities: structuredClone(CAPABILITIES),
     };
   }
 
-  async validateConfig(config: unknown): Promise<HarnessDriverConfigValidation> {
+  async validateConfig(
+    config: unknown,
+  ): Promise<HarnessDriverConfigValidation> {
     const candidate = isRecord(config) ? config : {};
     const issues = [];
-    const model = typeof candidate.model === "string" ? candidate.model.trim() : "";
-    if (!validModel(model)) issues.push({ path: "model", code: "invalid_model", message: "OpenCode model must use provider/model form." });
-    const command = typeof candidate.command === "string" ? candidate.command.trim() : "opencode";
-    if (!command) issues.push({ path: "command", code: "invalid_command", message: "OpenCode command cannot be empty." });
+    const model =
+      typeof candidate.model === "string" ? candidate.model.trim() : "";
+    if (!validModel(model))
+      issues.push({
+        path: "model",
+        code: "invalid_model",
+        message: "OpenCode model must use provider/model form.",
+      });
+    const command =
+      typeof candidate.command === "string"
+        ? candidate.command.trim()
+        : "opencode";
+    if (!command)
+      issues.push({
+        path: "command",
+        code: "invalid_command",
+        message: "OpenCode command cannot be empty.",
+      });
     const permissionMode = candidate.permissionMode ?? "allow";
-    if (permissionMode !== "allow" && permissionMode !== "ask" && permissionMode !== "deny") {
-      issues.push({ path: "permissionMode", code: "invalid_permission_mode", message: "OpenCode permission mode must be allow, ask, or deny." });
+    if (
+      permissionMode !== "allow" &&
+      permissionMode !== "ask" &&
+      permissionMode !== "deny"
+    ) {
+      issues.push({
+        path: "permissionMode",
+        code: "invalid_permission_mode",
+        message: "OpenCode permission mode must be allow, ask, or deny.",
+      });
     }
     return issues.length === 0
       ? { ok: true, config: { model, command, permissionMode }, issues: [] }
@@ -162,35 +318,65 @@ export class OpenCodeServerDriver implements HarnessDriver {
     return this.#open(input, null);
   }
 
-  async recoverSession(snapshot: PersistedHarnessSession): Promise<HarnessSessionRecoveryResult> {
+  async recoverSession(
+    snapshot: PersistedHarnessSession,
+  ): Promise<HarnessSessionRecoveryResult> {
     if (
-      snapshot.driverKind !== OPENCODE_SERVER_DRIVER_KIND
-      || !snapshot.runId
-      || !snapshot.normalizedSessionId
-      || !snapshot.driverSessionId
-    ) return { recovered: false, reason: "persisted OpenCode session identity is incomplete" };
+      snapshot.driverKind !== OPENCODE_SERVER_DRIVER_KIND ||
+      !snapshot.runId ||
+      !snapshot.normalizedSessionId ||
+      !snapshot.driverSessionId
+    )
+      return {
+        recovered: false,
+        reason: "persisted OpenCode session identity is incomplete",
+      };
     try {
-      const session = await this.#open({
-        runId: snapshot.runId,
-        normalizedSessionId: snapshot.normalizedSessionId,
-        workingDirectory: await this.#readWorkspace(snapshot.normalizedSessionId),
-      }, snapshot);
+      const session = await this.#open(
+        {
+          runId: snapshot.runId,
+          normalizedSessionId: snapshot.normalizedSessionId,
+          workingDirectory: await this.#readWorkspace(
+            snapshot.normalizedSessionId,
+          ),
+        },
+        snapshot,
+      );
       return { recovered: true, session };
     } catch (error) {
-      return { recovered: false, reason: redact(String(error), [this.#options.environment?.OPENROUTER_API_KEY]) };
+      return {
+        recovered: false,
+        reason: redact(String(error), [
+          this.#options.environment?.OPENROUTER_API_KEY,
+          this.#options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+        ]),
+      };
     }
   }
 
   async #readWorkspace(normalizedSessionId: string): Promise<string> {
-    const raw = await readFile(join(sessionRoot(this.#options.runtimeDirectory, normalizedSessionId), "workspace"), "utf8");
+    const raw = await readFile(
+      join(
+        sessionRoot(this.#options.runtimeDirectory, normalizedSessionId),
+        "workspace",
+      ),
+      "utf8",
+    );
     return raw.trim();
   }
 
-  async #open(input: OpenHarnessSessionInput, snapshot: PersistedHarnessSession | null): Promise<HarnessSession> {
+  async #open(
+    input: OpenHarnessSessionInput,
+    snapshot: PersistedHarnessSession | null,
+  ): Promise<HarnessSession> {
     const cwd = validateWorkspace(input.workingDirectory);
-    const root = sessionRoot(this.#options.runtimeDirectory, input.normalizedSessionId);
+    const root = sessionRoot(
+      this.#options.runtimeDirectory,
+      input.normalizedSessionId,
+    );
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "workspace"), `${cwd}\n`, { mode: 0o600 });
+    await removeLegacyIsolatedHomes(root);
     const trace = await createProviderTraceFileSink({
       path: this.#options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH,
       provider: "opencode",
@@ -208,22 +394,30 @@ export class OpenCodeServerDriver implements HarnessDriver {
           cwd,
           trace,
           dispatch: (call) => {
-            if (session === null) throw new Error("OpenCode session is not ready for tool calls");
+            if (session === null)
+              throw new Error("OpenCode session is not ready for tool calls");
             return session.dispatchTool(call);
           },
         });
         const fetcher = this.#options.fetch ?? globalThis.fetch;
-        let providerSessionId = snapshot?.providerSessionId ?? snapshot?.driverSessionId ?? null;
+        let providerSessionId =
+          snapshot?.providerSessionId ?? snapshot?.driverSessionId ?? null;
         if (providerSessionId !== null) {
-          const existing = await api(fetcher, runtime, `/session/${encodeURIComponent(providerSessionId)}`);
-          if (!isRecord(existing) || text(existing.id) !== providerSessionId) throw new Error("OpenCode resumed a different session");
+          const existing = await api(
+            fetcher,
+            runtime,
+            `/session/${encodeURIComponent(providerSessionId)}`,
+          );
+          if (!isRecord(existing) || text(existing.id) !== providerSessionId)
+            throw new Error("OpenCode resumed a different session");
         } else {
           const created = await api(fetcher, runtime, "/session", {
             method: "POST",
             body: JSON.stringify({ title: `Paperclip ${input.runId}` }),
           });
           providerSessionId = text(record(created).id);
-          if (!providerSessionId) throw new Error("OpenCode session creation omitted its id");
+          if (!providerSessionId)
+            throw new Error("OpenCode session creation omitted its id");
         }
         session = new OpenCodeHarnessSession({
           runtime,
@@ -232,11 +426,21 @@ export class OpenCodeServerDriver implements HarnessDriver {
           normalizedSessionId: input.normalizedSessionId,
           providerSessionId,
           workingDirectory: cwd,
-          runnerInstanceId: this.#options.runnerInstanceId ?? `paperclip-opencode-${input.runId}`,
+          runnerInstanceId:
+            this.#options.runnerInstanceId ??
+            `paperclip-opencode-${input.runId}`,
           model: this.#options.model,
-          taskEnvelope: this.#options.taskEnvelope ?? createCodexTaskEnvelope({ objective: "Complete the supplied task." }),
-          systemInstructions: this.#options.systemInstructions ?? CODEX_SKILLLESS_BASE_INSTRUCTIONS,
+          taskEnvelope:
+            this.#options.taskEnvelope ??
+            createCodexTaskEnvelope({
+              objective: "Complete the supplied task.",
+            }),
+          conversationMode: this.#options.conversationMode,
+          systemInstructions:
+            this.#options.systemInstructions ??
+            CODEX_SKILLLESS_BASE_INSTRUCTIONS,
           dynamicToolHandler: this.#options.dynamicToolHandler,
+          completionFeedback: this.#options.completionFeedback,
           snapshot,
           now: this.#options.now ?? (() => new Date()),
         });
@@ -249,8 +453,12 @@ export class OpenCodeServerDriver implements HarnessDriver {
           await trace?.finish({ reason: "opencode_session_start_failed" });
           throw error;
         }
-        this.#options.onDiagnostic?.(`OpenCode session startup attempt ${attempt} failed; retrying.`);
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 100 * attempt));
+        this.#options.onDiagnostic?.(
+          `OpenCode session startup attempt ${attempt} failed; retrying.`,
+        );
+        await new Promise((resolveDelay) =>
+          setTimeout(resolveDelay, 100 * attempt),
+        );
       }
     }
     throw lastError;
@@ -269,15 +477,27 @@ class OpenCodeHarnessSession implements HarnessSession {
   readonly #taskEnvelope: CodexTaskEnvelope;
   readonly #systemInstructions: string;
   readonly #dynamicToolHandler?: DynamicToolHandler;
+  readonly #completionFeedback?: OpenCodeCompletionFeedback;
   readonly #now: () => Date;
   readonly #events = new AsyncQueue<PrpEvent>();
   readonly #transcript: PrpEvent[] = [];
   readonly #terminalTurns = new Map<string, string>();
   readonly #seenProviderEvents = new Set<string>();
+  // The turn that created each native message. A raw OpenCode frame carries
+  // no turn identity of its own, so this map — not the mutable active-turn
+  // pointer, which can already have moved on to a later turn by the time a
+  // straggling frame for this message arrives — is the source of truth for
+  // which turn a message's content belongs to.
+  readonly #messageTurnIds = new Map<string, string>();
   readonly #messageRoles = new Map<string, string>();
-  readonly #pendingMessageParts = new Map<string, Array<Record<string, unknown>>>();
+  readonly #pendingMessageParts = new Map<
+    string,
+    Array<Record<string, unknown>>
+  >();
   readonly #partText = new Map<string, string>();
+  readonly #streamingParts = new Map<string, Record<string, unknown>>();
   readonly #completedTextPartIds = new Set<string>();
+  readonly #completedReasoningPartIds = new Set<string>();
   readonly #completedTextParts: Array<{
     partId: string;
     messageId: string | null;
@@ -287,18 +507,23 @@ class OpenCodeHarnessSession implements HarnessSession {
   }> = [];
   readonly #messageUsageFingerprints = new Map<string, string>();
   readonly #workspaceChangesByTurn = new Map<string, Record<string, unknown>>();
+  #reportedSseCompaction = false;
   readonly #emittedFileReferences = new Set<string>();
-  readonly #pendingRuntimeRequests = new Map<string, {
-    request: HarnessRuntimeRequest;
-    nativeQuestions: Record<string, unknown>[];
-    submittedResponse?: PaperclipQuestionResponse;
-    submittedAction?: "accept" | "accept_for_session" | "decline" | "cancel";
-    settling?: boolean;
-  }>();
+  readonly #pendingRuntimeRequests = new Map<
+    string,
+    {
+      request: HarnessRuntimeRequest;
+      nativeQuestions: Record<string, unknown>[];
+      submittedResponse?: PaperclipQuestionResponse;
+      submittedAction?: "accept" | "accept_for_session" | "decline" | "cancel";
+      settling?: boolean;
+    }
+  >();
   #activeTraceFrameId: number | null = null;
   #activeTraceEmittedEventIds: string[] = [];
   #sourceSequence: number;
   #activeTurnId: string | null;
+  #performanceBoundaryMs = 0;
   #result: PrpStructuredRunResult | null;
   #resultFingerprint: string | null;
   #resultCallId: string | null;
@@ -307,8 +532,10 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
+  readonly #conversationMode: "task" | "prepared";
   #sendFullContext: boolean;
   #closed = false;
+  #completionSettlement: Promise<void> | null = null;
   #abort = new AbortController();
 
   constructor(input: {
@@ -320,9 +547,11 @@ class OpenCodeHarnessSession implements HarnessSession {
     workingDirectory: string;
     runnerInstanceId: string;
     model: string;
+    conversationMode?: "task" | "prepared";
     taskEnvelope: CodexTaskEnvelope;
     systemInstructions: string;
     dynamicToolHandler?: DynamicToolHandler;
+    completionFeedback?: OpenCodeCompletionFeedback;
     snapshot: PersistedHarnessSession | null;
     now: () => Date;
   }) {
@@ -335,11 +564,13 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#workingDirectory = input.workingDirectory;
     this.#runnerInstanceId = input.runnerInstanceId;
     this.#model = input.model;
+    this.#conversationMode = input.conversationMode ?? "task";
     this.#taskEnvelope = input.taskEnvelope;
     this.#systemInstructions = input.systemInstructions;
     this.#dynamicToolHandler = input.dynamicToolHandler;
+    this.#completionFeedback = input.completionFeedback;
     this.#now = input.now;
-    this.#sendFullContext = input.snapshot === null;
+    this.#sendFullContext = input.snapshot === null && this.#conversationMode !== "prepared";
     this.#sourceSequence = input.snapshot?.lastSourceSequence ?? 0;
     this.#activeTurnId = input.snapshot?.activeTurnId ?? null;
     const restored = input.snapshot?.semanticResult ?? null;
@@ -347,7 +578,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#resultFingerprint = restored?.fingerprint ?? null;
     this.#resultCallId = restored?.callId ?? null;
     this.#resultTurnId = restored?.turnId ?? null;
-    for (const terminal of input.snapshot?.terminalTurns ?? []) this.#terminalTurns.set(terminal.turnId, terminal.fingerprint);
+    for (const terminal of input.snapshot?.terminalTurns ?? []) {
+      this.#terminalTurns.set(terminal.turnId, terminal.fingerprint);
+    }
     if (this.#activeTurnId && this.#terminalTurns.has(this.#activeTurnId)) {
       this.#activeTurnId = null;
     }
@@ -364,19 +597,32 @@ class OpenCodeHarnessSession implements HarnessSession {
         permissionMode: input.runtime.permissionMode,
       },
     });
-    this.#emit("item.completed", {
-      kind: "model",
-      text: `${input.model} (OpenCode ${input.runtime.version})`,
-      model: { name: input.model, provider: input.model.split("/", 1)[0], opencodeVersion: input.runtime.version },
-    }, { itemId: `${input.providerSessionId}:model` });
+    this.#emit(
+      "item.completed",
+      {
+        kind: "model",
+        text: `${input.model} (OpenCode ${input.runtime.version})`,
+        model: {
+          name: input.model,
+          provider: input.model.split("/", 1)[0],
+          opencodeVersion: input.runtime.version,
+        },
+      },
+      { itemId: `${input.providerSessionId}:model` },
+    );
   }
 
   ids() {
-    return { driverSessionId: this.#providerSessionId, providerSessionId: this.#providerSessionId, displayId: this.#providerSessionId };
+    return {
+      driverSessionId: this.#providerSessionId,
+      providerSessionId: this.#providerSessionId,
+      displayId: this.#providerSessionId,
+    };
   }
 
   attachRun(input: { runId: string }): void {
-    if (this.#activeTurnId !== null) throw new Error("opencode_run_attach_busy");
+    if (this.#activeTurnId !== null)
+      throw new Error("opencode_run_attach_busy");
     if (!input.runId) throw new Error("opencode_run_attach_invalid");
     this.#runId = input.runId;
     this.#result = null;
@@ -387,71 +633,118 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#semanticResultProviderMessageId = null;
     this.#lastNonTerminalToolSourceSeq = 0;
     this.#completedTextPartIds.clear();
+    this.#completedReasoningPartIds.clear();
     this.#completedTextParts.length = 0;
+    // `#terminalTurns` clears here for its own persisted-snapshot bookkeeping.
+    // The late-frame gate in `#emit` does not depend on this map: it compares
+    // against `#activeTurnId` directly, so a frame for the just-finished turn
+    // stays blocked even after this new run attaches (see `#emit`).
     this.#terminalTurns.clear();
     this.#sendFullContext = false;
     this.#emit("run.attached", { runId: input.runId, sameSession: true });
   }
 
-  events(): AsyncIterable<PrpEvent> { return this.#events; }
+  events(): AsyncIterable<PrpEvent> {
+    return this.#events;
+  }
 
   startEventPump(): void {
     void this.#recoverPendingRuntimeRequests()
-      .catch((error) => this.#emit("harness.diagnostic", {
-        code: "opencode_runtime_request_recovery_failed",
-        message: redact(String(error), this.#runtime.sensitiveValues),
-      }))
+      .catch((error) =>
+        this.#emit("harness.diagnostic", {
+          code: "opencode_runtime_request_recovery_failed",
+          message: redact(String(error), this.#runtime.sensitiveValues),
+        }),
+      )
       .finally(() => this.#pumpEvents());
   }
 
-  async startTurn(input: { message: NativeUserMessage }): Promise<{ turnId: string }> {
-    if (this.#activeTurnId !== null) throw new Error("OpenCode session already has an active turn");
+  supportsTurnReasoning(): boolean {
+    return this.#model.startsWith("openrouter/");
+  }
+
+  async startTurn(input: {
+    message: NativeUserMessage;
+    reasoningMode?: OpenCodeReasoningMode;
+  }): Promise<{ turnId: string }> {
+    if (this.#activeTurnId !== null)
+      throw new Error("OpenCode session already has an active turn");
+    const reasoningMode = parseOpenCodeReasoningMode(input.reasoningMode);
+    if (input.reasoningMode !== undefined && !this.#model.startsWith("openrouter/")) {
+      throw new Error("Per-turn OpenCode reasoning is supported only for OpenRouter models");
+    }
     const turnId = `turn-${randomBytes(12).toString("hex")}`;
+    this.#streamingParts.clear();
     this.#activeTurnId = turnId;
-    this.#emit("turn.submitted", { envelopeSchema: this.#taskEnvelope.schema, text: input.message.text });
+    this.#emit("turn.submitted", {
+      envelopeSchema: this.#taskEnvelope.schema,
+      text: input.message.text,
+    });
     this.#emit("turn.accepted", { turnId }, { turnId });
     this.#emit("turn.started", { status: "inProgress" }, { turnId });
     const [providerID, ...modelParts] = this.#model.split("/");
     const modelID = modelParts.join("/");
-    // A resumed OpenCode provider session already retains the original system
-    // instructions and task envelope in its conversation. Repeating both on
-    // every Paperclip continuation can overflow smaller context windows and
-    // OpenCode then completes with `finish: unknown` and zero tokens. The
-    // native model envelope still carries the authoritative wake delta,
-    // interaction responses, completion contract, and current issue context.
+    // Keep the task envelope only on the initial task-mode wake. OpenCode
+    // rebuilds system instructions from the latest user message, so system
+    // instructions must still accompany every prompt (including recovery).
     const prompt = this.#sendFullContext
-      ? JSON.stringify({ task: this.#taskEnvelope, message: input.message.text })
+      ? JSON.stringify({
+          task: this.#taskEnvelope,
+          message: input.message.text,
+        })
       : input.message.text;
-    await api(this.#fetch, this.#runtime, `/session/${encodeURIComponent(this.#providerSessionId)}/prompt_async`, {
-      method: "POST",
-      body: JSON.stringify({
-        // OpenCode 1.18's PromptPayload carries the provider and model at the
-        // top level.  Older examples used a nested `model` object; 1.18
-        // silently ignores that shape and falls back to the configured model,
-        // which can turn `openrouter/deepseek/...` into a duplicated provider
-        // lookup. Keep Paperclip's persisted provider/model form, but adapt it
-        // at this HTTP boundary.
-        providerID,
-        modelID,
-        // This exact OpenCode version passed the native-question conformance
-        // suite. question.asked is adapted into PRP v2 and its reply/reject API
-        // remains private to this driver.
-        tools: { question: true },
-        ...(this.#sendFullContext ? { system: this.#systemInstructions } : {}),
-        parts: [{ type: "text", text: prompt }],
-      }),
-    });
+    await api(
+      this.#fetch,
+      this.#runtime,
+      `/session/${encodeURIComponent(this.#providerSessionId)}/prompt_async`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          // OpenCode 1.18's PromptPayload carries the provider and model at the
+          // top level.  Older examples used a nested `model` object; 1.18
+          // silently ignores that shape and falls back to the configured model,
+          // which can turn `openrouter/deepseek/...` into a duplicated provider
+          // lookup. Keep Paperclip's persisted provider/model form, but adapt it
+          // at this HTTP boundary.
+          providerID,
+          modelID,
+          // Always select the empty default variant on an ordinary turn so a
+          // previous disabled turn cannot change this turn's provider defaults.
+          ...(providerID === "openrouter"
+            ? { variant: reasoningMode === "disabled" ? "paperclip-no-reasoning" : "paperclip-default" }
+            : {}),
+          // Keep question enabled in the isolated config. OpenCode 1.18.32
+          // turns a prompt's deprecated `tools` map into replacement session
+          // permissions, so a sparse override here discards the session policy.
+          system: this.#systemInstructions,
+          parts: [{ type: "text", text: prompt }],
+        }),
+      },
+    );
     this.#sendFullContext = false;
     return { turnId };
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
-    if (input.turnId && this.#activeTurnId && input.turnId !== this.#activeTurnId) throw new Error("stale OpenCode turn");
-    await api(this.#fetch, this.#runtime, `/session/${encodeURIComponent(this.#providerSessionId)}/abort`, { method: "POST" });
+    await this.#completionSettlement;
+    if (
+      input.turnId &&
+      this.#activeTurnId &&
+      input.turnId !== this.#activeTurnId
+    )
+      throw new Error("stale OpenCode turn");
+    await api(
+      this.#fetch,
+      this.#runtime,
+      `/session/${encodeURIComponent(this.#providerSessionId)}/abort`,
+      { method: "POST" },
+    );
   }
 
   pendingRuntimeRequests(): HarnessRuntimeRequest[] {
-    return [...this.#pendingRuntimeRequests.values()].map(({ request }) => structuredClone(request));
+    return [...this.#pendingRuntimeRequests.values()].map(({ request }) =>
+      structuredClone(request),
+    );
   }
 
   async resolveRuntimeRequest(input: {
@@ -460,49 +753,74 @@ class OpenCodeHarnessSession implements HarnessSession {
     resolution: HarnessRuntimeRequestResolution;
   }): Promise<void> {
     const pending = this.#pendingRuntimeRequests.get(input.requestId);
-    if (!pending) throw new Error(`OpenCode request ${input.requestId} is no longer pending`);
-    if (pending.request.turnId !== input.turnId || this.#activeTurnId !== input.turnId) {
-      throw new Error(`OpenCode request ${input.requestId} belongs to a stale turn`);
+    if (!pending)
+      throw new Error(
+        `OpenCode request ${input.requestId} is no longer pending`,
+      );
+    if (
+      pending.request.turnId !== input.turnId ||
+      this.#activeTurnId !== input.turnId
+    ) {
+      throw new Error(
+        `OpenCode request ${input.requestId} belongs to a stale turn`,
+      );
     }
     const resolution = parseHarnessRuntimeRequestResolution(
       pending.request.requestKind,
       input.resolution,
       pending.request.input,
     );
-    if (pending.settling) throw new Error(`OpenCode request ${input.requestId} is already settling`);
+    if (pending.settling)
+      throw new Error(
+        `OpenCode request ${input.requestId} is already settling`,
+      );
     pending.settling = true;
     const submit = async (operation: Promise<unknown>) => {
       try {
         await operation;
       } catch (error) {
-        if (this.#pendingRuntimeRequests.get(input.requestId) === pending) pending.settling = false;
+        if (this.#pendingRuntimeRequests.get(input.requestId) === pending)
+          pending.settling = false;
         throw error;
       }
     };
     const workspace = `directory=${encodeURIComponent(this.#workingDirectory)}`;
     if (pending.request.requestKind === "permission_approval") {
-      const action = resolution.action === "accept" || resolution.action === "accept_for_session"
-        ? resolution.action
-        : resolution.action === "decline" || resolution.action === "cancel"
+      const action =
+        resolution.action === "accept" ||
+        resolution.action === "accept_for_session"
           ? resolution.action
-          : "decline";
+          : resolution.action === "decline" || resolution.action === "cancel"
+            ? resolution.action
+            : "decline";
       pending.submittedAction = action;
-      await submit(api(
-        this.#fetch,
-        this.#runtime,
-        `/permission/${encodeURIComponent(input.requestId)}/reply?${workspace}`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            reply: action === "accept" ? "once" : action === "accept_for_session" ? "always" : "reject",
-          }),
-        },
-      ));
+      await submit(
+        api(
+          this.#fetch,
+          this.#runtime,
+          `/permission/${encodeURIComponent(input.requestId)}/reply?${workspace}`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              reply:
+                action === "accept"
+                  ? "once"
+                  : action === "accept_for_session"
+                    ? "always"
+                    : "reject",
+            }),
+          },
+        ),
+      );
       if (!this.#pendingRuntimeRequests.delete(input.requestId)) return;
-      this.#emit("runtime_request.resolved", harnessRuntimeRequestOutcome(pending.request, { action }), {
-        turnId: input.turnId,
-        itemId: pending.request.itemId,
-      });
+      this.#emit(
+        "runtime_request.resolved",
+        harnessRuntimeRequestOutcome(pending.request, { action }),
+        {
+          turnId: input.turnId,
+          itemId: pending.request.itemId,
+        },
+      );
       return;
     }
     const base = `/question/${encodeURIComponent(input.requestId)}`;
@@ -511,29 +829,47 @@ class OpenCodeHarnessSession implements HarnessSession {
       // returns. Retain the canonical response before crossing that boundary
       // so the racing terminal event carries the same durable answer record.
       pending.submittedResponse = structuredClone(resolution.response);
-      await submit(api(this.#fetch, this.#runtime, `${base}/reply?${workspace}`, {
-        method: "POST",
-        body: JSON.stringify({ answers: openCodeAnswers(pending, resolution.response) }),
-      }));
+      await submit(
+        api(this.#fetch, this.#runtime, `${base}/reply?${workspace}`, {
+          method: "POST",
+          body: JSON.stringify({
+            answers: openCodeAnswers(pending, resolution.response),
+          }),
+        }),
+      );
     } else if (resolution.action === "submit" && "answers" in resolution) {
-      await submit(api(this.#fetch, this.#runtime, `${base}/reply?${workspace}`, {
-        method: "POST",
-        body: JSON.stringify({ answers: pending.nativeQuestions.map((question, index) =>
-          resolution.answers[openCodeQuestionId(question, index)]?.answers ?? [],
-        ) }),
-      }));
+      await submit(
+        api(this.#fetch, this.#runtime, `${base}/reply?${workspace}`, {
+          method: "POST",
+          body: JSON.stringify({
+            answers: pending.nativeQuestions.map(
+              (question, index) =>
+                resolution.answers[openCodeQuestionId(question, index)]
+                  ?.answers ?? [],
+            ),
+          }),
+        }),
+      );
     } else {
-      await submit(api(this.#fetch, this.#runtime, `${base}/reject?${workspace}`, { method: "POST" }));
+      await submit(
+        api(this.#fetch, this.#runtime, `${base}/reject?${workspace}`, {
+          method: "POST",
+        }),
+      );
     }
     // question.replied/question.rejected can race the HTTP response on the SSE
     // stream. The first terminal fact wins; the echo must not emit a duplicate.
     if (!this.#pendingRuntimeRequests.delete(input.requestId)) return;
-    this.#emit("runtime_request.resolved", harnessRuntimeRequestOutcome(pending.request, {
-      action: resolution.action,
-      ...(resolution.action === "submit" && "response" in resolution
-        ? { response: resolution.response }
-        : {}),
-    }), { turnId: input.turnId, itemId: pending.request.itemId });
+    this.#emit(
+      "runtime_request.resolved",
+      harnessRuntimeRequestOutcome(pending.request, {
+        action: resolution.action,
+        ...(resolution.action === "submit" && "response" in resolution
+          ? { response: resolution.response }
+          : {}),
+      }),
+      { turnId: input.turnId, itemId: pending.request.itemId },
+    );
   }
 
   handoffRuntimeRequest(input: {
@@ -547,14 +883,15 @@ class OpenCodeHarnessSession implements HarnessSession {
     }
     const pending = this.#pendingRuntimeRequests.get(input.requestId);
     if (
-      !pending
-      || pending.request.input === undefined
-      || pending.request.turnId !== input.turnId
-      || this.#activeTurnId !== input.turnId
-      || pending.settling
-      || pending.submittedResponse !== undefined
-      || pending.submittedAction !== undefined
-    ) return { result: "already_settled", cleanup: Promise.resolve() };
+      !pending ||
+      pending.request.input === undefined ||
+      pending.request.turnId !== input.turnId ||
+      this.#activeTurnId !== input.turnId ||
+      pending.settling ||
+      pending.submittedResponse !== undefined ||
+      pending.submittedAction !== undefined
+    )
+      return { result: "already_settled", cleanup: Promise.resolve() };
     if (!this.#pendingRuntimeRequests.delete(input.requestId)) {
       return { result: "already_settled", cleanup: Promise.resolve() };
     }
@@ -582,16 +919,25 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   async read(): Promise<Record<string, unknown>> {
-    const messages = await api(this.#fetch, this.#runtime, `/session/${encodeURIComponent(this.#providerSessionId)}/message`);
+    const messages = await api(
+      this.#fetch,
+      this.#runtime,
+      `/session/${encodeURIComponent(this.#providerSessionId)}/message`,
+    );
     return { sessionId: this.#providerSessionId, messages };
   }
 
   async reconcile(): Promise<Record<string, unknown>> {
     const status = await api(this.#fetch, this.#runtime, "/session/status");
-    return { sessionId: this.#providerSessionId, status: record(status)[this.#providerSessionId] ?? null };
+    return {
+      sessionId: this.#providerSessionId,
+      status: record(status)[this.#providerSessionId] ?? null,
+    };
   }
 
-  async usage(): Promise<Record<string, unknown> | null> { return this.#usage === null ? null : structuredClone(this.#usage); }
+  async usage(): Promise<Record<string, unknown> | null> {
+    return this.#usage === null ? null : structuredClone(this.#usage);
+  }
 
   async transcript(): Promise<HarnessTranscriptSnapshot> {
     return {
@@ -611,10 +957,19 @@ class OpenCodeHarnessSession implements HarnessSession {
       runId: this.#runId,
       normalizedSessionId: this.#normalizedSessionId,
       activeTurnId: this.#activeTurnId,
-      semanticResult: this.#result && this.#resultFingerprint && this.#resultTurnId
-        ? { result: structuredClone(this.#result), fingerprint: this.#resultFingerprint, callId: this.#resultCallId, turnId: this.#resultTurnId }
-        : null,
-      terminalTurns: [...this.#terminalTurns].map(([turnId, fingerprint]) => ({ turnId, fingerprint })),
+      semanticResult:
+        this.#result && this.#resultFingerprint && this.#resultTurnId
+          ? {
+              result: structuredClone(this.#result),
+              fingerprint: this.#resultFingerprint,
+              callId: this.#resultCallId,
+              turnId: this.#resultTurnId,
+            }
+          : null,
+      terminalTurns: [...this.#terminalTurns].map(([turnId, fingerprint]) => ({
+        turnId,
+        fingerprint,
+      })),
       pendingRuntimeRequests: this.pendingRuntimeRequests(),
       lastSourceSequence: this.#sourceSequence,
     };
@@ -622,57 +977,174 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   async close(): Promise<void> {
     if (this.#closed) return;
+    // A controller response is authoritative. Settle its tool result before
+    // closing the provider or the event stream, rather than reject after acceptance.
+    await this.#completionSettlement;
+    if (this.#closed) return;
     this.#closed = true;
     this.#abort.abort();
-    for (const { request } of this.#pendingRuntimeRequests.values()) {
-      this.#emit(
-        request.input === undefined ? "runtime_request.cancelled" : "runtime_request.expired",
-        request.input === undefined
-          ? harnessRuntimeRequestOutcome(request, { reason: "session_closed" })
-          : harnessRuntimeInputExpiredOutcome(request, "provider_process_lost"),
-        { turnId: request.turnId, itemId: request.itemId },
-      );
-    }
-    this.#pendingRuntimeRequests.clear();
+    // Settle whatever is still pending, including a request whose turn
+    // already went terminal without the driver observing it (see
+    // `#settlePendingRuntimeRequestsForTurn`). Bypass the terminal-turn
+    // gate so each settlement event still reaches the consumer instead of
+    // getting dropped as a late frame.
+    for (const requestId of [...this.#pendingRuntimeRequests.keys()])
+      this.#settlePendingRuntimeRequest(requestId);
     this.#events.close();
     await this.#runtime.close();
   }
 
-  async dispatchTool(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
-    const tool = canonicalOpenCodeMcpToolName(call.tool);
+  // A request can outlive its own turn: the turn can fail or get cancelled
+  // while the request is still pending, which clears `#activeTurnId`
+  // without settling the request. Settle any such request the moment its
+  // owning turn goes terminal, before emitting the terminal turn event
+  // itself, so the settlement event reaches the consumer within the same
+  // turn it belongs to instead of waiting for a later, separate close.
+  #settlePendingRuntimeRequestsForTurn(turnId: string): void {
+    const requestIds = [...this.#pendingRuntimeRequests]
+      .filter(([, pending]) => pending.request.turnId === turnId)
+      .map(([requestId]) => requestId);
+    for (const requestId of requestIds)
+      this.#settlePendingRuntimeRequest(requestId);
+  }
+
+  #settlePendingRuntimeRequest(requestId: string): void {
+    const pending = this.#pendingRuntimeRequests.get(requestId);
+    if (!pending) return;
+    this.#pendingRuntimeRequests.delete(requestId);
+    const { request } = pending;
+    this.#emit(
+      request.input === undefined
+        ? "runtime_request.cancelled"
+        : "runtime_request.expired",
+      request.input === undefined
+        ? harnessRuntimeRequestOutcome(request, { reason: "session_closed" })
+        : harnessRuntimeInputExpiredOutcome(request, "provider_process_lost"),
+      { turnId: request.turnId, itemId: request.itemId },
+      { bypassTerminalTurnGate: true },
+    );
+  }
+
+  async dispatchTool(call: {
+    tool: string;
+    callId: string;
+    arguments: unknown;
+  }): Promise<unknown> {
+    // The authenticated MCP bridge has resolved this against its closed
+    // declared catalog. A second prefix strip changes legitimate operation IDs.
+    const tool = call.tool;
     const turnId = this.#activeTurnId;
-    if (turnId === null) throw new Error("OpenCode tool call is not bound to an active turn");
-    this.#emit("item.started", {
-      kind: "dynamicToolCall",
-      item: { type: "tool_call", id: call.callId, name: tool, arguments: call.arguments },
-    }, { turnId, itemId: call.callId });
-    if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
-      if (!validation.ok) throw new Error("Invalid semantic result");
-      if (
-        (tool === PRP_BLOCK_TOOL_NAME && validation.result.reportedWorkDisposition !== "blocked")
-        || (tool === PRP_COMPLETION_TOOL_NAME && validation.result.reportedWorkDisposition === "blocked")
-      ) throw new Error("Semantic result disposition does not match the terminal tool");
-      if (validation.result.completionClaim.contractRevision !== this.#taskEnvelope.completionContract.revision) {
-        throw new Error("Semantic result completion contract revision does not match");
-      }
-      const fingerprint = canonicalJson(validation.result);
-      if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint) throw new Error("A different semantic result was already committed");
-      if (!this.#resultFingerprint) {
-        this.#result = structuredClone(validation.result);
-        this.#resultFingerprint = fingerprint;
-        this.#resultCallId = call.callId;
-        this.#resultTurnId = turnId;
-        this.#semanticResultTextBoundary = this.#completedTextParts.length;
-        this.#emit("run.result.proposed", validation.result, { turnId, itemId: call.callId });
-      }
-      this.#emit("item.completed", {
+    if (turnId === null)
+      throw new Error("OpenCode tool call is not bound to an active turn");
+    this.#emit(
+      "item.started",
+      {
         kind: "dynamicToolCall",
-        item: { type: "tool_result", id: call.callId, tool_use_id: call.callId, result: "Semantic completion accepted." },
-      }, { turnId, itemId: call.callId });
-      return { accepted: true };
+        item: {
+          type: "tool_call",
+          id: call.callId,
+          name: tool,
+          arguments: call.arguments,
+        },
+      },
+      { turnId, itemId: call.callId },
+    );
+    if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
+      let settle: (() => void) | undefined;
+      try {
+        if (this.#closed || this.#completionSettlement)
+          throw new Error("A completion is already settling or the session is closed");
+        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
+        const completionInput = await resolveCompletionContinuation(call.arguments, this.#runId,
+          this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+            tool: "get_task_context", callId: `${call.callId}:continuation`,
+            threadId: this.#providerSessionId, turnId, arguments: {},
+          }) : undefined);
+        if (this.#closed || this.#activeTurnId !== turnId)
+          throw new Error("The turn ended while resolving completion");
+        const validation = validatePrpStructuredRunResult(completionInput);
+        if (!validation.ok) throw new Error("Invalid semantic result");
+        if (
+          (tool === PRP_BLOCK_TOOL_NAME &&
+            validation.result.reportedWorkDisposition !== "blocked") ||
+          (tool === PRP_COMPLETION_TOOL_NAME &&
+            validation.result.reportedWorkDisposition === "blocked")
+        )
+          throw new Error(
+            "Semantic result disposition does not match the terminal tool",
+          );
+        if (
+          validation.result.completionClaim.contractRevision !==
+          this.#taskEnvelope.completionContract.revision
+        ) {
+          throw new Error(
+            "Semantic result completion contract revision does not match",
+          );
+        }
+        const expectedIds = this.#taskEnvelope.completionContract.criteria.map((criterion) => criterion.id);
+        const receivedIds = validation.result.completionClaim.criteria.map((criterion) => criterion.criterionId);
+        if (receivedIds.length !== expectedIds.length || new Set(receivedIds).size !== receivedIds.length || receivedIds.some((id) => !expectedIds.includes(id))) {
+          // Reject at the tool boundary so the provider can repair its claim.
+          // Emitting a bad result here kills runnerd's strict outer validation.
+          throw new Error(`Semantic result criteria must contain exactly these criterionIds, once each: ${JSON.stringify(expectedIds)}. Keep contractRevision ${JSON.stringify(this.#taskEnvelope.completionContract.revision)}.`);
+        }
+        const fingerprint = canonicalJson(validation.result);
+        if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
+          throw new Error("A different semantic result was already committed");
+        // Wait for the bound controller before committing or resolving the
+        // provider call. A rejection remains repairable in this same turn.
+        const feedback = this.#completionFeedback
+          ? await this.#completionFeedback(validation.result, {
+              tool, callId: call.callId, threadId: this.#providerSessionId, turnId,
+            })
+          : "Semantic completion accepted.";
+        if (typeof feedback !== "string" || !feedback.trim())
+          throw new Error("Completion feedback omitted its response text");
+        if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
+          throw new Error("A different semantic result was already committed");
+        if (!this.#resultFingerprint) {
+          this.#result = structuredClone(validation.result);
+          this.#resultFingerprint = fingerprint;
+          this.#resultCallId = call.callId;
+          this.#resultTurnId = turnId;
+          this.#semanticResultTextBoundary = this.#completedTextParts.length;
+          this.#emit("run.result.proposed", validation.result, {
+            turnId,
+            itemId: call.callId,
+          });
+        }
+        this.#emit(
+          "item.completed",
+          {
+            kind: "dynamicToolCall",
+            item: {
+              type: "tool_result",
+              id: call.callId,
+              tool_use_id: call.callId,
+              result: feedback,
+            },
+          },
+          { turnId, itemId: call.callId },
+        );
+        return { accepted: true, feedback };
+      } catch (error) {
+        // A rejected semantic call still completes its tool activity item.
+        // Otherwise a later question can appear to have an in-flight tool.
+        this.#emit("item.completed", {
+          kind: "dynamicToolCall",
+          item: { type: "tool_result", id: call.callId, tool_use_id: call.callId,
+            is_error: true, error: error instanceof Error ? error.message : String(error) },
+        }, { turnId, itemId: call.callId });
+        throw error;
+      } finally {
+        if (settle) {
+          this.#completionSettlement = null;
+          settle();
+        }
+      }
     }
-    if (!this.#dynamicToolHandler) throw new Error("Unsupported Paperclip operation");
+    if (!this.#dynamicToolHandler)
+      throw new Error("Unsupported Paperclip operation");
     try {
       const result = await this.#dynamicToolHandler({
         tool,
@@ -681,16 +1153,35 @@ class OpenCodeHarnessSession implements HarnessSession {
         turnId,
         arguments: call.arguments,
       });
-      this.#emit("item.completed", {
-        kind: "dynamicToolCall",
-        item: { type: "tool_result", id: call.callId, tool_use_id: call.callId, result },
-      }, { turnId, itemId: call.callId });
+      this.#emit(
+        "item.completed",
+        {
+          kind: "dynamicToolCall",
+          item: {
+            type: "tool_result",
+            id: call.callId,
+            tool_use_id: call.callId,
+            result,
+          },
+        },
+        { turnId, itemId: call.callId },
+      );
       return result;
     } catch (error) {
-      this.#emit("item.completed", {
-        kind: "dynamicToolCall",
-        item: { type: "tool_result", id: call.callId, tool_use_id: call.callId, error: redact(String(error)), is_error: true },
-      }, { turnId, itemId: call.callId });
+      this.#emit(
+        "item.completed",
+        {
+          kind: "dynamicToolCall",
+          item: {
+            type: "tool_result",
+            id: call.callId,
+            tool_use_id: call.callId,
+            error: redact(String(error)),
+            is_error: true,
+          },
+        },
+        { turnId, itemId: call.callId },
+      );
       throw error;
     }
   }
@@ -705,9 +1196,10 @@ class OpenCodeHarnessSession implements HarnessSession {
     const pending = Array.isArray(value)
       ? value
       : Array.isArray(record(value).permissions)
-        ? record(value).permissions as unknown[]
+        ? (record(value).permissions as unknown[])
         : [];
-    for (const entry of pending) this.#acceptPermission(record(entry), "permission.recovered");
+    for (const entry of pending)
+      this.#acceptPermission(record(entry), "permission.recovered");
   }
 
   async #recoverPendingQuestions(): Promise<void> {
@@ -716,7 +1208,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#runtime,
       `/question?directory=${encodeURIComponent(this.#workingDirectory)}`,
     );
-    const pending = Array.isArray(value) ? value : Array.isArray(record(value).questions) ? record(value).questions as unknown[] : [];
+    const pending = Array.isArray(value)
+      ? value
+      : Array.isArray(record(value).questions)
+        ? (record(value).questions as unknown[])
+        : [];
     for (const entry of pending) {
       const question = record(entry);
       const sessionId = text(question.sessionID, text(question.sessionId));
@@ -728,14 +1224,24 @@ class OpenCodeHarnessSession implements HarnessSession {
   #acceptQuestion(properties: Record<string, unknown>): void {
     const turnId = this.#activeTurnId;
     if (!turnId) return;
-    const requestId = text(properties.id, text(properties.requestID, text(properties.requestId)));
-    const nativeQuestions = Array.isArray(properties.questions) ? properties.questions.map(record).slice(0, 64) : [];
+    const requestId = text(
+      properties.id,
+      text(properties.requestID, text(properties.requestId)),
+    );
+    const nativeQuestions = Array.isArray(properties.questions)
+      ? properties.questions.map(record).slice(0, 64)
+      : [];
     if (!requestId || nativeQuestions.length === 0) {
-      this.#emit("harness.diagnostic", {
-        code: "runtime_input_rejected",
-        adapter: "opencode-server",
-        reason: "OpenCode emitted a question event without a request id or supported questions.",
-      }, { turnId, ...(requestId ? { itemId: requestId } : {}) });
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_rejected",
+          adapter: "opencode-server",
+          reason:
+            "OpenCode emitted a question event without a request id or supported questions.",
+        },
+        { turnId, ...(requestId ? { itemId: requestId } : {}) },
+      );
       return;
     }
     if (this.#pendingRuntimeRequests.has(requestId)) return;
@@ -743,11 +1249,15 @@ class OpenCodeHarnessSession implements HarnessSession {
     try {
       input = normalizeOpenCodeQuestionSet(nativeQuestions, properties);
     } catch {
-      this.#emit("harness.diagnostic", {
-        code: "runtime_input_rejected",
-        adapter: "opencode-server",
-        reason: "OpenCode emitted a malformed or ambiguous question set.",
-      }, { turnId, itemId: requestId });
+      this.#emit(
+        "harness.diagnostic",
+        {
+          code: "runtime_input_rejected",
+          adapter: "opencode-server",
+          reason: "OpenCode emitted a malformed or ambiguous question set.",
+        },
+        { turnId, itemId: requestId },
+      );
       return;
     }
     const request: HarnessRuntimeRequest = {
@@ -760,23 +1270,31 @@ class OpenCodeHarnessSession implements HarnessSession {
       prompt: "OpenCode requests user input.",
       details: {},
       input,
-      origin: { adapter: "opencode-server", provider: "opencode", method: "question.asked" },
+      origin: {
+        adapter: "opencode-server",
+        provider: "opencode",
+        method: "question.asked",
+      },
     };
     this.#pendingRuntimeRequests.set(requestId, { request, nativeQuestions });
-    this.#emit("runtime_request.created", {
-      request: {
-        schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
-        requestKind: "runtime",
-        requestId,
-        type: "input",
-        status: "pending",
-        prompt: request.prompt,
-        input,
-        origin: request.origin,
-        turnId,
-        itemId: request.itemId,
+    this.#emit(
+      "runtime_request.created",
+      {
+        request: {
+          schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
+          requestKind: "runtime",
+          requestId,
+          type: "input",
+          status: "pending",
+          prompt: request.prompt,
+          input,
+          origin: request.origin,
+          turnId,
+          itemId: request.itemId,
+        },
       },
-    }, { turnId, itemId: request.itemId });
+      { turnId, itemId: request.itemId },
+    );
   }
 
   #acceptPermission(properties: Record<string, unknown>, method: string): void {
@@ -789,10 +1307,16 @@ class OpenCodeHarnessSession implements HarnessSession {
         : properties;
     const requestId = text(
       permission.id,
-      text(permission.requestID, text(permission.requestId, text(permission.permissionID))),
+      text(
+        permission.requestID,
+        text(permission.requestId, text(permission.permissionID)),
+      ),
     );
     if (!requestId || this.#pendingRuntimeRequests.has(requestId)) return;
-    const title = text(permission.title, text(permission.permission, text(permission.tool, "requested operation")));
+    const title = text(
+      permission.title,
+      text(permission.permission, text(permission.tool, "requested operation")),
+    );
     const request: HarnessRuntimeRequest = {
       requestId,
       requestKind: "permission_approval",
@@ -804,22 +1328,29 @@ class OpenCodeHarnessSession implements HarnessSession {
       details: bounded(permission),
       origin: { adapter: "opencode-server", provider: "opencode", method },
     };
-    this.#pendingRuntimeRequests.set(requestId, { request, nativeQuestions: [] });
-    this.#emit("runtime_request.created", {
-      request: {
-        schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
-        requestKind: "runtime",
-        requestId,
-        type: "permission",
-        status: "pending",
-        prompt: request.prompt,
-        actions: ["accept", "accept_for_session", "decline", "cancel"],
-        details: request.details,
-        origin: request.origin,
-        turnId,
-        itemId: request.itemId,
+    this.#pendingRuntimeRequests.set(requestId, {
+      request,
+      nativeQuestions: [],
+    });
+    this.#emit(
+      "runtime_request.created",
+      {
+        request: {
+          schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
+          requestKind: "runtime",
+          requestId,
+          type: "permission",
+          status: "pending",
+          prompt: request.prompt,
+          actions: ["accept", "accept_for_session", "decline", "cancel"],
+          details: request.details,
+          origin: request.origin,
+          turnId,
+          itemId: request.itemId,
+        },
       },
-    }, { turnId, itemId: request.itemId });
+      { turnId, itemId: request.itemId },
+    );
   }
 
   async #pumpEvents(): Promise<void> {
@@ -827,10 +1358,17 @@ class OpenCodeHarnessSession implements HarnessSession {
     while (!this.#closed && !this.#abort.signal.aborted) {
       try {
         const response = await this.#fetch(`${this.#runtime.baseUrl}/event`, {
-          headers: { Authorization: this.#runtime.authHeader, Accept: "text/event-stream" },
+          headers: {
+            Authorization: this.#runtime.authHeader,
+            Accept: "text/event-stream",
+          },
           signal: this.#abort.signal,
         });
-        if (!response.ok || !response.body) throw new Error(`OpenCode event stream returned HTTP ${response.status}`);
+        if (!response.ok || !response.body)
+          throw Object.assign(
+            new Error(`OpenCode event stream returned HTTP ${response.status}`),
+            { httpStatus: response.status },
+          );
         const outboundFrameId = this.#runtime.trace?.frame({
           direction: "client_to_provider",
           raw: "",
@@ -846,30 +1384,61 @@ class OpenCodeHarnessSession implements HarnessSession {
             reason: "Opened the OpenCode server-sent event stream",
           });
         }
-        for await (const frame of parseSseFrames(response.body)) {
+        for await (const frame of parseOpenCodeSseFrames(response.body)) {
           if (this.#closed) return;
-          const frameId = this.#runtime.trace?.frame({
-            direction: "provider_to_client",
-            raw: frame.raw,
-            transport: "http_sse",
-            nativeMethod: "SSE /event",
-          }) ?? null;
+          const compaction = frame.compaction;
+          if (compaction?.omitted) {
+            // Even the compacted structure exceeded its bound. Report the
+            // frame instead of ending the stream or dropping it silently.
+            this.#emit("harness.diagnostic", {
+              code: "opencode_sse_event_omitted",
+              message: `OpenCode sent a ${compaction.frameChars}-character event that could not be retained within the payload bound.`,
+              providerEventType: compaction.eventType,
+              frameChars: compaction.frameChars,
+            });
+            continue;
+          }
+          if (compaction && !this.#reportedSseCompaction) {
+            this.#reportedSseCompaction = true;
+            this.#emit("harness.diagnostic", {
+              code: "opencode_sse_event_compacted",
+              message: `OpenCode sent a ${compaction.frameChars}-character event. Long strings were shortened to keep the event within the payload bound.`,
+              providerEventType: compaction.eventType,
+              frameChars: compaction.frameChars,
+              truncatedStrings: compaction.truncatedStrings,
+              omittedChars: compaction.omittedChars,
+            });
+          }
+          const frameId =
+            this.#runtime.trace?.frame({
+              direction: "provider_to_client",
+              raw: frame.raw,
+              transport: "http_sse",
+              nativeMethod: "SSE /event",
+            }) ?? null;
           let event: unknown;
           try {
             event = JSON.parse(frame.data);
+            if (compaction) annotateOmittedProviderText(event, compaction);
             if (frameId) {
               this.#runtime.trace?.interpretation({
                 frameId,
                 stage: "typescript_opencode_sse_parse",
-                ruleId: "opencode.sse.json",
+                ruleId: compaction ? "opencode.sse.compacted_json" : "opencode.sse.json",
                 disposition: "mapped",
-                fieldMappings: [{
-                  inputPath: "$raw.data",
-                  outputPath: "$providerEvent",
-                  action: "normalized",
-                  reason: "Decoded the exact SSE data payload as an OpenCode event",
-                }],
-                reason: "OpenCode SSE frame parsed as JSON",
+                fieldMappings: [
+                  {
+                    inputPath: "$raw.data",
+                    outputPath: "$providerEvent",
+                    action: "normalized",
+                    reason: compaction
+                      ? "Decoded the compacted SSE data payload as an OpenCode event"
+                      : "Decoded the exact SSE data payload as an OpenCode event",
+                  },
+                ],
+                reason: compaction
+                  ? `OpenCode SSE frame of ${compaction.frameChars} characters parsed as JSON after ${compaction.truncatedStrings} long strings were shortened (${compaction.omittedChars} characters omitted)`
+                  : "OpenCode SSE frame parsed as JSON",
               });
             }
           } catch (error) {
@@ -884,20 +1453,70 @@ class OpenCodeHarnessSession implements HarnessSession {
             }
             throw error;
           }
+          const type = text(record(event).type);
+          const properties = record(record(event).properties);
+          if (type === "session.idle" || type === "session.error"
+            || (type === "session.status" && text(record(record(event).properties).status && record(record(record(event).properties).status).type) === "idle")) {
+            // Do not seal the turn while its bound controller is deciding a
+            // finishing call. Acceptance/rejection and the tool result must
+            // precede the provider's terminal event.
+            await this.#completionSettlement;
+            if (this.#closed) return;
+          }
           this.#mapProviderEvent(event, frameId);
         }
-        throw new Error("OpenCode event stream closed before the session became terminal");
+        throw Object.assign(
+          new Error("OpenCode event stream closed before the session became terminal"),
+          { streamClosed: true },
+        );
       } catch (error) {
         if (this.#closed || this.#abort.signal.aborted) return;
         attempts += 1;
         if (attempts > 3) {
-          this.#emit("harness.diagnostic", { code: "opencode_sse_failed", message: redact(String(error), this.#runtime.sensitiveValues) });
+          await this.#completionSettlement;
+          if (this.#closed) return;
+          const failure = await openCodeEventStreamFailure(error, this.#runtime.process);
+          if (this.#closed) return;
+          this.#emit("harness.diagnostic", {
+            code: "opencode_sse_failed",
+            message: redact(String(error), this.#runtime.sensitiveValues),
+            failure,
+          });
+          this.#failActiveTurnOnStreamLoss(failure);
           this.#events.fail(error);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 50 * attempts));
       }
     }
+  }
+
+  /**
+   * The event stream is the only path for this turn's terminal event. Once it
+   * is gone the turn cannot finish, so record why before the stream ends
+   * instead of leaving runnerd to close it later with no cause.
+   */
+  #failActiveTurnOnStreamLoss(failure: OpenCodeEventStreamFailure): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#terminalTurns.has(turnId)) return;
+    this.#settlePendingRuntimeRequestsForTurn(turnId);
+    this.#emit(
+      "turn.failed",
+      {
+        status: "failed",
+        providerTerminalObserved: false,
+        error: {
+          code: failure.kind === "server_exited" ? "opencode_server_exited" : "opencode_event_stream_lost",
+          message: failure.kind === "server_exited"
+            ? "OpenCode stopped while the turn was running."
+            : "The OpenCode event stream failed while the turn was running.",
+          opencodeFailure: failure,
+        },
+      },
+      { turnId },
+    );
+    this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
+    this.#activeTurnId = null;
   }
 
   #mapProviderEvent(value: unknown, traceFrameId: number | null = null): void {
@@ -922,14 +1541,18 @@ class OpenCodeHarnessSession implements HarnessSession {
               ? "mapped"
               : "ignored",
           emittedEventIds: [...this.#activeTraceEmittedEventIds],
-          fieldMappings: this.#activeTraceEmittedEventIds.length > 0
-            ? [{
-                inputPath: "properties",
-                outputPath: "prpEvent.payload",
-                action: "normalized",
-                reason: "Mapped OpenCode event fields into canonical PRP payloads",
-              }]
-            : [],
+          fieldMappings:
+            this.#activeTraceEmittedEventIds.length > 0
+              ? [
+                  {
+                    inputPath: "properties",
+                    outputPath: "prpEvent.payload",
+                    action: "normalized",
+                    reason:
+                      "Mapped OpenCode event fields into canonical PRP payloads",
+                  },
+                ]
+              : [],
           reason: rejected
             ? `OpenCode event normalization failed: ${String(rejected).slice(0, 400)}`
             : this.#activeTraceEmittedEventIds.length > 0
@@ -946,22 +1569,42 @@ class OpenCodeHarnessSession implements HarnessSession {
     const event = record(value);
     const properties = record(event.properties);
     const type = text(event.type);
-    const eventId = text(event.id, canonicalJson(value));
-    if (this.#seenProviderEvents.has(eventId)) return;
-    this.#seenProviderEvents.add(eventId);
-    if (this.#seenProviderEvents.size > 10_000) this.#seenProviderEvents.delete(this.#seenProviderEvents.values().next().value!);
-    const sessionId = text(properties.sessionID, text(record(properties.info).sessionID));
+    // Id-less deltas are additive: two identical chunks can be legitimate
+    // adjacent tokens. Content deduplication would silently lose the second.
+    // Key id-less events by digest: a retained canonical copy of each recent
+    // event would hold up to 10,000 large tool payloads in memory.
+    const eventId = text(event.id) || (type === "message.part.delta"
+      ? null
+      : `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`);
+    if (eventId !== null && this.#seenProviderEvents.has(eventId)) return;
+    if (eventId !== null) this.#seenProviderEvents.add(eventId);
+    if (this.#seenProviderEvents.size > 10_000)
+      this.#seenProviderEvents.delete(
+        this.#seenProviderEvents.values().next().value!,
+      );
+    const sessionId = text(
+      properties.sessionID,
+      text(record(properties.info).sessionID),
+    );
     if (sessionId && sessionId !== this.#providerSessionId) return;
     const turnId = this.#activeTurnId;
     if (type === "question.asked" && turnId) {
       this.#acceptQuestion(properties);
       return;
     }
-    if ((type === "permission.updated" || type === "permission.asked" || type === "permission.v2.asked") && turnId) {
+    if (
+      (type === "permission.updated" ||
+        type === "permission.asked" ||
+        type === "permission.v2.asked") &&
+      turnId
+    ) {
       this.#acceptPermission(properties, type);
       return;
     }
-    if ((type === "permission.replied" || type === "permission.v2.replied") && turnId) {
+    if (
+      (type === "permission.replied" || type === "permission.v2.replied") &&
+      turnId
+    ) {
       const permission = isRecord(properties.permission)
         ? properties.permission
         : isRecord(properties.request)
@@ -969,69 +1612,128 @@ class OpenCodeHarnessSession implements HarnessSession {
           : properties;
       const requestId = text(
         permission.id,
-        text(permission.requestID, text(permission.requestId, text(permission.permissionID))),
+        text(
+          permission.requestID,
+          text(permission.requestId, text(permission.permissionID)),
+        ),
       );
       const pending = this.#pendingRuntimeRequests.get(requestId);
-      if (!pending || pending.request.requestKind !== "permission_approval") return;
+      if (!pending || pending.request.requestKind !== "permission_approval")
+        return;
       this.#pendingRuntimeRequests.delete(requestId);
       const nativeReply = text(
         properties.reply,
-        text(properties.response, text(permission.reply, text(permission.response))),
+        text(
+          properties.response,
+          text(permission.reply, text(permission.response)),
+        ),
       );
-      const action = pending.submittedAction
-        ?? (nativeReply === "always" || nativeReply === "always_allow"
+      const action =
+        pending.submittedAction ??
+        (nativeReply === "always" || nativeReply === "always_allow"
           ? "accept_for_session"
           : nativeReply === "once" || nativeReply === "allow"
             ? "accept"
             : "decline");
-      this.#emit("runtime_request.resolved", harnessRuntimeRequestOutcome(pending.request, { action }), {
-        turnId,
-        itemId: pending.request.itemId,
-      });
+      this.#emit(
+        "runtime_request.resolved",
+        harnessRuntimeRequestOutcome(pending.request, { action }),
+        {
+          turnId: pending.request.turnId,
+          itemId: pending.request.itemId,
+        },
+      );
       return;
     }
-    if ((type === "question.replied" || type === "question.rejected") && turnId) {
-      const requestId = text(properties.id, text(properties.requestID, text(properties.requestId)));
+    if (
+      (type === "question.replied" || type === "question.rejected") &&
+      turnId
+    ) {
+      const requestId = text(
+        properties.id,
+        text(properties.requestID, text(properties.requestId)),
+      );
       const pending = this.#pendingRuntimeRequests.get(requestId);
       if (!pending) return;
       this.#pendingRuntimeRequests.delete(requestId);
       this.#emit(
-        type === "question.replied" ? "runtime_request.resolved" : "runtime_request.cancelled",
+        type === "question.replied"
+          ? "runtime_request.resolved"
+          : "runtime_request.cancelled",
         harnessRuntimeRequestOutcome(
           pending.request,
           type === "question.replied"
             ? { action: "submit", response: pending.submittedResponse }
             : { reason: "provider_rejected" },
         ),
-        { turnId, itemId: pending.request.itemId },
+        { turnId: pending.request.turnId, itemId: pending.request.itemId },
       );
       return;
     }
-    if (type === "message.part.updated" && turnId) {
-      const part = record(properties.part);
+    if (type === "message.part.updated" || type === "message.part.delta") {
+      let part = record(properties.part);
+      if (type === "message.part.delta") {
+        const previous = this.#streamingParts.get(text(properties.partID));
+        // A delta has no role or part type. Only stream text for an observed
+        // part with matching message identity; never infer assistant identity.
+        if (!previous || properties.field !== "text" || typeof properties.delta !== "string"
+          || text(previous.messageID, text(previous.messageId)) !== text(properties.messageID)) return;
+        part = { ...previous, text: text(previous.text) + properties.delta };
+      }
       const messageId = text(part.messageID, text(part.messageId));
       if (!messageId) return;
+      // Resolve the turn this message actually belongs to, not whichever
+      // turn is active right now. A straggling part for an earlier message
+      // must stay attributed to the turn that created that message.
+      const owningTurnId = this.#messageTurnIds.get(messageId) ?? turnId;
+      if (!owningTurnId) return;
+      if (owningTurnId === turnId && text(part.id) && ["text", "reasoning"].includes(text(part.type))) {
+        this.#streamingParts.set(text(part.id), part);
+      }
       const role = this.#messageRoles.get(messageId);
-      if (role === "assistant") this.#emitAssistantPart(part, turnId);
+      if (role === "assistant") this.#emitAssistantPart(part, owningTurnId);
       else if (role === undefined) {
         const pending = this.#pendingMessageParts.get(messageId) ?? [];
-        if (pending.length < 100) pending.push(part);
+        // Text deltas are cumulative by this point. Keep the newest snapshot
+        // (including completion metadata), not the first 100 token chunks.
+        const previousIndex = ["text", "reasoning"].includes(text(part.type)) && text(part.id)
+          ? pending.findIndex(candidate => candidate.id === part.id && candidate.type === part.type)
+          : -1;
+        if (previousIndex >= 0) pending[previousIndex] = part;
+        else if (pending.length < 100) pending.push(part);
         this.#pendingMessageParts.set(messageId, pending);
       }
       return;
     }
-    if (type === "message.updated" && turnId) {
+    if (type === "message.updated") {
       const info = record(properties.info);
-      const messageId = text(info.id, text(info.messageID, text(info.messageId)));
+      const messageId = text(
+        info.id,
+        text(info.messageID, text(info.messageId)),
+      );
       const role = text(info.role);
+      // Record the message's owning turn at the moment OpenCode first
+      // reports it. A later turn that reuses the same native message id
+      // legitimately reclaims ownership; a stale message never sees this
+      // branch again, so its recorded owner never changes.
+      if (messageId && role && turnId) this.#messageTurnIds.set(messageId, turnId);
+      const owningTurnId = messageId
+        ? (this.#messageTurnIds.get(messageId) ?? turnId)
+        : turnId;
+      if (!owningTurnId) return;
       if (messageId && role) {
         this.#messageRoles.set(messageId, role);
         const pending = this.#pendingMessageParts.get(messageId) ?? [];
         this.#pendingMessageParts.delete(messageId);
-        if (role === "assistant") for (const part of pending) this.#emitAssistantPart(part, turnId);
+        if (role === "assistant")
+          for (const part of pending)
+            this.#emitAssistantPart(part, owningTurnId);
       }
       const tokens = record(info.tokens);
-      if (role === "assistant" && (Object.keys(tokens).length > 0 || typeof info.cost === "number")) {
+      if (
+        role === "assistant" &&
+        (Object.keys(tokens).length > 0 || typeof info.cost === "number")
+      ) {
         this.#usage = bounded({
           ...tokens,
           costUsd: info.cost ?? null,
@@ -1040,35 +1742,60 @@ class OpenCodeHarnessSession implements HarnessSession {
           driverVersion: this.#runtime.version,
         });
         const usageFingerprint = canonicalJson(this.#usage);
-        const hasMeaningfulUsage = hasPositiveNumber(tokens)
-          || (typeof info.cost === "number" && info.cost > 0);
+        const hasMeaningfulUsage =
+          hasPositiveNumber(tokens) ||
+          (typeof info.cost === "number" && info.cost > 0);
         if (
-          hasMeaningfulUsage
-          && this.#messageUsageFingerprints.get(messageId) !== usageFingerprint
+          hasMeaningfulUsage &&
+          this.#messageUsageFingerprints.get(messageId) !== usageFingerprint
         ) {
           this.#messageUsageFingerprints.set(messageId, usageFingerprint);
-          this.#emit("item.completed", { kind: "usage", usage: this.#usage }, { turnId, itemId: `${turnId}:usage` });
+          this.#emit(
+            "item.completed",
+            { kind: "usage", usage: this.#usage, usageMessageId: messageId },
+            { turnId: owningTurnId, itemId: `${owningTurnId}:usage` },
+          );
         }
       }
       return;
     }
-    if ((type === "session.idle" || (type === "session.status" && text(record(properties.status).type) === "idle")) && turnId) {
-      const fingerprint = canonicalJson({ status: "completed", semanticResult: this.#resultFingerprint });
+    if (
+      (type === "session.idle" ||
+        (type === "session.status" &&
+          text(record(properties.status).type) === "idle")) &&
+      turnId
+    ) {
+      const fingerprint = canonicalJson({
+        status: "completed",
+        semanticResult: this.#resultFingerprint,
+      });
       this.#terminalTurns.set(turnId, fingerprint);
       this.#emitSettledFinalAgentMessage(turnId);
       const workspace = this.#workspaceChangesByTurn.get(turnId);
-      if (workspace !== undefined) this.#emit("workspace.diff.recorded", { ...workspace, complete: true }, { turnId, itemId: `${turnId}:workspace` });
-      this.#activeTurnId = null;
+      if (workspace !== undefined)
+        this.#emit(
+          "workspace.diff.recorded",
+          { ...workspace, complete: true },
+          { turnId, itemId: `${turnId}:workspace` },
+        );
+      // Settle any request this turn never answered before the terminal
+      // event, so a consumer that stops reading at that terminal event still
+      // observes the settlement.
+      this.#settlePendingRuntimeRequestsForTurn(turnId);
+      // Emit while this turn is still `#activeTurnId`; the gate in `#emit`
+      // drops any frame whose turnId is not the active turn, so nulling it
+      // first would make `#emit` drop this very event.
       this.#emit("turn.completed", { status: "completed" }, { turnId });
-      this.#events.close();
+      this.#activeTurnId = null;
       return;
     }
     if (type === "session.error" && turnId) {
       const providerError = record(properties.error);
       const providerErrorData = record(providerError.data);
       if (
-        text(providerError.name) === "MessageAbortedError"
-        && text(providerErrorData.message, text(providerError.message)) === "Aborted"
+        text(providerError.name) === "MessageAbortedError" &&
+        text(providerErrorData.message, text(providerError.message)) ===
+          "Aborted"
       ) {
         // OpenCode reports its normal /abort control path as session.error. That
         // endpoint is also how Paperclip parks a provider turn after a durable
@@ -1077,29 +1804,50 @@ class OpenCodeHarnessSession implements HarnessSession {
         // card. Preserve the provider fact as a cancelled terminal event; the
         // native session loop independently commits the authoritative yielded
         // result when this abort followed a governed wait.
-        this.#activeTurnId = null;
-        this.#emit("turn.cancelled", {
-          status: "cancelled",
-          error: bounded(properties.error ?? properties),
-        }, { turnId });
+        // Settle any request this turn never answered before the terminal
+        // event, so a consumer that stops reading at that terminal event
+        // still observes the settlement.
+        this.#settlePendingRuntimeRequestsForTurn(turnId);
+        this.#emit(
+          "turn.cancelled",
+          {
+            status: "cancelled",
+            error: bounded(properties.error ?? properties),
+          },
+          { turnId },
+        );
         this.#terminalTurns.set(turnId, canonicalJson({ status: "cancelled" }));
-        this.#events.close();
+        this.#activeTurnId = null;
         return;
       }
-      this.#emit("provider.notice.recorded", {
-        schema: "paperclip.provider.notice.v1",
-        noticeId: `${turnId}:session-error`,
-        severity: "error",
-        category: "session_error",
-        scope: "turn",
-        recoverable: false,
-        userActionable: true,
-        summary: redact(text(record(properties.error).message, "OpenCode session failed."), this.#runtime.sensitiveValues).slice(0, 4000),
-      }, { turnId, itemId: `${turnId}:session-error` });
-      this.#activeTurnId = null;
-      this.#emit("turn.failed", { status: "failed", error: bounded(properties.error ?? properties) }, { turnId });
+      this.#emit(
+        "provider.notice.recorded",
+        {
+          schema: "paperclip.provider.notice.v1",
+          noticeId: `${turnId}:session-error`,
+          severity: "error",
+          category: "session_error",
+          scope: "turn",
+          recoverable: false,
+          userActionable: true,
+          summary: redact(
+            text(record(properties.error).message, "OpenCode session failed."),
+            this.#runtime.sensitiveValues,
+          ).slice(0, 4000),
+        },
+        { turnId, itemId: `${turnId}:session-error` },
+      );
+      // Settle any request this turn never answered before the terminal
+      // event, so a consumer that stops reading at that terminal event still
+      // observes the settlement.
+      this.#settlePendingRuntimeRequestsForTurn(turnId);
+      this.#emit(
+        "turn.failed",
+        { status: "failed", error: bounded(properties.error ?? properties) },
+        { turnId },
+      );
       this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
-      this.#events.close();
+      this.#activeTurnId = null;
     }
   }
 
@@ -1114,11 +1862,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       ),
     );
     if (
-      ["tool", "tool-call", "tool_call"].includes(partType)
-      && [PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME].includes(
+      ["tool", "tool-call", "tool_call"].includes(partType) &&
+      [PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME].includes(
         canonicalToolName as typeof PRP_COMPLETION_TOOL_NAME,
-      )
-      && messageId
+      ) &&
+      messageId
     ) {
       // OpenCode may report the terminal MCP call before it marks the text
       // part from the same assistant message complete. Correlating by native
@@ -1127,11 +1875,14 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#semanticResultProviderMessageId = messageId;
     }
     for (const canonical of canonicalProviderEventsFromOpenCodePart(part)) {
-      this.#emit(canonical.eventType, canonical.payload, { turnId, itemId: canonical.itemId });
+      this.#emit(canonical.eventType, canonical.payload, {
+        turnId,
+        itemId: canonical.itemId,
+      });
     }
     if (
-      ["tool", "tool-call", "tool_call"].includes(partType)
-      && ![PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME].includes(
+      ["tool", "tool-call", "tool_call"].includes(partType) &&
+      ![PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME].includes(
         canonicalToolName as typeof PRP_COMPLETION_TOOL_NAME,
       )
     ) {
@@ -1139,11 +1890,24 @@ class OpenCodeHarnessSession implements HarnessSession {
     }
     if (partType === "patch") {
       const paths = Array.isArray(part.files) ? part.files : [];
-      const files = paths.slice(0, 2_000).flatMap((value): Record<string, unknown>[] => {
-        const path = text(value).replaceAll("\\", "/");
-        if (!path || path.startsWith("/") || path.split("/").includes("..")) return [];
-        return [{ path, operation: "modify", previousPath: null, additions: null, deletions: null, binary: false, diff: null }];
-      });
+      const files = paths
+        .slice(0, 2_000)
+        .flatMap((value): Record<string, unknown>[] => {
+          const path = text(value).replaceAll("\\", "/");
+          if (!path || path.startsWith("/") || path.split("/").includes(".."))
+            return [];
+          return [
+            {
+              path,
+              operation: "modify",
+              previousPath: null,
+              additions: null,
+              deletions: null,
+              binary: false,
+              diff: null,
+            },
+          ];
+        });
       if (files.length > 0) {
         const previous = this.#workspaceChangesByTurn.get(turnId);
         const payload = {
@@ -1157,7 +1921,10 @@ class OpenCodeHarnessSession implements HarnessSession {
           patchArtifactRef: null,
         };
         this.#workspaceChangesByTurn.set(turnId, payload);
-        this.#emit("workspace.change.updated", payload, { turnId, itemId: `${turnId}:workspace` });
+        this.#emit("workspace.change.updated", payload, {
+          turnId,
+          itemId: `${turnId}:workspace`,
+        });
       }
     }
     const content = text(part.text, text(part.output));
@@ -1171,26 +1938,103 @@ class OpenCodeHarnessSession implements HarnessSession {
       )) {
         if (this.#emittedFileReferences.has(reference.referenceId)) continue;
         this.#emittedFileReferences.add(reference.referenceId);
-        this.#emit("workspace.file.referenced", { ...reference }, { turnId, itemId: reference.referenceId });
+        this.#emit(
+          "workspace.file.referenced",
+          { ...reference },
+          { turnId, itemId: reference.referenceId },
+        );
       }
     }
-    const delta = content.startsWith(previous) ? content.slice(previous.length) : content;
+    const delta = content.startsWith(previous)
+      ? content.slice(previous.length)
+      : content;
     if (delta) {
-      this.#emit("item.delta", { kind: partType, text: delta, item: bounded(part) }, { turnId, itemId: partId });
+      // OpenCode calls assistant prose a `text` part, but `text` is not a PRP
+      // item identity and is consequently ignored by the task projection.
+      // Until settlement selects one completed part as the final response,
+      // every assistant text update is canonical progress/commentary.
+      const assistantDelta = partType === "text";
+      const reasoningDelta = partType === "reasoning";
+      this.#emit(
+        "item.delta",
+        {
+          kind: assistantDelta
+            ? "agentMessage"
+            : reasoningDelta
+              ? "reasoning"
+              : partType,
+          ...(assistantDelta
+            ? { channel: "progress", providerPhase: "commentary" }
+            : reasoningDelta
+              ? { channel: "detail", providerPhase: "reasoning" }
+              : {}),
+          text: delta,
+          item: bounded(
+            assistantDelta
+              ? {
+                  ...part,
+                  type: "agentMessage",
+                  channel: "progress",
+                  phase: "commentary",
+                  text: delta,
+                }
+              : reasoningDelta
+                ? {
+                    ...part,
+                    type: "reasoning",
+                    channel: "detail",
+                    phase: "reasoning",
+                    text: delta,
+                  }
+                : part,
+          ),
+        },
+        { turnId, itemId: partId },
+      );
     }
     const completedAt = record(part.time).end;
     if (
-      partType === "text"
-      && content.trim().length > 0
-      && Number.isFinite(completedAt)
-      && !this.#completedTextPartIds.has(partId)
+      partType === "reasoning" &&
+      content.trim().length > 0 &&
+      Number.isFinite(completedAt) &&
+      !this.#completedReasoningPartIds.has(partId)
+    ) {
+      this.#completedReasoningPartIds.add(partId);
+      this.#emit(
+        "item.completed",
+        {
+          kind: "reasoning",
+          channel: "detail",
+          providerPhase: "reasoning",
+          text: content,
+          item: bounded({
+            ...part,
+            type: "reasoning",
+            channel: "detail",
+            phase: "reasoning",
+            text: content,
+          }),
+        },
+        { turnId, itemId: partId },
+      );
+    }
+    if (
+      partType === "text" &&
+      content.trim().length > 0 &&
+      Number.isFinite(completedAt) &&
+      !this.#completedTextPartIds.has(partId)
     ) {
       this.#completedTextPartIds.add(partId);
       this.#completedTextParts.push({
         partId,
         messageId,
         text: content,
-        item: bounded({ ...part, type: "agentMessage", phase: "final_answer", text: content }),
+        item: bounded({
+          ...part,
+          type: "agentMessage",
+          phase: "final_answer",
+          text: content,
+        }),
         observedSourceSeq: this.#sourceSequence,
       });
     }
@@ -1208,38 +2052,96 @@ class OpenCodeHarnessSession implements HarnessSession {
     const afterLastWorkTool = (part: { observedSourceSeq: number }) =>
       part.observedSourceSeq > this.#lastNonTerminalToolSourceSeq;
     const eligibleText = this.#completedTextParts.filter(afterLastWorkTool);
-    // OpenCode can place terminal-tool troubleshooting text in the same
-    // native message as paperclip_finish, then emit the actual answer in a
-    // later message. It can also append a terse acknowledgement after a real
-    // answer. With no native commentary/final channel, prefer the most
-    // substantive eligible text and use structural correlation/order only as
-    // tie breakers. This does not cap, truncate, or regex-filter model prose.
-    const selected = eligibleText.reduce<(typeof eligibleText)[number] | null>((best, candidate) => {
-      if (best === null) return candidate;
-      const candidateLength = candidate.text.trim().length;
-      const bestLength = best.text.trim().length;
-      if (candidateLength !== bestLength) return candidateLength > bestLength ? candidate : best;
-      const candidateCorrelated = candidate.messageId === this.#semanticResultProviderMessageId;
-      const bestCorrelated = best.messageId === this.#semanticResultProviderMessageId;
-      if (candidateCorrelated !== bestCorrelated) return candidateCorrelated ? candidate : best;
-      const candidateBeforeResult = this.#semanticResultTextBoundary !== null
-        && this.#completedTextParts.indexOf(candidate) < this.#semanticResultTextBoundary;
-      const bestBeforeResult = this.#semanticResultTextBoundary !== null
-        && this.#completedTextParts.indexOf(best) < this.#semanticResultTextBoundary;
-      if (candidateBeforeResult !== bestBeforeResult) return candidateBeforeResult ? candidate : best;
-      return candidate.observedSourceSeq >= best.observedSourceSeq ? candidate : best;
-    }, null);
+    // OpenCode exposes no prose channel, so final selection must use provider
+    // structure rather than text length or content. When OpenCode reports the
+    // terminal tool part, prefer prose completed afterward in that exact
+    // provider message. If that message contains only pre-tool commentary,
+    // the first later assistant message is the compatible terminal response.
+    // Without a reported tool-message identity, a completed pre-tool message
+    // is more authoritative than a later acknowledgement; otherwise the first
+    // post-tool message is the only available compatibility fallback.
+    const indexed = eligibleText.map((part) => ({
+      part,
+      index: this.#completedTextParts.indexOf(part),
+    }));
+    const boundary = this.#semanticResultTextBoundary;
+    const beforeResult = indexed.filter(
+      ({ index }) => boundary !== null && index < boundary,
+    );
+    const afterResult = indexed.filter(
+      ({ index }) => boundary === null || index >= boundary,
+    );
+    const correlatedAfterResult =
+      this.#semanticResultProviderMessageId === null
+        ? []
+        : afterResult.filter(
+            ({ part }) =>
+              part.messageId === this.#semanticResultProviderMessageId,
+          );
+    const uncorrelatedAfterResult =
+      this.#semanticResultProviderMessageId === null
+        ? afterResult
+        : afterResult.filter(
+            ({ part }) =>
+              part.messageId !== this.#semanticResultProviderMessageId,
+          );
+    const selected =
+      correlatedAfterResult.at(-1)?.part ??
+      (this.#semanticResultProviderMessageId === null
+        ? beforeResult.at(-1)?.part
+        : uncorrelatedAfterResult[0]?.part) ??
+      beforeResult.at(-1)?.part ??
+      afterResult[0]?.part ??
+      null;
     if (!selected) return;
-    this.#emit("item.completed", {
-      kind: "agentMessage",
-      channel: "final",
-      providerPhase: "final_answer",
-      text: selected.text,
-      item: selected.item,
-    }, { turnId, itemId: selected.partId });
+    this.#emit(
+      "item.completed",
+      {
+        kind: "agentMessage",
+        channel: "final",
+        providerPhase: "final_answer",
+        text: selected.text,
+        item: selected.item,
+      },
+      { turnId, itemId: selected.partId },
+    );
   }
 
-  #emit(eventType: PrpEvent["eventType"], payload: Record<string, unknown>, refs: { turnId?: string; itemId?: string } = {}): void {
+  #emit(
+    eventType: PrpEvent["eventType"],
+    payload: Record<string, unknown>,
+    refs: { turnId?: string; itemId?: string } = {},
+    options?: { bypassTerminalTurnGate?: boolean },
+  ): void {
+    if (
+      !options?.bypassTerminalTurnGate &&
+      eventType !== "harness.diagnostic" &&
+      refs.turnId !== undefined &&
+      refs.turnId !== this.#activeTurnId
+    ) {
+      // The provider sent this frame for a turn that is not the current
+      // active turn, so that turn already reached a terminal state: turns
+      // run strictly one at a time (`startTurn` and `attachRun` both refuse
+      // to proceed while `#activeTurnId` is set), and a turn id is never
+      // reused. Comparing directly against `#activeTurnId` needs no history
+      // of past turns, so the gate stays correct and its memory stays O(1)
+      // no matter how many turns a long-lived session runs. The queue stays
+      // open across turns, so a silent drop here would let a stale frame
+      // reach the next turn's consumer. Report it instead of discarding it
+      // without a trace.
+      this.#emit("harness.diagnostic", {
+        code: "opencode_late_terminal_turn_event_dropped",
+        message: `OpenCode sent a ${eventType} event for a turn that already reached a terminal state.`,
+        droppedEventType: eventType,
+        turnId: refs.turnId,
+      });
+      return;
+    }
+    if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(eventType)) {
+      const performance = this.#runtime.performanceDiagnostics?.take(this.#performanceBoundaryMs);
+      this.#performanceBoundaryMs = this.#now().getTime();
+      if (performance) this.#emit("harness.diagnostic", performance, refs);
+    }
     const sourceSeq = ++this.#sourceSequence;
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
@@ -1265,12 +2167,120 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 }
 
+/** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv) {
+  const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
+  const token = randomBytes(32).toString("base64url");
+  // Agent-local settings keep one runtime's transport configuration out of other sessions.
+  const proxyEnv = {
+    HTTP_PROXY: environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    HTTPS_PROXY: environment.https_proxy ?? environment.HTTPS_PROXY ?? environment.http_proxy ?? environment.HTTP_PROXY ?? environment.all_proxy ?? environment.ALL_PROXY,
+    NO_PROXY: environment.no_proxy ?? environment.NO_PROXY,
+  };
+  const ca = [...getCACertificates("default")];
+  if (environment.SSL_CERT_FILE) ca.push(await readFile(environment.SSL_CERT_FILE, "utf8"));
+  if (environment.SSL_CERT_DIR) {
+    for (const entry of await readdir(environment.SSL_CERT_DIR, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        const certificate = await readFile(join(environment.SSL_CERT_DIR, entry.name), "utf8");
+        if (certificate.includes("-----BEGIN CERTIFICATE-----")) ca.push(certificate);
+      }
+    }
+  }
+  const agent = upstreamUrl.protocol === "https:" ? new HttpsAgent({ proxyEnv, ca }) : new HttpAgent({ proxyEnv });
+  const controllers = new Set<AbortController>();
+  const server = createHttpServer((request, response) => {
+    const controller = new AbortController();
+    controllers.add(controller);
+    response.once("close", () => controller.abort());
+    void (async () => {
+      if (request.headers.authorization !== `Bearer ${token}`) {
+        response.writeHead(401).end();
+        return;
+      }
+      if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      let bytes = 0;
+      for await (const chunk of request) {
+        bytes += chunk.length;
+        if (bytes > 16 * 1024 * 1024) {
+          response.writeHead(413).end();
+          return;
+        }
+        chunks.push(Buffer.from(chunk));
+      }
+      const body = Buffer.concat(chunks);
+      let payload: Record<string, unknown>;
+      try { payload = JSON.parse(body.toString("utf8")); }
+      catch { response.writeHead(400).end(); return; }
+      if (!payload || typeof payload !== "object" || payload.model !== model) {
+        response.writeHead(400).end();
+        return;
+      }
+      const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+        const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
+          method: "POST",
+          agent,
+          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
+        }, resolve);
+        outgoing.once("error", reject);
+        outgoing.end(body);
+      });
+      // Never forward authentication to a redirect destination.
+      const status = upstream.statusCode ?? 502;
+      if (status >= 300 && status < 400) {
+        upstream.destroy();
+        throw new Error("Provider redirects are not supported");
+      }
+      const headers: Record<string, string> = {};
+      for (const name of ["content-type", "content-encoding", "cache-control", "retry-after"]) {
+        const value = upstream.headers[name];
+        if (typeof value === "string") headers[name] = value;
+      }
+      response.writeHead(status, headers);
+      await pipeline(upstream, response);
+    })().catch(() => {
+      if (!response.headersSent) response.writeHead(502).end("Provider request failed");
+      else response.destroy();
+    }).finally(() => controllers.delete(controller));
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+  } catch (error) { agent.destroy(); throw error; }
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    agent.destroy();
+    throw new Error("Could not bind OpenCode provider proxy");
+  }
+  return {
+    baseURL: `http://127.0.0.1:${address.port}/v1`,
+    token,
+    close: async () => {
+      for (const controller of controllers) controller.abort();
+      agent.destroy();
+      await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
+    },
+  };
+}
+
 async function startRuntime(input: {
   options: OpenCodeServerDriverOptions;
   root: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
-  dispatch: (call: { tool: string; callId: string; arguments: unknown }) => Promise<unknown>;
+  dispatch: (call: {
+    tool: string;
+    callId: string;
+    arguments: unknown;
+  }) => Promise<unknown>;
 }): Promise<OpenCodeRuntime> {
   const port = await reservePort();
   const password = randomBytes(32).toString("base64url");
@@ -1287,124 +2297,246 @@ async function startRuntime(input: {
   // HOME contains a read-only skill snapshot, whose destination must be fresh.
   // Keep OpenCode's XDG data stable for provider-session recovery while giving
   // every launch (including retries and recovery) a new isolated HOME.
-  const isolatedHome = await mkdtemp(join(input.root, "home-"));
+  const homesRoot = join(input.root, OPENCODE_ISOLATED_HOMES_DIRECTORY);
+  await mkdir(homesRoot, { recursive: true, mode: 0o700 });
+  const isolatedHome = await mkdtemp(join(homesRoot, "home-"));
   await chmod(isolatedHome, 0o700);
   try {
-    await materializeNativeRuntimeSkills(input.options.runtimeContext ?? null, join(isolatedHome, ".claude", "skills"));
+    await materializeNativeRuntimeSkills(
+      input.options.runtimeContext ?? null,
+      join(isolatedHome, ".claude", "skills"),
+    );
   } catch (error) {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
   }).catch(async (error) => {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   });
-  const assignedMcp = nativeMcpLaunchBinding(input.options.environment ?? process.env);
-  input.trace?.addSensitiveValues([
+  const assignedMcp = nativeMcpLaunchBinding(
+    input.options.environment ?? process.env,
+  );
+  const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
+  const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
+    ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
+  const sensitiveValues = [
+    ...identityValues,
     password,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
     input.options.environment?.OPENROUTER_API_KEY,
-  ]);
-  const instructionRoot = input.options.runtimeContext?.instructions.bundle.rootPath;
-  const config = {
-    $schema: "https://opencode.ai/config.json",
-    model: input.options.model,
-    small_model: input.options.model,
-    share: "disabled",
-    // The configured entry is already composed exactly once into the session
-    // system prompt; siblings remain available through the read-only root.
-    instructions: [],
-    plugin: [],
-    tools: {
-      question: true,
-    },
-    permission: {
-      "*": input.options.permissionMode ?? "allow",
-      question: "allow",
-      "paperclip_*": "allow",
-      "mcp__paperclip__*": "allow",
-      external_directory: instructionRoot
-        ? { "*": "deny", [`${instructionRoot}/**`]: "allow" }
-        : "deny",
-    },
-    mcp: {
-      paperclip: {
-        type: "remote",
-        url: bridge.url,
-        enabled: true,
-        oauth: false,
-        headers: { Authorization: `Bearer ${bridge.secret}` },
-        timeout: 30_000,
+    input.options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+  ].filter((value): value is string => Boolean(value));
+  input.trace?.addSensitiveValues(sensitiveValues);
+  const instructionRoot =
+    input.options.runtimeContext?.instructions.bundle.rootPath;
+  // OpenCode canonicalizes tool paths (for example /var -> /private/var on
+  // macOS). Permit the assigned workspace under either spelling; operations
+  // within it still obey the selected allow/ask/deny permission mode.
+  const externalDirectories: Record<string, string> = { "*": "deny" };
+  for (const root of new Set([input.cwd, await realpath(input.cwd)])) {
+    externalDirectories[root] = "allow";
+    externalDirectories[`${root}/**`] = "allow";
+  }
+  if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
+  const [modelProvider, ...modelIdParts] = input.options.model.split("/");
+  const providerModelId = modelIdParts.join("/");
+  const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
+        await bridge.close().catch(() => {});
+        await removeIsolatedHome(isolatedHome).catch(() => {});
+        throw error;
+      })
+    : null;
+  if (providerProxy) {
+    sensitiveValues.push(providerProxy.token);
+    input.trace?.addSensitiveValues([providerProxy.token]);
+  }
+  let child: ChildProcess | undefined;
+  // Failure to collect diagnostics must not prevent the requested work.
+  const performanceDiagnostics = input.options.environment?.[PROVIDER_PERFORMANCE_ENV] === "1"
+    ? await startOpenCodePerformanceDiagnostics().catch(() => null) : null;
+  if (performanceDiagnostics) {
+    const values = [performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS,
+      performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS.replace("Authorization=Bearer ", "")];
+    sensitiveValues.push(...values);
+    input.trace?.addSensitiveValues(values);
+  }
+  let launchPrepared = false;
+  const releaseExecutable = () => {
+    if (!launchPrepared) return;
+    launchPrepared = false;
+    try {
+      input.options.commandLifecycle?.afterExit?.();
+    } catch (error) {
+      input.options.onDiagnostic?.(redact(`OpenCode executable cleanup failed: ${String(error)}`, sensitiveValues));
+    }
+  };
+  try {
+    const config = {
+      $schema: "https://opencode.ai/config.json",
+      model: input.options.model,
+      small_model: input.options.model,
+      share: "disabled",
+      autoupdate: false,
+      ...(performanceDiagnostics ? { experimental: { openTelemetry: true } } : {}),
+      // The configured entry is already composed exactly once into the session
+      // system prompt; siblings remain available through the read-only root.
+      instructions: [],
+      plugin: [],
+      // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
+      // catalog. Bind the already-qualified exact model slug into the built-in
+      // provider instead of silently falling back or rejecting a newer model.
+      provider: {
+        [modelProvider!]: {
+          ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
+          ...(providerProxy ? {
+            npm: "@ai-sdk/openai-compatible",
+            name: "Paperclip connection",
+            options: {
+              baseURL: providerProxy.baseURL,
+              apiKey: providerProxy.token,
+            },
+          } : {}),
+          models: {
+            [providerModelId]: {
+              name: providerModelId,
+              ...(modelProvider === "openrouter"
+                ? { variants: {
+                    "paperclip-default": {},
+                    "paperclip-no-reasoning": { reasoning: { enabled: false } },
+                  } }
+                : {}),
+            },
+          },
+        },
       },
-      ...(assignedMcp ? {
-        [assignedMcp.name]: {
+      tools: {
+        question: true,
+      },
+      permission: {
+        "*": input.options.permissionMode ?? "allow",
+        question: "allow",
+        "paperclip_*": "allow",
+        "mcp__paperclip__*": "allow",
+        external_directory: externalDirectories,
+      },
+      mcp: {
+        paperclip: {
           type: "remote",
-          url: assignedMcp.url,
+          url: bridge.url,
           enabled: true,
           oauth: false,
-          headers: { Authorization: `Bearer ${assignedMcp.token}` },
+          headers: { Authorization: `Bearer ${bridge.secret}` },
           timeout: 30_000,
         },
-      } : {}),
-    },
-  };
-  await writeFile(join(configHome, "opencode", "opencode.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  const environment = sanitizedEnvironment(input.options.environment ?? process.env, {
-    HOME: isolatedHome,
-    XDG_CONFIG_HOME: configHome,
-    XDG_DATA_HOME: dataHome,
-    XDG_CACHE_HOME: cacheHome,
-    OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-    OPENCODE_SERVER_USERNAME: username,
-    OPENCODE_SERVER_PASSWORD: password,
-  });
-  const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
-  const child = spawn(input.options.command ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
-    cwd: input.cwd,
-    env: environment,
-    stdio: ["ignore", "ignore", "pipe"],
-    detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
-  });
-  let diagnostics = "";
-  child.stderr?.on("data", (chunk) => {
-    const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-    const redactedDiagnostic = redact(raw.toString("utf8"), [
-      password,
-      input.options.environment?.OPENROUTER_API_KEY,
-    ]);
-    diagnostics = `${diagnostics}${redactedDiagnostic}`.slice(-8_192);
-    const frameId = input.trace?.frame({
-      direction: "provider_stderr",
-      raw,
-      transport: "process_stderr",
-      nativeMethod: "opencode serve stderr",
-    });
-    if (frameId) {
-      input.trace?.interpretation({
-        frameId,
-        stage: "typescript_opencode_process_transport",
-        ruleId: "opencode.stderr",
-        disposition: "operator_only",
-        reason: "OpenCode stderr is retained only in the restricted trace sidecar",
-      });
+        ...(assignedMcp
+          ? {
+              [assignedMcp.name]: {
+                type: "remote",
+                url: assignedMcp.url,
+                enabled: true,
+                oauth: false,
+                headers: { Authorization: `Bearer ${assignedMcp.token}` },
+                timeout: 30_000,
+              },
+            }
+          : {}),
+      },
+    };
+    await writeFile(
+      join(configHome, "opencode", "opencode.json"),
+      `${JSON.stringify(config, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const environment = sanitizedEnvironment(
+      input.options.environment,
+      {
+        HOME: isolatedHome,
+        XDG_CONFIG_HOME: configHome,
+        XDG_DATA_HOME: dataHome,
+        XDG_CACHE_HOME: cacheHome,
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+        // The runner pins the executable, model and assigned MCP tools. A
+        // fresh isolated cache must not fetch a catalog or install unrelated
+        // default plugins before it can submit the first prompt.
+        OPENCODE_DISABLE_MODELS_FETCH: "true",
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+        OPENCODE_SERVER_USERNAME: username,
+        OPENCODE_SERVER_PASSWORD: password,
+        ...performanceDiagnostics?.environment,
+        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+      },
+    );
+    const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
+    const stdio: Array<"ignore" | "pipe" | number> = ["ignore", "ignore", "pipe"];
+    if (input.options.commandFd !== undefined) {
+      while (stdio.length <= input.options.commandFd) stdio.push("ignore");
+      stdio[input.options.commandFd] = input.options.commandFd;
     }
-    input.options.onDiagnostic?.(redactedDiagnostic);
-  });
-  try {
+    input.options.commandLifecycle?.beforeSpawn();
+    launchPrepared = true;
+    child = spawn(
+      input.options.command ?? resolvePinnedOpenCodeCommand(),
+      ["serve", "--hostname", "127.0.0.1", "--port", String(port)],
+      {
+        cwd: input.cwd,
+        env: environment,
+        stdio,
+        detached: globalThis.process.platform !== "win32" && isolateProcessGroup,
+      },
+    );
+    child.once("exit", releaseExecutable);
+    if (child.pid !== undefined) {
+      try {
+        input.options.commandLifecycle?.afterSpawn();
+      } catch (error) {
+        child.kill("SIGKILL");
+        throw error;
+      }
+    }
+    let diagnostics = "";
+    child.stderr?.on("data", (chunk) => {
+      const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const redactedDiagnostic = redact(raw.toString("utf8"), sensitiveValues);
+      diagnostics = `${diagnostics}${redactedDiagnostic}`.slice(-8_192);
+      const frameId = input.trace?.frame({
+        direction: "provider_stderr",
+        raw,
+        transport: "process_stderr",
+        nativeMethod: "opencode serve stderr",
+      });
+      if (frameId) {
+        input.trace?.interpretation({
+          frameId,
+          stage: "typescript_opencode_process_transport",
+          ruleId: "opencode.stderr",
+          disposition: "operator_only",
+          reason:
+            "OpenCode stderr is retained only in the restricted trace sidecar",
+        });
+      }
+      input.options.onDiagnostic?.(redactedDiagnostic);
+    });
+    const providerChild = child;
     await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
+      providerChild.once("spawn", resolve);
+      providerChild.once("error", reject);
     });
-    if (child.pid) await input.options.onSpawn?.({
-      pid: child.pid,
-      processGroupId: globalThis.process.platform === "win32" || !isolateProcessGroup ? null : child.pid,
-      startedAt: new Date().toISOString(),
-    });
+    if (child.pid)
+      await input.options.onSpawn?.({
+        pid: child.pid,
+        processGroupId:
+          globalThis.process.platform === "win32" || !isolateProcessGroup
+            ? null
+            : child.pid,
+        startedAt: new Date().toISOString(),
+      });
     const baseUrl = `http://127.0.0.1:${port}`;
     const health = await waitForHealth(
       baseUrl,
@@ -1415,8 +2547,12 @@ async function startRuntime(input: {
       input.trace,
     );
     const version = text(record(health).version);
-    if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error("OpenCode health response omitted a semantic version");
-    const qualifiedComparison = compareVersion(version, QUALIFIED_OPENCODE_VERSION);
+    if (!/^\d+\.\d+\.\d+$/.test(version))
+      throw new Error("OpenCode health response omitted a semantic version");
+    const qualifiedComparison = compareVersion(
+      version,
+      QUALIFIED_OPENCODE_VERSION,
+    );
     if (qualifiedComparison !== 0) {
       throw new Error(
         `OpenCode ${version} is not the question-conformance-qualified ${QUALIFIED_OPENCODE_VERSION}`,
@@ -1430,34 +2566,52 @@ async function startRuntime(input: {
       process: child,
       bridge,
       trace: input.trace,
-      sensitiveValues: [password, input.options.environment?.OPENROUTER_API_KEY].filter((value): value is string => Boolean(value)),
+      sensitiveValues,
+      performanceDiagnostics,
       close: async (closeInput = {}) => {
+        await providerProxy?.close();
         await bridge.close().catch(() => {});
-        if (child.exitCode === null && child.signalCode === null && child.pid) {
+        if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
-            if (globalThis.process.platform === "win32" || !isolateProcessGroup) child.kill("SIGTERM");
-            else globalThis.process.kill(-child.pid, "SIGTERM");
-          } catch { child.kill("SIGTERM"); }
+            if (globalThis.process.platform === "win32" || !isolateProcessGroup)
+              providerChild.kill("SIGTERM");
+            else globalThis.process.kill(-providerChild.pid, "SIGTERM");
+          } catch {
+            providerChild.kill("SIGTERM");
+          }
         }
-        await waitForExit(child, 2_000);
-        if (child.exitCode === null && child.signalCode === null && child.pid) {
+        await waitForExit(providerChild, 2_000);
+        if (providerChild.exitCode === null && providerChild.signalCode === null && providerChild.pid) {
           try {
-            if (globalThis.process.platform === "win32" || !isolateProcessGroup) child.kill("SIGKILL");
-            else globalThis.process.kill(-child.pid, "SIGKILL");
-          } catch { child.kill("SIGKILL"); }
+            if (globalThis.process.platform === "win32" || !isolateProcessGroup)
+              providerChild.kill("SIGKILL");
+            else globalThis.process.kill(-providerChild.pid, "SIGKILL");
+          } catch {
+            providerChild.kill("SIGKILL");
+          }
+          await waitForExit(providerChild, 2_000);
         }
-        await rm(join(configHome, "opencode", "opencode.json"), { force: true }).catch(() => undefined);
-        await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
+        await performanceDiagnostics?.close().catch(() => {});
+        await rm(join(configHome, "opencode", "opencode.json"), {
+          force: true,
+        }).catch(() => undefined);
+        await removeIsolatedHome(isolatedHome).catch(() => undefined);
         if (closeInput.finalizeTrace !== false) {
           await input.trace?.finish({ reason: closeInput.reason ?? null });
         }
       },
     };
   } catch (error) {
+    await performanceDiagnostics?.close().catch(() => {});
+    await providerProxy?.close();
     await bridge.close().catch(() => {});
-    child.kill("SIGKILL");
-    await rm(join(configHome, "opencode", "opencode.json"), { force: true }).catch(() => undefined);
-    await rm(isolatedHome, { recursive: true, force: true }).catch(() => undefined);
+    child?.kill("SIGKILL");
+    if (child?.pid) await waitForExit(child, 2_000);
+    if (!child?.pid || child.exitCode !== null || child.signalCode !== null) releaseExecutable();
+    await rm(join(configHome, "opencode", "opencode.json"), {
+      force: true,
+    }).catch(() => undefined);
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
 }
@@ -1466,71 +2620,122 @@ export function normalizeOpenCodeQuestionSet(
   nativeQuestions: Record<string, unknown>[],
   metadata: Record<string, unknown> = {},
 ): PaperclipQuestionSet {
-  const questions = nativeQuestions.map((question, index): PaperclipQuestion => {
-    const options = (Array.isArray(question.options) ? question.options : []).map(record).slice(0, 128).map((option, optionIndex) => ({
-      id: text(option.id, `option-${optionIndex + 1}`).slice(0, 160),
-      label: text(option.label, text(option.value, `Option ${optionIndex + 1}`)).slice(0, 1_000),
-      ...(text(option.description) ? { description: text(option.description).slice(0, 4_000) } : {}),
-    }));
-    return {
-      id: openCodeQuestionId(question, index),
-      ...(text(question.header) ? { header: text(question.header).slice(0, 1_000) } : {}),
-      prompt: text(question.question, text(question.prompt, `Question ${index + 1}`)).slice(0, 4_000),
-      ...(text(question.description) ? { helpText: text(question.description).slice(0, 4_000) } : {}),
-      required: question.required === true,
-      answerMode: options.length === 0 ? "text" : question.multiple === true ? "multi_select" : "single_select",
-      ...(options.length > 0 ? { options } : {}),
-      ...(question.custom === true || question.allowCustom === true
-        ? { customAnswer: { enabled: true, label: "Other", placeholder: "Enter another answer" } }
-        : {}),
-    };
-  });
+  const questions = nativeQuestions.map(
+    (question, index): PaperclipQuestion => {
+      const options = (Array.isArray(question.options) ? question.options : [])
+        .map(record)
+        .slice(0, 128)
+        .map((option, optionIndex) => ({
+          id: text(option.id, `option-${optionIndex + 1}`).slice(0, 160),
+          label: text(
+            option.label,
+            text(option.value, `Option ${optionIndex + 1}`),
+          ).slice(0, 1_000),
+          ...(text(option.description)
+            ? { description: text(option.description).slice(0, 4_000) }
+            : {}),
+        }));
+      return {
+        id: openCodeQuestionId(question, index),
+        ...(text(question.header)
+          ? { header: text(question.header).slice(0, 1_000) }
+          : {}),
+        prompt: text(
+          question.question,
+          text(question.prompt, `Question ${index + 1}`),
+        ).slice(0, 4_000),
+        ...(text(question.description)
+          ? { helpText: text(question.description).slice(0, 4_000) }
+          : {}),
+        required: question.required === true,
+        answerMode:
+          options.length === 0
+            ? "text"
+            : question.multiple === true
+              ? "multi_select"
+              : "single_select",
+        ...(options.length > 0 ? { options } : {}),
+        ...(question.custom === true || question.allowCustom === true
+          ? {
+              customAnswer: {
+                enabled: true,
+                label: "Other",
+                placeholder: "Enter another answer",
+              },
+            }
+          : {}),
+      };
+    },
+  );
   return parsePaperclipQuestionSet({
     schema: PAPERCLIP_QUESTION_SET_SCHEMA,
     title: text(metadata.title, "OpenCode needs your input").slice(0, 1_000),
-    ...(text(metadata.description) ? { description: text(metadata.description).slice(0, 4_000) } : {}),
+    ...(text(metadata.description)
+      ? { description: text(metadata.description).slice(0, 4_000) }
+      : {}),
     submitLabel: text(metadata.submitLabel, "Submit answers").slice(0, 200),
     questions,
   });
 }
 
 function openCodeAnswers(
-  pending: { request: HarnessRuntimeRequest; nativeQuestions: Record<string, unknown>[] },
+  pending: {
+    request: HarnessRuntimeRequest;
+    nativeQuestions: Record<string, unknown>[];
+  },
   response: PaperclipQuestionResponse,
 ): string[][] {
   return pending.nativeQuestions.map((nativeQuestion, index) => {
     const questionId = openCodeQuestionId(nativeQuestion, index);
-    const question = pending.request.input?.questions.find((candidate) => candidate.id === questionId);
+    const question = pending.request.input?.questions.find(
+      (candidate) => candidate.id === questionId,
+    );
     const answer = response.answers[questionId];
     if (!question || !answer) return [];
-    const values = (answer.selectedOptionIds ?? []).map((optionId) =>
-      question.options?.find((option) => option.id === optionId)?.label,
-    ).filter((value): value is string => typeof value === "string");
+    const values = (answer.selectedOptionIds ?? [])
+      .map(
+        (optionId) =>
+          question.options?.find((option) => option.id === optionId)?.label,
+      )
+      .filter((value): value is string => typeof value === "string");
     if (answer.text !== undefined) values.push(answer.text);
     if (answer.customText !== undefined) values.push(answer.customText);
     return values;
   });
 }
 
-function openCodeQuestionId(question: Record<string, unknown>, index: number): string {
+function openCodeQuestionId(
+  question: Record<string, unknown>,
+  index: number,
+): string {
   const nativeId = text(question.id).trim();
   if (nativeId) return nativeId.slice(0, 160);
-  const header = text(question.header).trim().toLowerCase()
+  const header = text(question.header)
+    .trim()
+    .toLowerCase()
     .replace(/[^a-z0-9._:-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 160);
   return header || `question-${index + 1}`;
 }
 
-async function api(fetcher: typeof globalThis.fetch, runtime: OpenCodeRuntime, path: string, init: RequestInit = {}): Promise<unknown> {
+async function api(
+  fetcher: typeof globalThis.fetch,
+  runtime: OpenCodeRuntime,
+  path: string,
+  init: RequestInit = {},
+): Promise<unknown> {
   const timeout = AbortSignal.timeout(20_000);
-  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, timeout])
+    : timeout;
   const method = String(init.method ?? "GET").toUpperCase();
-  const requestRaw = typeof init.body === "string"
-    ? init.body
-    : init.body instanceof Uint8Array
+  const requestRaw =
+    typeof init.body === "string"
       ? init.body
-      : "";
+      : init.body instanceof Uint8Array
+        ? init.body
+        : "";
   const requestFrameId = runtime.trace?.frame({
     direction: "client_to_provider",
     raw: requestRaw,
@@ -1551,10 +2756,16 @@ async function api(fetcher: typeof globalThis.fetch, runtime: OpenCodeRuntime, p
     response = await fetcher(`${runtime.baseUrl}${path}`, {
       ...init,
       signal,
-      headers: { Authorization: runtime.authHeader, "Content-Type": "application/json", ...init.headers },
+      headers: {
+        Authorization: runtime.authHeader,
+        "Content-Type": "application/json",
+        ...init.headers,
+      },
     });
   } catch (error) {
-    throw new Error(`OpenCode API ${path} request failed: ${redact(String(error), runtime.sensitiveValues)}`);
+    throw new Error(
+      `OpenCode API ${path} request failed: ${redact(String(error), runtime.sensitiveValues)}`,
+    );
   }
   const responseRaw = await response.text();
   const responseFrameId = runtime.trace?.frame({
@@ -1573,7 +2784,9 @@ async function api(fetcher: typeof globalThis.fetch, runtime: OpenCodeRuntime, p
         reason: `OpenCode API returned HTTP ${response.status}`,
       });
     }
-    throw new Error(`OpenCode API ${path} returned HTTP ${response.status}: ${redact(responseRaw, runtime.sensitiveValues)}`);
+    throw new Error(
+      `OpenCode API ${path} returned HTTP ${response.status}: ${redact(responseRaw, runtime.sensitiveValues)}`,
+    );
   }
   if (response.status === 204 || !responseRaw) {
     if (responseFrameId) {
@@ -1595,12 +2808,14 @@ async function api(fetcher: typeof globalThis.fetch, runtime: OpenCodeRuntime, p
         stage: "typescript_opencode_http_parse",
         ruleId: "opencode.http.json_success",
         disposition: "operator_only",
-        fieldMappings: [{
-          inputPath: "$raw",
-          outputPath: "$response",
-          action: "normalized",
-          reason: "Decoded the exact OpenCode HTTP response body as JSON",
-        }],
+        fieldMappings: [
+          {
+            inputPath: "$raw",
+            outputPath: "$response",
+            action: "normalized",
+            reason: "Decoded the exact OpenCode HTTP response body as JSON",
+          },
+        ],
         reason: "OpenCode HTTP response parsed as JSON",
       });
     }
@@ -1621,15 +2836,17 @@ async function api(fetcher: typeof globalThis.fetch, runtime: OpenCodeRuntime, p
 
 function retryableOpenCodeStartupError(error: unknown): boolean {
   const message = String(error);
-  return message.includes("request failed")
-    || message.includes("did not become healthy")
-    || message.includes("exited during startup")
-    || message.includes("provider_initialize_timeout")
-    || message.includes("provider_process_exited")
-    || message.includes("HTTP 408")
-    || message.includes("HTTP 425")
-    || message.includes("HTTP 429")
-    || /HTTP 5\d\d/.test(message);
+  return (
+    message.includes("request failed") ||
+    message.includes("did not become healthy") ||
+    message.includes("exited during startup") ||
+    message.includes("provider_initialize_timeout") ||
+    message.includes("provider_process_exited") ||
+    message.includes("HTTP 408") ||
+    message.includes("HTTP 425") ||
+    message.includes("HTTP 429") ||
+    /HTTP 5\d\d/.test(message)
+  );
 }
 
 async function waitForHealth(
@@ -1688,7 +2905,9 @@ async function waitForHealth(
         }
         return parsed;
       }
-    } catch { /* server is still starting */ }
+    } catch {
+      /* server is still starting */
+    }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const detail = redact(diagnostics());
@@ -1704,57 +2923,114 @@ async function reservePort(): Promise<number> {
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Unable to reserve OpenCode port");
+  if (!address || typeof address === "string")
+    throw new Error("Unable to reserve OpenCode port");
   const port = address.port;
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
   return port;
 }
 
-async function* parseSseFrames(
+async function* parseSse(
   stream: ReadableStream<Uint8Array>,
-): AsyncIterable<{ raw: string; data: string }> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
-    buffer += decoder.decode(chunk, { stream: true });
-    if (buffer.length > 1_048_576) throw new Error("OpenCode SSE event exceeded the retained payload limit");
-    let boundary: RegExpExecArray | null;
-    while ((boundary = /\r?\n\r?\n/.exec(buffer)) !== null) {
-      const rawFrame = buffer.slice(0, boundary.index);
-      const raw = buffer.slice(0, boundary.index + boundary[0].length);
-      const frame = rawFrame.replaceAll("\r", "");
-      buffer = buffer.slice(boundary.index + boundary[0].length);
-      const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-      if (!data || data === "[DONE]") continue;
-      yield { raw, data };
-    }
+): AsyncIterable<unknown> {
+  for await (const frame of parseOpenCodeSseFrames(stream)) {
+    if (frame.compaction?.omitted) continue;
+    const event = JSON.parse(frame.data) as unknown;
+    if (frame.compaction) annotateOmittedProviderText(event, frame.compaction);
+    yield event;
   }
 }
 
-async function* parseSse(stream: ReadableStream<Uint8Array>): AsyncIterable<unknown> {
-  for await (const frame of parseSseFrames(stream)) yield JSON.parse(frame.data);
-}
-
-function sanitizedEnvironment(source: NodeJS.ProcessEnv, overrides: Record<string, string>): NodeJS.ProcessEnv {
-  const allowed = ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENROUTER_API_KEY"];
+function sanitizedEnvironment(
+  source: NodeJS.ProcessEnv | undefined,
+  overrides: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const allowed = [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "OPENROUTER_API_KEY",
+  ];
   const result: NodeJS.ProcessEnv = {};
-  for (const key of allowed) if (source[key] !== undefined) result[key] = source[key];
-  return { ...result, ...overrides };
+  const candidate = source ?? process.env;
+  for (const key of allowed)
+    if (candidate[key] !== undefined) result[key] = candidate[key];
+  return { ...result, ...githubCredentialEnvironment(source ?? {}), ...overrides };
 }
 
 function sanitizedEnvironmentKeys(): string[] {
-  return ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENROUTER_API_KEY"];
+  return [
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "OPENROUTER_API_KEY",
+  ];
 }
 
-function sessionRoot(runtimeDirectory: string, normalizedSessionId: string): string {
-  const safe = normalizedSessionId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
-  if (!safe || safe === "." || safe === "..") throw new Error("Invalid normalized OpenCode session id");
-  return join(resolve(runtimeDirectory), safe);
+export const OPENCODE_ISOLATED_HOMES_DIRECTORY = "homes";
+
+export function opencodeRuntimeSessionDirectoryName(
+  normalizedSessionId: string,
+): string {
+  const safe = normalizedSessionId
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 120);
+  if (!safe || safe === "." || safe === "..")
+    throw new Error("Invalid normalized OpenCode session id");
+  return safe;
+}
+
+function sessionRoot(
+  runtimeDirectory: string,
+  normalizedSessionId: string,
+): string {
+  return join(
+    resolve(runtimeDirectory),
+    opencodeRuntimeSessionDirectoryName(normalizedSessionId),
+  );
+}
+
+async function removeIsolatedHome(home: string): Promise<void> {
+  const skillsParent = await lstat(join(home, ".claude")).catch(() => null);
+  if (skillsParent?.isDirectory()) {
+    await releaseMaterializedNativeRuntimeSkills(
+      join(home, ".claude", "skills"),
+    ).catch(() => undefined);
+  }
+  await rm(home, { recursive: true, force: true });
+}
+
+async function removeLegacyIsolatedHomes(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("home-")) continue;
+    await removeIsolatedHome(join(root, entry.name)).catch(() => undefined);
+  }
 }
 
 function validateWorkspace(value: string): string {
   const cwd = resolve(value);
-  if (!value.trim() || cwd === dirname(cwd)) throw new Error("OpenCode working directory must not be a filesystem root");
+  if (!value.trim() || cwd === dirname(cwd))
+    throw new Error("OpenCode working directory must not be a filesystem root");
   return cwd;
 }
 
@@ -1774,14 +3050,21 @@ function compareVersion(left: string, right: string): number {
 
 function bounded(value: unknown): Record<string, unknown> {
   const serialized = JSON.stringify(value);
-  if (!serialized || serialized.length > 64 * 1024) return { omitted: true, reason: "payload_limit" };
+  if (!serialized || serialized.length > 64 * 1024)
+    return { omitted: true, reason: "payload_limit" };
   const parsed = JSON.parse(serialized) as unknown;
   return isRecord(parsed) ? parsed : { value: parsed };
 }
 
-function record(value: unknown): Record<string, unknown> { return isRecord(value) ? value : {}; }
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
-function text(value: unknown, fallback = ""): string { return typeof value === "string" ? value : fallback; }
+function record(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function text(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
 function hasPositiveNumber(value: unknown): boolean {
   if (typeof value === "number") return Number.isFinite(value) && value > 0;
   if (Array.isArray(value)) return value.some(hasPositiveNumber);
@@ -1795,33 +3078,103 @@ function safeTraceRulePath(value: string): string {
     .replaceAll("/", "_")
     .slice(0, 120);
 }
-function redact(value: string, sensitiveValues: readonly (string | undefined)[] = []): string {
+function redact(
+  value: string,
+  sensitiveValues: readonly (string | undefined)[] = [],
+): string {
   let redacted = value;
   for (const sensitive of sensitiveValues) {
-    if (sensitive && sensitive.length >= 4) redacted = redacted.split(sensitive).join("[REDACTED]");
+    if (sensitive && sensitive.length >= 4)
+      redacted = redacted.split(sensitive).join("[REDACTED]");
   }
-  return redacted.replace(/(OPENROUTER_API_KEY|authorization|password|token|secret)\s*[:=]\s*[^\s,}\]]+/gi, "$1=[REDACTED]").slice(0, 8_192);
+  return redacted
+    .replace(
+      /(OPENROUTER_API_KEY|authorization|password|token|secret)\s*[:=]\s*[^\s,}\]]+/gi,
+      "$1=[REDACTED]",
+    )
+    .slice(0, 8_192);
 }
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (isRecord(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  if (isRecord(value))
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
   return JSON.stringify(value) ?? "undefined";
 }
 
-async function waitForExit(process: ChildProcess, timeoutMs: number): Promise<void> {
+async function waitForExit(
+  process: ChildProcess,
+  timeoutMs: number,
+): Promise<void> {
   if (process.exitCode !== null || process.signalCode !== null) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, timeoutMs);
     timer.unref?.();
-    process.once("exit", () => { clearTimeout(timer); resolve(); });
+    process.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
 
-export const openCodeServerDriverInternals = { parseSse };
+/** Closed vocabulary for a lost OpenCode event stream. Never provider text. */
+export interface OpenCodeEventStreamFailure {
+  kind: "server_exited" | "connection_failed" | "http_error" | "stream_closed" | "stream_error";
+  exitCode?: number;
+  signal?: string;
+  connectionError?: string;
+  httpStatus?: number;
+}
+
+const OPENCODE_CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH",
+  "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function connectionErrorCode(error: unknown): string | undefined {
+  // undici reports `TypeError: fetch failed` and keeps the socket error in `cause`.
+  for (let current = error, depth = 0; current && depth < 4; current = record(current).cause, depth += 1) {
+    const code = record(current).code;
+    if (typeof code === "string") return OPENCODE_CONNECTION_ERROR_CODES.has(code) ? code : "unrecognized";
+  }
+  return undefined;
+}
+
+async function openCodeEventStreamFailure(
+  error: unknown,
+  process: ChildProcess,
+): Promise<OpenCodeEventStreamFailure> {
+  const connectionError = connectionErrorCode(error);
+  // A refused or reset connection usually means `opencode serve` has died.
+  // Give its exit a moment to be observed so the cause is the exit itself.
+  if (connectionError) await waitForExit(process, 1_000);
+  if (process.exitCode !== null || process.signalCode !== null) {
+    return {
+      kind: "server_exited",
+      ...(process.exitCode !== null ? { exitCode: process.exitCode } : {}),
+      ...(process.signalCode !== null && process.signalCode in osConstants.signals ? { signal: process.signalCode } : {}),
+      ...(connectionError ? { connectionError } : {}),
+    };
+  }
+  const httpStatus = record(error).httpStatus;
+  if (typeof httpStatus === "number" && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)
+    return { kind: "http_error", httpStatus };
+  if (connectionError) return { kind: "connection_failed", connectionError };
+  if (record(error).streamClosed === true) return { kind: "stream_closed" };
+  return { kind: "stream_error" };
+}
+
+export const openCodeServerDriverInternals = { parseSse, openCodeEventStreamFailure };
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   #items: T[] = [];
-  #waiters: Array<{ resolve: (result: IteratorResult<T>) => void; reject: (error: unknown) => void }> = [];
+  #waiters: Array<{
+    resolve: (result: IteratorResult<T>) => void;
+    reject: (error: unknown) => void;
+  }> = [];
   #closed = false;
   #error: unknown = null;
   push(item: T): void {
@@ -1833,7 +3186,8 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const waiter of this.#waiters.splice(0)) waiter.resolve({ done: true, value: undefined });
+    for (const waiter of this.#waiters.splice(0))
+      waiter.resolve({ done: true, value: undefined });
   }
   fail(error: unknown): void {
     if (this.#closed) return;
@@ -1845,10 +3199,14 @@ class AsyncQueue<T> implements AsyncIterable<T> {
     return {
       next: () => {
         const item = this.#items.shift();
-        if (item !== undefined) return Promise.resolve({ done: false, value: item });
+        if (item !== undefined)
+          return Promise.resolve({ done: false, value: item });
         if (this.#error !== null) return Promise.reject(this.#error);
-        if (this.#closed) return Promise.resolve({ done: true, value: undefined });
-        return new Promise((resolve, reject) => this.#waiters.push({ resolve, reject }));
+        if (this.#closed)
+          return Promise.resolve({ done: true, value: undefined });
+        return new Promise((resolve, reject) =>
+          this.#waiters.push({ resolve, reject }),
+        );
       },
     };
   }

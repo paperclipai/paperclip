@@ -4,7 +4,12 @@ import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import type { StartupTraceContextHandle } from "../../instrumentation.js";
 import {
+  buildNativeHeartbeatPreparationSpans,
+  buildNativeWakeIngressSpan,
   createNativeRunTrace,
+  nativeRunPreparationStarts,
+  recordFailedSkillPreparation,
+  recordNativeProviderPerformanceSpans,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
 } from "./native-run-trace.js";
@@ -62,6 +67,207 @@ function createRecordingTraceContext(): {
 }
 
 describe("native runner performance trace", () => {
+  it("projects a full durable diagnostic batch without waiting on duplicate run-log writes", async () => {
+    const {traceContext, spans}=createRecordingTraceContext();
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release=resolve; });
+    const write=vi.fn(async()=>barrier);
+    const trace=createNativeRunTrace({runId:"provider-perf-blocked-log",startedAtMs:1000,traceContext,onEvent:write});
+    const names=["provider.model.stream","provider.context.environment","provider.tools.resolve","provider.model.resolve",
+      "provider.workspace.snapshot.track","provider.workspace.snapshot.patch","provider.workspace.snapshot.diff","provider.skills.discovery"];
+    let completed=false;
+    const work=recordNativeProviderPerformanceSpans(trace,Array.from({length:128},(_,index)=>({
+      name:names[index%names.length],startedAtMs:1100+index,endedAtMs:1200+index,
+    }))).then(()=>{completed=true;});
+    try {
+      await new Promise<void>(resolve=>setImmediate(resolve));
+      expect(completed).toBe(true);
+      expect(write).not.toHaveBeenCalled();
+      expect(spans.filter(span=>span.parentName==="provider.runtime")).toHaveLength(128);
+    } finally {release();await work;await trace.finish("ok");}
+  });
+  it("groups normalized provider phases under their real native execution parent", async () => {
+    const {traceContext, spans}=createRecordingTraceContext();
+    const trace=createNativeRunTrace({runId:"provider-perf",startedAtMs:1000,traceContext});
+    const execute=trace.start("native.session.execute",{startedAtMs:1000});
+    await recordNativeProviderPerformanceSpans(trace,[
+      {name:"provider.context.environment",startedAtMs:1100,endedAtMs:1200},
+      {name:"provider.model.stream",startedAtMs:1200,endedAtMs:1700},
+    ]);
+    await trace.end(execute,{endedAtMs:1800});
+    await trace.finish("ok");
+    expect(spans.find(s=>s.name==="provider.runtime")).toMatchObject({parentName:"native.session.execute",endedAtMs:1700});
+    expect(spans.filter(s=>s.name==="provider.model.stream"||s.name==="provider.context.environment").map(s=>s.parentName))
+      .toEqual(["provider.runtime","provider.runtime"]);
+  });
+  it.each([7_200_000, 10_800_000])(
+    "times the current answer after %i ms without charging prior questions or human wait",
+    async (answeredAtMs) => {
+      const original = {
+        id: "original-comment",
+        createdAt: new Date(1_000).toISOString(),
+      };
+      const ingress = buildNativeWakeIngressSpan({
+        runCreatedAtMs: answeredAtMs + 10,
+        wakeComments: [original],
+        attestedQuestionResponseAtMs: answeredAtMs,
+      });
+      expect(ingress).toEqual({
+        name: "question_response.to_run_created",
+        parentName: "task.provider_session",
+        startedAtMs: answeredAtMs,
+        endedAtMs: answeredAtMs + 10,
+      });
+      const starts = nativeRunPreparationStarts(
+        [
+          ingress!,
+          ...buildNativeHeartbeatPreparationSpans({
+            runCreatedAtMs: answeredAtMs + 10,
+            runStartedAtMs: answeredAtMs + 20,
+            attemptStartedAtMs: answeredAtMs + 30,
+            environmentAcquireStartedAtMs: answeredAtMs + 40,
+            environmentRealizeEndedAtMs: answeredAtMs + 50,
+            nativeDispatchAtMs: answeredAtMs + 60,
+          }),
+        ],
+        answeredAtMs + 60,
+      );
+      expect(starts).toEqual({
+        runStartedAtMs: answeredAtMs,
+        preparationStartedAtMs: answeredAtMs + 30,
+      });
+      const events: AdapterRuntimeEvent[] = [];
+      const trace = createNativeRunTrace({
+        runId: "answer-run",
+        startedAtMs: starts.runStartedAtMs,
+        traceContext: createRecordingTraceContext().traceContext,
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(answeredAtMs + 19_000);
+      try {
+        await trace.finish("ok");
+      } finally {
+        clock.mockRestore();
+      }
+      expect(
+        events.find((event) => event.payload?.span === "task.provider_session.measured")
+          ?.payload,
+      ).toMatchObject({ durationMs: 19_000 });
+      expect(original.createdAt).toBe(new Date(1_000).toISOString());
+    },
+  );
+
+  it("preserves ordinary and retry comment ingress and ignores caller answer timestamps", () => {
+    const wakeComments = [
+      { createdAt: new Date(2_000).toISOString(), answeredAtMs: 50_000 },
+      { createdAt: "invalid", answeredAtMs: 60_000 },
+      {
+        createdAt: new Date(1_000).toISOString(),
+        externalChatQuestionResponse: { answeredAtMs: 70_000 },
+      },
+    ];
+    expect(
+      buildNativeWakeIngressSpan({
+        runCreatedAtMs: 3_000,
+        wakeComments,
+        attestedQuestionResponseAtMs: null,
+      }),
+    ).toEqual({
+      name: "comment.to_run_created",
+      parentName: "task.provider_session",
+      startedAtMs: 1_000,
+      endedAtMs: 3_000,
+    });
+    expect(
+      buildNativeWakeIngressSpan({
+        runCreatedAtMs: 3_000,
+        wakeComments: [{ answeredAtMs: 1 }],
+        attestedQuestionResponseAtMs: null,
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    { label: "initial", attemptStartedAtMs: 2_000 },
+    { label: "same-run resume after host sleep", attemptStartedAtMs: 985_000 },
+  ])(
+    "keeps $label preparation attempt-local while retaining run wall time",
+    async ({ attemptStartedAtMs }) => {
+      const events: AdapterRuntimeEvent[] = [];
+      const { traceContext, spans: recordedSpans } =
+        createRecordingTraceContext();
+      const historicalSpans = [
+        {
+          name: "comment.to_run_created",
+          startedAtMs: 900,
+          endedAtMs: 1_000,
+        },
+        ...buildNativeHeartbeatPreparationSpans({
+          runCreatedAtMs: 1_000,
+          runStartedAtMs: 2_000,
+          attemptStartedAtMs,
+          environmentAcquireStartedAtMs: attemptStartedAtMs + 20,
+          environmentRealizeEndedAtMs: attemptStartedAtMs + 30,
+          nativeDispatchAtMs: attemptStartedAtMs + 40,
+        }),
+      ];
+      const beforeEnvironment = historicalSpans.find(
+        (span) => span.name === "heartbeat.prepare_before_environment",
+      )!;
+      expect(beforeEnvironment.endedAtMs - beforeEnvironment.startedAtMs).toBe(
+        20,
+      );
+      expect(
+        historicalSpans.find((span) => span.name === "heartbeat.queue"),
+      ).toMatchObject({
+        startedAtMs: 1_000,
+        endedAtMs: 2_000,
+      });
+      const starts = nativeRunPreparationStarts(
+        historicalSpans,
+        attemptStartedAtMs + 40,
+      );
+      expect(starts).toEqual({
+        runStartedAtMs: 900,
+        preparationStartedAtMs: attemptStartedAtMs,
+      });
+      const trace = createNativeRunTrace({
+        runId: "same-run",
+        startedAtMs: starts.runStartedAtMs,
+        traceContext,
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+      const prepare = trace.start("task.prepare", {
+        parentName: "task.provider_session",
+        startedAtMs: starts.preparationStartedAtMs,
+      });
+      await trace.end(prepare, { endedAtMs: attemptStartedAtMs + 50 });
+      const clock = vi
+        .spyOn(Date, "now")
+        .mockReturnValue(attemptStartedAtMs + 100);
+      try {
+        await trace.finish("ok");
+      } finally {
+        clock.mockRestore();
+      }
+      expect(
+        events.find((event) => event.payload?.span === "task.prepare")?.payload,
+      ).toMatchObject({
+        durationMs: 50,
+        startOffsetMs: attemptStartedAtMs - 900,
+      });
+      expect(recordedSpans[0]?.attributes["paperclip.task.run.wall_ms"]).toBe(
+        attemptStartedAtMs + 100 - 900,
+      );
+    },
+  );
+
   it("persists measured spans with bounded run-relative timing", async () => {
     const events: AdapterRuntimeEvent[] = [];
     const trace = createNativeRunTrace({
@@ -91,7 +297,7 @@ describe("native runner performance trace", () => {
         schema: "paperclip.run-performance-span.v1",
         traceSchemaVersion: NATIVE_RUN_TRACE_SCHEMA_VERSION,
         span: "runner.transport.selected",
-        parentSpan: "task.run",
+        parentSpan: "task.provider_session",
         startOffsetMs: 125,
         durationMs: 0,
         outcome: "ok",
@@ -128,6 +334,29 @@ describe("native runner performance trace", () => {
     });
   });
 
+  it("records skills.prepare beneath preparation with no attributes and tolerates a failed log sink", async () => {
+    const { traceContext, spans } = createRecordingTraceContext();
+    const trace = createNativeRunTrace({ runId: "skills-run", startedAtMs: 100,
+      traceContext, onEvent: async () => { throw new Error("run log unavailable"); } });
+    const preparation = trace.start("task.prepare", { parentName: "task.provider_session", startedAtMs: 100 });
+    await expect(trace.record({ name: "skills.prepare", parentName: "task.prepare", startedAtMs: 120, endedAtMs: 170 })).resolves.toBeUndefined();
+    await trace.end(preparation, { endedAtMs: 200 });
+    expect(spans.find((span) => span.name === "skills.prepare")).toMatchObject({ name: "skills.prepare", parentName: "task.prepare", endedAtMs: 170 });
+    await expect(trace.finish("ok")).resolves.toBeUndefined();
+  });
+
+  it("emits failed skill preparation without starting execution, even when the log sink fails", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const { traceContext, spans } = createRecordingTraceContext();
+    await recordFailedSkillPreparation({ runId: "failed-skills", startedAtMs: Date.now() - 10,
+      traceContext, onEvent: async (event) => { events.push(event); throw new Error("log unavailable"); } });
+    expect(events.find((event) => event.payload?.span === "skills.prepare")?.payload).toMatchObject({
+      span: "skills.prepare", parentSpan: "task.prepare", outcome: "failed",
+    });
+    expect(spans.find((span) => span.name === "skills.prepare")?.parentName).toBe("task.prepare");
+    expect(spans.some((span) => span.name === "native.session.execute")).toBe(false);
+  });
+
   it("never fails runner control flow when its event sink fails", async () => {
     const trace = createNativeRunTrace({
       runId: "run-1",
@@ -155,7 +384,7 @@ describe("native runner performance trace", () => {
     });
 
     const prepare = trace.start("task.prepare", {
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: 1_010,
     });
     const environment = trace.start("environment.startup", {
@@ -172,7 +401,7 @@ describe("native runner performance trace", () => {
     await trace.end(prepare, { endedAtMs: 1_040 });
 
     const execute = trace.start("native.session.execute", {
-      parentName: "task.run",
+      parentName: "task.provider_session",
       startedAtMs: 1_050,
     });
     const startup = trace.start("runner.session.startup", {
@@ -222,11 +451,11 @@ describe("native runner performance trace", () => {
 
     const parentOf = (name: string) =>
       spans.find((span) => span.name === name)?.parentName;
-    expect(parentOf("task.run")).toBeNull();
-    expect(parentOf("task.prepare")).toBe("task.run");
+    expect(parentOf("task.provider_session")).toBeNull();
+    expect(parentOf("task.prepare")).toBe("task.provider_session");
     expect(parentOf("environment.startup")).toBe("task.prepare");
     expect(parentOf("environment.acquire")).toBe("environment.startup");
-    expect(parentOf("native.session.execute")).toBe("task.run");
+    expect(parentOf("native.session.execute")).toBe("task.provider_session");
     expect(parentOf("runner.session.startup")).toBe("native.session.execute");
     expect(parentOf("runner.artifact.prepare")).toBe("runner.session.startup");
     expect(parentOf("runner.artifact.discover")).toBe(
@@ -242,10 +471,36 @@ describe("native runner performance trace", () => {
     expect(parentOf("provider.dynamic")).toBe("agent.turn");
     expect(parentOf("provider.turn.queue")).toBe("agent.turn");
 
-    expect(spans.filter((span) => span.name === "task.run")).toHaveLength(1);
-    expect(spans.some((span) => span.name === "task.run.measured")).toBe(false);
+    expect(spans.filter((span) => span.name === "task.provider_session")).toHaveLength(1);
+    expect(spans.some((span) => span.name === "task.provider_session.measured")).toBe(false);
     expect(
-      events.some((event) => event.payload?.span === "task.run.measured"),
+      events.some((event) => event.payload?.span === "task.provider_session.measured"),
     ).toBe(true);
   });
+});
+
+it.each(["start", "context", "attribute", "status", "end"])("keeps execution and cleanup independent of a throwing %s tracer method", async broken => {
+  const failure = new Error("original private execution failure");
+  const spans: Array<{ end: ReturnType<typeof vi.fn> }> = [];
+  const traceContext: StartupTraceContextHandle = {
+    tracer: { startSpan() {
+      if (broken === "start") throw new Error("tracer failed");
+      const span = {
+        setAttribute() { if (broken === "attribute") throw new Error("attribute failed"); },
+        setStatus() { if (broken === "status") throw new Error("status failed"); },
+        end: vi.fn(() => { if (broken === "end") throw new Error("end failed"); }),
+      };
+      spans.push(span);
+      return span;
+    } },
+    contextWithSpan() { if (broken === "context") throw new Error("context failed"); return undefined; },
+  };
+  const native = createNativeRunTrace({ runId: "throwing-tracer", traceContext });
+  const result = {}, work = vi.fn(async () => result), failedWork = vi.fn(async () => { throw failure; });
+  await expect(native.measure("runner.turn.submit", work)).resolves.toBe(result);
+  await expect(native.measure("agent.turn", failedWork)).rejects.toBe(failure);
+  await expect(native.finish("failed")).resolves.toBeUndefined();
+  expect(work).toHaveBeenCalledOnce();
+  expect(failedWork).toHaveBeenCalledOnce();
+  for (const span of spans) expect(span.end).toHaveBeenCalledOnce();
 });

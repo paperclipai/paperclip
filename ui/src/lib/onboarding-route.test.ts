@@ -8,7 +8,6 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
   ONBOARDING_AGENT_STEP,
-  ONBOARDING_MISSION_STEP,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -226,6 +225,29 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
     ).toBe(false);
   });
 
+  it("does not trust a cached empty list while it is being refreshed", () => {
+    // The wizard hires the first agent and lands on the first task. A
+    // dashboard reached from there can still hold the empty list it cached
+    // before the hire, with the refetch in flight — offering on it reopens
+    // "Create your first agent" for a company that just got one.
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: true,
+        agentCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: false,
+        agentCount: 0,
+      }),
+    ).toBe(true);
+  });
+
   it("does not redirect onto onboarding from onboarding", () => {
     // The loop: finish the wizard without creating an agent, and a redirect
     // that ignored the current path would send you straight back in.
@@ -252,24 +274,6 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
         companies,
       }),
     ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
-  });
-
-  it("takes no mission input, so no goal state can route around the agent step", () => {
-    // Three cases used to live here — mission present, absent, and in flight —
-    // and two of them routed to the mission step. The resolver no longer
-    // accepts the input at all, which is what collapses them into one: there is
-    // no value a caller could pass that reaches a different step.
-    //
-    // Asserted on the accepted keys rather than by example, because the
-    // property being defended is that nothing can be passed. A test that tried
-    // would not fail, it would not compile.
-    const resolved = resolveRouteOnboardingOptions({
-      pathname: "/PC1/onboarding",
-      companyPrefix: "PC1",
-      companies,
-    });
-    expect(resolved).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
-    expect(resolved!.initialStep).not.toBe(ONBOARDING_MISSION_STEP);
   });
 
   it("never resolves into the create wizard on a managed stack", () => {
@@ -323,19 +327,5 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
 describe("onboardingStepForCompany", () => {
   it("opens an existing company on the agent step", () => {
     expect(onboardingStepForCompany()).toBe(ONBOARDING_AGENT_STEP);
-  });
-
-  it("never opens on the mission step, whatever the company's goals say", () => {
-    // This used to branch on whether the company had a mission, and a company
-    // without one was sent to ask for it first. Onboarding stopped asking — the
-    // mission is collected later, in the tenant app — but the branch outlived
-    // the question, and because Cloud's naming screen had dropped its own
-    // mission field, *every* Cloud-created company arrived looking mission-less
-    // and took the detour.
-    //
-    // There is no argument left to vary, which is the point: the assertion is
-    // that the mission step is unreachable from here rather than merely
-    // unlikely.
-    expect(onboardingStepForCompany()).not.toBe(ONBOARDING_MISSION_STEP);
   });
 });

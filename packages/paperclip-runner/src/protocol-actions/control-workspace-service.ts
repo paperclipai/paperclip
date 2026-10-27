@@ -27,7 +27,7 @@ export const controlWorkspaceServiceAction = {
   },
   "documentation": {
     "title": "Control workspace service",
-    "description": "Start, stop, or fault one active-task mock workspace service.",
+    "description": "Start, stop, or fault one active-task workspace service.",
     "note": null
   },
   "examples": {
@@ -70,7 +70,7 @@ export const controlWorkspaceServiceAction = {
       "operationId": "control_workspace_service",
       "version": 1,
       "title": "Control workspace service",
-      "description": "Start, stop, or fault one active-task mock workspace service.",
+      "description": "Start, stop, or fault one active-task workspace service.",
       "exposure": "optional",
       "requiredClaims": [
         "workspace:control"
@@ -90,7 +90,7 @@ export const controlWorkspaceServiceAction = {
           },
           "serviceId": {
             "type": "string",
-            "description": "Mock workspace service id.",
+            "description": "Workspace service id.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -106,7 +106,7 @@ export const controlWorkspaceServiceAction = {
               "string",
               "null"
             ],
-            "description": "Optional mock service URL.",
+            "description": "Optional service URL.",
             "maxLength": 20000
           }
         },
@@ -122,7 +122,7 @@ export const controlWorkspaceServiceAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -138,7 +138,7 @@ export const controlWorkspaceServiceAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

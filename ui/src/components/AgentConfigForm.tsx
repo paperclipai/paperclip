@@ -1,9 +1,25 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
+import { useConnectionModels } from "./ai-connections/useConnectionModels";
+import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
+import { adaptersApi } from "../api/adapters";
+import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
+import { AgentRunnerSelect } from "./AgentRunnerSelect";
+import { aiRoutingHarness } from "@paperclipai/shared";
+import { AiConnectionField } from "./ai-connections/AiConnectionField";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { testAgentSetup } from "@/lib/test-agent-setup";
+import { setupEfforts } from "../lib/agent-setup-fields";
+import { RuntimeTestCard } from "./RuntimeTestCard";
+import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
+import type { AdapterConfigSection } from "../adapters/types";
+import { useConfigSchema } from "../adapters/schema-config-fields";
+import { schemaFieldSection } from "../adapters/config-sections";
+import { hashKey, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
+  CodexAccountBindingClaim,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
@@ -18,27 +34,36 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { secretsApi } from "../api/secrets";
 import { assetsApi } from "../api/assets";
-import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
+import {
+  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { NativeSelect, SelectPopover } from "@/components/ui/select";
+import { AdapterMark } from "./AdapterMark";
+import { FolderOpen, Heart, X, Copy, Check, ExternalLink, Loader2, TriangleAlert, Bug } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
+import {
+  connectSourceName,
+  ProviderSubscriptionCard,
+  OnboardingCardField,
+  OnboardingLoginCodeRow,
+  type AdapterLoginChrome,
+} from "./AdapterLoginChrome";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
   resolveManagedSandboxEnvironmentId,
 } from "../lib/adapter-test-environment";
 import { environmentDisplayLabel } from "../lib/managed-sandbox-environment";
-import { extractModelName, extractProviderId } from "../lib/model-utils";
+import { adapterCuratesModelOrder, extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import {
@@ -51,13 +76,11 @@ import {
   help,
   adapterLabels,
 } from "./agent-config-primitives";
-import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
-import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import {
   EnvironmentVariablesEditor,
@@ -74,13 +97,18 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 
 /* ---- Create mode values ---- */
 
 // Canonical type lives in @paperclipai/adapter-utils; re-exported here
 // so existing imports from this file keep working.
 export type { CreateConfigValues } from "@paperclipai/adapter-utils";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import {
+  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  paperclipRunnerTransitionConfig,
+  type CreateConfigValues,
+} from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
 
 /* ---- Props ---- */
@@ -105,6 +133,7 @@ type AgentConfigFormProps = {
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
+  compactTestFeedback?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
   /** Allow instance administrators to configure short-lived raw provider capture. */
@@ -113,8 +142,13 @@ type AgentConfigFormProps = {
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
   content?: "configuration" | "secrets";
+  /** Keep variable bindings beside secret access in a unified edit surface. */
+  environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
+  /** Optional settings composition; sorting changes DOM order as well as visual order. */
+  sectionOrder?: readonly string[];
+  sectionTitles?: Record<string, string>;
 } & (
   | {
       mode: "create";
@@ -143,19 +177,85 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+}
+
+export function resolvePaperclipRunnerTransitionModel(
+  previousAdapterType: string,
+  previousModel: unknown,
+): string {
+  return paperclipRunnerTransitionConfig(previousAdapterType, previousModel).model as string;
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
     Object.keys(o.identity).length > 0 ||
     o.adapterType !== undefined ||
+    o.runner !== undefined ||
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.debug).length > 0 ||
-    Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    Object.keys(o.runtime).length > 0
   );
+}
+
+/**
+ * Structural equality for overlay entry values. Overlay values are
+ * JSON-shaped (scalars, env maps, argument arrays), so a reference compare
+ * alone would keep an edit-then-restore of a structured value falsely dirty
+ * after a refresh subtracts the persisted snapshot.
+ */
+export function overlayValuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => overlayValuesEqual(item, b[index]));
+  }
+  if (
+    typeof a === "object" && a !== null && !Array.isArray(a) &&
+    typeof b === "object" && b !== null && !Array.isArray(b)
+  ) {
+    const aEntries = Object.entries(a as Record<string, unknown>);
+    const bRecord = b as Record<string, unknown>;
+    return (
+      aEntries.length === Object.keys(bRecord).length &&
+      aEntries.every(([key, value]) => key in bRecord && overlayValuesEqual(value, bRecord[key]))
+    );
+  }
+  return false;
+}
+
+/**
+ * Remove from `current` every entry `persisted` carried with a structurally
+ * equal value, keeping entries the user added or changed after `persisted`
+ * was snapshotted. The refresh that follows a background save consumes this
+ * so edits made while that save was in flight survive as pending dirty state
+ * instead of being wiped with the rest of the overlay.
+ */
+export function subtractPersistedOverlay(
+  current: AgentConfigOverlay,
+  persisted: AgentConfigOverlay,
+): AgentConfigOverlay {
+  const subtractGroup = (
+    currentGroup: Record<string, unknown>,
+    persistedGroup: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    Object.fromEntries(
+      Object.entries(currentGroup).filter(
+        ([field, value]) =>
+          !(field in persistedGroup) || !overlayValuesEqual(value, persistedGroup[field]),
+      ),
+    );
+  return {
+    identity: subtractGroup(current.identity, persisted.identity),
+    ...(current.runner !== undefined && current.runner !== persisted.runner ? { runner: current.runner } : {}),
+    ...(current.adapterType !== undefined && current.adapterType !== persisted.adapterType
+      ? { adapterType: current.adapterType }
+      : {}),
+    adapterConfig: subtractGroup(current.adapterConfig, persisted.adapterConfig),
+    heartbeat: subtractGroup(current.heartbeat, persisted.heartbeat),
+    debug: subtractGroup(current.debug, persisted.debug),
+    runtime: subtractGroup(current.runtime, persisted.runtime),
+  };
 }
 
 /* ---- Shared input class ---- */
@@ -177,15 +277,6 @@ function formatArgList(value: unknown): string {
   }
   return typeof value === "string" ? value : "";
 }
-
-const codexThinkingEffortOptions = [
-  { id: "", label: "Auto" },
-  { id: "minimal", label: "Minimal" },
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "xhigh", label: "X-High" },
-] as const;
 
 const openCodeThinkingEffortOptions = [
   { id: "", label: "Auto" },
@@ -232,6 +323,23 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+function ConfigSections({ order, className, children }: {
+  order?: readonly string[];
+  className: string;
+  children: ReactNode;
+}) {
+  if (!order) return <div className={className}>{children}</div>;
+  const rank = (child: ReactNode) => {
+    const key = isValidElement<{ "data-config-section"?: string }>(child)
+      ? child.props["data-config-section"]
+      : undefined;
+    const index = key ? order.indexOf(key) : -1;
+    return index < 0 ? order.length : index;
+  };
+  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  return <div className={className}>{sections}</div>;
+}
+
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
@@ -239,9 +347,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isCreate = mode === "create";
   const cards = props.sectionLayout === "cards";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
-  const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
-  const showInlineAdapterTestEnvironmentButton =
-    showAdapterTestEnvironmentButton && !props.onTestActionChange;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
@@ -300,8 +405,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     if (experimentalSettings?.enableNativeRunner !== true) {
       next.add("paperclip_runner");
     }
+    if (experimentalSettings?.enableOpenAiDot !== true || disabledTypes.has("paperclip_runner")) {
+      next.add("openai_dot");
+    }
     return next;
-  }, [disabledTypes, experimentalSettings?.enableNativeRunner]);
+  }, [disabledTypes, experimentalSettings?.enableNativeRunner, experimentalSettings?.enableOpenAiDot]);
   const environmentsEnabled = experimentalSettings?.enableEnvironments === true;
   // Managed-sandbox-only policy: every agent runs in the platform-managed
   // environment, so the form hides each host filesystem path and each
@@ -337,7 +445,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     // when the experimental environments picker is otherwise hidden).
     enabled:
       Boolean(selectedCompanyId) &&
-      (environmentsEnabled || generalSettings?.executionMode === "kubernetes"),
+      (environmentsEnabled || !isCreate || generalSettings?.executionMode === "kubernetes"),
   });
 
   // Setting-driven: resolve whether the instance forces Kubernetes execution and
@@ -366,19 +474,57 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
+  const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
+  const [runnerUpgrade, setRunnerUpgrade] = useState<{
+    agentId: string;
+    status: "pending" | "upgraded" | "failed";
+    error?: string;
+  } | null>(null);
+  const currentRunnerUpgrade = !isCreate && runnerUpgrade?.agentId === props.agent.id ? runnerUpgrade : null;
+  const runnerUpgradePending = currentRunnerUpgrade?.status === "pending";
+  const runnerUpgraded = currentRunnerUpgrade?.status === "upgraded";
+  const runnerUpgradeError = currentRunnerUpgrade?.error;
+  useEffect(() => {
+    if (!isCreate && props.agent.adapterType !== "paperclip_runner") {
+      setRunnerUpgrade(current => current?.agentId === props.agent.id ? null : current);
+    }
+  }, [isCreate, !isCreate ? props.agent.id : undefined, !isCreate ? props.agent.adapterType : undefined]);
   const agentRef = useRef<Agent | null>(null);
+  // The overlay snapshot a background account-binding save persisted. The form
+  // stays editable while that save is in flight, so the agent refresh that
+  // follows it must not wipe edits made during the save. The refresh subtracts
+  // only what the save persisted; a user-initiated Save leaves the snapshot
+  // null and keeps the full wipe. An UNRELATED refresh can land while the save
+  // is still in flight — that refresh does not carry the persisted binding
+  // yet, so it must neither consume the snapshot nor subtract it: subtracting
+  // would drop the binding entry from the overlay while `props.agent` also
+  // lacks it, and an ordinary Save racing the binding refresh would then
+  // replace the config without the binding and undo the just-persisted bind.
+  // The overlay stays untouched until the save settles; the refresh after
+  // settlement consumes the snapshot and subtracts it.
+  const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
+  const backgroundSaveInFlightRef = useRef(false);
 
   // Clear overlay when agent data refreshes (after save)
   useEffect(() => {
     if (!isCreate) {
-      if (agentRef.current !== null && props.agent !== agentRef.current) {
-        setOverlay({ ...emptyOverlay });
+      if (
+        agentRef.current !== null &&
+        props.agent !== agentRef.current &&
+        !backgroundSaveInFlightRef.current
+      ) {
+        const persisted = backgroundSaveOverlayRef.current;
+        backgroundSaveOverlayRef.current = null;
+        setOverlay((prev) =>
+          persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
+        );
       }
       agentRef.current = props.agent;
     }
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isDirty = !isCreate && isOverlayDirty(overlay);
+  const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
@@ -427,6 +573,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
+    setEnvironmentDraftDirty(false);
+    setEnvironmentEditorKey(key => key + 1);
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -471,9 +619,59 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterType = isCreate
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
+  const effectiveConfig = isCreate ? props.values.adapterSchemaValues ?? {} : { ...config, ...overlay.adapterConfig };
+  const harnessType = agentHarnessType(adapterType, effectiveConfig);
+  const isCodexHarness = harnessType === "codex_local";
+  const runnerProfile = paperclipRunnerProfileForHarness(harnessType);
+  const isRunnerHarness = Boolean(runnerProfile);
+  const rawCurrentDefaultEnvironmentId = isCreate
+    ? props.values.defaultEnvironmentId ?? ""
+    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
+  const currentDefaultEnvironmentId = useMemo(() => {
+    if (!rawCurrentDefaultEnvironmentId) return "";
+    const selected = environments.find((environment) => environment.id === rawCurrentDefaultEnvironmentId) ?? null;
+    return selected?.driver === "local" ? "" : rawCurrentDefaultEnvironmentId;
+  }, [environments, rawCurrentDefaultEnvironmentId]);
+  const runnerDiscovery = useQuery({
+    queryKey: queryKeys.adapters.availability(selectedCompanyId, rawCurrentDefaultEnvironmentId || null),
+    queryFn: () => adaptersApi.list({ companyId: selectedCompanyId!, environmentId: rawCurrentDefaultEnvironmentId || null }),
+    enabled: Boolean(selectedCompanyId),
+  });
+  const runnerAvailability = runnerDiscovery.data?.find(item => item.type === harnessType);
+  const runner: AgentRunnerChoice = isCreate ? props.values.runner ?? "auto" : overlay.runner ?? agentRunner(adapterType);
+  const fieldsAdapterType = isRunnerHarness
+    ? (runner === "paperclip" || (runner === "auto" && runnerAvailability?.defaultRunner === "paperclip") ? "paperclip_runner" : harnessType)
+    : adapterType;
+  useEffect(() => {
+    if (props.mode !== "create" || !isRunnerHarness) return;
+    const resolvedRunner = runner === "auto" ? runnerAvailability?.defaultRunner : runner;
+    if (props.values.resolvedRunner !== resolvedRunner) props.onChange({ resolvedRunner });
+  }, [props.mode, harnessType, isRunnerHarness, runner, runnerAvailability?.defaultRunner,
+    isCreate ? props.values.resolvedRunner : undefined, isCreate ? props.onChange : undefined]);
+  // A Runner-only environment, such as a plugin environment that runs Runner
+  // tasks, offers no Legacy runner. Switch a Legacy choice to Paperclip Runner
+  // so the test and the save both resolve the Runner.
+  const legacyRunnerUnavailable = isRunnerHarness && runner === "legacy"
+    && runnerAvailability?.supportedRunners !== undefined && !runnerAvailability.supportedRunners.includes("legacy");
+  useEffect(() => {
+    if (!legacyRunnerUnavailable) return;
+    if (props.mode === "create") props.onChange({ runner: "paperclip" });
+    else setOverlay(prev => ({ ...prev, runner: "paperclip" }));
+  }, [legacyRunnerUnavailable, props.mode, props.mode === "create" ? props.onChange : undefined]);
   const getCapabilities = useAdapterCapabilities();
-  const adapterCaps = getCapabilities(adapterType);
-  const isLocal = adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt;
+  const adapterCaps = getCapabilities(isRunnerHarness ? harnessType : adapterType);
+  const runnerProvider = adapterType === "paperclip_runner"
+    ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
+    : undefined;
+  const isDotRunner = runnerProvider === "openai_dot";
+  const isGrokBotRunner = runnerProvider === "grok_bot";
+  const isMuseRunner = runnerProvider === "muse";
+  const isExternalRunner = isDotRunner || isGrokBotRunner || isMuseRunner;
+  const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
+  const showInlineAdapterTestEnvironmentButton =
+    showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
+  const isLocal = !isExternalRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
   
   // The legacy working directory is an absolute path on the host, so the
   // managed-sandbox-only policy hides it. A stored value stays untouched; it is
@@ -483,9 +681,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
+  const fieldsUiAdapter = useMemo(() => getUIAdapter(fieldsAdapterType), [fieldsAdapterType]);
   const supportedEnvironmentDrivers = useMemo(
-    () => new Set(supportedEnvironmentDriversForAdapter(adapterType)),
-    [adapterType],
+    () => new Set(supportedEnvironmentDriversForAdapter(fieldsAdapterType)),
+    [fieldsAdapterType],
   );
   const val = isCreate ? props.values : null;
   const set = isCreate
@@ -556,6 +755,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     invalidateUserSecretDefinitions();
   };
 
+  // Edit mode: a Codex login that signed in to a DIFFERENT account than the
+  // company default cannot take effect through the shared company home — the
+  // promotion never displaces another account's claim there. Bind this
+  // agent's CODEX_HOME to the login's account-home secret and persist at
+  // once, the same one-step shape as the Claude stored-login bind above.
+  // Same-account logins skip the bind on purpose: the company-home refresh
+  // already carried them, and an unbound agent keeps following the company
+  // default across later credential rotations. No claim flag is needed —
+  // the secret already exists company-scoped, so this is an ordinary
+  // secret-reference binding through the normal agent-update patch.
+  const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
+    if (isCreate || !claim.companyIdentityDiffers) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv: Record<string, EnvBinding> = {
+      ...baseEnv,
+      CODEX_HOME: { type: "secret_ref", secretId: claim.secretId, version: "latest" },
+    };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    // This save runs in the background while the form stays editable. Record
+    // exactly what it persists so the agent refresh it triggers keeps edits
+    // made during the save (see the refresh effect) instead of wiping them
+    // with the persisted entries. The in-flight flag protects the snapshot
+    // from an unrelated refresh landing mid-save. A failed save never
+    // refreshes the agent with the binding, so clear the snapshot there — a
+    // later unrelated refresh then wipes normally.
+    backgroundSaveOverlayRef.current = nextOverlay;
+    backgroundSaveInFlightRef.current = true;
+    try {
+      await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    } catch (err) {
+      backgroundSaveOverlayRef.current = null;
+      throw err;
+    } finally {
+      backgroundSaveInFlightRef.current = false;
+    }
+    invalidateUserSecretDefinitions();
+  };
+
   // Create mode: bind the fixed reference to an existing stored login with no new
   // login round trip. Add the fixed binding and set the apply-existing flag. The
   // create request sends the flag; the server binds the token only for a user
@@ -593,14 +837,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     invalidateUserSecretDefinitions();
   };
 
-  const rawCurrentDefaultEnvironmentId = isCreate
-    ? val!.defaultEnvironmentId ?? ""
-    : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
-  const currentDefaultEnvironmentId = useMemo(() => {
-    if (!rawCurrentDefaultEnvironmentId) return "";
-    const selected = environments.find((environment) => environment.id === rawCurrentDefaultEnvironmentId) ?? null;
-    return selected?.driver === "local" ? "" : rawCurrentDefaultEnvironmentId;
-  }, [environments, rawCurrentDefaultEnvironmentId]);
   const currentDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === currentDefaultEnvironmentId) ?? null,
     [currentDefaultEnvironmentId, environments],
@@ -631,25 +867,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // is on but no managed sandbox is available; a render must not throw, so this
   // resolution catches that case and resolves no login environment. The Test
   // mutation surfaces the same case as a fail-closed error.
-  const effectiveLoginEnvironmentId = useMemo(() => {
-    try {
-      return resolveAdapterTestEnvironmentId({
-        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
-        localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
-        managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
-        managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
-        // The policy hides the local environment, so an agent default that still
-        // points at the hidden local row names no visible environment. Pass the
-        // visible ids so the resolver redirects that stale local default to the
-        // managed sandbox instead of the hidden local id.
-        visibleEnvironmentIds: environments.map((environment) => environment.id),
-      });
-    } catch {
-      return null;
-    }
+  const savedDefaultEnvironmentId = isCreate ? null : props.agent.defaultEnvironmentId ?? null;
+  const { effectiveLoginEnvironmentId, savedLoginEnvironmentId } = useMemo(() => {
+    const resolve = (agentDefaultEnvironmentId: string | null) => {
+      try {
+        return resolveAdapterTestEnvironmentId({
+          agentDefaultEnvironmentId,
+          instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+          localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+          managedSandboxOnly: experimentalSettings?.enableManagedSandboxOnly === true,
+          managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+          // The policy hides the local environment, so an agent default that still
+          // points at the hidden local row names no visible environment. Pass the
+          // visible ids so the resolver redirects that stale local default to the
+          // managed sandbox instead of the hidden local id.
+          visibleEnvironmentIds: environments.map((environment) => environment.id),
+        });
+      } catch {
+        return null;
+      }
+    };
+    return {
+      effectiveLoginEnvironmentId: resolve(rawCurrentDefaultEnvironmentId || null),
+      savedLoginEnvironmentId: resolve(savedDefaultEnvironmentId),
+    };
   }, [
     rawCurrentDefaultEnvironmentId,
+    savedDefaultEnvironmentId,
     instanceSettings?.defaultEnvironmentId,
     environments,
     experimentalSettings?.enableManagedSandboxOnly,
@@ -658,6 +902,58 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     () => environments.find((environment) => environment.id === effectiveLoginEnvironmentId) ?? null,
     [environments, effectiveLoginEnvironmentId],
   );
+  const nativeRunnerAvailability = runnerDiscovery.data?.find(item => item.type === "paperclip_runner");
+  const upgradeEnvironment = forcedKubernetes ? kubernetesEnvironment : effectiveLoginEnvironment;
+  const upgradeEnvironmentId = upgradeEnvironment?.id ?? null;
+  const upgradeEnvironmentChanged = !isCreate && !forcedKubernetes
+    && effectiveLoginEnvironmentId !== savedLoginEnvironmentId;
+  const canQualifyRunnerUpgrade = upgradeEnvironment?.status === "active"
+    && canQualifyRunnerEnvironment(upgradeEnvironment)
+    && Boolean(runnerAvailability && !runnerAvailability.disabled && !runnerAvailability.overriddenBuiltin)
+    && Boolean(nativeRunnerAvailability && !nativeRunnerAvailability.disabled && !nativeRunnerAvailability.overriddenBuiltin);
+  const upgradeWarnings = harnessType === "claude_local" ? normalizeClaudeRunnerOptions(effectiveConfig).warnings : [];
+  const runnerSettingsTargetRef = useRef("");
+  const runnerSettingsTarget = JSON.stringify([!isCreate ? props.agent.id : null, selectedCompanyId, adapterType,
+    rawCurrentDefaultEnvironmentId, upgradeEnvironmentId, upgradeEnvironment?.config, effectiveConfig, overlay]);
+  runnerSettingsTargetRef.current = runnerSettingsTarget;
+  useEffect(() => () => { runnerSettingsTargetRef.current = ""; }, []);
+  const showRunnerUpgrade = !isCreate
+    && ["codex_local", "claude_local", "grok_local"].includes(props.agent.adapterType)
+    && adapterType === props.agent.adapterType
+    && !runnerDiscovery.isError
+    && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
+  const upgradeRunner = async () => {
+    if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
+    const agentId = props.agent.id;
+    setRunnerUpgrade({ agentId, status: "pending" });
+    try {
+      const flushedEnv = flushEnvironmentDraft();
+      const nextOverlay = flushedEnv
+        ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
+        : overlay;
+      const pendingTarget = runnerSettingsTargetRef.current;
+      if (runnerAvailability?.defaultRunner !== "paperclip") {
+        if (!canQualifyRunnerUpgrade || !upgradeEnvironmentId || !selectedCompanyId) {
+          throw new Error("Could not determine which environment to verify. Retry the upgrade.");
+        }
+        const qualified = await qualifyRunnerEnvironment({
+          adapterType: harnessType,
+          readAdapters: () => adaptersApi.list({ companyId: selectedCompanyId, environmentId: upgradeEnvironmentId }),
+          probeEnvironment: () => agentsApi.qualifyRunner(agentId, upgradeEnvironmentId, selectedCompanyId),
+          isCurrent: () => runnerSettingsTargetRef.current === pendingTarget,
+        });
+        if (!qualified) throw new Error("Agent settings changed during verification. Retry the upgrade with the current settings.");
+        queryClient.setQueryData(queryKeys.adapters.availability(selectedCompanyId, rawCurrentDefaultEnvironmentId || null), qualified.adapters);
+        if (qualified.runner !== "paperclip") throw new Error("This environment does not support Paperclip Runner. Your agent still uses Legacy runner.");
+      }
+      await props.onSave({ ...buildAgentUpdatePatch(props.agent, nextOverlay), runner: "paperclip" });
+      setRunnerUpgrade(current => current?.agentId === agentId ? { agentId, status: "upgraded" } : current);
+    } catch (error) {
+      setRunnerUpgrade(current => current?.agentId === agentId ? {
+        agentId, status: "failed", error: error instanceof Error ? error.message : "Could not upgrade this agent. Try again.",
+      } : current);
+    }
+  };
   // Load the sandbox provider capabilities. A login that runs on a real
   // pseudo-terminal needs a provider that advertises the login pseudo-terminal
   // capability. The login panel gate reads this to hide the panel for a provider
@@ -714,23 +1010,44 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : "Local";
 
-  // Fetch adapter models for the effective adapter type
+  const modelProvider = adapterType === "opencode_local" && aiConnectionBindingSchema.safeParse(
+    (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection,
+  ).data?.provider === "openrouter" ? "openrouter" : runnerProvider;
+  const runnerAcpxAgent = adapterType === "paperclip_runner" && runnerProvider === "acpx"
+    ? String(isCreate ? props.values.adapterSchemaValues?.acpxAgent ?? "claude" : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")) : undefined;
+  const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
+  const modelCacheIdentity = runnerAcpxAgent === "copilot" ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : modelProvider;
+  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
+  // Fetch adapter models for the effective provider, including unsaved changes.
+  const modelAdapterType = isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
     error: fetchedModelsError,
+    isLoading: fetchingModels,
+    refetch: refreshConnectionModels,
   } = useQuery({
     queryKey: modelQueryKey,
-    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
+    queryFn: () => agentsApi.adapterModels(selectedCompanyId!, modelAdapterType, {
       environmentId: currentDefaultEnvironmentId || null,
+      provider: modelProvider,
+      acpxAgent: runnerAcpxAgent,
+      aiConnection: modelAiBinding,
+      agentId: isCreate ? undefined : props.agent.id,
     }),
-    enabled: Boolean(selectedCompanyId),
+    ...(runnerAcpxAgent === "copilot" ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
   });
+  const copilotModelScope = runnerAcpxAgent === "copilot" ? JSON.stringify(modelQueryKey) : null;
+  useEffect(() => {
+    if (copilotModelScope && selectedCompanyId && !isExternalRunner && !connectionModels) void refreshConnectionModels();
+  }, [copilotModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
-  const models = fetchedModels ?? externalModels ?? [];
+  const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
+  const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
   const adapterCommandField = "command";
   const {
     data: detectedModelData,
@@ -745,7 +1062,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local"),
+    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
@@ -758,49 +1075,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   /** Props passed to adapter-specific config field components */
   const adapterFieldProps = {
+    companyId: selectedCompanyId ?? undefined,
+    agentId: isCreate ? undefined : props.agent.id,
     mode,
     isCreate,
-    adapterType,
-    values: isCreate ? props.values : null,
+    adapterType: fieldsAdapterType,
+    hideRunnerHarness: isRunnerHarness,
+    values: isCreate ? { ...props.values, ...(runnerProfile && fieldsAdapterType === "paperclip_runner" ? { adapterSchemaValues: { ...props.values.adapterSchemaValues, ...runnerProfile } } : {}) } : null,
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
-    config,
+    config: runnerProfile && fieldsAdapterType === "paperclip_runner" ? { ...config, ...runnerProfile } : config,
     eff: eff as <T>(group: "adapterConfig", field: string, original: T) => T,
-    mark: mark as (group: "adapterConfig", field: string, value: unknown) => void,
+    // Harness transitions supply the new harness's default model. Resolve
+    // user-selected model IDs in ModelDropdown, not through the previous
+    // render's harness when adapter fields change several values together.
+    mark,
     models,
     // Resolve the effective instructions-file gate once. The instructions file
     // is an absolute host path, so the managed-sandbox-only policy hides it for
     // every adapter without a per-adapter edit.
-    hideInstructionsFile: hideInstructionsFile || hideHostPaths,
-    managedSandboxOnly: hideHostPaths,
+    hideInstructionsFile: hideInstructionsFile || hideHostPaths || isExternalRunner,
+    managedSandboxOnly: hideHostPaths || isExternalRunner,
+    openAiDotEnabled: experimentalSettings?.enableOpenAiDot === true,
+    museEnabled: experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true,
   };
 
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
+  const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
+  const configSchema = useConfigSchema(adapterType);
+  const renderAdapterFields = (section: AdapterConfigSection) => (
+    <>
+      {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
+      <fieldsUiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
+    </>
+  );
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
-  const [cheapModelOpen, setCheapModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
-
-  // Cheap model profile state — only relevant when the adapter advertises
-  // `supportsModelProfiles`. Defaults are sourced from the adapter's
-  // /model-profiles endpoint so the UI does not encode adapter-specific
-  // cheap defaults.
-  const supportsModelProfiles = adapterCaps.supportsModelProfiles;
-  const { data: adapterCheapProfileDefinitions } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.agents.adapterModelProfiles(selectedCompanyId, adapterType)
-      : ["agents", "none", "adapter-model-profiles", adapterType],
-    queryFn: () => agentsApi.adapterModelProfiles(selectedCompanyId!, adapterType),
-    enabled: Boolean(selectedCompanyId) && supportsModelProfiles,
-  });
-  const adapterCheapDefault = useMemo(() => {
-    return (adapterCheapProfileDefinitions ?? []).find((profile) => profile.key === "cheap") ?? null;
-  }, [adapterCheapProfileDefinitions]);
-  const adapterCheapDefaultModel = useMemo(() => {
-    const adapterConfig = adapterCheapDefault?.adapterConfig ?? {};
-    const value = (adapterConfig as Record<string, unknown>).model;
-    return typeof value === "string" ? value : "";
-  }, [adapterCheapDefault]);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
@@ -818,86 +1129,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return omitUndefinedEntries(next);
   }
 
-  function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
-    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
-    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
-    const cheapAdapterConfig = isCreate
-      ? {
-          ...adapterDefaultConfig,
-          ...(createCheapModel ? { model: createCheapModel } : {}),
-        }
-      : {
-          ...adapterDefaultConfig,
-          ...cheapProfileFromAgent.adapterConfig,
-          ...asObject(cheapOverlay?.adapterConfig),
-        };
-    return buildAdapterConfigForTest({ ...cheapAdapterConfig, ...adapterConfigPatch });
-  }
-
-  function getCheapModelTestCase(adapterConfigPatch?: Record<string, unknown>): { model: string; adapterConfig: Record<string, unknown> } | null {
-    if (!currentCheapEnabled) return null;
-    const adapterConfig = buildCheapAdapterConfigForTest(adapterConfigPatch);
-    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
-    const model = configModel || currentCheapModel.trim();
-    if (!model) return null;
-    adapterConfig.model = model;
-    return { model, adapterConfig };
-  }
-
-  function prefixEnvironmentTestChecks(
-    result: AdapterEnvironmentTestResult,
-    label: string,
-    model: string | null,
-  ): AdapterEnvironmentTestResult {
-    const modelLabel = model ? ` (${model})` : "";
-    return {
-      ...result,
-      checks: [
-        {
-          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
-          level: "info",
-          message: `${label} test${modelLabel}`,
-        },
-        ...result.checks.map((check) => ({
-          ...check,
-          message: `${label} test${modelLabel}: ${check.message}`,
-        })),
-      ],
-    };
-  }
-
-  async function runEnvironmentTestCase(
-    label: string,
-    model: string | null,
-    adapterConfig: Record<string, unknown>,
-    environmentId: string | null,
-  ): Promise<AdapterEnvironmentTestResult> {
-    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
-      adapterConfig,
-      environmentId,
-    });
-    return prefixEnvironmentTestChecks(result, label, model);
-  }
-
-  function mergeEnvironmentTestResults(
-    results: AdapterEnvironmentTestResult[],
-  ): AdapterEnvironmentTestResult {
-    const checks = results.flatMap((result) => result.checks);
-    const status = results.some((result) => result.status === "fail")
-      ? "fail"
-      : results.some((result) => result.status === "warn")
-        ? "warn"
-        : "pass";
-    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
-
-    return {
-      adapterType,
-      status,
-      checks,
-      testedAt,
-    };
-  }
-
   const testEnvironment = useMutation({
     mutationFn: async () => {
       if (!selectedCompanyId) {
@@ -905,8 +1136,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       const flushedEnv = flushEnvironmentDraft();
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
-      const primaryModel = currentModelId.trim() || null;
-      const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
       // agent that runs in the instance-default sandbox reports failures
@@ -974,35 +1203,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
-        {
-          label: "Primary model",
-          model: primaryModel,
-          result: await runEnvironmentTestCase(
-            "Primary model",
-            primaryModel,
-            buildAdapterConfigForTest(adapterConfigPatch),
-            environmentId,
-          ),
-        },
-      ];
-
-      if (cheapTestCase) {
-        testResults.push({
-          label: "Cheap model",
-          model: cheapTestCase.model,
-          result: await runEnvironmentTestCase(
-            "Cheap model",
-            cheapTestCase.model,
-            cheapTestCase.adapterConfig,
-            environmentId,
-          ),
-        });
+      const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      const agentId = isCreate ? undefined : props.agent.id;
+      const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
+        (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
+      ).data;
+      if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
+        && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
+        const target = runnerSettingsTargetRef.current;
+        // Qualify only the saved computer. The strict agent-scoped endpoint
+        // accepts no draft provider config, credentials or replacement target.
+        const qualification = await agentsApi.qualifyRunner(props.agent.id, environmentId, selectedCompanyId);
+        if (runnerSettingsTargetRef.current !== target) throw new Error("Agent settings changed during the test. Run test again.");
+        if (qualification.ok !== true || qualification.details?.platformQualificationRecorded !== true) {
+          throw new Error(qualification.summary || "Could not verify the saved computer. Run test again.");
+        }
       }
-
-      return testResults.length > 1
-        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
-        : testResults[0]!.result;
+      if (props.compactTestFeedback) {
+        const providerAdapter = adapterType === "paperclip_runner"
+          ? adapterConfig.provider === "codex" ? "codex_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "grok" ? "grok_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
+              : adapterType
+          : adapterType;
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+      }
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1049,7 +1275,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     resetTestEnvironmentRef.current();
     setTestActionError(null);
     clearClaudeLoginClaimRef.current();
-  }, [adapterType, effectiveLoginEnvironmentId]);
+  }, [adapterType, runner, effectiveLoginEnvironmentId, runner === "auto" ? runnerAvailability?.defaultRunner : undefined]);
 
   // Show the login affordance only for a current sandbox adapter that declares a
   // login capability, and whose most recent Test result carries the canonical
@@ -1060,7 +1286,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const adapterSupportsSandboxLogin = adapterCaps.login != null;
   const testResult = testEnvironment.data;
   const testResultSupportsSandboxLogin =
-    testResult != null && getCapabilities(testResult.adapterType).login != null;
+    testResult != null && getCapabilities(isRunnerHarness ? harnessType : testResult.adapterType).login != null;
   const authMissingCheck =
     testResult && testResultSupportsSandboxLogin
       ? testResult.checks.find((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE) ?? null
@@ -1078,6 +1304,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
+    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1154,7 +1381,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // environment id, so both are present here.
       login:
         showAdapterLogin && selectedCompanyId && effectiveLoginEnvironmentId
-          ? { companyId: selectedCompanyId, adapterType, environmentId: effectiveLoginEnvironmentId }
+          ? { companyId: selectedCompanyId, adapterType: isRunnerHarness ? harnessType : adapterType, environmentId: effectiveLoginEnvironmentId }
           : null,
     });
     return () => {
@@ -1182,7 +1409,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, modelAdapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: modelProvider, ...(runnerAcpxAgent === "copilot" ? { acpxAgent: runnerAcpxAgent, aiConnection: modelAiBinding, agentId: !isCreate ? props.agent.id : undefined } : {}) });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : "Failed to refresh adapter models.");
@@ -1192,106 +1419,54 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   const thinkingEffortKey =
-    adapterType === "codex_local"
+    isCodexHarness || (adapterType === "paperclip_runner" && harnessType === "claude_local")
       ? "modelReasoningEffort"
       : adapterType === "cursor"
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : "effort";
+          : harnessType === "grok_local" ? "reasoningEffort"
+          : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
-    adapterType === "codex_local"
-      ? codexThinkingEffortOptions
+    isCodexHarness
+      ? codexReasoningEffortOptions(currentModelId, "Auto").map((option) => ({
+          id: option.value,
+          label: option.label,
+        }))
       : adapterType === "cursor"
         ? cursorModeOptions
         : adapterType === "opencode_local"
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
-            : claudeThinkingEffortOptions;
+            : adapterType === "pi_local"
+              ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
+              : harnessType === "claude_local" || harnessType === "grok_local"
+                ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
+                    id,
+                    label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
+                  }))]
+                : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
-    : adapterType === "codex_local"
+    : isCodexHarness || (adapterType === "paperclip_runner" && ["claude_local", "grok_local"].includes(harnessType))
       ? eff(
           "adapterConfig",
-          "modelReasoningEffort",
-          String(config.modelReasoningEffort ?? config.reasoningEffort ?? ""),
+          thinkingEffortKey,
+          String(config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort ?? ""),
         )
       : adapterType === "cursor"
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", "effort", String(config.effort ?? ""));
-  const showThinkingEffort = adapterType !== "gemini_local"
+          : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+  const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
+    && adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
-    && adapterType !== "paperclip_runner";
+    && (adapterType !== "paperclip_runner" || isRunnerHarness);
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
-  // Cheap profile read/write helpers. Edit-mode values come from
-  // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
-  // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
-    const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = asObject(cheap.adapterConfig);
-    return {
-      enabled: cheap.enabled !== false,
-      adapterConfig: cheapAdapterConfig,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
-    };
-  }, [runtimeConfig]);
-  const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
-  const currentCheapEnabled = isCreate
-    ? val!.cheapModelEnabled ?? false
-    : cheapOverlay?.enabled ?? cheapProfileFromAgent.enabled;
-  const currentCheapModel = isCreate
-    ? val!.cheapModel ?? ""
-    : (() => {
-        const overlayModel = (cheapOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
-        if (typeof overlayModel === "string") return overlayModel;
-        return cheapProfileFromAgent.model;
-      })();
-
-  function setCheapEnabled(next: boolean) {
-    if (isCreate) {
-      set!({ cheapModelEnabled: next });
-      return;
-    }
-    setOverlay((prev) => ({
-      ...prev,
-      modelProfiles: {
-        cheap: {
-          ...(prev.modelProfiles?.cheap ?? {}),
-          enabled: next,
-        },
-      },
-    }));
-  }
-
-  function setCheapModel(next: string) {
-    if (isCreate) {
-      set!({ cheapModel: next });
-      return;
-    }
-    setOverlay((prev) => {
-      const existing = prev.modelProfiles?.cheap ?? {};
-      const nextAdapterConfig = {
-        ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
-        model: next || undefined,
-      };
-      return {
-        ...prev,
-        modelProfiles: {
-          cheap: {
-            ...existing,
-            adapterConfig: nextAdapterConfig,
-          },
-        },
-      };
-    });
-  }
-
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -1333,6 +1508,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
+  const environmentVariablesEditor = (
+    <EnvironmentVariablesEditor
+      ref={environmentVariablesEditorRef}
+      disabled={runnerUpgradePending}
+      key={environmentEditorKey}
+      onDirtyChange={setEnvironmentDraftDirty}
+      hideDraftActions={!isCreate && props.hideInlineSave}
+      value={
+        isCreate
+          ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+          : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+      }
+      secrets={availableSecrets}
+      userSecretDefinitions={userSecretDefinitions}
+      onCreateSecret={async (name, value) => {
+        const created = await createSecret.mutateAsync({ name, value });
+        return created;
+      }}
+      onChange={(env) =>
+        isCreate
+          ? set!({ envBindings: env ?? {}, envVars: "" })
+          : mark("adapterConfig", "env", env)
+      }
+    />
+  );
+
+
   if (!isCreate && props.content === "secrets") {
     return (
       <div className={cn("relative", cards && "space-y-6")}>
@@ -1347,7 +1549,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         )}
 
-        <div className={cn(!cards && "border-b border-border")}>
+        {props.environmentVariablesPlacement === "secrets" && (
+          <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+            {cards
+              ? <h3 className="mb-3 text-sm font-medium">Environment variables</h3>
+              : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
+            }
+            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+              {environmentVariablesEditor}
+            </div>
+          </div>
+        )}
+
+        <div data-config-section="secrets" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
@@ -1371,7 +1585,39 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   return (
-    <div className={cn("relative", cards && "space-y-6")}>
+    <div className="space-y-6">
+      {showRunnerUpgrade && !runnerUpgraded ? (
+        <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-4">
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="text-sm font-medium">Upgrade to Paperclip Runner</p>
+              <p className="text-sm text-muted-foreground">
+                Keep your harness, model, account, and compatible settings.
+                New sessions start fresh; past runs stay available.
+              </p>
+              {canQualifyRunnerUpgrade && runnerAvailability?.defaultRunner !== "paperclip" ? (
+                <p className="text-xs text-muted-foreground">The upgrade will verify your computer first. This can take a few minutes.</p>
+              ) : null}
+              {upgradeWarnings.map(warning => <p key={warning.field} className="text-xs text-muted-foreground">{warning.message}</p>)}
+              {upgradeEnvironmentChanged ? (
+                <p className="text-xs text-muted-foreground">Save your computer change before upgrading the runner.</p>
+              ) : isDirty ? <p className="text-xs text-muted-foreground">Your unsaved changes will be included.</p> : null}
+            </div>
+            <Button size="sm" className="self-end sm:self-auto" onClick={upgradeRunner} disabled={runnerUpgradePending || upgradeEnvironmentChanged || (!isCreate && props.isSaving)}>
+              {runnerUpgradePending ? <Loader2 className="size-4 animate-spin" /> : null}
+              {runnerUpgradePending ? "Upgrading…" : "Upgrade runner"}
+            </Button>
+          </div>
+          {runnerUpgradeError ? <p role="alert" className="text-sm text-destructive">{runnerUpgradeError}</p> : null}
+        </div>
+      ) : null}
+      {runnerUpgraded ? <p role="status" className="text-sm text-muted-foreground">Upgraded to Paperclip Runner.</p> : null}
+      {adapterType === "paperclip_runner" && upgradeWarnings.length > 0 ? (
+        <div role="status" className="space-y-1 rounded-lg border border-border bg-muted/30 p-4">
+          {upgradeWarnings.map(warning => <p key={warning.field} className="text-sm text-muted-foreground">{warning.message}</p>)}
+        </div>
+      ) : null}
+    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1390,9 +1636,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Identity (edit only) ---- */}
       {!isCreate && (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="identity" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Identity</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1421,21 +1667,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onChange={(id) => mark("identity", "reportsTo", id)}
                 excludeAgentIds={[props.agent.id]}
                 chooseLabel="Choose manager…"
-              />
-            </Field>
-            <Field label="Capabilities" hint={help.capabilities}>
-              <MarkdownEditor
-                value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
-                onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder="Describe what this agent can do..."
-                contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                imageUploadHandler={async (file) => {
-                  const asset = await uploadMarkdownImage.mutateAsync({
-                    file,
-                    namespace: `agents/${props.agent.id}/capabilities`,
-                  });
-                  return asset.contentPath;
-                }}
               />
             </Field>
             {isLocal && !props.hidePromptTemplate && (
@@ -1471,7 +1702,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1496,7 +1727,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">Environment</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
@@ -1504,25 +1735,24 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <Field label="Environment override">
               <div className="space-y-2">
-                <select
-                  className={inputClass}
+                <SelectPopover
+                  aria-label="Environment override"
                   value={currentDefaultEnvironmentId}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
+                  onValueChange={(nextValue) => {
                     if (isCreate) {
                       set!({ defaultEnvironmentId: nextValue });
                       return;
                     }
                     mark("identity", "defaultEnvironmentId", nextValue || null);
                   }}
-                >
-                  <option value="">Default: {inheritedEnvironmentLabel}</option>
-                  {environmentOptions.map((environment) => (
-                    <option key={environment.id} value={environment.id}>
-                      {environmentDisplayLabel(environment)}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { value: "", label: `Default: ${inheritedEnvironmentLabel}` },
+                    ...environmentOptions.map((environment) => ({
+                      value: environment.id,
+                      label: environmentDisplayLabel(environment),
+                    })),
+                  ]}
+                />
               </div>
             </Field>
           </div>
@@ -1530,10 +1760,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+      <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">Adapter</h3>
+            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1550,16 +1780,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
         </div>
         <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-          {showAdapterTypeField && (
-            <Field label="Adapter type" hint={help.adapterType}>
+          {showAdapterTypeField && isGrokBotRunner && (
+            <Field label="Harness" hint={help.adapterType}>
+              <div className="inline-flex items-center gap-1.5">
+                <AdapterMark type="grok_bot" className="size-4" />
+                <span>Grok Bot</span>
+                <ExperimentalBadge />
+              </div>
+            </Field>
+          )}
+          {showAdapterTypeField && !isGrokBotRunner && (
+            <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={adapterType}
+                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
                 disabledTypes={adapterPickerDisabledTypes}
-                onChange={(t) => {
+                openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
+                nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
+                onChange={(choice) => {
+                  const dot = choice === "openai_dot";
+                  const muse = choice === "muse";
+                  const external = dot || muse;
+                  const t = external ? "paperclip_runner" : choice;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
-                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t };
+                    const nextValues: CreateConfigValues = { ...defaults, adapterType: t, runner: undefined };
                     if (t === "codex_local") {
                       nextValues.dangerouslyBypassSandbox =
                         DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX;
@@ -1571,6 +1817,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "paperclip_runner") {
+                      nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
+                    }
+                    if (external) {
+                      nextValues.model = "";
+                      nextValues.adapterSchemaValues = { provider: muse ? "muse" : "openai_dot" };
                     }
                     set!(nextValues);
                   } else {
@@ -1579,7 +1831,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
+                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1590,16 +1842,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : external ? ""
+                            : t === "paperclip_runner"
+                              ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
                         effort: "",
                         modelReasoningEffort: "",
                         variant: "",
                         mode: "",
-                        ...(t === "codex_local"
-                          ? {
-                              dangerouslyBypassApprovalsAndSandbox:
-                                DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-                            }
+                        ...(external
+                            ? { provider: muse ? "muse" : "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, ...(dot ? { dotAttachmentAccess: false, dotWorkspaceAccess: false } : {}) }
+                          : t === "paperclip_runner"
+                            ? {
+                                ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
+                              }
                           : {}),
                       },
                     }));
@@ -1609,7 +1865,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
+          {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+            routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
+            onChange={binding => {
+              mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding });
+              if (runnerAcpxAgent === "copilot" && hashKey([modelAiBinding ?? null]) === hashKey([binding ?? null])) void refreshConnectionModels();
+            }} />}
+
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
                 ?? (testEnvironment.error instanceof Error
@@ -1618,7 +1882,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -1626,12 +1890,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AdapterLoginPanel
               key={`${adapterType}:${effectiveLoginEnvironmentId}`}
               companyId={selectedCompanyId!}
-              adapterType={adapterType}
+              adapterType={isRunnerHarness ? harnessType : adapterType}
               environmentId={effectiveLoginEnvironmentId!}
               onStored={isCreate ? handleClaudeLoginStored : handleClaudeLoginStoredEdit}
               onApplyStored={
                 isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
               }
+              onAccountBinding={isCreate ? undefined : handleCodexAccountBindingEdit}
             />
           )}
 
@@ -1660,22 +1925,151 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+          {renderAdapterFields("adapter")}
+          {isLocal && (<>
+              <ModelDropdown
+                models={models}
+                loadingModels={connectionModels?.isLoading ?? fetchingModels}
+                value={currentModelId}
+                onChange={(v) => {
+                  const supportedEfforts = setupEfforts(isRunnerHarness ? harnessType : adapterType, v);
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(isRunnerHarness ? harnessType : adapterType)
+                    && Boolean(currentThinkingEffort)
+                    && !supportedEfforts.includes(String(currentThinkingEffort));
+                  if (isCreate) {
+                    set!({
+                      model: v,
+                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+                    });
+                    return;
+                  }
+                  mark("adapterConfig", "model", connectionModels?.resolveModel(v) || v || undefined);
+                  if (clearUnsupportedEffort) {
+                    for (const key of ["modelReasoningEffort", "reasoningEffort", "effort"]) mark("adapterConfig", key, undefined);
+                  }
+                }}
+                open={modelOpen}
+                onOpenChange={setModelOpen}
+                defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
+                preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
+                creatable
+                detectedModel={connectionModels ? undefined : detectedModel}
+                detectedModelCandidates={[]}
+                onDetectModel={connectionModels || adapterType === "opencode_local" || adapterType === "paperclip_runner"
+                  ? undefined
+                  : async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }}
+                onRefreshModels={
+                  connectionModels ? connectionModels.refreshModels : supportsAdapterModelRefresh(adapterType)
+                    ? handleRefreshModels
+                    : undefined
+                }
+                refreshingModels={connectionModels?.refreshing ?? refreshingModels}
+                detectModelLabel="Detect model"
+                emptyDetectHint="No model detected. Select or enter one manually."
+              />
+              {(refreshModelsError || modelError) && (
+                <p className="text-xs text-destructive">
+                  {refreshModelsError
+                    ?? (modelError instanceof Error
+                      ? modelError.message
+                      : "Failed to load adapter models.")}
+                </p>
+              )}
+              {adapterType === "opencode_local"
+                && !connectionModels
+                && currentDefaultEnvironment
+                && currentDefaultEnvironment.driver !== "local" && (
+                <p className="text-xs text-muted-foreground">
+                  Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
+                </p>
+              )}
 
-          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
+              {showThinkingEffort && (
+                <>
+                  <ThinkingEffortDropdown
+                    value={currentThinkingEffort}
+                    options={thinkingEffortOptions}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ thinkingEffort: v })
+                        : (() => {
+                            mark("adapterConfig", thinkingEffortKey, v || undefined);
+                            if (isRunnerHarness) {
+                              for (const key of ["modelReasoningEffort", "reasoningEffort", "effort"]) if (key !== thinkingEffortKey) mark("adapterConfig", key, undefined);
+                            }
+                          })()
+                    }
+                    open={thinkingEffortOpen}
+                    onOpenChange={setThinkingEffortOpen}
+                  />
+                  {adapterType === "codex_local" &&
+                    codexSearchEnabled &&
+                    currentThinkingEffort === "minimal" && (
+                      <p className="text-xs text-amber-400">
+                        Codex may reject `minimal` thinking when search is enabled.
+                      </p>
+                    )}
+                </>
+              )}
+          </>)}
         </div>
 
       </div>
 
-      {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
-        <div className={cn(!cards && "border-b border-border")}>
+      {/* ---- Configuration ---- */}
+      {(
+        <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Permissions &amp; Configuration</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Permissions &amp; Configuration</div>
+            ? <h3 className="text-sm font-medium mb-3">Configuration</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              {/*
+              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+                <>
+                  <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
+                    <MarkdownEditor
+                      value={eff(
+                        "adapterConfig",
+                        "bootstrapPromptTemplate",
+                        String(config.bootstrapPromptTemplate ?? ""),
+                      )}
+                      onChange={(v) =>
+                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
+                      }
+                      placeholder="Optional initial setup prompt for the first run"
+                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
+                      imageUploadHandler={async (file) => {
+                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
+                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                        return asset.contentPath;
+                      }}
+                    />
+                  </Field>
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                    Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
+                  </div>
+                </>
+              )}
+              {renderAdapterFields("configuration")}
+              {(isLocal || adapterType === "process" || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced")) && (
+              <CollapsibleSection
+                title="Advanced"
+                open={configurationAdvancedOpen}
+                onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
+              >
+                <div className="space-y-3">
+                  {isRunnerHarness && <AgentRunnerSelect value={runner}
+                    pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                    defaultRunner={runnerAvailability?.defaultRunner}
+                    supportedRunners={runnerAvailability?.supportedRunners}
+                    onChange={next => isCreate ? set!({ runner: next }) : setOverlay(prev => ({ ...prev, runner: next }))} />}
+                  {isLocal && (!isRunnerHarness || fieldsAdapterType !== "paperclip_runner") && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
                 owns the binary. Hiding is presentation only. A stored
@@ -1722,123 +2116,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </Field>
               )}
 
-              {supportsModelProfiles && (
-                <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Primary model</div>
-              )}
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                creatable
-                detectedModel={detectedModel}
-                detectedModelCandidates={[]}
-                onDetectModel={adapterType === "opencode_local"
-                  ? undefined
-                  : async () => {
-                      const result = await refetchDetectedModel();
-                      return result.data?.model ?? null;
-                    }}
-                onRefreshModels={
-                  supportsAdapterModelRefresh(adapterType)
-                    ? handleRefreshModels
-                    : undefined
-                }
-                refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint="No model detected. Select or enter one manually."
-              />
-              {(refreshModelsError || fetchedModelsError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (fetchedModelsError instanceof Error
-                      ? fetchedModelsError.message
-                      : "Failed to load adapter models.")}
-                </p>
-              )}
-              {adapterType === "opencode_local"
-                && currentDefaultEnvironment
-                && currentDefaultEnvironment.driver !== "local" && (
-                <p className="text-xs text-muted-foreground">
-                  Live OpenCode model discovery only runs for Local environments. Using the curated list and manual entry for {currentDefaultEnvironment.name}.
-                </p>
-              )}
-
-              {supportsModelProfiles && (
-                <CheapModelSection
-                  enabled={currentCheapEnabled}
-                  model={currentCheapModel}
-                  models={models}
-                  adapterType={adapterType}
-                  adapterDefaultModel={adapterCheapDefaultModel}
-                  onEnabledChange={setCheapEnabled}
-                  onModelChange={setCheapModel}
-                  open={cheapModelOpen}
-                  onOpenChange={setCheapModelOpen}
-                />
-              )}
-
-              {showThinkingEffort && (
-                <>
-                  <ThinkingEffortDropdown
-                    value={currentThinkingEffort}
-                    options={thinkingEffortOptions}
-                    onChange={(v) =>
-                      isCreate
-                        ? set!({ thinkingEffort: v })
-                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
-                    }
-                    open={thinkingEffortOpen}
-                    onOpenChange={setThinkingEffortOpen}
-                  />
-                  {adapterType === "codex_local" &&
-                    codexSearchEnabled &&
-                    currentThinkingEffort === "minimal" && (
-                      <p className="text-xs text-amber-400">
-                        Codex may reject `minimal` thinking when search is enabled.
-                      </p>
-                    )}
-                </>
-              )}
-              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
-                <>
-                  <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
-                    <MarkdownEditor
-                      value={eff(
-                        "adapterConfig",
-                        "bootstrapPromptTemplate",
-                        String(config.bootstrapPromptTemplate ?? ""),
-                      )}
-                      onChange={(v) =>
-                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
-                      }
-                      placeholder="Optional initial setup prompt for the first run"
-                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                      imageUploadHandler={async (file) => {
-                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
-                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                        return asset.contentPath;
-                      }}
-                    />
-                  </Field>
-                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                    Bootstrap prompt is legacy and will be removed in a future release. Consider moving this content into the agent&apos;s prompt template or instructions file instead.
-                  </div>
-                </>
-              )}
-              {adapterType === "claude_local" && (
-                <ClaudeLocalAdvancedFields {...adapterFieldProps} />
-              )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
-
               <Field label="Extra args (comma-separated)" hint={help.extraArgs}>
                 <DraftInput
                   value={
@@ -1856,64 +2133,31 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label="Environment variables" hint={help.envVars}>
-                <EnvironmentVariablesEditor
-                  ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                  }
-                  secrets={availableSecrets}
-                  userSecretDefinitions={userSecretDefinitions}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
-                />
-              </Field>
-
-              {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
-                <>
-                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "graceSec",
-                        Number(config.graceSec ?? 15),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                </>
+                  </>)}
+                  {renderAdapterFields("advanced")}
+                </div>
+              </CollapsibleSection>
               )}
+
+          </div>
+        </div>
+      )}
+
+      {props.environmentVariablesPlacement !== "secrets" && (isLocal || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "environment")) && (
+        <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">Environment variables</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
       )}
 
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
@@ -1931,10 +2175,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            <CollapsibleSection title="Advanced Run Policy" open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
+              <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
+            </CollapsibleSection>
           </div>
         </div>
       ) : !isCreate ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
@@ -1961,6 +2208,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
             >
             <div className="space-y-3">
+              {renderAdapterFields("runPolicy")}
+              {isLocal && (<>
+              {/* Edit-only: timeout + grace period */}
+              {!isCreate && (
+                <>
+                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
+                  <Field label="Timeout (sec)" hint={help.timeoutSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "timeoutSec",
+                        Number(config.timeoutSec ?? 0),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                  {!configSchema?.fields.some((field) => field.key === "graceSec") && (
+                  <Field label="Interrupt grace period (sec)" hint={help.graceSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "graceSec",
+                        Number(config.graceSec ?? 15),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                </>
+              )}
+              </>)}
               <ToggleField
                 label="Wake on demand"
                 hint={help.wakeOnDemand}
@@ -2036,7 +2319,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Debugging ---- */}
-      {!isCreate && canConfigureProviderTrace ? (
+      {!isExternalRunner && !isCreate && canConfigureProviderTrace ? (
         <div className={cn(!cards && "border-b border-border")}>
           {cards ? (
             <h3 className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -2075,6 +2358,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
+      {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
+        <RuntimeTestCard
+          variant={isExternalRunner ? "prerequisites" : "connection"}
+          metadataOnly={adapterType === "paperclip_runner" && runnerAcpxAgent === "copilot"}
+          state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
+          result={testResult ?? null}
+          error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
+          onTest={triggerTestEnvironment}
+          disabled={testEnvironmentDisabled}
+        />
+      )}
+    </ConfigSections>
     </div>
   );
 }
@@ -2184,14 +2479,84 @@ export type AdapterLoginDescriptor = {
 // `onApplyStored` binds the fixed reference to an existing stored login with no
 // new login round trip. The panel shows the apply-existing affordance only when
 // the status route reports a stored value.
+// `autoStart`, `onCancel`, `onConnected` and `chrome` are what the onboarding
+// connect step needs, and each is off or absent by default so the two settings
+// surfaces that render this panel keep the behaviour they have.
+//
+// They are props on the existing panels rather than a second implementation
+// because the part onboarding needs unchanged is the whole of it: the session
+// start, the two polls, the server deadline, the one-shot completion read. A
+// copy drawn to the new design would have had to reproduce all of that
+// correctly, and the first thing to rot would have been the timeout and
+// cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Applies the non-secret Codex account-binding claim from an authenticated
+  // owner read: the company secret that names the signed-in account's own
+  // home. The panel calls this only when the company default home stayed on a
+  // DIFFERENT account — the one case where the login cannot take effect
+  // through the shared company home — and it AWAITS the handler, rendering
+  // saving/bound/failed states with an explicit Retry on failure, so a
+  // rejected save is never silently swallowed. The claim never carries a
+  // token byte or an account identifier.
+  onAccountBinding?: (claim: CodexAccountBindingClaim) => void | Promise<void>;
+  // Start the login on mount instead of waiting for a press. The connect step's
+  // footer button is the press — by the time the panel is rendered there, the
+  // customer has already asked for this.
+  autoStart?: boolean;
+  // The login reached its success state. Onboarding advances on this, which is
+  // why the `onboarding` chrome draws no success state of its own — the screen
+  // it would appear on is already gone.
+  onConnected?: (sessionId?: string) => void;
+  // The pasted code went to the server. Fires as the submit starts rather than
+  // when the login finishes, so a caller can show the work the moment the
+  // customer has done their part: the round trip to `onConnected` is a poll
+  // and a completion read, long enough to read as nothing having happened.
+  onCodeSubmitted?: () => void;
+  // A submitted code did not become a stored login — the submit was refused,
+  // the completion failed, or the session failed or ran out of time. The pair
+  // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
+  onSubmitFailed?: () => void;
+  chrome?: AdapterLoginChrome;
+  /**
+   * The address the customer has to open, once the server has produced one.
+   *
+   * The one fact about a running login that the step needs outside the card:
+   * its own button is what sends the customer there, and a prompt arriving is
+   * what moves the step from waiting to ready. Everything else it needs the
+   * panel already does — the paste submits itself, and the submit and how it
+   * ended are reported through `onCodeSubmitted`, `onSubmitFailed` and
+   * `onConnected` — so this stays a single value rather than a whole session
+   * handed upward.
+   */
+  onPromptReady?: (authorizationUrl: string | null) => void;
 };
 
 // The login panel dispatcher. It picks the panel from the projected panel mode,
 // not from the adapter name. The `submitted_browser_code` mode shows the
 // submitted-browser-code panel; every other mode shows the displayed-code panel.
+/**
+ * The account a source signs in to, named where one is known.
+ *
+ * "Sign in to the environment" describes the plumbing — a login performed inside
+ * a sandbox — and is the honest label when the provider is unknown. But for the
+ * two sources onboarding offers, the customer is signing in to Anthropic or to
+ * OpenAI, and naming that is what tells them which password manager entry to
+ * reach for. The generic wording stays for anything not listed, where a guess
+ * would be worse than a description.
+ */
+const ADAPTER_LOGIN_PROVIDER: Record<string, string> = {
+  claude_local: "Anthropic",
+  codex_local: "OpenAI",
+};
+
+function adapterLoginTitle(adapterType: string): string {
+  const provider = ADAPTER_LOGIN_PROVIDER[adapterType];
+  return provider ? `Sign in to ${provider}` : "Sign in to the environment";
+}
+
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
   const panelMode = getCapabilities(props.adapterType).login?.panelMode;
@@ -2201,10 +2566,22 @@ export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   return <DisplayedCodeLoginPanel {...props} />;
 }
 
+class AdapterLoginConflictError extends Error {
+  constructor(readonly sessionId: string) {
+    super("Another sign-in attempt is active. Finish or cancel that attempt before starting a new sign-in.");
+  }
+}
+
 function DisplayedCodeLoginPanel({
   companyId,
   adapterType,
   environmentId,
+  autoStart,
+  onConnected,
+  onAccountBinding,
+  chrome = "panel",
+  aiConnection,
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2212,12 +2589,30 @@ function DisplayedCodeLoginPanel({
   // it so a later poll that returns a null prompt does not hide the code and the
   // URL.
   const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+  // The cross-account bind's own lifecycle (see the binding block below).
+  // Declared with the panel's state because `startDisabled` reads it: a
+  // saving bind blocks a new Sign in.
+  const [accountBindState, setAccountBindState] = useState<"idle" | "saving" | "bound" | "failed">(
+    "idle",
+  );
+
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
 
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
+      // A fresh login is a fresh bind decision: clear the previous session's
+      // bind narration so its outcome cannot masquerade as this session's.
+      setAccountBindState("idle");
       setSessionId(session.sessionId);
     },
     onError: (error) => {
@@ -2225,24 +2620,64 @@ function DisplayedCodeLoginPanel({
     },
   });
 
+  // Reset local state, so the panel returns to its idle start state and the
+  // Sign in button is available again.
+  const clearActiveSession = useCallback(() => {
+    resumedRef.current = false;
+    setSessionId(null);
+    setLatchedPrompt(null);
+    setStartError(null);
+  }, []);
+
   const cancelLogin = useMutation({
     mutationFn: () => agentsApi.cancelAdapterAuthLogin(companyId, adapterType, sessionId!),
-    onSuccess: () => {
-      // Reset local state, so the panel returns to its idle start state and the
-      // Log in button is available again.
-      setSessionId(null);
-      setLatchedPrompt(null);
-      setStartError(null);
-    },
+    onSuccess: clearActiveSession,
     onError: (error) => {
       setStartError(error instanceof Error ? error.message : "Could not cancel the login.");
     },
   });
 
+  // Read the caller's active session on mount, with no session id, so the
+  // browser rediscovers its own session after a reload with no local state. A
+  // 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["adapter-login-active-session", companyId, adapterType],
+    queryFn: async () => {
+      try {
+        const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new AdapterLoginConflictError(active.sessionId);
+        return active;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   const statusQuery = useQuery({
     queryKey: ["adapter-login-status", companyId, adapterType, sessionId],
     queryFn: () => agentsApi.getAdapterAuthLoginStatus(companyId, adapterType, sessionId!),
-    enabled: Boolean(sessionId),
+    enabled: Boolean(sessionId) && !releasingResumedSession,
+    // A status 404 is unrecoverable: the server removed the row, so a retry
+    // cannot bring it back. Stop at once and fail loudly.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       return status && ADAPTER_LOGIN_TERMINAL_STATUSES.has(status)
@@ -2263,12 +2698,203 @@ function DisplayedCodeLoginPanel({
   const prompt = latchedPrompt;
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
   const isActive = Boolean(sessionId) && !isTerminal;
-  const startDisabled = startLogin.isPending || isActive;
+  // A saving bind also blocks a new Sign in: the bind is an agent-update save,
+  // and a second login started while it is in flight could finish its own
+  // save first — the older save would then land last and silently revert the
+  // agent to the previous account while the panel reports the newer bind.
+  // Serializing at the only entry point is the whole fix; the panel has no
+  // other way to start a login mid-save.
+  const startDisabled = startLogin.isPending || isActive || accountBindState === "saving";
+
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    setStartError(null);
+    setLatchedPrompt(active.prompt ?? null);
+    setSessionId(active.sessionId);
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
+
+  // A resumed session's status poll found the session already gone: the read
+  // that discovered it and the poll that tried to use it raced, and the
+  // session lost. The panel cannot resume it, and there is no unmount cleanup
+  // left to fall back on, so it releases the reservation itself and waits for
+  // that release before it returns to the idle start state.
+  useEffect(() => {
+    const error = statusQuery.error;
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (!resumedRef.current || releasingResumedSession) return;
+    setReleasingResumedSession(true);
+    const id = sessionId;
+    void (async () => {
+      if (id) {
+        await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, id).catch(() => {
+          // The session is already gone either way; nothing more to do.
+        });
+      }
+      setReleasingResumedSession(false);
+      clearActiveSession();
+    })();
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId, adapterType, clearActiveSession]);
+
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. The ref is the guard rather than the mutation's
+  // own pending flag: `startLogin` settles, and without a latch a re-render
+  // after it settles would read "not pending, no session yet" during the gap
+  // before the session id lands and start a second login the server would
+  // count against the per-owner cap.
+  const autoStartedRef = useRef(false);
+  const cancelConflictingLogin = useMutation({
+    mutationFn: async () => {
+      const conflict = activeSessionQuery.error;
+      if (!(conflict instanceof AdapterLoginConflictError)) return;
+      await agentsApi.cancelAdapterAuthLogin(companyId, adapterType, conflict.sessionId);
+    },
+    onSuccess: async () => {
+      autoStartedRef.current = false;
+      resumeAttemptedRef.current = false;
+      setStartError(null);
+      await activeSessionQuery.refetch();
+    },
+    onError: () => setStartError("Could not cancel the previous sign-in. Retry before starting a new one."),
+  });
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
+    autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
+    startLoginRef.current();
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
+
+  // Report success upward once. `authenticated` is this panel's terminal
+  // success: unlike the Claude login there is no completion read after it, so
+  // the status is the whole of the news.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (status !== "authenticated" || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.(sessionId ?? undefined);
+  }, [status]);
+
+  // Drive the account-binding hand-off as a visible state machine, not a
+  // fire-and-forget latch. The bind saves the agent, and the status poll
+  // stops at the terminal state — so a rejected save behind a silently
+  // latched claim would leave nothing to re-fire it and no way to retry.
+  // A cross-account claim moves saving → bound | failed, and failed renders
+  // an explicit Retry that re-runs the same handler with the same claim.
+  // Latched per SESSION, not per mount: the terminal state re-enables Sign in
+  // inside the same mounted panel, and a second cross-account login must run
+  // its own bind — a mount-scoped boolean would silently skip it and leave
+  // the agent on the previous account.
+  const accountBindSessionRef = useRef<string | null>(null);
+  const onAccountBindingRef = useRef(onAccountBinding);
+  onAccountBindingRef.current = onAccountBinding;
+  const accountBinding = statusQuery.data?.codexAccountBinding ?? null;
+  const runAccountBinding = useCallback(async (claim: CodexAccountBindingClaim) => {
+    const handler = onAccountBindingRef.current;
+    if (!handler) return;
+    setAccountBindState("saving");
+    try {
+      await handler(claim);
+      setAccountBindState("bound");
+    } catch {
+      setAccountBindState("failed");
+    }
+  }, []);
+  useEffect(() => {
+    if (status !== "authenticated" || !sessionId) return;
+    if (accountBindSessionRef.current === sessionId) return;
+    if (!accountBinding || !accountBinding.companyIdentityDiffers || !onAccountBindingRef.current) {
+      return;
+    }
+    accountBindSessionRef.current = sessionId;
+    void runAccountBinding(accountBinding);
+  }, [status, sessionId, accountBinding, runAccountBinding]);
+
+  // Report the prompt's URL upward, the way the submitted-browser-code panel
+  // does. The caller's loading beat ends when this arrives, so without it the
+  // onboarding step waits on a card that has already opened: the code is on
+  // screen and the button stays disabled. Fires with null on mount, before the
+  // one-time prompt lands, which is the same null the caller starts from.
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(prompt?.url ?? null);
+  }, [prompt]);
+
+  if (chrome === "onboarding") {
+    const failed = isTerminal && status && status !== "authenticated";
+    return (
+      <ProviderSubscriptionCard
+        loading={!prompt && !startError && !failed}
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={prompt?.url}
+        mode="displayed_code"
+      >
+        {startError ? (
+          <div>
+            <p role="alert" className="pl-2 text-xs text-destructive">{startError}</p>
+            {activeSessionQuery.error instanceof AdapterLoginConflictError && (
+              <Button type="button" variant="outline" disabled={cancelConflictingLogin.isPending}
+                onClick={() => cancelConflictingLogin.mutate()}>
+                Cancel previous sign-in and retry
+              </Button>
+            )}
+          </div>
+        ) : failed ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {status === "timed_out"
+              ? "The login timed out. Start it again."
+              : status === "cancelled"
+                ? "The login was cancelled."
+                : "The login did not finish. Start it again."}
+          </p>
+        ) : (
+          <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
+        )}
+      </ProviderSubscriptionCard>
+    );
+  }
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2290,7 +2916,7 @@ function DisplayedCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            Log in
+            Sign in
           </Button>
         </div>
       </div>
@@ -2307,19 +2933,34 @@ function DisplayedCodeLoginPanel({
         {isActive && !prompt && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
         {isActive && prompt && (
           <div className="space-y-2">
             <div className="text-(length:--text-micro) text-muted-foreground">
-              Open the authentication page and enter the code.
+              Copy the code, then open the authentication page.
             </div>
+          {/* Code first, then the URL, and the sentence and the numbering both
+              say so.
+
+              This used to run the other way, on the reasoning that handing over
+              a code before the page it belongs to was getting ahead of the
+              customer. What that missed is where the two rows are used: opening
+              the page is what leaves this screen, and the form waiting on the
+              other side wants the code that was on this one. Reaching back for
+              it is the step worth removing, so the code is read and copied
+              while it is still in front of you.
+
+              The onboarding card is ordered the same way and for the same
+              reason. The Claude panel below is not, and should not be — its
+              second row is a field to type *into*, so there the page genuinely
+              does come first. */}
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Code
+                1. Code
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.code}</span>
             </div>
@@ -2328,7 +2969,7 @@ function DisplayedCodeLoginPanel({
           <div className="flex items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Authentication URL
+                2. Authentication URL
               </div>
               <span className="font-mono text-xs text-foreground break-all">{prompt.url}</span>
             </div>
@@ -2354,6 +2995,41 @@ function DisplayedCodeLoginPanel({
 
         {isTerminal && status && (
           <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
+        )}
+
+        {/* The cross-account bind's own state, below the login's success line.
+            The bind is a second, separate save — showing it as part of the
+            login would report success for a write that can still fail. */}
+        {status === "authenticated" && accountBindState === "saving" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>Binding this agent to the signed-in account...</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "bound" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+            <Check className="size-3 shrink-0" />
+            <span>Agent bound to the signed-in account.</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "failed" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro)">
+            <TriangleAlert className="size-3 shrink-0 text-destructive" />
+            <span className="text-destructive">
+              Could not bind this agent to the signed-in account.
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => {
+                if (accountBinding) void runAccountBinding(accountBinding);
+              }}
+            >
+              Retry
+            </Button>
+          </div>
         )}
       </div>
     </div>
@@ -2397,9 +3073,17 @@ const CLAUDE_LOGIN_TIMED_OUT_MESSAGE = "The login timed out. Start the login aga
 // only the server `stored` state as success, and it never shows the OAuth token.
 function SubmittedBrowserCodeLoginPanel({
   companyId,
+  adapterType,
   environmentId,
   onStored,
   onApplyStored,
+  autoStart,
+  onConnected,
+  onCodeSubmitted,
+  onSubmitFailed,
+  chrome = "panel",
+  aiConnection,
+  onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
@@ -2421,6 +3105,10 @@ function SubmittedBrowserCodeLoginPanel({
   // True after the client wall-clock cap passes for the active login. The panel
   // stops both polls and shows the timed-out state.
   const [timedOut, setTimedOut] = useState(false);
+  // A code has gone to the server and has not yet come back as a stored login
+  // or a failure. The field is locked for that stretch: the step's button is
+  // saying "Connecting" above it, and a second paste would submit again.
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
   // True after the status poll returns 404. The server removes the row and the
   // in-memory session at once on any non-stored terminal state, so a status 404
   // means the login failed and the server cleaned up. The panel stops both
@@ -2432,6 +3120,13 @@ function SubmittedBrowserCodeLoginPanel({
   // apply-existing path binds the fixed reference with no new login round trip,
   // so the panel shows the applied confirmation and hides the apply affordance.
   const [appliedStored, setAppliedStored] = useState(false);
+  // True for the session currently held in `sessionId` when it came from the
+  // owner-scoped resume read rather than a fresh `startLogin`. It marks the
+  // one case that needs the extra release-on-error path below: a session this
+  // browser instance did not just start, so a broken poll cannot fall back to
+  // the ordinary "let the user press Sign in again" recovery — the owner has
+  // no local memory of ever starting it.
+  const resumedRef = useRef(false);
 
   const resetLocalState = () => {
     setStartError(null);
@@ -2442,6 +3137,7 @@ function SubmittedBrowserCodeLoginPanel({
     setCompletionFailed(false);
     setTimedOut(false);
     setStatusGone(false);
+    setCodeSubmitted(false);
     completionStartedRef.current = false;
   };
 
@@ -2474,10 +3170,11 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: () =>
       agentsApi.startClaudeSetupTokenLogin(companyId, {
         environmentId,
+        aiConnection,
         // When the owner already has a stored token, the login rotates it under
         // the captured version, so a replacement login never conflicts with an
         // existing value. Without a stored token the login is a first write.
-        ...(storedToken
+        ...(storedToken && !aiConnection
           ? {
               overwrite: {
                 expectedSecretId: storedToken.secretId,
@@ -2487,6 +3184,7 @@ function SubmittedBrowserCodeLoginPanel({
           : {}),
       }),
     onSuccess: (session) => {
+      resumedRef.current = false;
       resetLocalState();
       setSessionId(session.sessionId);
     },
@@ -2498,6 +3196,7 @@ function SubmittedBrowserCodeLoginPanel({
   const clearActiveSession = () => {
     // Return the panel to its idle start state. The Log in button is available
     // again, and both polls stop because the session id is null.
+    resumedRef.current = false;
     setSessionId(null);
     resetLocalState();
   };
@@ -2522,7 +3221,7 @@ function SubmittedBrowserCodeLoginPanel({
   });
 
   // Release the server session at once, without a change to the panel state. The
-  // client-cutoff timer and the unmount path both use this. The server holds a
+  // client-cutoff timer uses this. The server holds a
   // per-owner reservation until the session reaches a terminal state, so an
   // abandoned session locks the owner out until the server deadline. A best-
   // effort cancel frees that reservation now, so the same owner can start a new
@@ -2542,11 +3241,43 @@ function SubmittedBrowserCodeLoginPanel({
     [companyId],
   );
 
+  // Read the caller's active Claude setup-token session on mount, with no
+  // session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  const activeSessionQuery = useQuery({
+    queryKey: ["claude-setup-token-active-session", companyId],
+    queryFn: async () => {
+      try {
+        const active = await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
+    retry: false,
+    // Never answered from cache. This read decides whether to adopt a running
+    // session or start a new one, and a cached "none" from an earlier mount is
+    // exactly wrong after Back: the panel would read `isFetched` immediately,
+    // see the stale null, and start a second login while the refetch was still
+    // in flight — which the per-owner cap then rejects.
+    gcTime: 0,
+    staleTime: 0,
+  });
+
+  // While the panel releases a resumed session it cannot recover (see below),
+  // it keeps showing the login as active rather than dropping back to idle, so
+  // it does not clear local state before the release finishes.
+  const [releasingResumedSession, setReleasingResumedSession] = useState(false);
+
   // Both polls run only while a session is active and the client cap has not
   // passed. The timeout stops the polls, so the panel never polls forever. A
   // status 404 also stops the polls: the server cleaned up the session, so the
   // panel enters a terminal failure state instead.
-  const pollingEnabled = Boolean(sessionId) && !timedOut && !statusGone;
+  const pollingEnabled =
+    Boolean(sessionId) && !timedOut && !statusGone && !releasingResumedSession;
 
   const statusQuery = useQuery({
     queryKey: ["claude-setup-token-status", companyId, sessionId],
@@ -2573,12 +3304,51 @@ function SubmittedBrowserCodeLoginPanel({
   // race against the next poll. React Query keeps the last successful data on
   // error, so without this branch the panel would hold stale data and show
   // nothing. Enter the terminal failure state, which stops both polls.
+  //
+  // A resumed session takes a different path: the read that discovered it and
+  // the poll that tried to use it raced, and the session lost. There is no
+  // unmount cleanup left to fall back on, so the panel releases the
+  // reservation itself and waits for that release before it returns to the
+  // idle start state, instead of trusting the 404 alone.
   useEffect(() => {
     const error = statusQuery.error;
-    if (error instanceof ApiError && error.status === 404) {
-      setStatusGone(true);
+    if (!(error instanceof ApiError && error.status === 404)) return;
+    if (resumedRef.current) {
+      if (releasingResumedSession) return;
+      setReleasingResumedSession(true);
+      const id = sessionId;
+      void (async () => {
+        if (id) {
+          await agentsApi.cancelClaudeSetupTokenLogin(companyId, id).catch(() => {
+            // The session is already gone either way; nothing more to do.
+          });
+        }
+        setReleasingResumedSession(false);
+        clearActiveSession();
+      })();
+      return;
     }
-  }, [statusQuery.error]);
+    setStatusGone(true);
+  }, [statusQuery.error, releasingResumedSession, sessionId, companyId]);
+
+  // Adopt the caller's active session once, on mount. This is what makes a
+  // page reload keep the session: with no local state at all, the panel would
+  // otherwise show its idle start state even though the server still holds an
+  // active login for this owner.
+  const resumeAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !activeSessionQuery.isFetched) return;
+    resumeAttemptedRef.current = true;
+    const active = activeSessionQuery.data;
+    if (!active) return;
+    resumedRef.current = true;
+    resetLocalState();
+    setSessionId(active.sessionId);
+    if (active.prompt) {
+      setAuthorizationUrl(active.prompt.authorizationUrl);
+      if (active.prompt.transportAdvisory) setTransportInsecure(true);
+    }
+  }, [activeSessionQuery.isFetched, activeSessionQuery.data]);
 
   // Poll the guarded prompt route until it returns the authorization URL. The
   // route returns 404 until the URL is ready, so the panel treats a 404 as
@@ -2653,21 +3423,6 @@ function SubmittedBrowserCodeLoginPanel({
   const isActive = Boolean(sessionId) && !isStored && !isFailure && !timedOut;
   const startDisabled = startLogin.isPending || isActive;
 
-  // Hold the active session id for the unmount cleanup. The panel updates it on
-  // every render. When the panel unmounts, or the parent removes it as the login
-  // closes, with an active, non-terminal session, the cleanup releases that
-  // session on the server. The ref is null once the session leaves the active
-  // state, so the cleanup never cancels a session the server already removed.
-  const activeSessionRef = useRef<string | null>(null);
-  activeSessionRef.current = isActive ? sessionId : null;
-
-  useEffect(() => {
-    return () => {
-      const id = activeSessionRef.current;
-      if (id) releaseServerSession(id);
-    };
-  }, [releaseServerSession]);
-
   // Cap the active login at the server deadline. The timer arms when the login
   // becomes active and clears when the login leaves the active state (a terminal
   // status, a stored success, or a new login). It re-arms when `expiresAt`
@@ -2703,20 +3458,196 @@ function SubmittedBrowserCodeLoginPanel({
     Boolean(authorizationUrl) &&
     !isCompleting &&
     isValidBrowserCode(trimmedCode) &&
-    !submitCode.isPending;
+    !submitCode.isPending &&
+    !codeSubmitted;
+
+  const onCodeSubmittedRef = useRef(onCodeSubmitted);
+  onCodeSubmittedRef.current = onCodeSubmitted;
+  const onSubmitFailedRef = useRef(onSubmitFailed);
+  onSubmitFailedRef.current = onSubmitFailed;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
+    // A new attempt supersedes the last attempt's error, and has to: the
+    // failure report below watches for an error after a submit, and one left
+    // over from before it would end this attempt the moment it began.
+    setStartError(null);
     submitCode.mutate(trimmedCode);
-    // Clear the browser code right after submit, so the secret never lingers in
-    // the input.
-    setBrowserCode("");
+    // Reported now, not when the login finishes. A stored login is a poll and a
+    // completion read away, long enough that a button still offering "Waiting
+    // for code" after the paste read as the paste not having registered.
+    setCodeSubmitted(true);
+    onCodeSubmittedRef.current?.();
+    // Onboarding keeps the code on screen; the panel still clears it.
+    //
+    // Clearing emptied the input in the same frame the paste landed, so on the
+    // connect step the only feedback for the seconds that followed was a field
+    // that had just gone blank — reported from staging as the paste looking
+    // dropped, or the step looking stuck. There the field is disabled from here
+    // on and the step's own button carries the status, so the code can stay:
+    // `resetLocalState` clears it whenever a session starts, resumes or is
+    // cleared, the value dies with the panel moments later, and the code is
+    // single-use and already spent.
+    //
+    // The panel is not that. It sits in a form that stays open long after the
+    // login, with its own status area doing the reporting — so there the code
+    // does have somewhere to linger, and clearing it remains right.
+    if (chrome !== "onboarding") setBrowserCode("");
   };
 
+  // Start once, on mount, when the caller has already taken the press, and
+  // only once the resume read has answered: a resumed session takes over
+  // instead of a fresh start. Latched for the same reason as the
+  // displayed-code panel: a second start would burn an owner reservation, and
+  // here it would also rotate the stored token twice.
+  const autoStartedRef = useRef(false);
+  const startLoginRef = useRef(startLogin.mutate);
+  startLoginRef.current = startLogin.mutate;
+  useEffect(() => {
+    if (!autoStart || autoStartedRef.current) return;
+    // A failed lookup is not proof that no session exists: only a successful
+    // lookup is. Show the failure to the user instead of starting a second
+    // login the server would reject against the per-owner cap.
+    if (activeSessionQuery.isError) {
+      autoStartedRef.current = true;
+      setStartError(
+        activeSessionQuery.error instanceof Error
+          ? activeSessionQuery.error.message
+          : "Could not check for an active login.",
+      );
+      return;
+    }
+    if (!activeSessionQuery.isSuccess) return;
+    autoStartedRef.current = true;
+    if (activeSessionQuery.data) return;
+    startLoginRef.current();
+  }, [
+    autoStart,
+    activeSessionQuery.isSuccess,
+    activeSessionQuery.isError,
+    activeSessionQuery.data,
+    activeSessionQuery.error,
+  ]);
+
+  /**
+   * Submit the pasted code without a press.
+   *
+   * Only in the onboarding chrome, and only here: this is the login where the
+   * code comes *back* off the clipboard, so the paste is the answer and a
+   * Submit button after it adds a step that can be missed. The displayed-code
+   * login has no field to watch.
+   *
+   * Driven by the paste rather than by the value, which is the part that is
+   * easy to get wrong. `isValidBrowserCode` looks like a completeness check and
+   * is not one: it accepts any run of printable ASCII from a single character
+   * up, deliberately, because the provider's exact format has never been
+   * pinned down. Keying the submit off the value therefore fires on the first
+   * keystroke of anyone who types the code instead of pasting it — submitting
+   * one character, failing, and clearing the field they were typing into.
+   *
+   * So the paste arms it and the shape check still gates it, which leaves
+   * typing to Enter. A paste that is not usable simply sits in the field.
+   *
+   * `submitCode.isPending` is inside `canSubmit` and `handleSubmit` clears the
+   * field, so one paste can only submit once.
+   */
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+  const autoSubmit = chrome === "onboarding";
+  const pastedRef = useRef(false);
+  useEffect(() => {
+    if (!autoSubmit || !pastedRef.current) return;
+    pastedRef.current = false;
+    if (!canSubmit) return;
+    handleSubmitRef.current();
+  }, [autoSubmit, canSubmit, browserCode]);
+
+  // Report success upward once. The `stored` state is the only success state,
+  // which is why this watches `isStored` and not the `authenticated` status the
+  // completion read still has to follow.
+  const connectedRef = useRef(false);
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  useEffect(() => {
+    if (!isStored || connectedRef.current) return;
+    connectedRef.current = true;
+    onConnectedRef.current?.(sessionId ?? undefined);
+  }, [isStored]);
+
+  // The other end of `onCodeSubmitted`. Any of these after a submit means the
+  // code is not going to become a stored login, and a caller still showing
+  // "Connecting" would otherwise spin for good. Once per submit; the field
+  // unlocks with it. Not reset on success: the field stays locked through the
+  // hold that follows, rather than reopening under a button saying Connecting.
+  useEffect(() => {
+    if (!codeSubmitted) return;
+    if (!startError && !isFailure && !timedOut) return;
+    setCodeSubmitted(false);
+    onSubmitFailedRef.current?.();
+  }, [codeSubmitted, startError, isFailure, timedOut]);
+
+  const onPromptReadyRef = useRef(onPromptReady);
+  onPromptReadyRef.current = onPromptReady;
+  useEffect(() => {
+    onPromptReadyRef.current?.(authorizationUrl);
+  }, [authorizationUrl]);
+
+  if (chrome === "onboarding") {
+    const failedNow = isFailure || timedOut;
+    return (
+      <ProviderSubscriptionCard
+        loading={!authorizationUrl && !startError && !failedNow}
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={authorizationUrl ?? undefined}
+        mode="submitted_code"
+      >
+        {/* The plain-HTTP advisory survives the redesign. It is the one thing on
+            this card not about getting the login done, and dropping it to keep
+            the card tidy would remove a warning about a code travelling in
+            clear text. */}
+        {transportInsecure && (
+          <p className="flex items-start gap-2 pl-2 text-xs text-amber-700 dark:text-amber-200">
+            <TriangleAlert className="mt-0.5 size-3 shrink-0" />
+            This connection is not encrypted. The login code travels in clear text on this
+            network. Continue only on a network you trust.
+          </p>
+        )}
+        {startError ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {startError}
+          </p>
+        ) : failedNow ? (
+          <p role="alert" className="pl-2 text-xs text-destructive">
+            {timedOut && !isFailure ? CLAUDE_LOGIN_TIMED_OUT_MESSAGE : CLAUDE_LOGIN_FAILED_MESSAGE}
+          </p>
+        ) : (
+          <OnboardingCardField
+            value={browserCode}
+            onChange={setBrowserCode}
+            onSubmit={handleSubmit}
+            onPaste={() => {
+              pastedRef.current = true;
+            }}
+            // Dots, not the code. It stays in the field after the paste so the
+            // customer can see something landed, and that is all they need to
+            // see of it.
+            masked
+            disabled={submitCode.isPending || isCompleting || codeSubmitted}
+          />
+        )}
+      </ProviderSubscriptionCard>
+    );
+  }
+
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-2">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 flex flex-col gap-2">
+      {/* `gap`, not `space-y`: the live region below collapses to
+          `display: none` whenever it has nothing to announce, and
+          `space-y` would still put its 8px on the row above — dead space
+          inside the card that pushes the row off centre. A gap only
+          applies between children that render. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-foreground">Sign in to the environment</span>
+        <span className="text-xs font-medium text-foreground">{adapterLoginTitle(adapterType)}</span>
         <div className="flex items-center gap-1.5">
           {isActive && (
             <Button
@@ -2755,7 +3686,7 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={startDisabled}
             onClick={() => startLogin.mutate()}
           >
-            {storedToken && !isActive && !isStored ? "Log in to replace" : "Log in"}
+            {storedToken && !isActive && !isStored ? "Sign in to replace" : "Sign in"}
           </Button>
         </div>
       </div>
@@ -2789,7 +3720,7 @@ function SubmittedBrowserCodeLoginPanel({
         {isActive && !authorizationUrl && !isCompleting && (
           <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
             <Loader2 className="size-3 animate-spin shrink-0" />
-            <span>Preparing the login…</span>
+            <span>Preparing...</span>
           </div>
         )}
 
@@ -2812,7 +3743,7 @@ function SubmittedBrowserCodeLoginPanel({
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                  Authorization URL
+                  1. Authorization URL
                 </div>
                 <span className="font-mono text-xs text-foreground break-all">{authorizationUrl}</span>
               </div>
@@ -2835,7 +3766,7 @@ function SubmittedBrowserCodeLoginPanel({
             </div>
             <div className="space-y-1">
               <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
-                Browser code
+                2. Browser code
               </div>
               <div className="flex items-center gap-2">
                 <input
@@ -2941,65 +3872,35 @@ export function AdapterTypeDropdown({
   value,
   onChange,
   disabledTypes,
+  openAiDotEnabled = false,
+  museEnabled = false,
+  nativeRunnerEnabled = false,
 }: {
   value: string;
   onChange: (type: string) => void;
   disabledTypes: Set<string>;
+  openAiDotEnabled?: boolean;
+  museEnabled?: boolean;
+  nativeRunnerEnabled?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const selectedDisplay = getAdapterDisplay(value);
-  const adapterList = useMemo(
-    () =>
-      listAdapterOptions((type) => adapterLabels[type] ?? getAdapterLabel(type)).filter(
-        (item) => !disabledTypes.has(item.value),
-      ),
-    [disabledTypes],
-  );
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-          <span className="inline-flex min-w-0 items-center gap-1.5">
-            {value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-            <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
-            {selectedDisplay.experimental && <ExperimentalBadge />}
-          </span>
-          <ChevronDown className="h-3 w-3 text-muted-foreground" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
-        {adapterList.map((item) => (
-          <button
-            key={item.value}
-            disabled={item.comingSoon}
-            className={cn(
-              "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded",
-              item.comingSoon
-                ? "opacity-40 cursor-not-allowed"
-                : "hover:bg-accent/50",
-              item.value === value && !item.comingSoon && "bg-accent",
-            )}
-            onClick={() => {
-              if (!item.comingSoon) {
-                onChange(item.value);
-                setOpen(false);
-              }
-            }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              {item.value === "opencode_local" ? <OpenCodeLogoIcon className="h-3.5 w-3.5" /> : null}
-              <span>{item.label}</span>
-              {item.experimental && <ExperimentalBadge />}
-            </span>
-            {item.comingSoon && (
-              <span className="text-(length:--text-nano) text-muted-foreground">Coming soon</span>
-            )}
-          </button>
-        ))}
-      </PopoverContent>
-    </Popover>
-  );
+  const adapterList = useMemo(() =>
+    [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
+      ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
+      ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
+    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
+      .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
+    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+  return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
+    displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
+      <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
+      <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+      {selectedDisplay.experimental && <ExperimentalBadge />}
+    </span>}
+    options={adapterList.map(item => ({ value: item.value,
+      group: item.value === "paperclip_runner" ? "Advanced" : undefined,
+      label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
+    }))} />;
 }
 
 function ExperimentalBadge() {
@@ -3019,15 +3920,18 @@ export function ModelDropdown({
   allowDefault,
   required,
   groupByProvider,
+  preserveOrder,
   creatable,
   detectedModel,
   detectedModelCandidates,
   onDetectModel,
   onRefreshModels,
   refreshingModels,
+  loadingModels,
   detectModelLabel,
   emptyDetectHint,
   defaultLabel,
+  presentation = "searchable",
 }: {
   models: AdapterModel[];
   value: string;
@@ -3037,17 +3941,22 @@ export function ModelDropdown({
   allowDefault: boolean;
   required: boolean;
   groupByProvider: boolean;
+  /** Keep the adapter's list order (curated lists) instead of sorting ungrouped entries by id. */
+  preserveOrder?: boolean;
   creatable?: boolean;
   detectedModel?: string | null;
   detectedModelCandidates?: string[];
   onDetectModel?: () => Promise<string | null>;
   onRefreshModels?: () => Promise<void>;
   refreshingModels?: boolean;
+  loadingModels?: boolean;
   detectModelLabel?: string;
   emptyDetectHint?: string;
   defaultLabel?: string;
+  presentation?: "searchable" | "native";
 }) {
   const [modelSearch, setModelSearch] = useState("");
+  const [enteringCustomModel, setEnteringCustomModel] = useState(false);
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
   const manualModel = modelSearch.trim();
@@ -3081,12 +3990,10 @@ export function ModelDropdown({
   }, [models, modelSearch, promotedModelIds]);
   const groupedModels = useMemo(() => {
     if (!groupByProvider) {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
-        },
-      ];
+      // A hand-ordered list (newest release of each family first, older releases at the end) is
+      // shown as the adapter ordered it; a discovered list has no stable order, so sort it.
+      const entries = preserveOrder ? filteredModels : [...filteredModels].sort((a, b) => a.id.localeCompare(b.id));
+      return [{ provider: "models", entries }];
     }
     const map = new Map<string, AdapterModel[]>();
     for (const model of filteredModels) {
@@ -3101,7 +4008,7 @@ export function ModelDropdown({
         provider,
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
-  }, [filteredModels, groupByProvider]);
+  }, [filteredModels, groupByProvider, preserveOrder]);
 
   async function handleDetectModel() {
     if (!onDetectModel) return;
@@ -3118,27 +4025,60 @@ export function ModelDropdown({
     }
   }
 
+  if (presentation === "native") {
+    const customOption = "__paperclip_custom_model__";
+    const extraModels = [...new Set([value, ...promotedModelIds])].filter(id => id && (!models.some(model => model.id === id) || promotedModelIds.has(id)));
+    return (
+      <Field label="Model" hint={help.model}>
+        <NativeSelect
+          aria-label="Model"
+          aria-busy={loadingModels || refreshingModels}
+          value={enteringCustomModel ? customOption : value}
+          required={required && !enteringCustomModel}
+          onChange={event => {
+            const next = event.target.value;
+            setEnteringCustomModel(next === customOption);
+            if (next !== customOption) onChange(next);
+          }}
+        >
+          <option value="" disabled={!allowDefault}>
+            {allowDefault ? (defaultLabel ?? "Default") : loadingModels ? "Loading models…" : required ? "Select model (required)" : "Select model"}
+          </option>
+          {extraModels.map(id => <option key={id} value={id}>{models.find(model => model.id === id)?.label ?? id}</option>)}
+          {groupedModels.map(({ provider, entries }) => groupByProvider ? (
+            <optgroup key={provider} label={provider}>
+              {entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </optgroup>
+          ) : entries.map(model => <option key={model.id} value={model.id}>{model.label}</option>))}
+          {creatable && <option value={customOption}>Enter custom model…</option>}
+        </NativeSelect>
+        {enteringCustomModel && (
+          <label className="mt-3 block space-y-1 text-xs text-muted-foreground">
+            Model ID
+            <Input aria-label="Model ID" value={value} onChange={event => onChange(event.target.value)}
+              placeholder="Enter model ID or alias" autoFocus required={required} />
+          </label>
+        )}
+        {loadingModels && <p role="status" className="mt-2 text-xs text-muted-foreground">Loading models…</p>}
+        {onRefreshModels && <Button type="button" variant="ghost" size="sm" disabled={refreshingModels}
+          onClick={() => void onRefreshModels()}>{refreshingModels ? "Refreshing…" : "Refresh models"}</Button>}
+      </Field>
+    );
+  }
+
   return (
     <Field label="Model" hint={help.model}>
-      <Popover
+      <SelectPopover aria-label="Model" value={value}
+        displayValue={<span className={cn("truncate", !value && "text-muted-foreground")}>
+          {selected?.label ?? (value || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model"))}
+        </span>}
         open={open}
         onOpenChange={(nextOpen) => {
           onOpenChange(nextOpen);
           if (!nextOpen) setModelSearch("");
         }}
       >
-        <PopoverTrigger asChild>
-          <button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>
-              {selected
-                ? selected.label
-                : value
-                  || (allowDefault ? (defaultLabel ?? "Default") : required ? "Select model (required)" : "Select model")}
-            </span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
+        <div role="listbox" aria-label="Model">
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
@@ -3197,6 +4137,7 @@ export function ModelDropdown({
           {value && (!models.some((m) => m.id === value) || promotedModelIds.has(value)) && (
             <button
               type="button"
+              role="option" aria-selected
               className={cn(
                 "flex items-center w-full px-2 py-1.5 text-sm rounded bg-accent/50",
               )}
@@ -3215,6 +4156,7 @@ export function ModelDropdown({
           {detectedModel && detectedModel !== value && (
             <button
               type="button"
+              role="option" aria-selected={false}
               className={cn(
                 "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
               )}
@@ -3239,6 +4181,7 @@ export function ModelDropdown({
                 <button
                   key={`detected-${candidate}`}
                   type="button"
+                  role="option" aria-selected={false}
                   className={cn(
                     "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   )}
@@ -3260,6 +4203,7 @@ export function ModelDropdown({
             {allowDefault && (
               <button
                 type="button"
+                role="option" aria-selected={!value}
                 className={cn(
                   "flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                   !value && "bg-accent",
@@ -3275,6 +4219,7 @@ export function ModelDropdown({
             {canCreateManualModel && (
               <button
                 type="button"
+                role="option" aria-selected={false}
                 className="flex items-center justify-between gap-2 w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50"
                 onClick={() => {
                   onChange(manualModel);
@@ -3297,6 +4242,7 @@ export function ModelDropdown({
                   <button
                     type="button"
                     key={m.id}
+                    role="option" aria-selected={m.id === value}
                     className={cn(
                       "flex items-center w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
                       m.id === value && "bg-accent",
@@ -3316,82 +4262,16 @@ export function ModelDropdown({
             {filteredModels.length === 0 && !canCreateManualModel && promotedModelIds.size === 0 && (
               <div className="px-2 py-2 space-y-2">
                 <p className="text-xs text-muted-foreground">
-                  {onDetectModel
+                  {loadingModels ? "Loading models…" : onDetectModel
                     ? (emptyDetectHint ?? "No model detected yet. Enter a provider/model manually.")
                     : "No models found."}
                 </p>
               </div>
             )}
           </div>
-        </PopoverContent>
-      </Popover>
-    </Field>
-  );
-}
-
-function CheapModelSection({
-  enabled,
-  model,
-  models,
-  adapterType,
-  adapterDefaultModel,
-  onEnabledChange,
-  onModelChange,
-  open,
-  onOpenChange,
-}: {
-  enabled: boolean;
-  model: string;
-  models: AdapterModel[];
-  adapterType: string;
-  adapterDefaultModel: string;
-  onEnabledChange: (next: boolean) => void;
-  onModelChange: (next: string) => void;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const placeholderHint = adapterDefaultModel
-    ? `Adapter default · ${adapterDefaultModel}`
-    : "No adapter default — choose a cheaper model";
-  return (
-    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Cheap model</div>
-          <p className="text-xs text-muted-foreground">
-            Used when a run requests the cheap profile (e.g. routine summaries). The primary model stays unchanged.
-          </p>
         </div>
-        <ToggleSwitch checked={enabled} onCheckedChange={onEnabledChange} />
-      </div>
-      {enabled ? (
-        <ModelDropdown
-          models={models}
-          value={model}
-          onChange={onModelChange}
-          open={open}
-          onOpenChange={onOpenChange}
-          allowDefault
-          required={false}
-          groupByProvider={adapterType === "opencode_local"}
-          creatable
-          detectedModel={null}
-          detectedModelCandidates={[]}
-          emptyDetectHint={placeholderHint}
-          defaultLabel={placeholderHint}
-        />
-      ) : null}
-      {enabled && !model && adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-muted-foreground">
-          No explicit cheap model selected — runtime falls back to <code>{adapterDefaultModel}</code>.
-        </p>
-      ) : null}
-      {enabled && !model && !adapterDefaultModel ? (
-        <p className="text-(length:--text-micro) text-amber-500">
-          No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
-        </p>
-      ) : null}
-    </div>
+      </SelectPopover>
+    </Field>
   );
 }
 
@@ -3408,36 +4288,11 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const selected = options.find((option) => option.id === value) ?? options[0];
-
-  return (
-    <Field label="Thinking effort" hint={help.thinkingEffort}>
-      <Popover open={open} onOpenChange={onOpenChange}>
-        <PopoverTrigger asChild>
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between">
-            <span className={cn(!value && "text-muted-foreground")}>{selected?.label ?? "Auto"}</span>
-            <ChevronDown className="h-3 w-3 text-muted-foreground" />
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
-          {options.map((option) => (
-            <button
-              key={option.id || "auto"}
-              className={cn(
-                "flex items-center justify-between w-full px-2 py-1.5 text-sm rounded hover:bg-accent/50",
-                option.id === value && "bg-accent",
-              )}
-              onClick={() => {
-                onChange(option.id);
-                onOpenChange(false);
-              }}
-            >
-              <span>{option.label}</span>
-              {option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : null}
-            </button>
-          ))}
-        </PopoverContent>
-      </Popover>
-    </Field>
-  );
+  return <Field label="Thinking effort" hint={help.thinkingEffort}>
+    <SelectPopover aria-label="Thinking effort" value={value} onValueChange={onChange}
+      open={open} onOpenChange={onOpenChange}
+      options={options.map(option => ({ value: option.id, label: option.label,
+        suffix: option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : undefined,
+      }))} />
+  </Field>;
 }

@@ -42,7 +42,8 @@
         "description": "Read presentation slides and content."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -51,7 +52,6 @@
       "defaults": {
         "serverUrl": "https://slidesmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/presentations.readonly"
         ]
       },
@@ -72,7 +72,8 @@
         "description": "Read presentation slides and content."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -84,7 +85,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/presentations.readonly"
         ],
         "oauthAuthorizationParams": {
@@ -115,7 +115,8 @@
         "description": "Read and update presentations."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -124,8 +125,6 @@
       "defaults": {
         "serverUrl": "https://slidesmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/presentations"
         ]
       },
@@ -147,7 +146,8 @@
         "description": "Read and update presentations."
       },
       "grantKinds": [
-        "user"
+        "user",
+        "organization"
       ],
       "ownershipModes": [
         "customer"
@@ -159,8 +159,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/presentations"
         ],
         "oauthAuthorizationParams": {

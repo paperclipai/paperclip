@@ -3,6 +3,11 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
+import {
+  PaperclipRunnerProviderProfileError,
+  resolvePaperclipRunnerProviderProfile,
+  type PaperclipRunnerProviderProfile,
+} from "./provider-profile.js";
 
 /**
  * Public compatibility resolver version. This value is persisted by the
@@ -24,7 +29,7 @@ export type HeartbeatRuntimeResolution =
       kind: "native";
       resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
       reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: "codex";
+      provider: PaperclipRunnerProviderProfile["provider"];
     };
 
 export type NativeRuntimeResolution =
@@ -40,7 +45,15 @@ export type NativeRuntimeResolution =
       reason: "eligible_opt_in";
       profile: {
         mode: "native";
-        backend: "codex_app_server" | "opencode_server" | "acpx_runtime";
+        backend:
+          | "codex_app_server"
+          | "opencode_server"
+          | "claude_managed_agents_api"
+          | "aws_agentcore_harness_api"
+          | "acpx_runtime"
+          | "openai_dot_mcp"
+          | "grok_bot_mcp"
+          | "muse_external";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -86,6 +99,9 @@ function ineligible(
 
 export function resolveNativeRuntimeMode(input: {
   enabled: boolean;
+  museEnabled?: boolean;
+  dotEnabled?: boolean;
+  grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
   agent: { id?: string; status: string; adapterType: string | null };
@@ -105,23 +121,30 @@ export function resolveNativeRuntimeMode(input: {
       reason: "direct_adapter",
     };
   }
-  if (!input.enabled) {
+  let runnerProfile: PaperclipRunnerProviderProfile;
+  try {
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+  } catch (error) {
+    if (error instanceof PaperclipRunnerProviderProfileError) {
+      throw ineligible(error.code, error.message);
+    }
+    throw error;
+  }
+  // Dot has its own rollout; enabling it does not opt in other Runner providers.
+  if (runnerProfile.provider === "muse") {
+    if (!input.enabled) throw ineligible("paperclip_runner_rollout_disabled", "Paperclip Runner is experimental and disabled on this instance.");
+    if (input.museEnabled !== true) throw ineligible("paperclip_runner_muse_disabled", "Enable Muse personal-agent connections in experimental settings before assigning new work.");
+  } else if (runnerProfile.provider === "openai_dot") {
+    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
+  } else if (runnerProfile.provider === "grok_bot" && (input.grokEnabled !== true || !input.enabled)) {
+    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot, Paperclip Runner, and Assistant connections (MCP) before assigning new work.");
+  } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
+    && !(runnerProfile.provider === "acpx"
+      && (["claude", "copilot", "pi"].includes(runnerProfile.acpxAgent ?? "")))
+    && !input.enabled) {
     throw ineligible(
       "paperclip_runner_rollout_disabled",
       "Paperclip Runner is experimental and disabled on this instance.",
-    );
-  }
-  const adapterConfig = input.adapterConfig;
-  const runnerProvider =
-    typeof adapterConfig === "object"
-    && adapterConfig !== null
-    && !Array.isArray(adapterConfig)
-      ? (adapterConfig as Record<string, unknown>).provider ?? "codex"
-      : "codex";
-  if (runnerProvider !== "codex") {
-    throw ineligible(
-      "paperclip_runner_provider_unsupported",
-      "Paperclip Runner currently supports only the Codex provider.",
     );
   }
   if (
@@ -157,7 +180,7 @@ export function resolveNativeRuntimeMode(input: {
     reason: "eligible_opt_in",
     profile: {
       mode: "native",
-      backend: "codex_app_server",
+      backend: runnerProfile.backend,
       protocolVersion: 1,
     },
     authorityDecision: rollout,
@@ -175,6 +198,9 @@ export function resolveHeartbeatRuntimeMode(input: {
     runtimeModeResolvedAt: Date | null;
   };
   enabled: boolean;
+  museEnabled?: boolean;
+  dotEnabled?: boolean;
+  grokEnabled?: boolean;
   adapterType: string | null;
   adapterConfig: unknown;
   agentStatus: string;
@@ -201,6 +227,9 @@ export function resolveHeartbeatRuntimeMode(input: {
   try {
     resolution = resolveNativeRuntimeMode({
       enabled: input.enabled,
+      museEnabled: input.museEnabled,
+      dotEnabled: input.dotEnabled,
+      grokEnabled: input.grokEnabled,
       runtimeConfig: {},
       adapterConfig: input.adapterConfig,
       agent: {
@@ -230,7 +259,18 @@ export function resolveHeartbeatRuntimeMode(input: {
     kind: "native",
     resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
     reason: "explicit_paperclip_runner",
-    provider: "codex",
+    provider: resolution.profile.backend === "opencode_server"
+      ? "opencode"
+      : resolution.profile.backend === "claude_managed_agents_api"
+        ? "claude_managed"
+        : resolution.profile.backend === "aws_agentcore_harness_api"
+          ? "aws_agentcore"
+      : resolution.profile.backend === "muse_external" ? "muse"
+      : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
+      : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
+      : resolution.profile.backend === "acpx_runtime"
+          ? "acpx"
+          : "codex",
   };
 }
 
@@ -247,6 +287,9 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
     driverKind?: string | null;
   };
   enabled: boolean;
+  museEnabled?: boolean;
+  dotEnabled?: boolean;
+  grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
   agent: { id?: string; status: string; adapterType: string | null };
@@ -274,9 +317,16 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
       const driverKind = input.persisted.driverKind;
       const backend = driverKind === "opencode_server"
         ? "opencode_server"
+        : driverKind === "claude_managed_agents_api"
+          ? "claude_managed_agents_api"
+          : driverKind === "aws_agentcore_harness_api"
+            ? "aws_agentcore_harness_api"
+        : driverKind === "muse_external" ? "muse_external"
+        : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
+        : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
         : driverKind === "acpx_runtime"
-          ? "acpx_runtime"
-          : driverKind === null
+            ? "acpx_runtime"
+            : driverKind === null
               || driverKind === undefined
               || driverKind === "codex"
               || driverKind === "codex_app_server"

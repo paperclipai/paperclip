@@ -1,7 +1,10 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    ...(process.env.PAPERCLIP_CI_PROFILE === "true"
+      ? { reporters: [...configDefaults.reporters, "./scripts/ci-profile/vitest-reporter.mjs"] }
+      : {}),
     projects: [
       "packages/shared",
       "packages/skills-catalog",
@@ -13,6 +16,7 @@ export default defineConfig({
       "packages/adapters/cursor-local",
       "packages/adapters/gemini-local",
       "packages/adapters/grok-local",
+      "packages/adapters/hermes",
       "packages/adapters/kimi-local",
       "packages/adapters/openclaw-gateway",
       "packages/adapters/opencode-local",

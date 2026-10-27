@@ -42,7 +42,11 @@ export function endpointHost(url: string): string | null {
  * they point at the same machine. The API therefore uses `localhost` for local
  * HTTP OAuth, so the setup form must advertise that same canonical spelling.
  */
-export function oauthCallbackUrlForBrowser(origin: string = window.location.origin): string {
+export function oauthCallbackUrlForBrowser(
+  origin: string = window.location.origin,
+  serverCallbackUrl?: string,
+): string {
+  if (serverCallbackUrl) return serverCallbackUrl;
   const callbackUrl = new URL("/api/tools/oauth/callback", origin);
   const hostname = callbackUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (
@@ -78,7 +82,7 @@ export function defaultGenericMcpName(url: string): string | null {
  * this to decide whether to reopen the URL field or the credential section, rather
  * than leaving them to guess which of the two was wrong.
  */
-export type GenericConnectFocus = "url" | "name" | "credentials" | "deployment" | "none";
+export type GenericConnectFocus = "url" | "credentials" | "deployment" | "none";
 
 export interface GenericConnectGuidance {
   title: string;
@@ -126,9 +130,9 @@ export function genericConnectGuidance(
       };
     case "tool_access_name_conflict":
       return {
-        title: "That name is taken",
-        body: "Choose a different name for this connection, then try again.",
-        focus: "name",
+        title: "Paperclip couldn’t name this connection",
+        body: "Try connecting again.",
+        focus: "none",
       };
     case "oauth_challenge":
       return {

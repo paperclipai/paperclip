@@ -55,7 +55,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
-import { copyTextToClipboard } from "@/lib/clipboard";
+import { useCopyAction } from "@/lib/use-copy-action";
 
 type TraceEntry = Record<string, unknown>;
 type InspectorView = "overview" | "pipeline" | "trace";
@@ -415,9 +415,11 @@ function JsonNode({
         key.toLowerCase().includes(query.toLowerCase()) || jsonMatches(child, query),
       )
     : entries;
+  const pathCopy = useCopyAction();
+  const valueCopy = useCopyAction();
   const copyValue = () => {
     const serialized = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-    void copyTextToClipboard(serialized ?? String(value));
+    void valueCopy.copy(serialized ?? String(value));
   };
   return (
     <div className={cn(depth > 0 && "border-l border-border/60 pl-3")}>
@@ -445,19 +447,19 @@ function JsonNode({
         <span className="ml-auto hidden items-center gap-0.5 group-hover:flex">
           <button
             type="button"
-            title="Copy JSON path"
+            title={pathCopy.copied ? "JSON path copied" : pathCopy.failed ? "Copy failed" : "Copy JSON path"}
             className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-            onClick={() => void copyTextToClipboard(path)}
+            onClick={() => void pathCopy.copy(path)}
           >
-            <Braces className="h-3 w-3" />
+            {pathCopy.copied ? <Check className="h-3 w-3" /> : <Braces className="h-3 w-3" />}
           </button>
           <button
             type="button"
-            title="Copy value"
+            title={valueCopy.copied ? "Value copied" : valueCopy.failed ? "Copy failed" : "Copy value"}
             className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
             onClick={copyValue}
           >
-            <Copy className="h-3 w-3" />
+            {valueCopy.copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           </button>
         </span>
       </div>
@@ -1090,7 +1092,7 @@ export function RunnerInspector({
                   <StatCard label="Operations" value={operations.length} detail="correlated groups" />
                   <StatCard label="PRP events" value={events.length} detail={`${visibleEventCount} visible`} />
                   <StatCard label="Mappings" value={interpretations.length} detail={`${ignoredCount} ignored`} />
-                  <StatCard label="Run status" value={run?.status ?? "unknown"} detail={traceBadgeLabel(inspection?.trace?.status ?? "expired", inspection?.trace?.expiresAt ?? new Date(0))} />
+                  <StatCard label="Run status" value={run?.status ?? "unknown"} detail={inspection?.trace ? traceBadgeLabel(inspection.trace.status, inspection.trace.expiresAt) : "Raw capture off"} />
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <section className="rounded-lg border border-border bg-card p-4">
