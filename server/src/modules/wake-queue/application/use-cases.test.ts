@@ -121,6 +121,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     finalizePromotedWake: vi.fn(async (input) => runSummary(input.wakeId)),
     hasExistingExecutionPath: vi.fn(async () => false),
     hasExplicitBlockerPath: vi.fn(async () => false),
+    hasPendingWakeInteraction: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
     isImmediateRecoverySourceBlocked: vi.fn(async () => false),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
@@ -784,6 +785,47 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("blocked");
     expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("immediate_execution_path");
     expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("releaseIssueExecution review-participant recovery", () => {
+  const reviewIssue: IssueSnapshot = {
+    ...ISSUE,
+    status: "in_review",
+    executionState: { status: "pending", currentParticipant: { type: "agent", agentId: "finishing-agent" } },
+  } as IssueSnapshot;
+  const reviewRun: RunSnapshot = {
+    ...RUN,
+    status: "succeeded",
+    contextSnapshot: { issueId: ISSUE.id, wakeReason: "execution_review_requested" },
+  };
+
+  async function release(hasPendingWakeInteraction: boolean) {
+    const transaction = createFakeTransaction({ hasPendingWakeInteraction: vi.fn(async () => hasPendingWakeInteraction) });
+    const recovery = createFakeRecovery();
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction, reviewIssue, reviewRun);
+    await createReleaseIssueExecution({ issueLock, recovery })({ companyId: "company-1", runId: "run-1", now: new Date() });
+    return { transaction, recovery };
+  }
+
+  it("leaves a review that waits on a pending wake interaction to that interaction", async () => {
+    const { transaction, recovery } = await release(true);
+    expect(transaction.hasPendingWakeInteraction).toHaveBeenCalledWith({ companyId: "company-1", issueId: ISSUE.id });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
+  it("still retries the review participant when nothing else is pending", async () => {
+    const { transaction } = await release(false);
+    expect(transaction.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not look for interactions outside the review-participant branch", async () => {
+    const transaction = createFakeTransaction();
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction);
+    await createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() })(
+      { companyId: "company-1", runId: "run-1", now: new Date() });
+    expect(transaction.hasPendingWakeInteraction).not.toHaveBeenCalled();
   });
 });
 
