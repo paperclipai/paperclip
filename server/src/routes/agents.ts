@@ -4687,14 +4687,7 @@ export function agentRoutes(
 
       let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
       const actor = getActorInfo(req);
-      if (!requiresApproval && agent.budgetMonthlyCents > 0) {
-        await budgets.upsertPolicy(companyId, {
-          scopeType: "agent",
-          scopeId: agent.id,
-          amount: agent.budgetMonthlyCents,
-          windowKind: "calendar_month_utc",
-        }, actor.actorId);
-      }
+
 
       if (requiresApproval) {
         const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -5004,18 +4997,7 @@ export function agentRoutes(
     );
     await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
 
-    if (agent.budgetMonthlyCents > 0) {
-      await budgets.upsertPolicy(
-        companyId,
-        {
-          scopeType: "agent",
-          scopeId: agent.id,
-          amount: agent.budgetMonthlyCents,
-          windowKind: "calendar_month_utc",
-        },
-        actor.actorType === "user" ? actor.actorId : null,
-      );
-    }
+
 
     res.status(201).json({ ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });

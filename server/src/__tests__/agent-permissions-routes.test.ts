@@ -2410,7 +2410,8 @@ describe("agent permission routes", () => {
     const app = createApp({ type: "board", userId: "operator-user", source: "local_implicit", companyIds: [companyId] });
     const response = await requestApp(app, url => request(url).post(`/api/companies/${companyId}/${route}`).send({ name: "New employee", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 }));
     expect(response.status).toBe(201);
-    expect(mockBudgetService.upsertPolicy).toHaveBeenCalledWith(companyId, expect.objectContaining({ scopeType: "agent", scopeId: agentId, amount: 5000 }), "operator-user");
+    expect(mockAgentService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({ budgetMonthlyCents: 5000 }), expect.objectContaining({ createdByUserId: "operator-user" }));
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
   });
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
     mockHeartbeatService.getRun.mockResolvedValue({
