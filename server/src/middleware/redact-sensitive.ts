@@ -139,7 +139,7 @@ export function stripSecretBearingUrlParts(value: string): string {
   const suffixStart = value.search(/[?#]/);
   const withoutQueryOrFragment =
     (suffixStart === -1 ? value : value.slice(0, suffixStart)).replace(
-      /(^|^[a-z][a-z\d+.-]*:\/\/[^/]*)(\/(?:api\/)?invites?\/)[^/]+/i,
+      /(^|^[a-z][a-z\d+.-]*:\/\/[^/]*)(\/(?:(?:api\/)?invites\/(?![^/]+\/revoke(?:\/|$))|invite\/))[^/]+/i,
       "$1$2[REDACTED]",
     );
 
