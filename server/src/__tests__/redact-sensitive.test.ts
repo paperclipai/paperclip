@@ -271,3 +271,16 @@ it("redacts Grok routine URL and key in setup failure logs", () => {
   expect(collectSensitiveStringValues(payload)).toContain(payload.webhookUrl);
   expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
 });
+
+describe("invitation bearer URL paths", () => {
+  it.each([
+    ["/api/invites/invite-bearer-canary/accept?token=query-canary", "/api/invites/[REDACTED]/accept"],
+    ["/invites/invite-bearer-canary/onboarding.txt", "/invites/[REDACTED]/onboarding.txt"],
+    ["/invite/invite-bearer-canary", "/invite/[REDACTED]"],
+    ["/API/INVITES/encoded%2Fbearer/skills/paperclip", "/API/INVITES/[REDACTED]/skills/paperclip"],
+    ["https://user:password@board.example/api/invites/invite-bearer-canary/accept#fragment", "https://board.example/api/invites/[REDACTED]/accept"],
+    ["/api/companies/company/invites/invite-record-id", "/api/companies/company/invites/invite-record-id"],
+  ])("sanitizes %s without hiding the route", (input, expected) => {
+    expect(stripSecretBearingUrlParts(input)).toBe(expected);
+  });
+});
