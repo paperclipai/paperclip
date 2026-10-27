@@ -357,6 +357,35 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(setupId)).lifecycleHolds).toContain("setup");
   });
 
+  it("saves the immediate hire budget and actual operator audit in its transaction", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Capped hire", adapterType: "process", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user" });
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id))).toMatchObject([{ amount: 5000 }]);
+    const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "budget.policy_upserted")));
+    expect(audit).toMatchObject([{ actorType: "user", actorId: "operator-user", agentId: null }]);
+  });
+
+  it("does not activate a proposed hire budget before human approval", async () => {
+    const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Proposed cap", status: "pending_approval", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user" });
+    expect(agent.budgetMonthlyCents).toBe(5000);
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, agent.id))).toHaveLength(0);
+  });
+
+  it("rolls back the hire, grants, policy and audit together when its initial budget write fails", async () => {
+    const effects = createAgentLifecycleEffects();
+    const setAgentBudget = vi.fn(async (...args: Parameters<typeof effects.setAgentBudget>) => {
+      await effects.setAgentBudget(...args);
+      throw new Error("Initial budget failed");
+    });
+    const lifecycle = createLifecycleCommands(db, { ...effects, setAgentBudget });
+    await expect(lifecycle.requestHire(companyId, { name: "Budget rollback", adapterType: "process", budgetMonthlyCents: 5000 }, { createdByUserId: "operator-user" }))
+      .rejects.toThrow("Initial budget failed");
+    expect(setAgentBudget).toHaveBeenCalledWith(expect.anything(), expect.any(Array), companyId, expect.any(String), 5000, "operator-user");
+    expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, companyId))).toHaveLength(0);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(0);
+  });
+
   it("rolls back a hire and its grants when hire initialization fails", async () => {
     const effects = createAgentLifecycleEffects();
     const lifecycle = createLifecycleCommands(db, { ...effects,
