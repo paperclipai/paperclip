@@ -389,6 +389,13 @@ describe("decideQueuedRunStaleness", () => {
     });
   });
 
+  it("keeps the addressee's run for a pending interaction on a task another agent owns", () => {
+    const facts = { ...baseStalenessFacts(), issueAssigneeAgentId: "agent-2", wakeReason: "interaction_pending" };
+    expect(decideQueuedRunStaleness({ ...facts, isPendingInteractionAddressee: true }, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...facts, isPendingInteractionAddressee: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+  });
+
   it("allows a resolved non-connection interaction to claim its review task", () => {
     expect(decideQueuedRunStaleness({
       ...baseStalenessFacts(),
