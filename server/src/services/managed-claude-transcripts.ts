@@ -138,7 +138,12 @@ function liveRunCondition(scope: Scope, taskKey: string) {
   );
 }
 
-async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: Date): Promise<string | null> {
+// `dueAt` is set only when the blocker will lift on its own at a known time
+// (a closed issue's retention window), so the caller can schedule the next
+// pass instead of relying solely on another scope's deadline to wake it.
+type RetentionBlocker = { reason: string; dueAt?: number };
+
+async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: Date, retentionDays: number): Promise<RetentionBlocker | null> {
   const [agent] = await tx
     .select({ id: agents.id })
     .from(agents)
@@ -151,12 +156,13 @@ async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: D
       .where(and(eq(issues.id, taskKey), eq(issues.companyId, scope.companyId)))
       .for("share");
     if (issue) {
-      if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return "issue_open";
+      if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open" };
       const closedAt = issue.completedAt ?? issue.cancelledAt;
-      if (!closedAt || new Date(closedAt) >= cutoff) return "recently_closed";
+      if (!closedAt) return { reason: "recently_closed" };
+      if (new Date(closedAt) >= cutoff) return { reason: "recently_closed", dueAt: new Date(closedAt).getTime() + retentionDays * DAY_MS };
     }
   }
-  return (await hasLiveRun(tx, scope, taskKey)) ? "live_run" : null;
+  return (await hasLiveRun(tx, scope, taskKey)) ? { reason: "live_run" } : null;
 }
 
 async function hasLiveRun(db: Db | Tx, scope: Scope, taskKey: string): Promise<boolean> {
@@ -170,29 +176,31 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
   async function expireScope(
     scope: Scope,
     cutoff: Date,
+    retentionDays: number,
     sessionInUse: boolean,
     result: ManagedClaudeTranscriptExpirationResult,
   ) {
-    const skip = (reason: string) => {
-      result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
+    const skip = (blocker: RetentionBlocker) => {
+      result.skipped[blocker.reason] = (result.skipped[blocker.reason] ?? 0) + 1;
+      if (blocker.dueAt != null && (result.nextDueAt === null || blocker.dueAt < result.nextDueAt)) result.nextDueAt = blocker.dueAt;
     };
     const { task } = scope;
-    if (!task) return skip("task_unknown");
-    if (task.lastUsed >= cutoff) return skip("recently_used");
-    if (!(await isRealDirectory(scope.dir))) return skip("unsafe_path");
+    if (!task) return skip({ reason: "task_unknown" });
+    if (task.lastUsed >= cutoff) return skip({ reason: "recently_used" });
+    if (!(await isRealDirectory(scope.dir))) return skip({ reason: "unsafe_path" });
 
     const id = randomUUID();
     const transcriptsDir = path.dirname(scope.dir);
     const retiring = path.join(transcriptsDir, `${RETIRING_PREFIX}${path.basename(scope.dir)}.${id}`);
     let retired = false;
-    let blocker: string | null;
+    let blocker: RetentionBlocker | null;
     try {
       blocker = await db.transaction(async (tx) => {
-        const reason = await retentionBlocker(tx, scope, task.taskKey, cutoff);
-        if (reason) return reason;
+        const found = await retentionBlocker(tx, scope, task.taskKey, cutoff, retentionDays);
+        if (found) return found;
         await fs.rename(scope.dir, retiring);
         retired = true;
-        if (await hasLiveRun(tx, scope, task.taskKey)) return "live_run";
+        if (await hasLiveRun(tx, scope, task.taskKey)) return { reason: "live_run" };
         if (sessionInUse) return null;
         const cleared = await tx
           .delete(agentTaskSessions)
@@ -242,8 +250,10 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     }
     const notYetDue = scopes.filter((scope) => scope.task && scope.task.lastUsed >= cutoff);
     const inUse = new Set(notYetDue.map((scope) => `${path.dirname(scope.dir)}\0${scope.task!.taskKey}`));
-    // Blocked scopes (an open issue, a live run) have no predictable due time;
-    // they are swept opportunistically whenever this fires for another reason.
+    // An open issue or a live run has no predictable due time; those scopes
+    // are swept opportunistically whenever this fires for another reason.
+    // A recently-closed issue's own due time is set below, once expireScope
+    // re-reads it inside the transaction.
     for (const scope of notYetDue) {
       const due = scope.task!.lastUsed.getTime() + retentionDays * DAY_MS;
       if (result.nextDueAt === null || due < result.nextDueAt) result.nextDueAt = due;
@@ -259,7 +269,7 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
       cursor = scope.dir;
       try {
         const sessionInUse = Boolean(scope.task) && inUse.has(`${path.dirname(scope.dir)}\0${scope.task!.taskKey}`);
-        await expireScope(scope, cutoff, sessionInUse, result);
+        await expireScope(scope, cutoff, retentionDays, sessionInUse, result);
       } catch (err) {
         result.failed++;
         logger.warn({ err, agentId: scope.agentId }, "managed Claude transcript expiration skipped a task");
@@ -278,24 +288,25 @@ export function registerManagedClaudeTranscriptCleanupWork(
   onResult: (result: ManagedClaudeTranscriptExpirationResult) => void,
 ) {
   let next: number | null = null;
-  let idle = true;
   const worker = coordinator.register(DELIVERY_QUEUES.managedClaudeTranscriptCleanup, {
     retryMs: MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS,
     run: async () => {
       const result = await service.tick();
       onResult(result);
+      // A failed directory is retried on the next full pass (the cursor
+      // resets whenever the pass was not truncated), so a transient error
+      // must not leave `next` on a distant or absent deadline.
+      const retryAt = result.failed > 0 ? Date.now() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS : null;
+      const dueAt = retryAt === null ? result.nextDueAt : result.nextDueAt === null ? retryAt : Math.min(result.nextDueAt, retryAt);
       // A truncated pass has more of the current batch to go; come straight
       // back rather than waiting for the next real deadline.
-      next = result.truncated ? Date.now() + 1000 : result.nextDueAt;
-      idle = next === null;
+      next = result.truncated ? Date.now() + 1000 : dueAt;
     },
     hasPending: async () => false,
     nextRunAt: () => next,
   });
-  onScopeRetained = () => {
-    if (!idle) return;
-    idle = false;
-    worker.wake();
-  };
+  // The coordinator preserves a wake received while a pass is already
+  // running, so every retained scope can forward here unconditionally.
+  onScopeRetained = () => worker.wake();
   return worker;
 }

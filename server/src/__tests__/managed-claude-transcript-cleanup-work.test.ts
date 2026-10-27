@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import {
+  MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS,
   registerManagedClaudeTranscriptCleanupWork,
   retainManagedClaudeTranscripts,
   type ManagedClaudeTranscriptExpirationResult,
@@ -76,6 +77,75 @@ describe("registerManagedClaudeTranscriptCleanupWork", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(tick).toHaveBeenCalledTimes(2);
     expect(c.nextWakeAt()).toBeNull();
+  });
+
+  it("retries soon after a failed directory instead of an absent or distant deadline", async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const tick = vi.fn()
+      .mockResolvedValueOnce(result({ failed: 1 }))
+      .mockResolvedValueOnce(result());
+    const c = coordinator();
+    registerManagedClaudeTranscriptCleanupWork(c, { tick }, vi.fn());
+    await vi.advanceTimersByTimeAsync(1);
+    expect(tick).toHaveBeenCalledTimes(1);
+    expect(c.nextWakeAt()).toBe(startedAt + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS);
+    await vi.advanceTimersByTimeAsync(MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS - 2);
+    expect(tick).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(tick).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a real deadline that is sooner than the failed-directory retry", async () => {
+    vi.useFakeTimers();
+    const soonDue = Date.now() + 10_000;
+    const tick = vi.fn(async () => result({ failed: 1, nextDueAt: soonDue }));
+    const c = coordinator();
+    registerManagedClaudeTranscriptCleanupWork(c, { tick }, vi.fn());
+    await vi.advanceTimersByTimeAsync(1);
+    expect(c.nextWakeAt()).toBe(soonDue);
+  });
+
+  it("keeps a wake that arrives while a pass is still in flight", async () => {
+    vi.useFakeTimers();
+    const guestDir = await fs.mkdtemp(path.join(os.tmpdir(), "pap-ai-cleanup-inflight-"));
+    vi.stubEnv("PAPERCLIP_HOME", await fs.mkdtemp(path.join(guestDir, "home-")));
+    vi.stubEnv("PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED", "true");
+    try {
+      const runtime = await fs.mkdtemp(path.join(guestDir, "run-home-"));
+      await fs.mkdir(path.join(runtime, "provider"), { mode: 0o700 });
+      const due = Date.now() + 5 * 24 * 60 * 60 * 1000;
+      let resolveSecondPass!: (value: ManagedClaudeTranscriptExpirationResult) => void;
+      const tick = vi.fn()
+        .mockResolvedValueOnce(result({ nextDueAt: due }))
+        .mockImplementationOnce(() => new Promise<ManagedClaudeTranscriptExpirationResult>((resolve) => { resolveSecondPass = resolve; }))
+        .mockResolvedValueOnce(result());
+      const c = coordinator();
+      registerManagedClaudeTranscriptCleanupWork(c, { tick }, vi.fn());
+      await vi.advanceTimersByTimeAsync(1);
+      expect(tick).toHaveBeenCalledTimes(1);
+
+      // The second pass starts (and is still in flight) once its deadline arrives.
+      await vi.advanceTimersByTimeAsync(due - Date.now());
+      expect(tick).toHaveBeenCalledTimes(2);
+
+      // A run retains a new scope while that second pass has not returned yet.
+      await retainManagedClaudeTranscripts({
+        runtime: { home: runtime, sessionIdentity: "grant-1:user-1:secret-1:0" },
+        adapterType: "claude_local",
+        companyId: "company-1",
+        agentId: "agent-1",
+        taskKey: "task-2",
+        target: { kind: "local" } as never,
+      });
+
+      resolveSecondPass(result());
+      await vi.advanceTimersByTimeAsync(1);
+      expect(tick).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(guestDir, { recursive: true, force: true });
+    }
   });
 
   it("wakes a worker that had gone idle when a run retains a new scope", async () => {

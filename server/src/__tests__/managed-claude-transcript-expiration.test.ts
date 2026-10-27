@@ -144,6 +144,25 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     expect(await taskSessionCount()).toBe(1);
   });
 
+  it("schedules the next pass for when a recently-closed issue's own window lifts", async () => {
+    const closedDaysAgo = 2;
+    await seed({ closedDaysAgo });
+
+    const result = await service().tick();
+
+    expect(result.skipped.recently_closed).toBe(1);
+    expect(result.nextDueAt).toBe(now.getTime() - closedDaysAgo * DAY_MS + 7 * DAY_MS);
+  });
+
+  it("leaves no due time for a blocker that cannot resolve on its own", async () => {
+    await seed({ issueStatus: "in_progress" });
+
+    const result = await service().tick();
+
+    expect(result.skipped.issue_open).toBe(1);
+    expect(result.nextDueAt).toBeNull();
+  });
+
   it("expires transcripts whose issue or agent no longer exists once unused for the window", async () => {
     const withoutIssue = await seed({ withIssue: false });
     const withoutAgent = await seed({ withAgent: false });
