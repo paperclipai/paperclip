@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, agentTaskSessions, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -179,6 +180,16 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     expect(await exists(held.scopeDir)).toBe(true);
     expect(await exists(expirable.scopeDir)).toBe(false);
     expect(second.nextDueAt).toBe(now.getTime() + DAY_MS);
+  });
+
+  it("rechecks after a day when a closed issue has no closing time", async () => {
+    const seeded = await seed();
+    await db.update(issues).set({ completedAt: null, cancelledAt: null }).where(eq(issues.id, seeded.taskKey));
+
+    const result = await service().tick();
+
+    expect(result.skipped.recently_closed).toBe(1);
+    expect(result.nextDueAt).toBe(now.getTime() + DAY_MS);
   });
 
   it("schedules nothing when no transcript directory is left", async () => {

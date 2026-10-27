@@ -136,6 +136,7 @@ function liveRunCondition(scope: Scope, taskKey: string) {
 type RetentionBlocker = { reason: string; dueAt?: number };
 
 async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: Date, retentionDays: number): Promise<RetentionBlocker | null> {
+  const recheckAt = cutoff.getTime() + (retentionDays + 1) * DAY_MS;
   const [agent] = await tx
     .select({ id: agents.id })
     .from(agents)
@@ -148,13 +149,13 @@ async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: D
       .where(and(eq(issues.id, taskKey), eq(issues.companyId, scope.companyId)))
       .for("share");
     if (issue) {
-      if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open" };
+      if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open", dueAt: recheckAt };
       const closedAt = issue.completedAt ?? issue.cancelledAt;
-      if (!closedAt) return { reason: "recently_closed" };
+      if (!closedAt) return { reason: "recently_closed", dueAt: recheckAt };
       if (new Date(closedAt) >= cutoff) return { reason: "recently_closed", dueAt: new Date(closedAt).getTime() + retentionDays * DAY_MS };
     }
   }
-  return (await hasLiveRun(tx, scope, taskKey)) ? { reason: "live_run" } : null;
+  return (await hasLiveRun(tx, scope, taskKey)) ? { reason: "live_run", dueAt: recheckAt } : null;
 }
 
 async function hasLiveRun(db: Db | Tx, scope: Scope, taskKey: string): Promise<boolean> {
@@ -193,7 +194,7 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
         if (found) return found;
         await fs.rename(scope.dir, retiring);
         retired = true;
-        if (await hasLiveRun(tx, scope, task.taskKey)) return { reason: "live_run" };
+        if (await hasLiveRun(tx, scope, task.taskKey)) return { reason: "live_run", dueAt: cutoff.getTime() + (retentionDays + 1) * DAY_MS };
         if (sessionInUse) return null;
         const cleared = await tx
           .delete(agentTaskSessions)
@@ -265,7 +266,6 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
         logger.warn({ err, agentId: scope.agentId }, "managed Claude transcript expiration skipped a task");
       }
     }
-    if (result.skipped.issue_open || result.skipped.live_run) result.nextDueAt = earliest(result.nextDueAt, now + DAY_MS);
     if (result.failed > 0) result.nextDueAt = earliest(result.nextDueAt, now + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS);
     sweepDueAt = earliest(sweepDueAt, result.nextDueAt);
     if (!result.truncated) {
