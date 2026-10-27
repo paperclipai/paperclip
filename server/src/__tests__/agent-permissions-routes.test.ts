@@ -2371,12 +2371,19 @@ describe("agent permission routes", () => {
   });
 
   it.each([0, 5000])("budget authority: rejects agent policy changes through the legacy field (%i)", async amount => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, budgetMonthlyCents: 500 });
     const app = createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
     const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: amount }));
     expect(response.status).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+  it("budget authority: accepts an unchanged legacy amount with an unrelated title edit", async () => {
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const response = await requestApp(app, url => request(url).patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: 0, title: "New title" }));
+    expect(response.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalled();
   });
   it.each(["agents", "agent-hires"])("budget authority: rejects agent immediate creation budgets through %s", async route => {
     mockAccessService.hasPermission.mockResolvedValue(true);

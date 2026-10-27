@@ -59,8 +59,8 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           .then((rows) => rows[0]);
         await effects.initializeHire(txDb, created, options);
         if (!options?.setupOnly && status !== "pending_approval" && status !== "terminated"
-          && created.budgetMonthlyCents > 0 && options?.createdByUserId) {
-          await effects.setAgentBudget(txDb, publications, companyId, created.id, created.budgetMonthlyCents, options.createdByUserId);
+          && created.budgetMonthlyCents > 0 && options?.initialBudgetPolicyUserId) {
+          await effects.setAgentBudget(txDb, publications, companyId, created.id, created.budgetMonthlyCents, options.initialBudgetPolicyUserId);
         }
         if (!options?.setupOnly && created.status !== "pending_approval" && created.status !== "terminated") {
           await effects.recordCreation(txDb, companyId, created.id);
