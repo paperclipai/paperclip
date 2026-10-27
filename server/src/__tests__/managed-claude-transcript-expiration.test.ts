@@ -154,13 +154,21 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     expect(result.nextDueAt).toBe(now.getTime() - closedDaysAgo * DAY_MS + 7 * DAY_MS);
   });
 
-  it("leaves no due time for a blocker that cannot resolve on its own", async () => {
-    await seed({ issueStatus: "in_progress" });
+  it.each([
+    [{ issueStatus: "in_progress" }, "issue_open"],
+    [{ runStatus: "running" }, "live_run"],
+  ] as const)("rechecks after a day while a directory is held back by %o", async (input, reason) => {
+    await seed(input);
 
     const result = await service().tick();
 
-    expect(result.skipped.issue_open).toBe(1);
-    expect(result.nextDueAt).toBeNull();
+    expect(result.skipped[reason]).toBe(1);
+    expect(result.nextDueAt).toBe(now.getTime() + DAY_MS);
+  });
+
+  it("schedules nothing when no transcript directory is left", async () => {
+    instanceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-transcripts-"));
+    expect((await service().tick()).nextDueAt).toBeNull();
   });
 
   it("expires transcripts whose issue or agent no longer exists once unused for the window", async () => {

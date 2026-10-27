@@ -27,10 +27,6 @@ export function managedClaudeTranscriptRetentionEnabled(): boolean {
   return process.env.PAPERCLIP_MANAGED_CLAUDE_TRANSCRIPT_RETENTION_ENABLED === "true";
 }
 
-// A freshly retained scope is new work the cleanup worker does not know about
-// yet. Set once at startup by registerManagedClaudeTranscriptCleanupWork, so a
-// worker that went idle (nothing to expire) wakes instead of staying asleep
-// until some unrelated event happens to touch it.
 let onScopeRetained: (() => void) | null = null;
 
 export async function retainManagedClaudeTranscripts(input: {
@@ -73,7 +69,6 @@ export type ManagedClaudeTranscriptExpirationResult = {
   failed: number;
   truncated: boolean;
   skipped: Record<string, number>;
-  /** Earliest time a known scope becomes due, or null with nothing left to wait on. */
   nextDueAt: number | null;
 };
 
@@ -138,9 +133,6 @@ function liveRunCondition(scope: Scope, taskKey: string) {
   );
 }
 
-// `dueAt` is set only when the blocker will lift on its own at a known time
-// (a closed issue's retention window), so the caller can schedule the next
-// pass instead of relying solely on another scope's deadline to wake it.
 type RetentionBlocker = { reason: string; dueAt?: number };
 
 async function retentionBlocker(tx: Tx, scope: Scope, taskKey: string, cutoff: Date, retentionDays: number): Promise<RetentionBlocker | null> {
@@ -233,7 +225,8 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     const maxEntries = Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 200);
     const shouldContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
     const root = path.resolve(options.instanceRoot ?? defaults.instanceRoot ?? resolvePaperclipInstanceRoot());
-    const cutoff = new Date((options.now ?? defaults.now ?? new Date()).getTime() - retentionDays * DAY_MS);
+    const now = (options.now ?? defaults.now ?? new Date()).getTime();
+    const cutoff = new Date(now - retentionDays * DAY_MS);
     const result: ManagedClaudeTranscriptExpirationResult = {
       checked: 0, expired: 0, clearedTaskSessions: 0, failed: 0, truncated: false, skipped: {}, nextDueAt: null,
     };
@@ -250,10 +243,6 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
     }
     const notYetDue = scopes.filter((scope) => scope.task && scope.task.lastUsed >= cutoff);
     const inUse = new Set(notYetDue.map((scope) => `${path.dirname(scope.dir)}\0${scope.task!.taskKey}`));
-    // An open issue or a live run has no predictable due time; those scopes
-    // are swept opportunistically whenever this fires for another reason.
-    // A recently-closed issue's own due time is set below, once expireScope
-    // re-reads it inside the transaction.
     for (const scope of notYetDue) {
       const due = scope.task!.lastUsed.getTime() + retentionDays * DAY_MS;
       if (result.nextDueAt === null || due < result.nextDueAt) result.nextDueAt = due;
@@ -276,6 +265,9 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
       }
     }
     if (!result.truncated) cursor = null;
+    if (result.skipped.issue_open || result.skipped.live_run) {
+      result.nextDueAt = Math.min(result.nextDueAt ?? Infinity, now + DAY_MS);
+    }
     return result;
   }
 
@@ -293,20 +285,13 @@ export function registerManagedClaudeTranscriptCleanupWork(
     run: async () => {
       const result = await service.tick();
       onResult(result);
-      // A failed directory is retried on the next full pass (the cursor
-      // resets whenever the pass was not truncated), so a transient error
-      // must not leave `next` on a distant or absent deadline.
       const retryAt = result.failed > 0 ? Date.now() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS : null;
       const dueAt = retryAt === null ? result.nextDueAt : result.nextDueAt === null ? retryAt : Math.min(result.nextDueAt, retryAt);
-      // A truncated pass has more of the current batch to go; come straight
-      // back rather than waiting for the next real deadline.
       next = result.truncated ? Date.now() + 1000 : dueAt;
     },
     hasPending: async () => false,
     nextRunAt: () => next,
   });
-  // The coordinator preserves a wake received while a pass is already
-  // running, so every retained scope can forward here unconditionally.
   onScopeRetained = () => worker.wake();
   return worker;
 }

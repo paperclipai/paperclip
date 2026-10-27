@@ -125,11 +125,9 @@ describe("registerManagedClaudeTranscriptCleanupWork", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(tick).toHaveBeenCalledTimes(1);
 
-      // The second pass starts (and is still in flight) once its deadline arrives.
       await vi.advanceTimersByTimeAsync(due - Date.now());
       expect(tick).toHaveBeenCalledTimes(2);
 
-      // A run retains a new scope while that second pass has not returned yet.
       await retainManagedClaudeTranscripts({
         runtime: { home: runtime, sessionIdentity: "grant-1:user-1:secret-1:0" },
         adapterType: "claude_local",
