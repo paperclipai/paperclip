@@ -360,8 +360,11 @@ import {
 } from "../services/issue-hierarchy.js";
 import {
   authorizationDeniedDetails,
+  canActorReadProjectPrivacy,
+  issuePrivacyMode,
   issueReadSqlCondition,
   projectReadSqlCondition,
+  taskBridgeScopeIds,
 } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
@@ -5262,8 +5265,19 @@ export function issueRoutes(
 
   function taskBridgeKeyScopesProject(req: Request, projectId: string) {
     if (!isTaskBridgeKeyActor(req) || req.actor.keyScope?.kind !== "task_bridge") return false;
-    const scope = req.actor.keyScope;
-    return scope.projectId === projectId || (scope.projectIds ?? []).includes(projectId);
+    return taskBridgeScopeIds(req.actor.keyScope, "projectId", "projectIds").includes(projectId);
+  }
+
+  async function canActorUseProjectForCreate(
+    req: Request,
+    project: { id: string; companyId: string; visibility: string },
+  ) {
+    if (!taskBridgeKeyScopesProject(req, project.id)) return canActorReadProject(req, project);
+    const mode = issuePrivacyMode();
+    const authorizingUserId = req.actor.type === "agent" ? req.actor.authorizingUserId : undefined;
+    if (!authorizingUserId && mode === "off") return true;
+    if (await canActorReadProjectPrivacy(db, req.actor, project)) return true;
+    return !authorizingUserId && mode === "shadow";
   }
 
   function isSkillTestScopedActor(req: Request) {
@@ -13569,16 +13583,9 @@ export function issueRoutes(
         res.status(404).json({ error: "Project not found" });
         return;
       }
-      if (!taskBridgeKeyScopesProject(req, selectedProject.id)) {
-        const projectDecision = await access.decide({
-          actor: req.actor,
-          action: "project:read",
-          resource: { type: "project", companyId, projectId: selectedProject.id },
-        });
-        if (!projectDecision.allowed) {
-          res.status(404).json({ error: "Project not found" });
-          return;
-        }
+      if (!(await canActorUseProjectForCreate(req, selectedProject))) {
+        res.status(404).json({ error: "Project not found" });
+        return;
       }
     }
       const createAssignmentScope = {

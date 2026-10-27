@@ -623,6 +623,17 @@ export type ProjectPrivacyRow = {
   visibility: string;
 };
 
+export function taskBridgeScopeIds(
+  scope: TaskBridgeAgentKeyScope,
+  singularKey: "projectId" | "parentIssueId",
+  pluralKey: "projectIds" | "parentIssueIds",
+) {
+  return [
+    ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
+    ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
 export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
   const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
   if (mode === "off" || mode === "shadow") return mode;
@@ -1511,17 +1522,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     }
 
     return null;
-  }
-
-  function taskBridgeScopeIds(
-    scope: TaskBridgeAgentKeyScope,
-    singularKey: "projectId" | "parentIssueId",
-    pluralKey: "projectIds" | "parentIssueIds",
-  ) {
-    return [
-      ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
-      ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
-    ].filter((value): value is string => typeof value === "string" && value.length > 0);
   }
 
   async function parentIssueMatchesTaskBridgeBoundary(
