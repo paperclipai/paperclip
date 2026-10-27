@@ -380,6 +380,7 @@ describe("built-in agent routes", () => {
     const app = await createApp({
       type: "agent",
       agentId: "manager-agent",
+      runId: "native-request-run",
       companyId,
       source: "agent_key",
     });
@@ -403,6 +404,7 @@ describe("built-in agent routes", () => {
       actorType: "agent",
       actorId: "manager-agent",
       action: "approval.created",
+      runId: "native-request-run",
       entityId: "approval-1",
     }));
   });
