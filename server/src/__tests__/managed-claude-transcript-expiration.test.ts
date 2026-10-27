@@ -8,7 +8,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { managedClaudeTranscriptExpirationService } from "../services/managed-claude-transcripts.ts";
+import { MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS, managedClaudeTranscriptExpirationService } from "../services/managed-claude-transcripts.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -58,9 +58,10 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     withIssue?: boolean;
     withAgent?: boolean;
     withTaskFile?: boolean;
+    companyId?: string;
   } = {}) {
     if (!instanceRoot) instanceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-transcripts-"));
-    const companyId = randomUUID();
+    const companyId = input.companyId ?? randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Transcripts", issuePrefix: `T${companyId.slice(0, 6)}` });
     const agentId = randomUUID();
     if (input.withAgent !== false) await db.insert(agents).values({ id: agentId, companyId, name: "Coder" });
@@ -166,6 +167,20 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
     expect(result.nextDueAt).toBe(now.getTime() + DAY_MS);
   });
 
+  it("keeps a held-back directory's recheck across a sweep split into batches", async () => {
+    const held = await seed({ issueStatus: "in_progress", companyId: "00000000-0000-4000-8000-000000000001" });
+    const expirable = await seed({ companyId: "ffffffff-ffff-4fff-bfff-ffffffffffff" });
+    const sweep = managedClaudeTranscriptExpirationService(db, { retentionDays: 7, now, instanceRoot, maxEntries: 1 });
+
+    const first = await sweep.tick();
+    const second = await sweep.tick();
+
+    expect([first.truncated, second.truncated]).toEqual([true, false]);
+    expect(await exists(held.scopeDir)).toBe(true);
+    expect(await exists(expirable.scopeDir)).toBe(false);
+    expect(second.nextDueAt).toBe(now.getTime() + DAY_MS);
+  });
+
   it("schedules nothing when no transcript directory is left", async () => {
     instanceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-transcripts-"));
     expect((await service().tick()).nextDueAt).toBeNull();
@@ -253,7 +268,7 @@ describeEmbeddedPostgres("managed Claude transcript expiration", () => {
 
     const result = await managedClaudeTranscriptExpirationService(failingDb, { retentionDays: 7, now, instanceRoot }).tick();
 
-    expect(result).toMatchObject({ expired: 0, failed: 1 });
+    expect(result).toMatchObject({ expired: 0, failed: 1, nextDueAt: now.getTime() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS });
     expect(await fs.readdir(seeded.transcriptsDir)).toEqual([path.basename(seeded.scopeDir)]);
     expect(await taskSessionCount()).toBe(1);
   });

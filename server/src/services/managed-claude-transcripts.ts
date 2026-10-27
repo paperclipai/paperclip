@@ -164,6 +164,7 @@ async function hasLiveRun(db: Db | Tx, scope: Scope, taskKey: string): Promise<b
 
 export function managedClaudeTranscriptExpirationService(db: Db, defaults: ManagedClaudeTranscriptExpirationOptions = {}) {
   let cursor: string | null = null;
+  let sweepDueAt: number | null = null;
 
   async function expireScope(
     scope: Scope,
@@ -264,14 +265,22 @@ export function managedClaudeTranscriptExpirationService(db: Db, defaults: Manag
         logger.warn({ err, agentId: scope.agentId }, "managed Claude transcript expiration skipped a task");
       }
     }
-    if (!result.truncated) cursor = null;
-    if (result.skipped.issue_open || result.skipped.live_run) {
-      result.nextDueAt = Math.min(result.nextDueAt ?? Infinity, now + DAY_MS);
+    if (result.skipped.issue_open || result.skipped.live_run) result.nextDueAt = earliest(result.nextDueAt, now + DAY_MS);
+    if (result.failed > 0) result.nextDueAt = earliest(result.nextDueAt, now + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS);
+    sweepDueAt = earliest(sweepDueAt, result.nextDueAt);
+    if (!result.truncated) {
+      result.nextDueAt = sweepDueAt;
+      cursor = null;
+      sweepDueAt = null;
     }
     return result;
   }
 
   return { tick };
+}
+
+function earliest(a: number | null, b: number | null): number | null {
+  return a === null ? b : b === null ? a : Math.min(a, b);
 }
 
 export function registerManagedClaudeTranscriptCleanupWork(
@@ -282,12 +291,11 @@ export function registerManagedClaudeTranscriptCleanupWork(
   let next: number | null = null;
   const worker = coordinator.register(DELIVERY_QUEUES.managedClaudeTranscriptCleanup, {
     retryMs: MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS,
+    pausePassiveMaintenance: true,
     run: async () => {
       const result = await service.tick();
       onResult(result);
-      const retryAt = result.failed > 0 ? Date.now() + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS : null;
-      const dueAt = retryAt === null ? result.nextDueAt : result.nextDueAt === null ? retryAt : Math.min(result.nextDueAt, retryAt);
-      next = result.truncated ? Date.now() + 1000 : dueAt;
+      next = result.truncated ? Date.now() + 1000 : result.nextDueAt;
     },
     hasPending: async () => false,
     nextRunAt: () => next,

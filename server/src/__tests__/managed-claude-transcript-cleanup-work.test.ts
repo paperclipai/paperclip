@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import {
-  MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS,
   registerManagedClaudeTranscriptCleanupWork,
   retainManagedClaudeTranscripts,
   type ManagedClaudeTranscriptExpirationResult,
@@ -77,33 +76,6 @@ describe("registerManagedClaudeTranscriptCleanupWork", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(tick).toHaveBeenCalledTimes(2);
     expect(c.nextWakeAt()).toBeNull();
-  });
-
-  it("retries soon after a failed directory instead of an absent or distant deadline", async () => {
-    vi.useFakeTimers();
-    const startedAt = Date.now();
-    const tick = vi.fn()
-      .mockResolvedValueOnce(result({ failed: 1 }))
-      .mockResolvedValueOnce(result());
-    const c = coordinator();
-    registerManagedClaudeTranscriptCleanupWork(c, { tick }, vi.fn());
-    await vi.advanceTimersByTimeAsync(1);
-    expect(tick).toHaveBeenCalledTimes(1);
-    expect(c.nextWakeAt()).toBe(startedAt + MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS);
-    await vi.advanceTimersByTimeAsync(MANAGED_CLAUDE_TRANSCRIPT_CLEANUP_RETRY_MS - 2);
-    expect(tick).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(2);
-    expect(tick).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps a real deadline that is sooner than the failed-directory retry", async () => {
-    vi.useFakeTimers();
-    const soonDue = Date.now() + 10_000;
-    const tick = vi.fn(async () => result({ failed: 1, nextDueAt: soonDue }));
-    const c = coordinator();
-    registerManagedClaudeTranscriptCleanupWork(c, { tick }, vi.fn());
-    await vi.advanceTimersByTimeAsync(1);
-    expect(c.nextWakeAt()).toBe(soonDue);
   });
 
   it("keeps a wake that arrives while a pass is still in flight", async () => {

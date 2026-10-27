@@ -717,11 +717,13 @@ when all of these hold:
 - no run of the agent for that issue is queued, running, or unfinished. For a task
   that is not an issue, no run of the agent at all may be live.
 
-It checks at most 200 directories per batch, starting at server readiness, and
-computes the earliest time any remaining retained scope actually becomes due
-(last used plus the retention window) as its next deadline. With nothing retained,
-or retention off, no deadline is scheduled and the worker stays idle; a run that
-retains a new scope while it is idle wakes it directly. In one transaction it locks
+It runs at server readiness, also when retention is off, so directories kept while
+it was on still expire. It checks at most 200 directories per batch and schedules
+its next pass for the earliest of: when a directory becomes due (last used plus the
+retention window), when a recently closed issue's window ends, one day later while
+a directory is held back by an open issue or a live run, and one hour later after a
+failed deletion. With no transcript directories left, no deadline is scheduled and
+the worker stays idle; a run that retains a new scope wakes it directly. In one transaction it locks
 and checks the issue, renames the directory to `.retiring-<scope>.<UUID>`, checks the
 runs again, and removes the agent's `claude_local` task session for the task, so a
 reopened issue starts a fresh session. The session is kept when another transcript
