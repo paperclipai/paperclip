@@ -1,11 +1,17 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { nativeRunnerCheckpointWriter } from "../native-runtime/native-runner-checkpoint.js";
+import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { readUpgradeReadiness, summarizeUpgradeReadiness } from "./upgrade-readiness.js";
 const idle = { activeRuns: 0, pendingWakes: 0, draining: false };
 const report = (patch: Partial<Parameters<typeof summarizeUpgradeReadiness>[0]> = {}) =>
@@ -44,25 +50,55 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
       await applyPendingMigrations(externalUrl);
       database = { connectionString: externalUrl, cleanup: async () => {} };
     } else database = await startEmbeddedPostgresTestDatabase("paperclip-upgrade-readiness-");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); });
   it("requires a bound checkpoint and current owner rather than a native label or live process alone", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const owner = await currentNativeControllerIdentity();
     await db.insert(companies).values({ id: companyId, name: "Upgrade", issuePrefix: `U${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Upgrade", role: "engineer", adapterType: "paperclip_runner" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Synthetic upgrade", status: "in_progress", assigneeAgentId: agentId });
-    const execution = { runtimeMode: "native", runnerInstanceId: randomUUID(), nativeSessionId: randomUUID(), processPid: process.pid, processStartedAt: new Date() };
+    const workspace = { schema: "paperclip.native-workspace-sync/v1", state: "prepared",
+      descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), workspaceId: randomUUID(),
+      leaseId: randomUUID(), providerLeaseId: "synthetic-sandbox", remoteCwd: "/workspace" };
+    const execution = { runnerProfileJson: { nativeWorkspaceSync: workspace }, runtimeMode: "native", runnerInstanceId: randomUUID(), nativeSessionId: randomUUID(), processPid: process.pid, processStartedAt: new Date() };
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, nativeIssueId: issueId, status: "running", ...execution });
     const lease = { controllerBootId: owner.bootId, leaseOwner: "current-lease", controllerGeneration: 1, leaseExpiresAt: new Date(Date.now() + 60_000) };
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "observed", ...lease });
     const input = { activeRunIds: new Set([runId]), counters: () => ({ ...idle, activeRuns: 1 }) };
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
-    // Only the existing journal's metadata is inspected; no checkpoint decoding belongs to this report.
-    await db.insert(nativeRunnerCheckpoints).values({ runId, companyId, issueId, part: "header", material: {} });
+    const binding = { runId, companyId, issueId };
+    await db.insert(nativeRunnerCheckpoints).values({ ...binding, part: "header", material: {} });
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
+    const root = await mkdtemp(join(tmpdir(), "upgrade-checkpoint-"));
+    const core = new DurablePrpControlPlane({ stateDirectory: root,
+      identity: { runId, runnerInstanceId: execution.runnerInstanceId, normalizedSessionId: execution.nativeSessionId,
+        environmentLeaseId: workspace.leaseId, turnId: "turn", itemId: "item" },
+      expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    let header = "";
+    const writer = nativeRunnerCheckpointWriter(db, { ...binding, ...lease, bootId: owner.bootId,
+      authorityRunId: runId, generation: lease.controllerGeneration });
+    core.setCheckpointPersistence(async checkpoint => {
+      header = checkpoint.records.get("header")!;
+      await writer(checkpoint);
+    });
+    try { core.issueBootstrapTicket(); await core.flushCheckpoint(); }
+    finally { await core.stop(); await rm(root, { recursive: true, force: true }); }
     expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, recoverableRuns: 1 });
-    for (const patch of [{ runtimeMode: "legacy" }, { runnerInstanceId: null }, { nativeSessionId: null }, { processPid: null }, { processStartedAt: null }]) {
+    const cipher = createLocalEncryptedCipher("write");
+    for (const contents of ["{", "{}", JSON.stringify({ ...JSON.parse(header), schema: "paperclip.runner.controller-checkpoint.v1" }),
+      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(100_000) }),
+      JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state, identity: { ...JSON.parse(header).state.identity, runId: randomUUID() } } })]) {
+      await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents })) })
+        .where(eq(nativeRunnerCheckpoints.runId, runId));
+      expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
+    }
+    await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: header })) })
+      .where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
+    for (const patch of [{ runnerProfileJson: {} }, { runnerProfileJson: { nativeWorkspaceSync: {} } }, { runtimeMode: "legacy" }, { runnerInstanceId: null }, { nativeSessionId: null }, { processPid: null }, { processStartedAt: null }]) {
       await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, runId));
       expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
       await db.update(heartbeatRuns).set(execution).where(eq(heartbeatRuns.id, runId));
@@ -80,4 +116,28 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // the in-flight local tail is still unknown
     expect(await readUpgradeReadiness(db, { activeRunIds: new Set(), counters: () => idle })).toMatchObject({ ready: true, activeRuns: 0 });
   });
+  it("cancels a locked probe within its SQL budget and releases its connection", async () => {
+    const probeDb = createDb(database.connectionString, { maxConnections: 1 });
+    const lock = await db.$client.reserve();
+    try {
+      await lock.unsafe("begin");
+      await lock.unsafe("lock table native_runner_checkpoints in access exclusive mode");
+      const started = performance.now();
+      const result = readUpgradeReadiness(probeDb, { activeRunIds: new Set(), counters: () => idle })
+        .then(() => null, error => error);
+      const unrelatedStarted = performance.now();
+      expect(await db.execute(sql`select 1 as value`)).toMatchObject([{ value: 1 }]);
+      expect(performance.now() - unrelatedStarted).toBeLessThan(1_000);
+      const failure = await result;
+      expect(failure?.cause?.code ?? failure?.code).toBe("57014");
+      expect(performance.now() - started).toBeGreaterThanOrEqual(1_800);
+      expect(performance.now() - started).toBeLessThan(5_000);
+      // maxConnections=1 means this cannot pass if the cancelled transaction keeps its connection.
+      expect(await probeDb.execute(sql`show statement_timeout`)).toMatchObject([{ statement_timeout: "0" }]);
+      expect(await probeDb.execute(sql`select 1 as value`)).toMatchObject([{ value: 1 }]);
+    } finally {
+      await lock.unsafe("rollback"); lock.release(); await probeDb.$client.end();
+    }
+  });
+
 });

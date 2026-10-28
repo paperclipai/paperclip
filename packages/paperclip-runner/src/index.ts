@@ -40,6 +40,7 @@ export {
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
   decodeDurablePrpCheckpoint,
+  inspectDurablePrpCheckpointHeader,
   type PrpWireConnection,
   type PrpWireAttachment,
   type TransportCloseReason,

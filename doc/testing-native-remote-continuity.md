@@ -90,13 +90,17 @@ server cannot accept new HTTP requests during that interval.
 
 Cloud operators can read `GET /api/instance/task-drain?upgradeReadiness=1`
 with existing instance-control authority. The version 1 `upgradeReadiness` report
-counts current executions with a bound recovery journal and a live owner lease.
+counts current remote executions with a bound current-format encrypted header and a live owner lease.
+The checkpoint owner authenticates/decrypts that header and delegates version and identity
+inspection to Runner; the identity must match the run, session, runner and sandbox lease.
 Legacy/local executions, missing identities/checkpoints, foreign/expired owners,
 in-flight admission, and an incomplete census prevent a positive report. It
 returns aggregate counts only. The request does not stop admission, detach a
 runner, or authorize new work. Ordinary drain reads do not perform this SQL.
 The explicit probe uses a read-only transaction, a two-second statement timeout,
-and at most 1,001 run rows. This is an observation; the existing shutdown and
+and at most 1,001 run rows. Header reads are capped at 64 KiB each and 2 MiB total;
+oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
+This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.
 A positive report alone does not prove hosted upgrade continuity.
 
