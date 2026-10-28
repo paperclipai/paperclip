@@ -414,3 +414,33 @@ are stale after this normal merge. A stopped or paused Ponytail turn without a
 verdict does not block under the user's authorization; an actual failing
 verdict must be fixed. No new full local repository suite, live-provider test,
 Cloud wake, host/database suspension, or cost-saving result is claimed.
+
+
+## Review documentation and preserved remote timeout — October 28
+
+Ponytail reviewed `c28de398` at 4/5 advisory, found no must-fix production defect,
+and said to ship after correcting the design document's stale migration
+reference. The design document now links the current 185-case acceptance and
+migration `0397_known_madrox.sql`; the older 302/303-case paragraphs are marked
+historical. Its two remaining suggestions are explicitly optional: one-shot
+diagnostic `reconcile(limit)` still inventories the whole eligible window before
+slicing, and some existing test helpers advance fake time during assertion
+retries. They are not silently claimed fixed or treated as current idle polling.
+
+CI run `40703490340`, server shard 8/12 job `122869422044`, failed one unchanged
+approval-queue test: `resets consecutive failure backoff after a successful batch
+with remaining debt` exceeded its existing 15-second timeout. Teardown then
+reported a company foreign-key violation from activity-log work. The shard had
+2,097 passed tests, one failed and one skipped. No report assertion failed in
+that job, and the exact CI timing cause is not proven. The complete unchanged
+28-case approval-queue suite passes on a new isolated PostgreSQL database. Its
+test, worker, coordinator and transaction-signals source were checked byte-for-
+byte against `c28de398` before that probe, which ran from the local child checkout.
+No timeout, workflow, approval logic or production source was changed. The old
+CI failure remains recorded and the new documentation head requires fresh CI;
+no blind rerun of the failed old job or waiver is claimed.
+
+Evidence: `/tmp/sleep25-c28-server8-job.log`,
+`/tmp/sleep25-approval-timeout-local-probe.log` and its exit status 0. The 28 cases
+are a separate investigation result, not added to the 185-case report acceptance.
+Prior-head review scores are stale after this documentation commit.

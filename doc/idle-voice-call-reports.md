@@ -86,14 +86,23 @@ The audit and evidence ledger is
 [voice call-report scheduling](plans/2026-10-25-voice-call-report-sleep-audit.md).
 
 
-The [current-parent acceptance](plans/2026-10-25-voice-call-report-sleep-audit.md#current-parent-reconstruction-and-migration-acceptance-october-28)
-records 302 distinct passing cases, the bounded startup and same-owner restart
+The [historical parent acceptance](plans/2026-10-25-voice-call-report-sleep-audit.md#current-parent-reconstruction-and-migration-acceptance-october-28)
+records the earlier 302 distinct passing cases, the bounded startup and same-owner restart
 regressions, deterministic company fairness, generated migration 0396 and the
 preserved failures. The report owner keeps its finite provider refresh obligation;
 this is not an unconditional idle scan or proof of deployed suspension.
 
 
 The subsequent [configuration-scope repair](plans/2026-10-25-voice-call-report-sleep-audit.md#configuration-scope-review-repair-october-28)
-records the current 303-case acceptance. Five real connection saves over 205 saved
+records the earlier 303-case acceptance at `9bf20467df`. Five real connection saves over 205 saved
 reports select zero session rows, after reproducing 1,025 selected rows before
 the repair. The notification helper accepts only an exact session scope.
+
+
+The [landed-master acceptance](plans/2026-10-25-voice-call-report-sleep-audit.md#landed-master-migration-and-acceptance-october-28)
+records the current 185-case acceptance and generated migration
+`0397_known_madrox.sql`, after landed cleanup migration 0396. It preserves all
+existing SQL and journal entries, retains snapshots 0393 through 0397, and checks
+fresh application migration plus concurrent replay and invalid-index recovery.
+The older 302/303-case sections above are historical evidence, not the current
+migration filename or a claim that those full groups were rerun on this head.
