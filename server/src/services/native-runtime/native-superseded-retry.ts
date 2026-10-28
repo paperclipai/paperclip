@@ -5,9 +5,6 @@ import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 
-/** Caller holds the task, coordinator and run locks. A completed explicit Retry
- * supersedes provider replay, but never proves that the old files were saved or
- * its sandbox stopped. Hand those obligations to the existing preservation owner. */
 export async function retireSupersededNativeRetry(db: Db, input: {
   run: typeof heartbeatRuns.$inferSelect;
   coordinator: typeof nativeRunFinalizations.$inferSelect;

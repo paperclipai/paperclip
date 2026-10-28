@@ -1376,7 +1376,8 @@ and the exact prepared source lease. They atomically register file preservation
 without replaying provider work or changing the current task. A live owner,
 recorded process or mismatched source remains held. Retirement does not prove
 termination or saved files; the existing stop-and-save worker must establish both
-before workspace selection can proceed.
+before workspace selection can proceed. Both callers hold the task, coordinator
+and source-run locks throughout retirement and preservation registration.
 
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
