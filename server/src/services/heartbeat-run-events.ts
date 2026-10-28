@@ -42,6 +42,13 @@ export class HeartbeatRunEventConflictError extends Error {
   }
 }
 
+// Preserve reserved sequences and retained history when an older writer left
+// the cursor behind. Supported writers serialize on the run row.
+const nextSequence = sql`greatest(${heartbeatRuns.nextEventSeq}, coalesce((
+  select max(${heartbeatRunEvents.seq}) + 1 from ${heartbeatRunEvents}
+  where ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+), 1)) + 1`;
+
 /**
  * Atomically reserve the next event sequence on the run row. Both native PRP
  * ingestion and legacy/direct-adapter writers use this allocator so the
@@ -55,7 +62,7 @@ export async function allocateHeartbeatRunEventSeq(
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
-      nextEventSeq: sql`${heartbeatRuns.nextEventSeq} + 1`,
+      nextEventSeq: nextSequence,
       updatedAt: new Date(),
     })
     .where(eq(heartbeatRuns.id, runId))
@@ -71,7 +78,7 @@ export async function appendHeartbeatRunEvent(
   if (!input.nativeSource && !input.retryExhaustion) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
-      set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
+      set next_event_seq = ${nextSequence},
           updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
       where ${heartbeatRuns.id} = ${input.runId}
         and ${heartbeatRuns.companyId} = ${input.companyId}

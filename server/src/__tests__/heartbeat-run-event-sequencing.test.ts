@@ -5,6 +5,8 @@ import {
   agents,
   companies,
   createDb,
+  completionContracts,
+  issues,
   heartbeatRunEvents,
   heartbeatRuns,
 } from "@paperclipai/db";
@@ -13,9 +15,193 @@ import {
   appendHeartbeatRunEvent,
   HeartbeatRunEventConflictError,
 } from "../services/heartbeat-run-events.js";
+import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
+import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 describe("P6-11..13 / P6-17 canonical event allocator", () => {
+  it("reconciles the fast append path with retained history under concurrency", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-fast-cursor-");
+    const db = createDb(temporary.connectionString);
+    const companyId = "20000000-0000-4000-8000-000000000001";
+    const agentId = "20000000-0000-4000-8000-000000000002";
+    const runId = "20000000-0000-4000-8000-000000000003";
+    try {
+      await db.insert(companies).values({ id: companyId, name: "Fast cursor", issuePrefix: "FST" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Agent" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", nextEventSeq: 1 });
+      const [original] = await db.insert(heartbeatRunEvents).values({
+        companyId, agentId, runId, seq: 100, eventType: "stdout", message: "retained",
+      }).returning();
+      const writes = await Promise.all(Array.from({ length: 16 }, () =>
+        appendHeartbeatRunEvent(db, { companyId, agentId, runId, eventType: "stdout" })));
+      expect(writes.map((result) => result.row.seq).sort((a, b) => a - b))
+        .toEqual(Array.from({ length: 16 }, (_, index) => index + 101));
+      expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, original!.id)))[0])
+        .toEqual(original);
+      await db.update(heartbeatRuns).set({ nextEventSeq: 500 }).where(eq(heartbeatRuns.id, runId));
+      expect((await appendHeartbeatRunEvent(db, { companyId, agentId, runId, eventType: "stdout" })).row.seq).toBe(500);
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
+
+  it("preserves historical events and an ahead cursor across concurrent legacy writers", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-legacy-cursor-");
+    const db = createDb(temporary.connectionString);
+    const companyId = "20000000-0000-4000-8000-000000000001";
+    const agentId = "20000000-0000-4000-8000-000000000002";
+    const runId = "20000000-0000-4000-8000-000000000003";
+    try {
+      await db.insert(companies).values({ id: companyId, name: "Legacy cursor", issuePrefix: "LGC" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Legacy agent" });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", nextEventSeq: 1 });
+      await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq: 100, eventType: "stdout", message: "retained receipt", payload: { retained: true } });
+      const original = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId)))[0]!;
+      const sequences = await Promise.all(Array.from({ length: 16 }, async () => {
+        const seq = await allocateHeartbeatRunEventSeq(db, runId);
+        await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId, seq, eventType: "stdout" });
+        return seq;
+      }));
+      expect(sequences.sort((a, b) => a - b)).toEqual(Array.from({ length: 16 }, (_, i) => i + 101));
+      expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, original.id)))[0]).toEqual(original);
+      await db.update(heartbeatRuns).set({ nextEventSeq: 500 }).where(eq(heartbeatRuns.id, runId));
+      expect(await allocateHeartbeatRunEventSeq(db, runId)).toBe(500);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.nextEventSeq).toBe(501);
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
+
+  it("allocates actual native appends after retained history and serializes mixed writers", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-mixed-cursor-");
+    const db = createDb(temporary.connectionString);
+    const companyId = "20000000-0000-4000-8000-000000000001";
+    const agentId = "20000000-0000-4000-8000-000000000002";
+    const runId = "20000000-0000-4000-8000-000000000003";
+    const issueId = "20000000-0000-4000-8000-000000000004";
+    const contractId = "20000000-0000-4000-8000-000000000005";
+    const sessionId = "20000000-0000-4000-8000-000000000006";
+    const runnerId = "20000000-0000-4000-8000-000000000007";
+    const contractSha = `sha256:${"c".repeat(64)}`;
+    const nativeStore = new NativeRunCoordinatorStore(db, {
+      companyId,
+      issueId,
+      runId,
+      agentId,
+      normalizedSessionId: sessionId,
+      runnerSourceInstanceId: runnerId,
+      completionContractId: contractId,
+      completionContractSha256: contractSha,
+      completionContractRevision: "sequence-v1",
+      completionContractCriterionIds: ["objective"],
+    });
+    const nativeEvent = (sourceSeq: number): PrpEvent => ({
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: `${runnerId}:${sourceSeq}`,
+      sourceSeq,
+      sourceInstanceId: runnerId,
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: sessionId,
+      turnId: "sequence-turn",
+      itemId: `item-${sourceSeq}`,
+      eventType: "item.delta",
+      schemaVersion: 1,
+      priority: 1,
+      emittedAt: new Date().toISOString(),
+      payload: { itemId: `item-${sourceSeq}`, kind: "commandExecution", text: `native-${sourceSeq}` },
+    });
+    try {
+      await db.insert(companies).values({ id: companyId, name: "Mixed cursor", issuePrefix: "MIX" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Native agent" });
+      await db.insert(issues).values({
+        id: issueId, companyId, title: "Native sequence", status: "in_progress",
+        assigneeAgentId: agentId, workMode: "standard",
+      });
+      await db.insert(completionContracts).values({
+        id: contractId,
+        companyId,
+        issueId,
+        revision: 1,
+        schemaVersion: "paperclip.completion-contract.v1",
+        policyVersion: "sequence-v1",
+        risk: "standard",
+        completionAuthority: "server_arbiter",
+        incompleteCriteriaPolicy: "preserve_non_terminal",
+        contractJson: {
+          revision: "sequence-v1",
+          objective: "Keep native and legacy sequences unique",
+          criteria: [{ id: "objective", requirement: "Append events" }],
+        },
+        canonicalSha256: contractSha,
+        createdByActorType: "system",
+        createdByActorId: "test",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+        nextEventSeq: 1,
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        nativeSessionId: sessionId,
+        runnerInstanceId: runnerId,
+        completionContractId: contractId,
+        completionContractSha256: contractSha,
+      });
+      await db.insert(heartbeatRunEvents).values({
+        companyId, agentId, runId, seq: 100, eventType: "stdout",
+        message: "historical payload", payload: { retained: true, original: "unchanged" },
+      });
+      const original = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId)))[0]!;
+
+      // Prove the native allocator reconciles stale state on its own: no
+      // legacy writer has had a chance to repair the cursor yet.
+      await expect(nativeStore.appendEvent(nativeEvent(1))).resolves.toMatchObject({
+        disposition: "committed", cursor: 101, highestContiguousSourceSeq: 1,
+      });
+      expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, original.id)))[0])
+        .toEqual(original);
+
+      const legacyWrites = Array.from({ length: 16 }, async (_, index) => {
+        if (index % 2 === 0) {
+          const result = await appendHeartbeatRunEvent(db, {
+            companyId, agentId, runId, eventType: "stdout", message: `fast-${index}`,
+          });
+          return result.row.seq;
+        }
+        const seq = await allocateHeartbeatRunEventSeq(db, runId);
+        await db.insert(heartbeatRunEvents).values({
+          companyId, agentId, runId, seq, eventType: "stdout", message: `legacy-${index}`,
+        });
+        return seq;
+      });
+      const [nativeReceipt, legacySequences] = await Promise.all([
+        nativeStore.appendEvent(nativeEvent(2)),
+        Promise.all(legacyWrites),
+      ]);
+      expect(nativeReceipt).toMatchObject({ disposition: "committed", cursor: expect.any(Number) });
+      const allocated = [...legacySequences, nativeReceipt.cursor].sort((a, b) => a - b);
+      expect(allocated).toEqual(Array.from({ length: 17 }, (_, index) => index + 102));
+      expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, original.id)))[0])
+        .toEqual(original);
+
+      // A cursor ahead of history is also authoritative for the next native append.
+      await db.update(heartbeatRuns).set({ nextEventSeq: 500 }).where(eq(heartbeatRuns.id, runId));
+      await expect(nativeStore.appendEvent(nativeEvent(3))).resolves.toMatchObject({
+        disposition: "committed", cursor: 500, highestContiguousSourceSeq: 3,
+      });
+      expect((await db.select({ nextEventSeq: heartbeatRuns.nextEventSeq }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId)))[0]?.nextEventSeq).toBe(501);
+      expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.id, original.id)))[0])
+        .toEqual(original);
+    } finally {
+      await temporary.cleanup();
+    }
+  }, 60_000);
+
   it("keeps native cursor responses bounded with long histories and a late gap fill", async () => {
     const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-cursor-budget-");
     const db = createDb(temporary.connectionString);
