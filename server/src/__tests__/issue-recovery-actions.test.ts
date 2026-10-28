@@ -20,11 +20,14 @@ import {
   chatConversations,
   chatEndpoints,
   companies,
+  companyMemberships,
+  companySkills,
   createDb,
   documentRevisions,
   documents,
   environmentLeases,
   environments,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -3219,6 +3222,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     afterEach(async () => {
       for (const spy of killSpies.splice(0)) spy.mockRestore();
+      await db.delete(heartbeatRunEvents);
+      await db.delete(companyMemberships);
+      await db.delete(companySkills);
       await db.delete(chatConversations);
       await db.delete(chatEndpoints);
       await db.delete(toolConnections);
@@ -3449,6 +3455,51 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       expect(wakes[0]!.agentId).toBe(fixture.reviewerId);
       expect((await snapshot(fixture)).issue.executionState).toEqual(fixture.executionState);
     });
+
+    it("starts the reviewer again on the same pending review stage once its run slot frees up", async () => {
+      const fixture = await seedPreStartCancelledReview();
+      await db.update(agents).set({
+        adapterType: "process",
+        adapterConfig: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+      }).where(eq(agents.id, fixture.reviewerId));
+      const [company] = await db.select().from(companies).where(eq(companies.id, fixture.companyId));
+      await db.insert(companyMemberships).values({
+        companyId: fixture.companyId,
+        principalType: "user",
+        principalId: company!.defaultResponsibleUserId!,
+        membershipRole: "operator",
+        status: "active",
+      });
+      await request(fixture.app)
+        .post(`/api/issues/${fixture.issueA}/recovery-actions/resolve`)
+        .send(resolveBody(fixture))
+        .expect(200);
+
+      const slotRunId = randomUUID();
+      await seedHeartbeatRun({ companyId: fixture.companyId, agentId: fixture.reviewerId, runId: slotRunId, status: "running" });
+      const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      const [wake] = await db.select().from(agentWakeupRequests).where(
+        eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${fixture.action1.id}`),
+      );
+      expect(wake).toMatchObject({ agentId: fixture.reviewerId, status: "queued" });
+      const continuationRunId = wake!.runId!;
+      const [queued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuationRunId));
+      expect(queued).toMatchObject({ agentId: fixture.reviewerId, status: "queued", startedAt: null });
+      expect(queued!.contextSnapshot).toMatchObject({ issueId: fixture.issueA });
+
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, slotRunId));
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+
+      const [started] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuationRunId));
+      expect(started!.startedAt).not.toBeNull();
+      expect(started!.status).not.toBe("queued");
+      const [issueAfter] = await db.select().from(issues).where(eq(issues.id, fixture.issueA));
+      expect(issueAfter!.status).toBe("in_review");
+      expect(issueAfter!.executionState).toEqual(fixture.executionState);
+    }, 20_000);
 
     function stubProcessKill(code: string) {
       const spy = vi.spyOn(process, "kill").mockImplementation((() => {
