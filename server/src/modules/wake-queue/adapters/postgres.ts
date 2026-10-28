@@ -28,6 +28,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { activeIssueInteractionCondition } from "../../../services/issue-question-context.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -592,6 +593,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               "wake_assignee",
               "wake_assignee_on_accept",
             ]),
+            activeIssueInteractionCondition({ runId: run.id }),
           ),
         )
         .limit(1)
