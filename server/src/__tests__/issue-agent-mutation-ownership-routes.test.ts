@@ -43,6 +43,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   decide: vi.fn(),
+  decideProjectForIssueCreate: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -573,6 +574,14 @@ describe("agent issue mutation checkout ownership", () => {
           ? "Allowed by test default."
           : "Missing permission.",
     }));
+    mockAccessService.decideProjectForIssueCreate.mockReset();
+    mockAccessService.decideProjectForIssueCreate.mockImplementation(
+      (input: { actor: unknown; companyId: string; projectId: string }) => mockAccessService.decide({
+        actor: input.actor,
+        action: "project:read",
+        resource: { type: "project", companyId: input.companyId, projectId: input.projectId },
+      }),
+    );
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
@@ -914,6 +923,17 @@ describe("agent issue mutation checkout ownership", () => {
       return db;
     }
 
+    async function createBridgeApp(actor: Record<string, unknown>, db: ReturnType<typeof dbWithProjectPrivacy>) {
+      const { authorizationService } = await vi.importActual<typeof import("../services/authorization.js")>(
+        "../services/authorization.js",
+      );
+      mockAccessService.decideProjectForIssueCreate.mockImplementation(
+        (input: Parameters<ReturnType<typeof authorizationService>["decideProjectForIssueCreate"]>[0]) =>
+          authorizationService(db as never).decideProjectForIssueCreate(input),
+      );
+      return createApp(actor, db);
+    }
+
     function createInProject(app: Awaited<ReturnType<typeof createApp>>, projectId: string) {
       return request(app)
         .post(`/api/companies/${companyId}/issues`)
@@ -945,7 +965,7 @@ describe("agent issue mutation checkout ownership", () => {
       ["projectId", { projectId: scopedProjectId }],
     ])("creates an issue in a project listed in the key's %s without evaluating project:read", async (_name, keyScope) => {
       const res = await createInProject(
-        await createApp(bridgeActor(keyScope), dbWithProjectPrivacy(true)),
+        await createBridgeApp(bridgeActor(keyScope), dbWithProjectPrivacy(true)),
         scopedProjectId,
       );
 
@@ -982,7 +1002,7 @@ describe("agent issue mutation checkout ownership", () => {
         };
 
         const res = await createInProject(
-          await createApp(actor, dbWithProjectPrivacy(isMember)),
+          await createBridgeApp(actor, dbWithProjectPrivacy(isMember)),
           scopedProjectId,
         );
 
