@@ -513,11 +513,9 @@ const support = await getEmbeddedPostgresTestSupport();
     const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: run.id,
       provider: "ssh", providerLeaseId: "ssh://user@host:22/home/user", status: "expired",
       releasedAt: new Date() }).returning();
-    // The local SSH client of the run is still alive.
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
     await db.update(heartbeatRuns).set({ processPid: 2_000_000_000 }).where(eq(heartbeatRuns.id, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
-    // A failed cleanup still blocks, as before.
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, lease.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
   });

@@ -13,7 +13,6 @@ function absent(pid: number) {
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
 
-/** The run's recorded local process or process group still exists; a PID reused by another process does not count. */
 async function localProcessAlive(run: RunProcess) {
   let processAlive = Boolean(run.processPid && !absent(run.processPid));
   let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
@@ -59,8 +58,6 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
     const runLeases = leases.filter(lease => lease.heartbeatRunId === run.id);
     if (runLeases.some(lease => lease.provider && lease.provider !== "local")) {
-      // The SSH driver writes no termination receipt (#16346). A released SSH lease whose run has no
-      // live local process keeps the proof that applied before receipts were required.
       if (run.status === "cancelled" && !runLeases.every(hasRemoteTerminationReceipt) &&
           !(runLeases.every(lease => hasRemoteTerminationReceipt(lease) || isReleasedSshLease(lease)) &&
             !await localProcessAlive(run))) return false;
