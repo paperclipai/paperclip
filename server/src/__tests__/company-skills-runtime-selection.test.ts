@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, companySkillSources, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, projectAccessMembers, projects, projectSkillSources } from "@paperclipai/db";
+import { agents, companies, companyMemberships, companySkillSources, companySkills, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, projectAccessMembers, projects, projectSkillSources } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { PAPERCLIP_FEEDBACK_SKILL_KEYS, PAPERCLIP_OPERATIONAL_SKILL_KEY } from "@paperclipai/adapter-utils/server-utils";
 import { companySkillService } from "../services/company-skills.js";
@@ -81,6 +81,21 @@ describeDatabase("selected runtime skill reconciliation", () => {
       expect(insert).not.toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
     } finally { insert.mockRestore(); update.mockRestore(); }
+  });
+
+  it("refreshes selected bundled paths after an installation moves even when the old directory remains", async () => {
+    const service=companySkillService(db);
+    const initial=await service.listRuntimeSkillEntries(companyId,{includeLegacy:true,snapshotLatest:true});
+    const selected=initial[0]!;
+    const old=path.join(home,"previous-installation","skill");
+    await fs.mkdir(old,{recursive:true});
+    await fs.writeFile(path.join(old,"SKILL.md"),"Old installation content");
+    await db.update(companySkills).set({sourceLocator:old}).where(and(eq(companySkills.companyId,companyId),eq(companySkills.key,selected.key)));
+    const current=await service.listRuntimeSkillEntries(companyId,{onlyKeys:new Set([selected.key]),snapshotLatest:true});
+    expect(await fs.readFile(path.join(current[0]!.source,"SKILL.md"),"utf8")).toBe(await fs.readFile(path.join(selected.source,"SKILL.md"),"utf8"));
+    const [row]=await db.select().from(companySkills).where(and(eq(companySkills.companyId,companyId),eq(companySkills.key,selected.key)));
+    expect(row!.sourceLocator).not.toBe(old);
+    expect(await fs.readFile(path.join(old,"SKILL.md"),"utf8")).toBe("Old installation content");
   });
 
   it("bounds project-source authorization work without caching changed permissions", async () => {
