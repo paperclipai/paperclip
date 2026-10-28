@@ -15346,11 +15346,51 @@ export function issueRoutes(
           }
         }
       }
+      // The monitor merge below copies the live monitor from the unlocked read at the
+      // top of this route. If that row changed before the service takes its row lock
+      // — the monitor fired, was cleared, or was replaced — writing the merged policy
+      // back would resurrect a stale schedule. Guard the write with the same snapshot
+      // mechanism the API exposes: the service compares the policy under the row lock
+      // and returns 409 `execution_policy_changed` when it changed in the meantime.
+      let monitorMergeSnapshot: typeof existing.executionPolicy | undefined;
       if (req.body.executionPolicy !== undefined) {
-        updateFields.executionPolicy = applyActorMonitorScheduledBy(
-          normalizeIssueExecutionPolicy(req.body.executionPolicy),
+        const incomingPolicyBody: unknown = req.body.executionPolicy;
+        const normalizedIncomingPolicy = applyActorMonitorScheduledBy(
+          normalizeIssueExecutionPolicy(incomingPolicyBody),
           actor.actorType,
         );
+        // An `executionPolicy` body that omits the `monitor` key is a partial policy write,
+        // not a request to disarm the issue. Only an explicit `monitor: null` clears a
+        // schedule (an explicit `executionPolicy: null` still clears the whole policy).
+        // Omission has to preserve the live monitor because callers routinely round-trip a
+        // stale snapshot — the monitor-fire path strips `monitor` from the policy it
+        // snapshots into the woken run's context, and writing that snapshot back after the
+        // assignee re-armed the monitor used to null `monitorNextCheckAt` silently.
+        const incomingIsPolicyObject =
+          typeof incomingPolicyBody === "object" && incomingPolicyBody !== null;
+        const incomingBodyOwnsMonitorKey =
+          incomingIsPolicyObject &&
+          Object.prototype.hasOwnProperty.call(incomingPolicyBody, "monitor");
+        const existingMonitor =
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null)?.monitor ?? null;
+        const incomingIsPartialPolicyBody = incomingIsPolicyObject && !incomingBodyOwnsMonitorKey;
+        // Re-normalize with the live monitor attached so the stored policy keeps its
+        // full normalized shape (`mode`, `commentRequired`, `stages`) instead of becoming
+        // a monitor-only fragment; the untouched existing monitor keeps its own
+        // `scheduledBy`/`notes` ownership metadata.
+        const mergedIncomingPolicy = incomingIsPartialPolicyBody
+          ? normalizeIssueExecutionPolicy({
+            ...(incomingPolicyBody as Record<string, unknown>),
+            monitor: existingMonitor,
+          })
+          : null;
+        updateFields.executionPolicy =
+          existingMonitor && incomingIsPartialPolicyBody
+            ? mergedIncomingPolicy
+            : normalizedIncomingPolicy;
+        if (existingMonitor && incomingIsPartialPolicyBody) {
+          monitorMergeSnapshot = existing.executionPolicy ?? null;
+        }
       }
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
@@ -15832,7 +15872,7 @@ export function issueRoutes(
         ...(updateFields.parentId !== undefined ? { parentDepthPolicy } : {}),
         ...(expectedParentId !== undefined ? { expectedParentId } : {}),
         workspaceSelectionActor: req.actor,
-        expectedExecutionPolicy,
+        expectedExecutionPolicy: expectedExecutionPolicy ?? monitorMergeSnapshot,
         expectedStatusVersion,
         ...(checkedExecutionLock ? { expectedExecutionLock: checkedExecutionLock } : {}),
         actorAgentId: actor.agentId ?? null,

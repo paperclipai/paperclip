@@ -1866,6 +1866,25 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  function armedMonitorIssue(
+    policy: IssueExecutionPolicy,
+    overrides: Record<string, unknown> = {},
+  ) {
+    return {
+      status: "in_progress",
+      assigneeAgentId: coderAgentId,
+      assigneeUserId: null,
+      executionPolicy: policy,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date(policy.monitor?.nextCheckAt ?? "2026-04-11T12:30:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: policy.monitor?.notes ?? null,
+      monitorScheduledBy: policy.monitor?.scheduledBy ?? null,
+      ...overrides,
+    };
+  }
+
   describe("monitor policy", () => {
     it("schedules a one-shot monitor on an active agent-owned issue", () => {
       const policy = normalizeIssueExecutionPolicy({
@@ -1995,6 +2014,124 @@ describe("issue execution policy transitions", () => {
           monitorExplicitlyUpdated: true,
         }),
       ).toThrow("Monitor can only be scheduled");
+    });
+
+    it("keeps a re-armed monitor armed when a stale monitor-less policy is written back", () => {
+      const armedPolicy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Check deployment",
+          scheduledBy: "assignee",
+        },
+      })!;
+      // The policy a woken run sees after its monitor fired: same review stages, monitor
+      // stripped. Round-tripping it after re-arming must not disarm the new schedule.
+      const staleSnapshot = stripMonitorFromExecutionPolicy(armedPolicy);
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: armedMonitorIssue(armedPolicy),
+        policy: staleSnapshot,
+        previousPolicy: armedPolicy,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2026-04-11T12:30:00.000Z"));
+      expect(result.patch.monitorWakeRequestedAt).toBeUndefined();
+      expect((result.patch.executionPolicy as IssueExecutionPolicy).monitor?.nextCheckAt).toBe(
+        "2026-04-11T12:30:00.000Z",
+      );
+      expect(result.patch.executionState).toBeUndefined();
+    });
+
+    it("keeps the review stages of a stale write while preserving the live monitor", () => {
+      const armedPolicy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "assignee" },
+      })!;
+      const staleSnapshotWithReview = normalizeIssueExecutionPolicy({
+        stages: [{ type: "approval", participants: [{ type: "user", userId: ctoUserId }] }],
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: armedMonitorIssue(armedPolicy),
+        policy: staleSnapshotWithReview,
+        previousPolicy: armedPolicy,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      const storedPolicy = result.patch.executionPolicy as IssueExecutionPolicy;
+      expect(storedPolicy.stages.map((stage) => stage.type)).toEqual(["approval"]);
+      expect(storedPolicy.monitor?.nextCheckAt).toBe("2026-04-11T12:30:00.000Z");
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2026-04-11T12:30:00.000Z"));
+    });
+
+    it("clears the monitor when the caller explicitly updates the policy without one", () => {
+      const armedPolicy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "assignee" },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: armedMonitorIssue(armedPolicy),
+        policy: stripMonitorFromExecutionPolicy(armedPolicy),
+        previousPolicy: armedPolicy,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        monitorExplicitlyUpdated: true,
+      });
+
+      expect(result.patch.monitorNextCheckAt).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "manual" },
+      });
+    });
+
+    it("clears the monitor when the issue moves to a monitor-ineligible status without an explicit monitor update", () => {
+      const armedPolicy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z", scheduledBy: "assignee" },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: armedMonitorIssue(armedPolicy),
+        policy: stripMonitorFromExecutionPolicy(armedPolicy),
+        previousPolicy: armedPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.monitorNextCheckAt).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "done" },
+      });
+    });
+
+    it("clears a preserved monitor whose bounds are already exhausted", () => {
+      const armedPolicy = normalizeIssueExecutionPolicy({
+        stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          maxAttempts: 1,
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: armedMonitorIssue(armedPolicy, { monitorAttemptCount: 1 }),
+        policy: stripMonitorFromExecutionPolicy(armedPolicy),
+        previousPolicy: armedPolicy,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.monitorNextCheckAt).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "max_attempts_exhausted" },
+      });
     });
 
     it("rejects explicitly re-arming a monitor after max attempts are exhausted", () => {

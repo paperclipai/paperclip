@@ -1259,6 +1259,148 @@ describe("issue execution policy routes", () => {
     expect(res.body.ok).toBeUndefined();
   });
 
+  function armedMonitorIssueRow(title: string) {
+    const executionPolicy = normalizeIssueExecutionPolicy({
+      stages: [],
+      monitor: {
+        nextCheckAt: "2026-12-01T12:00:00.000Z",
+        notes: "Check the pending deploy",
+        scheduledBy: "assignee",
+      },
+    })!;
+    return {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title,
+      executionPolicy,
+      executionState: null,
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: new Date("2026-12-01T12:00:00.000Z"),
+      monitorLastTriggeredAt: null,
+      monitorNotes: "Check the pending deploy",
+      monitorScheduledBy: "assignee",
+    };
+  }
+
+  function stubIssueUpdate(issue: Record<string, unknown>) {
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+  }
+
+  it("keeps an armed monitor when an executionPolicy body omits the monitor key", async () => {
+    const issue = armedMonitorIssueRow("Stale policy round-trip");
+    mockIssueService.getById.mockResolvedValue(issue);
+    stubIssueUpdate(issue);
+
+    // A woken run re-sending the executionPolicy snapshot from its wake payload: valid
+    // policy body, no `monitor` key, because the fire path stripped it before snapshotting.
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { mode: "normal", commentRequired: true, stages: [] } });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.monitorNextCheckAt).toEqual(new Date("2026-12-01T12:00:00.000Z"));
+    expect((updatePatch.executionPolicy as { monitor?: { nextCheckAt?: string } }).monitor?.nextCheckAt)
+      .toBe("2026-12-01T12:00:00.000Z");
+  });
+
+  it("keeps the monitor scheduledBy owner when a partial policy write preserves it", async () => {
+    const issue = armedMonitorIssueRow("Monitor ownership preserved");
+    mockIssueService.getById.mockResolvedValue(issue);
+    stubIssueUpdate(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "55555555-5555-4555-8555-555555555555",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { mode: "normal", commentRequired: true, stages: [] } });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    const monitor = (updatePatch.executionPolicy as { monitor: { scheduledBy: string; notes: string | null } }).monitor;
+    expect(monitor.scheduledBy).toBe("assignee");
+    expect(monitor.notes).toBe("Check the pending deploy");
+    expect(updatePatch.monitorScheduledBy).toBe("assignee");
+  });
+
+  it("clears an armed monitor when an executionPolicy body explicitly nulls the monitor", async () => {
+    const issue = armedMonitorIssueRow("Explicit monitor clear");
+    mockIssueService.getById.mockResolvedValue(issue);
+    stubIssueUpdate(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: null,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.monitorNextCheckAt).toBeNull();
+    expect(updatePatch.executionPolicy).toBeNull();
+    expect(updatePatch.executionState).toMatchObject({
+      monitor: { status: "cleared", clearReason: "manual" },
+    });
+  });
+
+  it("guards a monitor-preserving partial write with the policy snapshot from the read", async () => {
+    const issue = armedMonitorIssueRow("Stale monitor merge guard");
+    mockIssueService.getById.mockResolvedValue(issue);
+    stubIssueUpdate(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: { mode: "normal", commentRequired: true, stages: [] } });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    // The merged monitor comes from the unlocked read at the top of the route. The
+    // service must compare this snapshot under its row lock and reject the write
+    // with 409 `execution_policy_changed` if the monitor fired, was cleared, or was
+    // replaced in the meantime, instead of resurrecting the stale schedule.
+    expect(updatePatch.expectedExecutionPolicy).toEqual(issue.executionPolicy);
+  });
+
+  it("sends no snapshot guard when the body owns the monitor key", async () => {
+    const issue = armedMonitorIssueRow("Explicit clear needs no guard");
+    mockIssueService.getById.mockResolvedValue(issue);
+    stubIssueUpdate(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          monitor: null,
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    // The caller stated its monitor intent, so nothing was merged from the read and
+    // there is no stale value to guard.
+    expect(updatePatch.expectedExecutionPolicy).toBeUndefined();
+  });
+
   it("lets a board user create a child issue with a scheduled monitor", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

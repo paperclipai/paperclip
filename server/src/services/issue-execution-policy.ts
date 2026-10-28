@@ -1128,16 +1128,41 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
       }
     }
   } else if (previousPolicy?.monitor) {
-    patch.monitorNextCheckAt = null;
-    patch.monitorWakeRequestedAt = null;
-    targetMonitorState = buildClearedMonitorState({
-      previous: currentMonitorState,
-      clearReason:
-        input.monitorExplicitlyUpdated
-          ? "manual"
-          : monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId) ?? "manual",
-      clearedAt: new Date(),
-    });
+    // An incoming policy without a monitor only means "clear" when the caller said so
+    // (`monitorExplicitlyUpdated`) or when the resulting issue can no longer hold a
+    // monitor (status/assignee/elapsed bounds). `normalizeIssueExecutionPolicy` collapses
+    // an explicit `monitor: null` and an omitted `monitor` into the same shape, so a write
+    // that merely round-trips a stale, monitor-stripped policy snapshot — such as the
+    // fire-stripped `executionPolicy` embedded in a woken run's context — would otherwise
+    // silently disarm a monitor the assignee has since re-armed.
+    const clearReason: IssueExecutionMonitorClearReason | null = input.monitorExplicitlyUpdated
+      ? "manual"
+      : monitorClearReasonForIssue(nextStatus, assigneeAgentId, assigneeUserId) ??
+        exhaustedMonitorClearReason({
+          monitor: previousPolicy.monitor,
+          attemptCount: currentMonitorState?.attemptCount ?? 0,
+          now: new Date(),
+        });
+
+    if (clearReason) {
+      patch.monitorNextCheckAt = null;
+      patch.monitorWakeRequestedAt = null;
+      targetMonitorState = buildClearedMonitorState({
+        previous: currentMonitorState,
+        clearReason,
+        clearedAt: new Date(),
+      });
+    } else {
+      // Preserve the still-valid schedule: keep the row armed and carry the existing
+      // monitor block into the outgoing policy so a monitor-less column write cannot
+      // erase the monitor the row is currently armed with.
+      patch.executionPolicy = input.policy
+        ? { ...input.policy, monitor: previousPolicy.monitor }
+        : previousPolicy;
+      patch.monitorNextCheckAt =
+        input.issue.monitorNextCheckAt ?? parseMonitorDate(previousPolicy.monitor.nextCheckAt);
+      targetMonitorState = currentMonitorState;
+    }
   }
 
   if (stagePatch.executionState !== undefined || !monitorStatesEqual(currentMonitorState, targetMonitorState)) {

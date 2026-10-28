@@ -116,6 +116,8 @@ For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUI
 
 When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
+An `executionPolicy` body that omits the `monitor` key is a partial policy write. The update applies the rest of the body and keeps the live monitor, with its own `scheduledBy` and `notes`. This lets a caller round-trip a stale, monitor-stripped policy snapshot without disarming a monitor that the assignee re-armed since. To clear the schedule, send `monitor: null`. To clear the whole policy, send `executionPolicy: null`. A partial write that keeps a monitor carries the policy from your last read; the server applies the same row-lock check as `expectedExecutionPolicy`. If the policy changed in the meantime, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying.
+
 ### Update Response
 
 Without a `Prefer` header, a successful update returns the full, updated issue row with two additive fields:
