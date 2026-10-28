@@ -1056,6 +1056,55 @@ describe("issue execution policy routes", () => {
       expect(updatePatch.assigneeAgentId).toBeUndefined();
     });
 
+    it("wakes the saved reviewer when the board restores the held review", async () => {
+      const issue = heldReviewIssue("blocked");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ status: "in_review" });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() =>
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          "33333333-3333-4333-8333-333333333333",
+          expect.objectContaining({
+            reason: "execution_review_requested",
+            payload: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              executionStage: expect.objectContaining({ wakeRole: "reviewer" }),
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("does not wake the reviewer on an unrelated edit to the held review", async () => {
+      const issue = heldReviewIssue("blocked");
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({ title: "Held review, renamed" });
+
+      expect(res.status).toBe(200);
+      const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect(updatePatch).not.toHaveProperty("status");
+      expect(updatePatch).not.toHaveProperty("executionState");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
     it.each(["todo", "in_progress"])("rejects a board %s that would dissolve the held review", async (status) => {
       const issue = heldReviewIssue("blocked");
       mockIssueService.getById.mockResolvedValue(issue);

@@ -751,6 +751,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       currentParticipant.type === "user" &&
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
+    const holdUntouched =
+      input.issue.status === "blocked" &&
+      (requestedStatus === undefined || requestedStatus === "blocked") &&
+      (!requestedAssigneePatchProvided ||
+        principalsEqual(explicitAssignee, escalatedHold ? currentParticipant : currentAssignee));
+    if (holdUntouched) {
+      return { patch };
+    }
     if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
       // An empty patch would not override the caller's own requested fields,
       // so a status or assignee change from a non-escalated actor must be
@@ -808,14 +816,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         patch,
         workflowControlledAssignment: true,
       };
-    }
-
-    const holdUntouched =
-      input.issue.status === "blocked" &&
-      (requestedStatus === undefined || requestedStatus === "blocked") &&
-      (!requestedAssigneePatchProvided || principalsEqual(explicitAssignee, currentAssignee));
-    if (holdUntouched) {
-      return { patch };
     }
 
     if (principalsEqual(currentParticipant, actor)) {

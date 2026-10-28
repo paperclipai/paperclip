@@ -2154,6 +2154,62 @@ describe("review round circuit breaker", () => {
     expect(result.patch.assigneeAgentId).toBeUndefined();
   });
 
+  it("keeps an escalated review blocked through another actor's unrelated edit", () => {
+    const escalated = (status: string) =>
+      reviewPendingIssue(
+        { status, assigneeAgentId: null, assigneeUserId: boardUserId },
+        {
+          currentParticipant: { type: "user", userId: boardUserId },
+          changesRequestedCount: 3,
+        },
+      );
+
+    const blocked = applyIssueExecutionPolicyTransition({
+      issue: escalated("in_review"),
+      policy,
+      requestedStatus: "blocked",
+      requestedAssigneePatch: {},
+      actor: { userId: boardUserId },
+      allowBoardOverride: true,
+    });
+    expect(blocked.patch).toEqual({});
+
+    for (const [actor, allowBoardOverride] of [
+      [{ userId: ctoUserId }, true],
+      [{ agentId: coderAgentId }, false],
+    ] as const) {
+      const edit = applyIssueExecutionPolicyTransition({
+        issue: escalated("blocked"),
+        policy,
+        requestedAssigneePatch: {},
+        actor,
+        allowBoardOverride,
+      });
+      expect(edit.patch).toEqual({});
+
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: escalated("blocked"),
+          policy,
+          requestedStatus: "in_progress",
+          requestedAssigneePatch: {},
+          actor,
+          allowBoardOverride,
+        }),
+      ).toThrow("Only the escalated reviewer can advance the current execution stage");
+    }
+
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: { ...escalated("blocked"), assigneeAgentId: coderAgentId, assigneeUserId: null },
+        policy,
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId, assigneeUserId: null },
+        actor: { userId: ctoUserId },
+        allowBoardOverride: true,
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
   it("rejects a non-escalated actor advancing the stage during the hold", () => {
     expect(() =>
       applyIssueExecutionPolicyTransition({
