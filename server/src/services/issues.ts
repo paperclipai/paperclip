@@ -11431,7 +11431,8 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
-        await recordReviewQuotaMonitorInstallation(tx as unknown as Db, receiptExisting, updated);
+        const quotaProofPublication = await recordReviewQuotaMonitorInstallation(tx as unknown as Db, receiptExisting, updated);
+        if (quotaProofPublication) activityPublications.push(quotaProofPublication);
         if (updated.status === "done") {
           await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
             publications: activityPublications });

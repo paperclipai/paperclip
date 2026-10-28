@@ -1803,6 +1803,14 @@ It applies the original null-only task backfill before the queue captures the
 complete generation in that admission transaction. Non-null task ownership is
 preserved. An immutable null-generation intent waits for lawful initialization;
 then the existing generation check retires it instead of re-signing it.
+When an ordinary comment coalesces into that queued review, the identity owner
+accepts previously unseen message identities inside the first claim transaction,
+after the queue holds company, issue/wake and run locks. It preserves explicit
+operator priority and existing accepted steering, and returns a run whose user
+matches its active identity. Reclaims do not replay messages or rewind identity.
+This changes run attribution without re-signing the review generation or
+reassigning the task's now non-null responsible user.
+
 
 A stamped reviewer quota retry also needs installation evidence. The issue
 mutation owner verifies the source's complete generation before installing the

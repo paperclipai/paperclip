@@ -19,7 +19,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(authUsers).values({ id: "board", name: "Sponsor", email: "sponsor@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 90_000);
   beforeEach(async () => { await db.execute(sql`TRUNCATE TABLE companies CASCADE`); });
-  afterEach(async () => { vi.useRealTimers(); await Promise.all(markers.splice(0).map(path => rm(path, { force: true }))); });
+  afterEach(async () => { vi.restoreAllMocks(); vi.useRealTimers(); await Promise.all(markers.splice(0).map(path => rm(path, { force: true }))); });
   afterAll(async () => { await db?.$client.end(); await fixture?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), authorId = randomUUID(), issueId = randomUUID(), stageId = randomUUID();
@@ -127,6 +127,181 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId))).toHaveLength(1);
     expect(await heartbeatService(db).wakeup(f.agentId, opts)).toBeTruthy();
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].responsibleUserId).toBe("board");
+  });
+
+  it.each(["default", "origin", "operator", "non-null"] as const)("applies later ordinary queued comments with %s identity before first provider dispatch", async kind => {
+    const f = await seed();
+    await db.insert(authUsers).values({ id: "writer", name: "Writer", email: "writer@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "writer", membershipRole: "operator", status: "active" });
+    await db.update(issues).set({ responsibleUserId: kind === "non-null" ? "board" : null }).where(eq(issues.id, f.issueId));
+    if (kind === "origin") await initializeRunIdentity(db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.source.id, responsibleUserId: "board", cause: "origin" });
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, args: ["-e", "process.exit(0)"] } }).where(eq(agents.id, f.agentId));
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    try {
+      const original = await service.wakeup(f.agentId, { source: kind === "operator" ? "on_demand" : "assignment",
+        triggerDetail: kind === "operator" ? "manual" : "system", reason: "execution_review_requested", payload: { issueId: f.issueId },
+        requestedByActorType: kind === "operator" ? "user" : "agent", requestedByActorId: kind === "operator" ? "board" : f.source.agentId,
+        ...(kind === "operator" ? { manualUserWake: true } : {}) });
+      const [message] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorUserId: "writer", body: "A later ordinary instruction" }).returning();
+      const joined = await service.wakeup(f.agentId, { source: "automation", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: message.id }, contextSnapshot: { wakeCommentId: message.id },
+        requestedByActorType: "user", requestedByActorId: "writer" });
+      expect(joined?.id).toBe(original!.id);
+      const [queued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id));
+      expect(queued.contextSnapshot?.reviewerAssignmentGeneration).toBe(original!.contextSnapshot?.reviewerAssignmentGeneration);
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+      await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id));
+      const [finishedActive] = await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, finished.activeIdentityContextId!));
+      const expectedUser = kind === "operator" ? "board" : "writer";
+      expect(finished).toMatchObject({ status: "succeeded", responsibleUserId: expectedUser });
+      expect(finishedActive.responsibleUserId).toBe(expectedUser);
+      expect(finished.contextSnapshot?.reviewerAssignmentGeneration).toBe(original!.contextSnapshot?.reviewerAssignmentGeneration);
+      const replay = await initializeRunIdentity(db, { companyId: f.companyId, runId: finished.id, issueId: f.issueId,
+        responsibleUserId: "board", messageIds: [], cause: "restart" });
+      expect(replay.id).toBe(finishedActive.id);
+    } finally { await service.drainActiveRunExecutions(); }
+  });
+
+  async function identityReview() {
+    const f = await seed();
+    await db.update(issues).set({ responsibleUserId: null,
+      executionPolicy: { ...f.issue.executionPolicy!, commentRequired: false } }).where(eq(issues.id, f.issueId));
+    const marker = join(process.env.TMPDIR!, `identity-boundary-${randomUUID()}`); markers.push(marker);
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(marker)},process.env.PAPERCLIP_RUN_ID+String.fromCharCode(10));setTimeout(()=>process.exit(0),2000)`] } }).where(eq(agents.id, f.agentId));
+    const opts = { source: "assignment" as const, reason: "execution_review_requested", payload: { issueId: f.issueId },
+      requestedByActorType: "agent" as const, requestedByActorId: f.source.agentId, idempotencyKey: `identity-boundary:${randomUUID()}` };
+    return { f, marker, opts };
+  }
+
+  async function recordProviderComment(f: Awaited<ReturnType<typeof seed>>, runId: string, marker: string) {
+    await vi.waitFor(async () => expect((await readFile(marker, "utf8")).trim().split(String.fromCharCode(10))).toContain(runId), { timeout: 10_000 });
+    await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, createdByRunId: runId,
+      authorAgentId: f.agentId, authorType: "agent", body: "The fixture provider completed this review turn." });
+  }
+
+  async function expectOriginalProviderOnce(f: Awaited<ReturnType<typeof seed>>, runId: string, marker: string) {
+    const entries = (await readFile(marker, "utf8")).trim().split(String.fromCharCode(10));
+    expect(entries.filter(id => id === runId)).toHaveLength(1);
+    const followups = entries.filter(id => id !== runId);
+    expect(followups.length).toBeLessThanOrEqual(1);
+    for (const id of followups) {
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id));
+      expect(retry).toMatchObject({ companyId: f.companyId, retryOfRunId: runId,
+        contextSnapshot: { retryReason: "execution_review_participant_recovery" } });
+    }
+  }
+
+  it("keeps identity backfill and provider invisible until outer admission commit", async () => {
+    const { f, marker, opts } = await identityReview();
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const transaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementation((...args: Parameters<typeof db.transaction>) => transaction(async tx => {
+      const value = await args[0](tx);
+      if (value && typeof value === "object" && "kind" in value && value.kind === "queued") { entered(); await gate; }
+      return value;
+    }, args[1]));
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    const admission = service.wakeup(f.agentId, opts);
+    try {
+      await Promise.race([ready, admission.then(() => { throw new Error("admission bypassed outer commit barrier"); })]);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].responsibleUserId).toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId))).toHaveLength(0);
+      expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.companyId, f.companyId))).toHaveLength(0);
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      release(); const admitted = await admission; expect(admitted).toBeTruthy();
+      await recordProviderComment(f, admitted!.id, marker); await service.drainActiveRunExecutions();
+      await expectOriginalProviderOnce(f, admitted!.id, marker);
+    } finally { release(); await admission; await service.drainActiveRunExecutions(); vi.restoreAllMocks(); }
+  });
+
+  it("recovers one identity admission after a committed response is lost", async () => {
+    const { f, marker, opts } = await identityReview();
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    let lost = false;
+    const unreliable = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof db.transaction>) => {
+        const value = await Reflect.apply(target.transaction, target, args);
+        if (!lost && value?.kind === "queued") { lost = true; throw new Error("synthetic committed identity response loss"); }
+        return value;
+      };
+    } });
+    await expect(heartbeatService(unreliable).wakeup(f.agentId, opts)).rejects.toThrow("synthetic committed identity response loss");
+    expect(lost).toBe(true);
+    const original = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId))).find(run => run.id !== busy.id)!;
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    try {
+      const resumed = await service.wakeup(f.agentId, opts);
+      expect(resumed?.id).toBe(original.id);
+      expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.runId, original.id))).toHaveLength(1);
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+      await service.resumeQueuedRuns(); await recordProviderComment(f, original.id, marker); await service.drainActiveRunExecutions();
+      await expectOriginalProviderOnce(f, original.id, marker);
+    } finally { await service.drainActiveRunExecutions(); }
+  });
+
+  it("rolls back a comment identity claim and retries without duplicate accepted messages", async () => {
+    const { f, marker, opts } = await identityReview();
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    await db.insert(authUsers).values({ id: "writer", name: "Writer", email: "writer@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "writer", membershipRole: "operator", status: "active" });
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    const original = await service.wakeup(f.agentId, opts);
+    const [message] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorUserId: "writer", body: "New queued instruction" }).returning();
+    await service.wakeup(f.agentId, { source: "automation", reason: "issue_commented", payload: { issueId: f.issueId, commentId: message.id },
+      contextSnapshot: { wakeCommentId: message.id }, requestedByActorType: "user", requestedByActorId: "writer" });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+    let injected = false;
+    const unreliable = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return (...args: Parameters<typeof db.transaction>) => target.transaction(async tx => {
+        const value = await args[0](tx);
+        if (value && typeof value === "object" && "kind" in value && value.kind === "claimed") {
+          injected = true; throw new Error("synthetic identity claim settlement failure");
+        }
+        return value;
+      }, args[1]);
+    } });
+    await expect(heartbeatService(unreliable).resumeQueuedRuns()).rejects.toThrow("synthetic identity claim settlement failure");
+    expect(injected).toBe(true);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id)))[0])
+      .toMatchObject({ status: "queued", responsibleUserId: "board", activeIdentityContextId: original!.activeIdentityContextId });
+    expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, message.id))).toHaveLength(0);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    try {
+      const second = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+      await Promise.all([service.resumeQueuedRuns(), second.resumeQueuedRuns()]);
+      await recordProviderComment(f, original!.id, marker);
+      await Promise.all([service.drainActiveRunExecutions(), second.drainActiveRunExecutions()]);
+      expect(await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.messageId, message.id))).toHaveLength(1);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id)))[0])
+        .toMatchObject({ status: "succeeded", responsibleUserId: "writer" });
+      await expectOriginalProviderOnce(f, original!.id, marker);
+    } finally { await service.drainActiveRunExecutions(); }
+  });
+
+  it("rejects a foreign active identity without mutating that company", async () => {
+    const { f, marker, opts } = await identityReview();
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    const original = await service.wakeup(f.agentId, opts);
+    const foreign = await seed();
+    const foreignIdentity = await initializeRunIdentity(db, { companyId: foreign.companyId, runId: foreign.source.id,
+      issueId: foreign.issueId, responsibleUserId: "board", cause: "foreign fixture" });
+    await db.update(heartbeatRuns).set({ activeIdentityContextId: foreignIdentity.id }).where(eq(heartbeatRuns.id, original!.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+    await service.resumeQueuedRuns();
+    expect((await db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, foreignIdentity.id)))[0]).toEqual(foreignIdentity);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id)))[0].status).toBe("cancelled");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+
   });
 
 });

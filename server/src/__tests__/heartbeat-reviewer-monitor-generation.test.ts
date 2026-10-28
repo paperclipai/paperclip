@@ -294,7 +294,7 @@ const support = await getEmbeddedPostgresTestSupport();
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, finishedAt: new Date() }).where(eq(heartbeatRuns.id, source!.id));
     const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     const next = new Date(Date.now() + 60_000);
-    const install = (externalRef = source!.id) => issueService(db).update(f.issueId, { monitorNextCheckAt: next, monitorNotes: "Quota retry",
+    const install = (externalRef = source!.id, executor = db) => issueService(executor).update(f.issueId, { monitorNextCheckAt: next, monitorNotes: "Quota retry",
       executionPolicy: { ...task.executionPolicy!, monitor: { nextCheckAt: next.toISOString(), notes: "Quota retry",
         scheduledBy: "board", kind: "external_service", serviceName: "AI provider quota", externalRef,
         maxAttempts: 3, timeoutAt: new Date(Date.now() + 300_000).toISOString() } } });
@@ -421,7 +421,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(0);
   });
 
-  it.each(["native", "reconciliation"] as const)("rechecks a quota source becoming %s inside retry admission", async fault => {
+  it.each(["native", "reconciliation", "running"] as const)("rechecks a quota source becoming %s inside retry admission", async fault => {
     const { f, source, install } = await quotaReady(); await install();
     let claimed = false, mutated = false;
     const racing = new Proxy(db, { get(target, key) {
@@ -429,7 +429,7 @@ const support = await getEmbeddedPostgresTestSupport();
       return async (...args: Parameters<typeof db.transaction>) => {
         if (claimed && !mutated) {
           mutated = true;
-          await db.update(heartbeatRuns).set(fault === "native" ? { runtimeMode: "native" } :
+          await db.update(heartbeatRuns).set(fault === "native" ? { runtimeMode: "native" } : fault === "running" ? { status: "running" } :
             { resultJson: { executionRecovery: { kind: "interrupted", providerWorkStarted: true } } }).where(eq(heartbeatRuns.id, source.id));
         }
         const value = await Reflect.apply(target.transaction, target, args);
@@ -441,6 +441,70 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(mutated).toBe(true);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].monitorNextCheckAt).not.toBeNull();
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(0);
+  });
+
+  it("rolls quota monitor installation back when its source proof cannot be persisted", async () => {
+    const { f, source, install } = await quotaReady();
+    const [before] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    let injected = false;
+    const failing = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return (...args: Parameters<typeof db.transaction>) => target.transaction(tx => {
+        const observed = (transaction: typeof tx): typeof tx => new Proxy(transaction, { get(current, field) {
+          if (field === "transaction") return (...nested: Parameters<typeof tx.transaction>) =>
+            current.transaction(child => nested[0](observed(child)), nested[1]);
+          if (field === "insert") return (table: unknown) => {
+            if (table === activityLog) { injected = true; throw new Error("synthetic quota installation storage failure"); }
+            return Reflect.apply(current.insert, current, [table]);
+          };
+          return Reflect.get(current, field);
+        } });
+        return args[0](observed(tx));
+      }, args[1]);
+    } });
+    await expect(install(source.id, failing)).rejects.toThrow("synthetic quota installation storage failure");
+    expect(injected).toBe(true);
+    const [retained] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(retained).toMatchObject({ executionPolicy: before.executionPolicy, executionState: before.executionState, monitorNextCheckAt: before.monitorNextCheckAt });
+    expect((await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).filter(row => row.action === "issue.review_quota_monitor_installed")).toHaveLength(0);
+    await install();
+    expect(await heartbeatService(db).triggerIssueMonitor(f.issueId)).toMatchObject({ outcome: "triggered" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
+  });
+
+  it("keeps a new quota installation and its proof invisible until outer commit", async () => {
+    const { f, install } = await quotaReady();
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const transaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementation((...args: Parameters<typeof db.transaction>) => transaction(async tx => {
+      const value = await args[0](tx);
+      if (value && typeof value === "object" && "id" in value && value.id === f.issueId &&
+          "executionPolicy" in value && (value.executionPolicy as any)?.monitor?.serviceName === "AI provider quota") { entered(); await gate; }
+      return value;
+    }, args[1]));
+    const installation = install();
+    try {
+      await Promise.race([ready, installation.then(() => { throw new Error("quota installation bypassed outer commit"); })]);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionPolicy?.monitor?.serviceName).toBe("github_checks");
+      expect((await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).filter(row => row.action === "issue.review_quota_monitor_installed")).toHaveLength(0);
+      release(); await installation;
+      expect((await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId))).filter(row => row.action === "issue.review_quota_monitor_installed")).toHaveLength(1);
+    } finally { release(); await installation; vi.restoreAllMocks(); }
+  });
+
+  it("retains quota duty rather than re-signing an existing scheduled retry", async () => {
+    const { f, source, service, install } = await quotaReady();
+    const [existing] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      scopeKind: "issue", issueId: f.issueId, status: "scheduled_retry", retryOfRunId: source.id,
+      contextSnapshot: source.contextSnapshot, responsibleUserId: "board", scheduledRetryAt: new Date(Date.now() + 120_000) }).returning();
+    await install();
+    const [before] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    await service.tickTimers(new Date(before.monitorNextCheckAt!.getTime() + 1));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, existing.id)))[0].contextSnapshot).toEqual(existing.contextSnapshot);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].monitorNextCheckAt).toEqual(before.monitorNextCheckAt);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
   });
 
 });

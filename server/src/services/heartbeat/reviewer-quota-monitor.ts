@@ -6,7 +6,7 @@ import { activityLog, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, isUuidLike } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
 import { issueExecutionGeneration, parseIssueExecutionState } from "../issue-execution-policy.js";
-import { logActivity } from "../activity-log.js";
+import { persistActivity } from "../activity-log.js";
 import { boundRunIssueId } from "../run-task-binding.js";
 
 type Task = typeof issues.$inferSelect;
@@ -61,10 +61,11 @@ export async function recordReviewQuotaMonitorInstallation(tx: Db, before: Task,
   if (sourceGeneration !== issueExecutionGeneration(before) ||
       issueExecutionGeneration(restored) !== issueExecutionGeneration(before))
     throw new ReviewQuotaMonitorHeld("The review submission changed before quota monitor installation");
-  await logActivity(tx, { companyId: before.companyId, actorType: "system", actorId: OWNER,
+  const { publication } = await persistActivity(tx, { companyId: before.companyId, actorType: "system", actorId: OWNER,
     action: ACTION, entityType: "issue", entityId: before.id, runId: source.id,
     details: { version: 1, sourceRunId: source.id, sourceGeneration,
       installedGeneration: issueExecutionGeneration(installed), nextCheckAt: installed.monitorNextCheckAt?.toISOString() } });
+  return publication;
 }
 
 export async function assertReviewQuotaMonitorInstallation(tx: Db, task: Task, source: Run) {
