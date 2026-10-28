@@ -356,6 +356,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
+  const subscribedEventNames = new Set<string>();
+  const recentEventIds = new Set<string>();
+  const MAX_RECENT_EVENT_IDS = 1000;
   const jobHandlers = new Map<string, (job: PluginJobContext) => Promise<void>>();
   const launcherRegistrations = new Map<string, PluginLauncherRegistration>();
   const dataHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
@@ -560,13 +563,17 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             registration = { name, filter: filterOrFn, fn: maybeFn };
           }
           eventHandlers.push(registration);
-          // Register subscription on the host so events are forwarded to this worker
-          void callHost("events.subscribe", { eventPattern: name, filter: registration.filter ?? null }).catch((err) => {
-            notifyHost("log", {
-              level: "warn",
-              message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+          if (!subscribedEventNames.has(name)) {
+            subscribedEventNames.add(name);
+            // Register subscription on the host so events are forwarded to this worker
+            void callHost("events.subscribe", { eventPattern: name, filter: null }).catch((err) => {
+              subscribedEventNames.delete(name);
+              notifyHost("log", {
+                level: "warn",
+                message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+              });
             });
-          });
+          }
           return () => {
             const idx = eventHandlers.indexOf(registration);
             if (idx !== -1) eventHandlers.splice(idx, 1);
@@ -1953,6 +1960,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   async function handleOnEvent(params: OnEventParams): Promise<void> {
     const event = params.event;
+
+    if (event.eventId) {
+      if (recentEventIds.has(event.eventId)) return;
+      recentEventIds.add(event.eventId);
+      if (recentEventIds.size > MAX_RECENT_EVENT_IDS) {
+        const oldest = recentEventIds.values().next().value;
+        if (oldest !== undefined) recentEventIds.delete(oldest);
+      }
+    }
 
     for (const registration of eventHandlers) {
       // Check event type match
