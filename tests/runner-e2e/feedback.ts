@@ -140,7 +140,7 @@ export async function collectAttemptFeedback(input: {
   const get = <T>(url: string) => {
     const remaining = readDeadlineAt - Date.now();
     if (remaining <= 0) { diagnose("deadline_reached"); throw new Error("Feedback collection deadline reached"); }
-    return input.api.get<T>(url, { timeout: Math.min(5_000, remaining) });
+    return input.api.get<T>(url, { timeout: remaining });
   };
   const persist = async (force = false) => {
     summary.bodiesCollected = evidence.entries.length;

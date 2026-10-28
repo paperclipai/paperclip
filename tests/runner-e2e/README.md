@@ -2833,8 +2833,11 @@ Each ordinary live attempt collects company-wide saved feedback after retiring
 runs and before fixture teardown, even when cancellation or grading fails. This
 includes feedback from child and background runs. Full paginated bodies and
 native tool invocation outcomes are checkpointed in the access-controlled
-`snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline;
-missing detail pages, truncated run lists, active work, and unavailable APIs
+`snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline.
+Each API read uses the remaining shared read budget, with up to five seconds
+reserved for the final checkpoint; a slow event response is not cut off by a
+separate five-second request limit. Reads are not retried.
+Missing detail pages, truncated run lists, active work, and unavailable APIs
 remain explicit partial/unavailable observations. Legacy shell helpers do not
 have complete native invocation coverage. An empty saved-feedback list does not
 prove that a tool was available, and a completed tool receipt does not by itself

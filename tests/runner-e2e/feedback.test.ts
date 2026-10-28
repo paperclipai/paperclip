@@ -435,3 +435,62 @@ it("bounds raw event inspection while retaining the observed feedback receipt pr
   expect(summary.invocations.unknown).toBeLessThan(100);
   expect(retained!.diagnostics).toContain("evidence_limit_reached");
 });
+
+
+it("allows a slow event read to finish within the shared collection deadline", async () => {
+  let now = 0, eventReads = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  let retained: FeedbackEvidence | undefined;
+  const slowApi = { get: async (url: string, options: { timeout: number }) => {
+    if (url.includes("agent-commentary?")) return { items: [], total: 0 };
+    if (url === "/api/companies/company/heartbeat-runs?limit=1000") return [{ id: "run", status: "succeeded" }];
+    if (url === "/api/heartbeat-runs/run") return { id: "run", status: "succeeded", runtimeMode: "native" };
+    if (url.includes("/events?")) {
+      eventReads++;
+      now += Math.min(8_000, options.timeout);
+      if (options.timeout < 8_000) throw new Error("request timeout");
+      return [event(1, "tool.execution.completed", { executionId: "call", name: "submit_suggestion", status: "completed" })];
+    }
+    throw new Error("Unexpected read");
+  } } as Pick<RunnerApi, "get">;
+  try {
+    const summary = await collectAttemptFeedback({ companyId: "company", deadlineAt: 30_000, api: slowApi,
+      persist: async evidence => { retained = structuredClone(evidence); },
+    });
+    expect(summary).toMatchObject({ collection: "complete", invocationCollection: "complete", runsInspected: 1,
+      invocations: { completed: 1, failed: 0, unknown: 0 } });
+    expect(retained!.runCoverage).toEqual([{ runId: "run", classification: "native_events" }]);
+    expect(retained!.diagnostics).toEqual([]);
+    expect(eventReads).toBe(1);
+    expect(now).toBe(8_000);
+  } finally { clock.mockRestore(); }
+});
+
+it("still times out a stalled event read and reserves time to persist saved feedback", async () => {
+  let now = 0, eventReads = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  let retained: FeedbackEvidence | undefined;
+  const stalledApi = { get: async (url: string, options: { timeout: number }) => {
+    if (url.includes("agent-commentary?")) return { items: [entry("saved")], total: 1 };
+    if (url.includes("agent-commentary/")) return entry("saved");
+    if (url === "/api/companies/company/heartbeat-runs?limit=1000") return [{ id: "run", status: "succeeded" }];
+    if (url === "/api/heartbeat-runs/run") return { id: "run", status: "succeeded", runtimeMode: "native" };
+    if (url.includes("/events?")) {
+      eventReads++;
+      now += options.timeout;
+      throw new Error("request timeout: secret details");
+    }
+    throw new Error("Unexpected read");
+  } } as Pick<RunnerApi, "get">;
+  try {
+    const summary = await collectAttemptFeedback({ companyId: "company", deadlineAt: 30_000, api: stalledApi,
+      persist: async evidence => { retained = structuredClone(evidence); },
+    });
+    expect(now).toBe(25_000);
+    expect(summary).toMatchObject({ collection: "complete", invocationCollection: "partial", bodiesCollected: 1, runsInspected: 0 });
+    expect(retained!.entries).toEqual([entry("saved")]);
+    expect(retained!.diagnostics).toEqual(["events_read_failed"]);
+    expect(JSON.stringify(retained)).not.toContain("secret details");
+    expect(eventReads).toBe(1);
+  } finally { clock.mockRestore(); }
+});
