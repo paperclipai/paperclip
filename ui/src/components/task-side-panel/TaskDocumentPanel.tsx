@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
-import { FileQuestion, Loader2 } from "lucide-react";
+import { Check, Copy, Download, FileQuestion, Loader2 } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/components/IssueDocumentAnnotations";
@@ -10,6 +10,8 @@ import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { useLocation } from "@/lib/router";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import { Button } from "@/components/ui/button";
 
 export function TaskDocumentPanel({
   issueId,
@@ -22,6 +24,21 @@ export function TaskDocumentPanel({
 }) {
   const location = useLocation();
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeTargetRef = useRef({ issueId, documentKey });
+
+  useEffect(() => {
+    activeTargetRef.current = { issueId, documentKey };
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    setCopied(false);
+    setCopyFailed(false);
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, [issueId, documentKey]);
+
   const query = useQuery<IssueDocument | null>({
     queryKey: [...queryKeys.issues.documents(issueId), documentKey],
     queryFn: async () => {
@@ -67,9 +84,77 @@ export function TaskDocumentPanel({
     );
   }
 
+  const handleCopy = async () => {
+    if (document.body == null) return;
+    const target = { issueId, documentKey };
+    const isTargetActive = () =>
+      activeTargetRef.current.issueId === target.issueId &&
+      activeTargetRef.current.documentKey === target.documentKey;
+
+    try {
+      await copyTextToClipboard(document.body);
+      if (!isTargetActive()) return;
+      setCopyFailed(false);
+      setCopied(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        if (isTargetActive()) setCopied(false);
+      }, 1500);
+    } catch {
+      if (!isTargetActive()) return;
+      setCopied(false);
+      setCopyFailed(true);
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => {
+        if (isTargetActive()) setCopyFailed(false);
+      }, 2000);
+    }
+  };
+
+  const handleDownload = () => {
+    if (document.body == null) return;
+    const blob = new Blob([document.body], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = window.document.createElement("a");
+    link.href = url;
+    const safeTitle = (document.title?.trim() || document.key || "document")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}_-]+/gu, "-")
+      .replace(/^-+|-+$/g, "");
+    link.download = `${safeTitle || "document"}.md`;
+    window.document.body.appendChild(link);
+    link.click();
+    window.document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   return (
     <article className="space-y-4">
-      <header className="space-y-1">
+      <header className="space-y-2">
+        <div className="flex items-center justify-end gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs font-normal flex items-center gap-1.5 cursor-pointer"
+            onClick={handleCopy}
+            title={copyFailed ? "Failed to copy" : "Copy Markdown"}
+            aria-label={copyFailed ? "Failed to copy" : "Copy Markdown"}
+          >
+            {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+            <span>{copyFailed ? "Failed" : copied ? "Copied" : "Copy"}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2.5 text-xs font-normal flex items-center gap-1.5 cursor-pointer"
+            onClick={handleDownload}
+            title="Download Markdown"
+            aria-label="Download Markdown"
+          >
+            <Download className="size-3.5" aria-hidden />
+            <span>Download</span>
+          </Button>
+        </div>
         <h2 className="text-lg font-semibold">{documentDisplayTitle(document)}</h2>
         <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <span>{`Revision ${document.latestRevisionNumber ?? 1}`}</span>
