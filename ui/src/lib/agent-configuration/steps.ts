@@ -11,7 +11,6 @@ export function requireItem<T>(items: readonly T[], matches: (item: T) => boolea
   return item;
 }
 
-/** PATCH omission preserves a value. Require an explicit clear in a full document. */
 export function requireExplicitFields(before: object, after: object, path: string) {
   for (const [key, value] of Object.entries(before)) {
     if (value !== undefined && !Object.hasOwn(after, key)) throw new Error(`Keep ${path}.${key} explicit; use null, false, an empty string, or an empty list to clear it where supported.`);

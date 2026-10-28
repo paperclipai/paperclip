@@ -16,7 +16,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -26,17 +26,26 @@ import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }, 90_000);
-  afterAll(async () => { for (const worker of workers) await worker.stop(); await database?.cleanup(); });
+  beforeAll(async () => {
+    if (external) { await applyPendingMigrations(external); db = createDb(external); }
+    else { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }
+  }, 90_000);
+  afterAll(async () => {
+    for (const worker of workers) await worker.stop();
+    if (external) await closeRegisteredClients(external);
+    else await database?.cleanup();
+  });
   beforeEach(async () => {
     for (const work of workers) await work.stop();
     companyId = randomUUID();
@@ -120,7 +129,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await request(board).patch(`/api/agents/${agent.id}`).send({ name: "Stale", expectedConfigurationRevision: response.body.configurationRevision }).expect(409);
     const foreign = app({ type: "board", source: "session", userId: "outsider", companyIds: [], memberships: [] });
     await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(403);
-    await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(403);
+    await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 
   it("maps existing states without starting setup or clearing pause reasons", async () => {

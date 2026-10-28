@@ -39,9 +39,7 @@ export function policyAgentIds(policy: Pick<ToolPolicy, "selectors">): string[] 
     Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : typeof value === "string" ? [value] : []);
 }
 
-/** User-triggered snapshot. Never substitute an empty list for a denied/failed read. */
 export async function loadAgentConfiguration(id: string, companyId: string) {
-  // Check configuration access before loading files or related resources.
   const core = await agentsApi.getConfiguration(id, companyId);
   const [agent, bundle, skills, connections, profiles, policies, endpoints, keys, revisions, secrets, proposals] = await Promise.all([
     agentsApi.get(id, companyId), agentsApi.instructionsBundle(id, companyId), agentsApi.skills(id, companyId),
@@ -87,10 +85,11 @@ export async function loadAgentConfiguration(id: string, companyId: string) {
         policies: directPolicies.map(policy => ({ id: policy.id, configuration: policyConfiguration(policy) })),
       },
       channels: channels.map(({ detail, resources }) => ({ id: detail.id, provider: detail.provider, settings: {
-        executionDefaults: detail.executionDefaults ?? null, communicationInstructions: detail.communicationInstructions ?? "",
+        executionDefaults: detail.executionDefaults ?? null,
+        ...(detail.provider === "slack" ? { communicationInstructions: detail.communicationInstructions ?? "" } : {}),
         allowUnlinkedPeople: detail.allowUnlinkedPeople,
         ...(detail.allowDirectMessages !== undefined ? { allowDirectMessages: detail.allowDirectMessages } : {}),
-        ...(detail.requireAtMention !== undefined ? { requireAtMention: detail.requireAtMention } : {}),
+        ...(detail.provider === "slack" && detail.requireAtMention !== undefined ? { requireAtMention: detail.requireAtMention } : {}),
         ...(detail.allowGroupChats !== undefined ? { allowGroupChats: detail.allowGroupChats } : {}),
         ...(detail.setup?.slackApp ? { slackApp: detail.setup.slackApp } : {}),
         ...(detail.setup?.slackSetupMethod ? { slackSetupMethod: detail.setup.slackSetupMethod } : {}),

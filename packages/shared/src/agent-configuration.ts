@@ -5,7 +5,6 @@ import { createAgentSchema } from "./validators/agent.js";
 import { objectWithoutDefaults } from "./validators/partial.js";
 import { agentConfigurationResourceShape } from "./agent-configuration-resources.js";
 
-/** The declarative, revisioned configuration; lifecycle and grants have separate APIs. */
 export const agentConfigurationSpecSchema = objectWithoutDefaults(createAgentSchema.pick({
   name: true,
   role: true,
@@ -31,8 +30,6 @@ export const agentConfigurationDocumentSchema = z.object({
 
 export type AgentConfigurationSpec = z.infer<typeof agentConfigurationSpecSchema>;
 export type AgentConfigurationDocument = z.infer<typeof agentConfigurationDocumentSchema>;
-// Stored rows can contain legacy strings that the editor must show (and let
-// the operator correct), rather than validating or coercing them on read.
 export type AgentConfigurationSource = Omit<Pick<Agent, "id" | keyof AgentConfigurationSpec>, "role" | "adapterType"> & {
   role: string;
   adapterType: string;
@@ -57,7 +54,6 @@ export function agentConfigurationSpec(agent: AgentConfigurationSource) {
   };
 }
 
-/** Stable JSON comparison ignores YAML mapping order, but preserves array order. */
 export function canonicalAgentConfiguration(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return item;

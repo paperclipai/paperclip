@@ -4,15 +4,12 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { unprocessable } from "../errors.js";
 
-// Includes credentials in the opaque digest, never in the response. Lifecycle
-// bookkeeping and spend do not invalidate an open configuration editor.
 export function agentConfigurationRevision(agent: AgentConfigurationSource & { permissions: Record<string, unknown> }) {
   return createHash("sha256").update(canonicalAgentConfiguration({
     ...agentConfigurationSpec(agent), permissions: normalizeAgentPermissions(agent.permissions),
   })).digest("hex");
 }
 
-/** Restore only unchanged masked values at their original paths. */
 export function restoreAgentConfigurationRedactions(requested: unknown, saved: unknown, displayed: unknown): unknown {
   if (canonicalAgentConfiguration(requested) === canonicalAgentConfiguration(displayed)) return saved;
   if (typeof requested === "string" && requested.includes(REDACTED_EVENT_VALUE)) {

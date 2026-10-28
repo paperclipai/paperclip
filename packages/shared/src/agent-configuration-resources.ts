@@ -8,7 +8,6 @@ import { createSecretSchema, rotateSecretSchema, updateSecretSchema } from "./va
 const id = z.string().min(1);
 const filePath = z.string().min(1).max(512).refine(value => !value.startsWith("/") && !value.includes("\\") && !value.split("/").some(part => part === ".." || part === "." || !part), "Use a relative file path without traversal.");
 
-/** Domain sections use the same input contracts as their owning API routes. */
 export const agentConfigurationResourceShape = {
   permissions: updateAgentPermissionsSchema.extend({
     canCreateSkills: z.boolean(), trustPreset: updateAgentPermissionsSchema.shape.trustPreset.unwrap(),
@@ -36,8 +35,6 @@ export const agentConfigurationResourceShape = {
     settings: updateChatEndpointSchema,
     resources: z.array(replaceChatEndpointResourcesSchema.shape.resources.element.strict()),
   }).strict()).optional(),
-  // Empty operation lists are emitted on each load. Removing a history row or
-  // saving an unchanged document never revokes a key or restores a revision.
   apiKeys: z.object({ create: z.array(createAgentKeySchema.strict()), revoke: z.array(id) }).strict().optional(),
   revisions: z.object({ restore: id.nullable() }).strict().optional(),
   secrets: z.object({

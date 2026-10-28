@@ -158,7 +158,7 @@ describe("complete agent configuration", () => {
     expect(api.agents.saveInstructionsFile).toHaveBeenCalledWith(agentId, { path: "AGENTS.md", content: "# Revised\n", baseHash: "hash", baseRevisionId: "revision-file" }, "company");
     expect(api.agents.syncSkills).toHaveBeenCalledWith(agentId, [], "replace", "company");
     expect(api.tools.putConnectionInstalls).toHaveBeenCalledWith("connection", [{ targetType: "agent", targetId: "another-agent" }]);
-    expect(api.channels.update).toHaveBeenCalledWith("channel", expect.objectContaining({ allowUnlinkedPeople: true }));
+    expect(api.channels.update).toHaveBeenCalledExactlyOnceWith("channel", { allowUnlinkedPeople: true });
     expect(api.channels.updateResources).toHaveBeenCalledWith("channel", [{ id: resourceId, enabled: false, executionDefaults: null }]);
     expect(api.channels.revokeLink).toHaveBeenCalledWith("channel", "principal");
     expect(api.agents.updatePermissions).toHaveBeenCalledWith(agentId, expect.objectContaining({ canCreateSkills: false }), "company");

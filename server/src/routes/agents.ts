@@ -5410,8 +5410,6 @@ export function agentRoutes(
       throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
     }
     if (expectedConfigurationRevision) {
-      // The editor holds the same protected, redacted projection as GET
-      // /configuration. Restore it before the ordinary adapter validation.
       await assertCanConfigureAgentSetup(req, existing);
       const displayed = redactAgentConfiguration(existing)!;
       for (const key of ["adapterConfig", "runtimeConfig", "metadata"] as const) {

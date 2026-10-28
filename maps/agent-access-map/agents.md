@@ -114,7 +114,9 @@ secrets, API key, and revision APIs. It does not add aggregate write authority;
 each request retains its own company and actor checks. Resource reads fail closed.
 Observed inherited access/history is read-only. Multi-resource writes are
 sequential, with preflight comparison and explicit partial-failure recovery;
-only core/file writes have their existing atomic revision/hash preconditions. Configuration reads include the complete redacted, revisioned fields
+Core configuration, managed files, and entry revisions enforce their existing
+atomic revision/hash preconditions. External supporting files and other
+unversioned resource writes retain a race window after preflight. Configuration reads include the complete redacted, revisioned fields
 and `configurationRevision`; writes accept an optional
 `expectedConfigurationRevision`, checked again under the write lock. A stale
 write returns `409`. Revision-guarded writes preserve unchanged redacted values

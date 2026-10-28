@@ -54,7 +54,6 @@ export function parseAgentConfigurationYaml(source: string): AgentConfigurationD
   return parsed.data;
 }
 
-/** Send changed fields only; replacing adapterConfig makes deleting a YAML key meaningful. */
 export function agentConfigurationPatch(document: AgentConfigurationDocument, saved: AgentConfigurationSource) {
   const before = agentConfigurationSpec(saved);
   const patch: Record<string, unknown> = {};

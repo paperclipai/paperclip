@@ -18,9 +18,10 @@ export function planChannelChanges(snapshot: AgentConfigurationSnapshot, documen
         requireExplicitFields(existing, resource, `channels.${row.id}.resources.${resource.id}`);
       }
       if (!equal(previous.settings, row.settings)) {
-        // PATCH optional fields cannot be cleared by silently dropping a key.
         requireExplicitFields(previous.settings, row.settings, `channels.${row.id}.settings`);
-        add(`Channel settings: ${row.id}`, () => chatEndpointsApi.update(row.id, row.settings));
+        const changes = Object.fromEntries(Object.entries(row.settings).filter(([key, value]) =>
+          !equal(value, previous.settings[key as keyof typeof previous.settings])));
+        add(`Channel settings: ${row.id}`, () => chatEndpointsApi.update(row.id, changes));
       }
       if (!equal(previous.resources, row.resources)) {
         const resources = previous.resources.map(resource => row.resources.find(value => value.id === resource.id) ?? { ...resource, enabled: false });

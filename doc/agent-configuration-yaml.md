@@ -157,6 +157,8 @@ connection. These are direct agent installations; inherited company
 installations appear in `observed.connections`. Removing a direct installation
 row has the same effect as `installed: false`. Saves preserve other agents'
 installations. Company installations cannot be overridden here.
+The installation service can add an access profile and binding for an installed
+connection. The canonical reload includes those generated profiles.
 
 Each profile contains:
 
@@ -317,3 +319,22 @@ an editable settings view, not a portable credential backup.
 
 No background polling, database migration, or new authorization bypass is
 introduced by the editor.
+
+## Verification
+
+Run the browser acceptance suite against its disposable checkout instance:
+
+```sh
+pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/agent-configuration.spec.ts
+```
+
+The suite checks resource saves and clears, one-time key receipts, secret
+redaction, stale drafts, a lost creation response, instruction relocation, and
+revision restore through real APIs. It enables and restores the Beta skills and
+chat connector flags. Its local MCP fixture provides a connection target; it
+does not qualify provider login or agent execution.
+
+The lifecycle regressions can use a dedicated external PostgreSQL database when
+embedded PostgreSQL is unavailable. Set
+`PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL` to a database ending in `_test`
+before running `server/src/modules/agent-lifecycle/__tests__/lifecycle.test.ts`.

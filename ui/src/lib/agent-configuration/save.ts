@@ -108,7 +108,6 @@ function planSecrets(snapshot: AgentConfigurationSnapshot, document: AgentConfig
   }
 }
 
-/** Plan every step before starting mutations. No generic PATCH can bypass domain owners. */
 export function planAgentConfiguration(snapshot: AgentConfigurationSnapshot, document: AgentConfigurationDocument, receipt: (value: ConfigurationReceipt) => void = () => {}) {
   const steps: ConfigurationStep[] = [];
   const add: AddConfigurationStep = (label, apply) => { steps.push({ label, apply }); };
@@ -161,7 +160,6 @@ export function planAgentConfiguration(snapshot: AgentConfigurationSnapshot, doc
 export async function saveAgentConfiguration(snapshot: AgentConfigurationSnapshot, input: AgentConfigurationDocument,
   onReceipt: (receipt: ConfigurationReceipt) => void, onProgress: (label: string) => void) {
   const document = agentConfigurationDocumentSchema.parse(input);
-  // Validate the entire draft before even the first side effect.
   const initialPlan = planAgentConfiguration(snapshot, document);
   if (!initialPlan.length) return snapshot;
   const current = await loadAgentConfiguration(snapshot.agent.id, snapshot.agent.companyId);
@@ -171,8 +169,6 @@ export async function saveAgentConfiguration(snapshot: AgentConfigurationSnapsho
       throw new Error(`${key} changed while you were editing. Reload saved before saving.`);
     }
   }
-  // Unedited resource sections must follow current state, never undo another
-  // operator's changes while saving an unrelated field.
   const spec = { ...document.spec };
   for (const key of ["permissions", "instructions", "skills", "tools", "channels"] as const) {
     if (equal(document.spec[key], snapshot.document.spec[key])) Object.assign(spec, { [key]: current.document.spec[key] });
