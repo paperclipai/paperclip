@@ -1,6 +1,5 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
-import { hasReviewerAssignmentContinuation } from "../domain/receipt-namespace.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -33,6 +32,7 @@ import type {
   WakeQueueHost,
   WakeQueueTransaction,
 } from "./ports.js";
+import { admitReleaseDrainCandidate } from "./release-drain.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
 
@@ -161,15 +161,7 @@ async function runReleaseDrain(
       ...(preservedWakeIds.length ? { excludedWakeIds: preservedWakeIds } : {}),
     });
     if (!candidate) break;
-    if (processedWakeIds.has(candidate.id)) {
-      throw new WakeQueueApplicationError(
-        "deferred_wake_not_advanced",
-        "Deferred wake queue read the same wake id twice; the row did not leave the deferred status",
-        { companyId: run.companyId, issueId: issue.id, wakeId: candidate.id },
-      );
-    }
-    processedWakeIds.add(candidate.id);
-    if (hasReviewerAssignmentContinuation(candidate.payload)) {
+    if (!admitReleaseDrainCandidate(candidate, processedWakeIds, { companyId: run.companyId, issueId: issue.id })) {
       preservedWakeIds.push(candidate.id);
       continue;
     }
