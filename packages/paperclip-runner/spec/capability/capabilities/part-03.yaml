@@ -1,0 +1,380 @@
+# GENERATED FILE — DO NOT EDIT. Run pnpm generate:capability-inventory.
+{
+  "rows": [
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:board-user-created-the-requesting-issue:506",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:506",
+      "title": "Board user created the requesting issue.",
+      "expectedSemantics": "Skill guidance headed “Board user created the requesting issue.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:506"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:fetch-the-board-user-s-mine-inbox-issues:510",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:510",
+      "title": "Fetch the board user's Mine inbox issues.",
+      "expectedSemantics": "Skill guidance headed “Fetch the board user's Mine inbox issues.”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:510"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:summarize-it-back-to-the-board-in-a-comment-or-document:524",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:524",
+      "title": "Summarize it back to the board in a comment or document.",
+      "expectedSemantics": "Skill guidance headed “Summarize it back to the board in a comment or document.”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:524"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:worked-example-archive-a-resolved-inbox-item:529",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:529",
+      "title": "Worked Example: Archive A Resolved Inbox Item",
+      "expectedSemantics": "Skill guidance headed “Worked Example: Archive A Resolved Inbox Item”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:529"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:the-responsible-user-s-id-is-resolved-from-the-authenticated-agent-run:534",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:534",
+      "title": "The responsible user's id is resolved from the authenticated agent run.",
+      "expectedSemantics": "Skill guidance headed “The responsible user's id is resolved from the authenticated agent run.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:534"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:reverse-the-archive-if-it-was-premature-or-no-longer-desired:543",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:543",
+      "title": "Reverse the archive if it was premature or no longer desired.",
+      "expectedSemantics": "Skill guidance headed “Reverse the archive if it was premature or no longer desired.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:543"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:worked-example-reviewer-approver-heartbeat:553",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:553",
+      "title": "Worked Example: Reviewer / Approver Heartbeat",
+      "expectedSemantics": "Skill guidance headed “Worked Example: Reviewer / Approver Heartbeat”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:553"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:worked-example-manager-heartbeat:592",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:592",
+      "title": "Worked Example: Manager Heartbeat",
+      "expectedSemantics": "Skill guidance headed “Worked Example: Manager Heartbeat”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:592"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:1-identity-skip-if-already-in-context:595",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:595",
+      "title": "1. Identity (skip if already in context)",
+      "expectedSemantics": "Skill guidance headed “1. Identity (skip if already in context)”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:595"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:2-check-team-status:599",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:599",
+      "title": "2. Check team status",
+      "expectedSemantics": "Skill guidance headed “2. Check team status”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:599"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:3-agent-42-is-blocked-read-comments:606",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:606",
+      "title": "3. Agent-42 is blocked. Read comments.",
+      "expectedSemantics": "Skill guidance headed “3. Agent-42 is blocked. Read comments.”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:606"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:4-unblock-reassign-and-comment:610",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:610",
+      "title": "4. Unblock: reassign and comment.",
+      "expectedSemantics": "Skill guidance headed “4. Unblock: reassign and comment.”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:610"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:5-check-own-assignments:614",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:614",
+      "title": "5. Check own assignments.",
+      "expectedSemantics": "Skill guidance headed “5. Check own assignments.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:614"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:6-create-subtasks-and-delegate:621",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:621",
+      "title": "6. Create subtasks and delegate.",
+      "expectedSemantics": "Skill guidance headed “6. Create subtasks and delegate.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:621"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:load-tests-depend-on-caching-layer-being-done-first-paperclip-will-auto-wake-agent-55-when-the-blocker-resolves:627",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:627",
+      "title": "^ Load tests depend on caching layer being done first. Paperclip will auto-wake agent-55 when the blocker resolves.",
+      "expectedSemantics": "Skill guidance headed “^ Load tests depend on caching layer being done first. Paperclip will auto-wake agent-55 when the blocker resolves.”.",
+      "primaryDisposition": "control_plane_owned",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:627"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:7-dashboard-for-health-check:632",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:632",
+      "title": "7. Dashboard for health check.",
+      "expectedSemantics": "Skill guidance headed “7. Dashboard for health check.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:632"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:comments-and-mentions:638",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:638",
+      "title": "Comments and @-mentions",
+      "expectedSemantics": "Skill guidance headed “Comments and @-mentions”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:638"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:cross-team-work-and-delegation:644",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:644",
+      "title": "Cross-Team Work and Delegation",
+      "expectedSemantics": "Skill guidance headed “Cross-Team Work and Delegation”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:644"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:receiving-cross-team-work:648",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:648",
+      "title": "Receiving cross-team work",
+      "expectedSemantics": "Skill guidance headed “Receiving cross-team work”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:648"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:questions-and-dependencies:658",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:658",
+      "title": "Questions and dependencies",
+      "expectedSemantics": "Skill guidance headed “Questions and dependencies”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:658"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:company-context:670",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:670",
+      "title": "Company Context",
+      "expectedSemantics": "Skill guidance headed “Company Context”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:670"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:company-branding-ceo-board:682",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:682",
+      "title": "Company Branding (CEO / Board)",
+      "expectedSemantics": "Skill guidance headed “Company Branding (CEO / Board)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:682"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:openclaw-invite-prompt-ceo:702",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:702",
+      "title": "OpenClaw Invite Prompt (CEO)",
+      "expectedSemantics": "Skill guidance headed “OpenClaw Invite Prompt (CEO)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:702"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:setting-agent-instructions-path:721",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:721",
+      "title": "Setting Agent Instructions Path",
+      "expectedSemantics": "Skill guidance headed “Setting Agent Instructions Path”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:721"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/api-reference.md:project-setup-create-workspace:754",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md:754",
+      "title": "Project Setup (Create + Workspace)",
+      "expectedSemantics": "Skill guidance headed “Project Setup (Create + Workspace)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/api-reference.md:754"
+      ]
+    }
+  ]
+}

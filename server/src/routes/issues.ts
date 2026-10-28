@@ -274,7 +274,7 @@ import {
 } from "../attachment-types.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { shouldHumanCommentResumeInProgressScheduledRetry, isNoWakeComment, shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
@@ -2224,21 +2224,6 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   )
     return false;
   return true;
-}
-
-function shouldHumanCommentResumeInProgressScheduledRetry(input: {
-  hasComment: boolean;
-  issueStatus: string | null | undefined;
-  assigneeAgentId: string | null | undefined;
-  actorType: "agent" | "user";
-}) {
-  if (!input.hasComment) return false;
-  if (input.actorType !== "user") return false;
-  if (input.issueStatus !== "in_progress") return false;
-  return (
-    typeof input.assigneeAgentId === "string" &&
-    input.assigneeAgentId.length > 0
-  );
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
@@ -14017,7 +14002,7 @@ export function issueRoutes(
       }
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
-          hasComment: !!commentBody,
+          hasComment: !!commentBody && !isNoWakeComment(commentBody),
           issueStatus: existing.status,
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
@@ -14041,6 +14026,7 @@ export function issueRoutes(
         !(isBlocked && !!commentBody && (await getExecutionBlocker(db, existing.companyId, existing.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
           (!!commentBody &&
+            !isNoWakeComment(commentBody) &&
             shouldImplicitlyMoveCommentedIssueToTodo({
               issueStatus: existing.status,
               assigneeAgentId: requestedAssigneeAgentId,
@@ -15767,6 +15753,7 @@ export function issueRoutes(
           const shouldWakeAssigneeForComment =
             shouldWakeAssigneeForIssueComment({
               selfComment,
+              noWake: isNoWakeComment(commentBody),
               resumeRequested: resumeRequested === true,
               commentCreatedByRunId: comment.createdByRunId,
               issueAtCommentStart: existing,
@@ -18544,7 +18531,7 @@ export function issueRoutes(
         effectiveReopenRequested || effectiveResumeRequested === true;
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
-          hasComment: true,
+          hasComment: !isNoWakeComment(req.body.body),
           issueStatus: issue.status,
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
@@ -18567,6 +18554,7 @@ export function issueRoutes(
         !assigneeSelfCommentOnTerminal &&
         !(isBlocked && (await getExecutionBlocker(db, issue.companyId, issue.id))?.workspaceRepairRequired) &&
         (explicitMoveToTodoRequested ||
+          (!isNoWakeComment(req.body.body) &&
           shouldImplicitlyMoveCommentedIssueToTodo({
             issueStatus: issue.status,
             assigneeAgentId: issue.assigneeAgentId,
@@ -18575,7 +18563,7 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,
-          }) ||
+          })) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =
         isBlocked && effectiveMoveToTodoRequested
@@ -19249,6 +19237,7 @@ export function issueRoutes(
         // explicit resume from a completed prior run remains a valid new turn.
         const shouldWakeAssigneeForComment = shouldWakeAssigneeForIssueComment({
           selfComment,
+          noWake: isNoWakeComment(req.body.body),
           resumeRequested: resumeRequested === true,
           commentCreatedByRunId: comment.createdByRunId,
           issueAtCommentStart: issue,

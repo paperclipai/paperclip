@@ -1,0 +1,410 @@
+# GENERATED FILE — DO NOT EDIT. Run pnpm generate:capability-inventory.
+{
+  "rows": [
+    {
+      "id": "skill:skills/paperclip/references/issue-documents.md:issue-documents-through-the-api:1",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-documents.md:1",
+      "title": "Issue documents through the API",
+      "expectedSemantics": "Skill guidance headed “Issue documents through the API”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-documents.md:1"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-documents.md:create-a-document:8",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-documents.md:8",
+      "title": "Create a document",
+      "expectedSemantics": "Skill guidance headed “Create a document”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-documents.md:8"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-documents.md:update-or-resolve-an-unclear-write:49",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-documents.md:49",
+      "title": "Update or resolve an unclear write",
+      "expectedSemantics": "Skill guidance headed “Update or resolve an unclear write”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-documents.md:49"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-comments.md:comments-and-mentions:1",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-comments.md:1",
+      "title": "Comments and @-mentions",
+      "expectedSemantics": "Skill guidance headed “Comments and @-mentions”.",
+      "primaryDisposition": "always_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-comments.md:1"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-comments.md:update:8",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-comments.md:8",
+      "title": "Update",
+      "expectedSemantics": "Skill guidance headed “Update”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-comments.md:8"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:issue-workspace-runtime-controls:1",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:1",
+      "title": "Issue Workspace Runtime Controls",
+      "expectedSemantics": "Skill guidance headed “Issue Workspace Runtime Controls”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:1"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:discover-the-workspace:5",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:5",
+      "title": "Discover the Workspace",
+      "expectedSemantics": "Skill guidance headed “Discover the Workspace”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:5"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:choose-files-and-repositories:23",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:23",
+      "title": "Choose Files and Repositories",
+      "expectedSemantics": "Skill guidance headed “Choose Files and Repositories”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:23"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:control-services:37",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:37",
+      "title": "Control Services",
+      "expectedSemantics": "Skill guidance headed “Control Services”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:37"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:start-all-configured-services-waits-for-configured-readiness-checks:42",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:42",
+      "title": "Start all configured services; waits for configured readiness checks.",
+      "expectedSemantics": "Skill guidance headed “Start all configured services; waits for configured readiness checks.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:42"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:restart-all-configured-services:50",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:50",
+      "title": "Restart all configured services.",
+      "expectedSemantics": "Skill guidance headed “Restart all configured services.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:50"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:stop-all-running-services:58",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:58",
+      "title": "Stop all running services.",
+      "expectedSemantics": "Skill guidance headed “Stop all running services.”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:58"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:read-the-url:77",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:77",
+      "title": "Read the URL",
+      "expectedSemantics": "Skill guidance headed “Read the URL”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:77"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/issue-workspaces.md:mcp-tools:86",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-workspaces.md:86",
+      "title": "MCP Tools",
+      "expectedSemantics": "Skill guidance headed “MCP Tools”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/issue-workspaces.md:86"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:paperclip-routines:1",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:1",
+      "title": "Paperclip Routines",
+      "expectedSemantics": "Skill guidance headed “Paperclip Routines”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:1"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:lifecycle:16",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:16",
+      "title": "Lifecycle",
+      "expectedSemantics": "Skill guidance headed “Lifecycle”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:16"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:creating-a-routine:27",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:27",
+      "title": "Creating a Routine",
+      "expectedSemantics": "Skill guidance headed “Creating a Routine”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:27"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:concurrency-policies:64",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:64",
+      "title": "Concurrency Policies",
+      "expectedSemantics": "Skill guidance headed “Concurrency Policies”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:64"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:catch-up-policies:76",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:76",
+      "title": "Catch-Up Policies",
+      "expectedSemantics": "Skill guidance headed “Catch-Up Policies”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:76"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:activity-gated-scheduled-runs:87",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:87",
+      "title": "Activity-Gated Scheduled Runs",
+      "expectedSemantics": "Skill guidance headed “Activity-Gated Scheduled Runs”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:87"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:example-skip-quiet-nights:107",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:107",
+      "title": "Example: skip quiet nights",
+      "expectedSemantics": "Skill guidance headed “Example: skip quiet nights”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:107"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:adding-triggers:126",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:126",
+      "title": "Adding Triggers",
+      "expectedSemantics": "Skill guidance headed “Adding Triggers”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:126"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:schedule-cron:136",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:136",
+      "title": "Schedule (cron)",
+      "expectedSemantics": "Skill guidance headed “Schedule (cron)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:136"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:webhook:150",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:150",
+      "title": "Webhook",
+      "expectedSemantics": "Skill guidance headed “Webhook”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:150"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:api-manual-only:167",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:167",
+      "title": "API (manual only)",
+      "expectedSemantics": "Skill guidance headed “API (manual only)”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:167"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:updating-and-deleting-triggers:179",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:179",
+      "title": "Updating and Deleting Triggers",
+      "expectedSemantics": "Skill guidance headed “Updating and Deleting Triggers”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:179"
+      ]
+    },
+    {
+      "id": "skill:skills/paperclip/references/routines.md:manual-run:196",
+      "sourceKind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/routines.md:196",
+      "title": "Manual Run",
+      "expectedSemantics": "Skill guidance headed “Manual Run”.",
+      "primaryDisposition": "optional_agent_tool",
+      "requiredGrants": [],
+      "assertionClasses": [
+        "control_plane_invariant"
+      ],
+      "evidenceIds": [
+        "skill:skills/paperclip/references/routines.md:196"
+      ]
+    }
+  ]
+}

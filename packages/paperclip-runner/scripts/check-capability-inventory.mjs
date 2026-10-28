@@ -3,19 +3,19 @@ import { resolve } from "node:path";
 import {
   buildMcpInventory,
   buildSkillInventory,
-  decodeInventory,
   renderContractModule,
-  renderDocumentation,
   validateInventorySchema,
   validateInventories,
 } from "./lib/capability-inventory.mjs";
 
+import { readInventory, inventoryOutputs, documentationOutputs } from "./lib/capability-inventory-storage.mjs";
+
 const packageRoot = resolve(import.meta.dirname, "..");
-const readInventory = async (name) => decodeInventory(await readFile(resolve(packageRoot, `spec/capability/${name}.yaml`), "utf8"));
+const readSavedInventory = (name) => readInventory(resolve(packageRoot, `spec/capability/${name}.yaml`));
 const inventories = {
-  capabilities: await readInventory("capabilities"),
-  evaluations: await readInventory("eval-traceability"),
-  legacyMcpAliases: await readInventory("mcp-tool-map"),
+  capabilities: await readSavedInventory("capabilities"),
+  evaluations: await readSavedInventory("eval-traceability"),
+  legacyMcpAliases: await readSavedInventory("mcp-tool-map"),
 };
 const inventorySchema = JSON.parse(await readFile(resolve(packageRoot, "spec/capability/inventory.schema.json"), "utf8"));
 const errors = [
@@ -45,7 +45,8 @@ for (const [name, liveInventory] of [["capabilities", liveCapabilities], ["legac
 }
 const expected = {
   [resolve(packageRoot, "src/generated/capability-contract.ts")]: renderContractModule(inventories),
-  [resolve(packageRoot, "docs/capability-contract.md")]: renderDocumentation(inventories),
+  ...inventoryOutputs(packageRoot, inventories.capabilities),
+  ...documentationOutputs(packageRoot, inventories),
 };
 for (const [path, source] of Object.entries(expected)) {
   if (await readFile(path, "utf8").catch(() => "") !== source) errors.push(`Generated output is stale: ${path}.`);
