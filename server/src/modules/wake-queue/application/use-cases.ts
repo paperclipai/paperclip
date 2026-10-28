@@ -1,6 +1,6 @@
-import { hasReviewerAssignmentContinuation } from "../domain/receipt-namespace.js";
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { hasReviewerAssignmentContinuation } from "../domain/receipt-namespace.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
