@@ -989,7 +989,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       explicitAssignee &&
       !principalsEqual(explicitAssignee, currentAssignee) &&
       !principalsEqual(explicitAssignee, existingState.returnAssignee) &&
-      !stageHasParticipant(currentStage, explicitAssignee)
+      !input.policy.stages.some((stage) => stageHasParticipant(stage, explicitAssignee))
     ) {
       patch.executionState = { ...existingState, returnAssignee: explicitAssignee };
     }

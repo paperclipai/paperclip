@@ -2462,6 +2462,37 @@ describe("explicit executor reassignment during changes requested", () => {
     });
   });
 
+  it("rebinds the return executor to an explicitly assigned human executor", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: reworkIssue(),
+      policy,
+      requestedAssigneePatch: { assigneeAgentId: null, assigneeUserId: boardUserId },
+      actor: { userId: boardUserId },
+    });
+
+    expect(result.patch).toEqual({
+      executionState: {
+        ...changesRequestedState,
+        returnAssignee: { type: "user", userId: boardUserId, agentId: null },
+      },
+    });
+  });
+
+  it("keeps the return executor for a reassignment to a later stage participant", () => {
+    const multiStagePolicy = twoStagePolicy();
+    const result = applyIssueExecutionPolicyTransition({
+      issue: reworkIssue({
+        executionPolicy: multiStagePolicy,
+        executionState: { ...changesRequestedState, currentStageId: multiStagePolicy.stages[0].id },
+      }),
+      policy: multiStagePolicy,
+      requestedAssigneePatch: { assigneeAgentId: null, assigneeUserId: ctoUserId },
+      actor: { userId: boardUserId },
+    });
+
+    expect(result.patch).toEqual({});
+  });
+
   it("does not rebind the return executor while a review stage is pending", () => {
     const pendingState = { ...changesRequestedState, status: "pending" as const, lastDecisionOutcome: null };
     const result = applyIssueExecutionPolicyTransition({
