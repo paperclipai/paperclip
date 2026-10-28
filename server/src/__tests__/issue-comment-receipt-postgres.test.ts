@@ -5,6 +5,7 @@ import { activityLog, companies, createDb, issueComments, issueReferenceMentions
 import { completeIssueCommentReceipt } from "../services/issue-comment-receipt.js";
 import { issueReferenceService } from "../services/issue-references.js";
 import { issueService } from "../services/issues.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -161,7 +162,7 @@ describePostgres("accepted comment finalization", () => {
     }
   }, 30_000);
 
-  it("serializes receipt completion with actual task deletion", async () => {
+  it.each(["task", "company"] as const)("serializes receipt completion with actual %s deletion", async kind => {
     const companyId = randomUUID(), issueId = randomUUID(), commentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Task deletion race", issuePrefix: `RCP${companyId.slice(0, 6).toUpperCase()}` });
     await db.insert(issues).values({ id: issueId, companyId, title: "Completed task", status: "done" });
@@ -179,15 +180,18 @@ describePostgres("accepted comment finalization", () => {
           }
           return callback(new Proxy(tx, {
             get(transaction, method) {
-              // Delay the real DELETE after its normal task lock is held.
+              // Delay the real task DELETE, preserving each service's normal
+              // earlier locks (including company deletion's child-row locks).
               if (deleting && method === "delete") return (table: unknown) => {
                 const builder = transaction.delete(table as typeof issues);
                 if (table !== issues) return builder;
-                return { where: (...args: Parameters<typeof builder.where>) => ({ returning: async () => {
-                  held();
-                  await gate;
-                  return builder.where(...args).returning();
-                } }) };
+                return { where: (...args: Parameters<typeof builder.where>) => {
+                  const query = builder.where(...args);
+                  const wait = async () => { held(); await gate; };
+                  return kind === "task"
+                    ? { returning: async () => { await wait(); return query.returning(); } }
+                    : (async () => { await wait(); return query; })();
+                } };
               };
               const value = Reflect.get(transaction, method, transaction);
               return typeof value === "function" ? value.bind(transaction) : value;
@@ -198,7 +202,8 @@ describePostgres("accepted comment finalization", () => {
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
-    const deleting = issueService(wrap(true)).remove(issueId).catch(error => error);
+    const deleting = (kind === "task" ? issueService(wrap(true)).remove(issueId)
+      : deleteCompany(wrap(true), companyId)).catch(error => error);
     let completing: Promise<unknown> | undefined;
     try {
       await ready;
@@ -213,11 +218,12 @@ describePostgres("accepted comment finalization", () => {
         expect(state?.wait_event_type).toBe("Lock");
       }, { timeout: 5_000, interval: 10 });
       release();
-      expect(await deleting).toMatchObject({ id: issueId });
+      expect(await deleting).toMatchObject({ id: kind === "task" ? issueId : companyId });
       expect(await completing).toMatchObject({ status: 404 });
       expect(await db.select().from(issues).where(eq(issues.id, issueId))).toHaveLength(0);
       expect(await db.select().from(issueComments).where(eq(issueComments.id, commentId))).toHaveLength(0);
       expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(0);
+      if (kind === "company") expect(await db.select().from(companies).where(eq(companies.id, companyId))).toHaveLength(0);
     } finally {
       release();
       await Promise.allSettled([deleting, completing]);

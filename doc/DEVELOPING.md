@@ -3455,7 +3455,7 @@ after optimistic cache cancellation or conversation creation. A retained accepte
 comment returns its existing receipt before the route can reopen a completed task.
 `server/src/services/issue-comment-receipt.ts` completes reference and activity
 records for keyed board comments. It locks the same-company task before its
-comment, matching task deletion, comment removal and tombstoning. It repairs references and
+comment, matching task and company deletion, comment removal and tombstoning. It repairs references and
 inserts a missing activity record in one
 transaction, and publishes after commit. The task uses `FOR NO KEY UPDATE` so
 concurrent comments can reference each other without blocking foreign-key checks. Both the initial send and a retained
