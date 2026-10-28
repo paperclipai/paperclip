@@ -907,7 +907,12 @@ export function createHeartbeatScheduling(
     if (!issue.assigneeAgentId || issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
     }
-    if (!["in_progress", "in_review"].includes(issue.status)) {
+    // A human can request one check of a blocked task. Admission still owns
+    // dependencies, recovery, pause and budget gates; automatic ticks stay idle.
+    const allowedStatuses = actorType === "user"
+      ? ["in_progress", "in_review", "blocked"]
+      : ["in_progress", "in_review"];
+    if (!allowedStatuses.includes(issue.status)) {
       throw conflict(
         "Issue monitor can only run while the issue is in progress or in review",
       );
@@ -928,7 +933,7 @@ export function createHeartbeatScheduling(
             sql`${issues.monitorNextCheckAt} is not null`,
             isNull(issues.assigneeUserId),
             sql`${issues.assigneeAgentId} is not null`,
-            inArray(issues.status, ["in_progress", "in_review"]),
+            inArray(issues.status, allowedStatuses),
             or(
               isNull(issues.monitorWakeRequestedAt),
               lt(issues.monitorWakeRequestedAt, staleClaimThreshold),

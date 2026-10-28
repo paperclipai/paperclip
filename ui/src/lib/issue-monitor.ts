@@ -56,6 +56,10 @@ export interface MonitorDateTimeFormatOptions {
   timeZone?: string;
 }
 
+export function areAutomaticMonitorChecksPaused(issue: Pick<MonitorIssueLike, "status">): boolean {
+  return issue.status !== undefined && issue.status !== "in_progress" && issue.status !== "in_review";
+}
+
 function toTimestamp(value: MonitorDate): number {
   const timestamp = new Date(value).getTime();
   if (Number.isNaN(timestamp)) throw new RangeError("Invalid monitor date");

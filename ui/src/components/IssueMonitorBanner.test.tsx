@@ -260,6 +260,36 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => root.unmount());
   });
 
+  it("offers a manual check on a blocked task without promising an automatic wake", () => {
+    const onCheckNow = vi.fn();
+    const issue = { ...issueWithMonitor(new Date(NOW.getTime() - 12 * 60_000).toISOString()), status: "blocked" as const };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} />
+    </>));
+    expect(container.textContent).toContain("Automatic checks paused");
+    expect(container.textContent).not.toMatch(/overdue|next tick|scheduled check/i);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.map(button => button.textContent)).toEqual(["Check now", "Check now"]);
+    flushSync(() => buttons[1]!.click());
+    expect(onCheckNow).toHaveBeenCalledTimes(1);
+    flushSync(() => root.unmount());
+  });
+
+  it.each(["backlog", "todo"] as const)("does not offer a monitor check on a %s task", (status) => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.textContent).not.toMatch(/next tick|momentarily|reply wakes/i);
+    flushSync(() => root.unmount());
+  });
+
   it("hides the banner and strip when there is no monitor", () => {
     expect(hasVisibleMonitorSurface(issueWithMonitor(null))).toBe(false);
     const root = createRoot(container);
