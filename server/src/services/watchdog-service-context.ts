@@ -2,6 +2,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { and, eq, inArray, or, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, companySecrets, companySecretBindings, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -133,6 +134,7 @@ export async function assertWatchdogSecret(db: Db, context: WatchdogServiceConte
 
 /**
  * `readCondition` applies the caller's private-issue access: signal origin grants none.
+ * Hidden issues are skipped, as in the normal issue list.
  * `titleQuery` filters before verification, which reads all origin runs in one query.
  */
 export async function listWatchdogSignals(
@@ -144,6 +146,7 @@ export async function listWatchdogSignals(
   const candidates = await db.select().from(issues).where(and(
     ...(readCondition ? [readCondition] : []),
     eq(issues.companyId, context.companyId), eq(issues.assigneeAgentId, context.assigneeAgentId),
+    visibleIssueCondition(),
     inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
     or(and(eq(issues.createdByAgentId, context.agentId), eq(issues.originKind, "watchdog_service_signal")),
       inArray(issues.id, context.legacyIssues.map((pin) => pin.issueId as string))),
