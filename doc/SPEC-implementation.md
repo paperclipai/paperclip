@@ -324,6 +324,15 @@ Invariants:
 - no cycles in reporting tree
 - `terminated` agents cannot be resumed
 
+Agent configuration also has a versioned YAML representation in the Advanced
+tab, including instruction text, skills, tools, channels, permissions, secrets,
+API key operations, and revision restore. Resource saves use their owning APIs
+and expose partial failures; they are not a cross-resource transaction.
+[Agent configuration YAML](agent-configuration-yaml.md) defines its schema,
+replacement semantics, secret preservation, and revision preconditions. It uses
+the existing configuration and resource APIs, retaining their authorization
+and approval gates. Agent lifecycle commands remain separate actions.
+
 ## 7.3 `agent_api_keys`
 
 - `id` uuid pk

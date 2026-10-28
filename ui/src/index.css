@@ -3295,6 +3295,26 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    ── end allowlist ── */
 
 /* Agent settings composition, shared with Storybook. */
+.agent-yaml-editor .cm-editor {
+  height: var(--sz-480px);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--background);
+  color: var(--foreground);
+}
+.agent-yaml-editor .cm-scroller { overflow: auto; }
+.agent-yaml-editor .cm-gutters {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-color: var(--border);
+}
+.agent-yaml-editor .cm-activeLine,
+.agent-yaml-editor .cm-activeLineGutter { background: var(--accent); }
+.agent-yaml-editor .cm-cursor { border-left-color: var(--foreground); }
+.agent-yaml-editor .cm-selectionBackground,
+.agent-yaml-editor .cm-focused .cm-selectionBackground { background: var(--accent); }
+.agent-yaml-editor .cm-focused { outline-color: var(--ring); }
+
 .agent-settings-form > .relative {
   @apply flex flex-col gap-8;
 }

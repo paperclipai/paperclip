@@ -49,6 +49,21 @@ resource allocation waits for approval.
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 
+Open **Advanced** at `/agents/:agentId/advanced` for the complete agent
+[YAML configuration](../../doc/agent-configuration-yaml.md). Edit a name, budget,
+runtime setting, and adapter key; save, reload, and check the ordinary settings
+and Revisions. Try malformed YAML, a missing/unknown field, a removed nested key,
+and a concurrent settings edit. Errors must retain the draft; stale saves return
+a conflict. Unchanged secret markers must preserve their stored values. Navigating
+away with a draft must show the existing unsaved-change guard. **Reload saved**
+discards the draft. Also edit instruction text, skill pins, direct tool installs,
+channel settings/resources, permissions/trust/project boundaries, secret operations,
+and API key operations. Verify each result in its owning tab. Revision restore is
+an isolated save. Inherited access/history under `observed` is read-only. An
+interrupted multi-resource save must report partial progress, preserve returned
+one-time keys, and require reload before another save. Domain APIs retain their
+existing authorization; a multi-resource save is not atomic.
+
 For a low-trust agent, open **Permissions / Trust → Allowed projects**. An operator
 with agent-management permission can select additional projects and explicitly
 save them. Existing projects and other containment restrictions remain intact.
