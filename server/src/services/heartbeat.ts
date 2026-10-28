@@ -10780,6 +10780,55 @@ export function heartbeatService(
     if (previousStatus === updated.status) return;
     clearHeartbeatRunRuntimeStatus(updated.id);
     void emitAgentTaskRun(db, updated);
+    void releaseAgentAfterTerminalRun(updated.agentId);
+  }
+
+  // Invariant: an agent row is flipped to status="running" at execution-start
+  // (the atomic gate in the run-start path), and nothing used to flip it back.
+  // A run that ends without passing through the normal teardown therefore
+  // leaves the agent stuck on "running" forever: the board shows a phantom
+  // live agent, and every reader that treats "running" as "busy" waits on it.
+  // The two ways this happened in practice are a SIGTERM during a run (the
+  // whole server goes away before teardown) and a run finalized by a
+  // recovery/terminalization path rather than by its own executor.
+  //
+  // Release the agent once the run that owned it reaches a terminal status and
+  // the agent holds no other live run. This runs in the background and never
+  // throws: agent status is bookkeeping, and a failure here must not fail the
+  // run write that triggered it. Paused/terminated agents are left alone; their
+  // status is a deliberate operator decision, not a leaked lease.
+  async function releaseAgentAfterTerminalRun(agentId: string): Promise<void> {
+    try {
+      const stillRunning = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        )
+        .limit(1);
+      if (stillRunning.length > 0) return;
+
+      const released = await db
+        .update(agents)
+        .set({ status: "idle", updatedAt: new Date() })
+        .where(and(eq(agents.id, agentId), eq(agents.status, "running")))
+        .returning({ id: agents.id })
+        .then((rows) => rows[0] ?? null);
+      if (released) {
+        logger.debug(
+          { agentId },
+          "agent released to idle after its last run reached a terminal status",
+        );
+      }
+    } catch (error) {
+      logger.warn(
+        { agentId, err: error },
+        "failed to release agent status after terminal run",
+      );
+    }
   }
 
   async function setRunStatus(
