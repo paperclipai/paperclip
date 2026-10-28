@@ -48,7 +48,11 @@ describe.skipIf(!support.supported)("wake admission pool progress", () => {
     let ready!: () => void;
     const reserved = new Promise<void>(resolve => { ready = resolve; });
     const deps = createHeartbeatQueueTestDependencies(db);
-    deps.getAgent.mockImplementation(async id => work.find(item => item.agent.id === id)?.agent ?? null);
+    deps.getAgent.mockImplementation(async id => {
+      const item = work.find(item => item.agent.id === id);
+      if (!item) throw new Error("Unknown fixture agent");
+      return item.agent;
+    });
     deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true } as Awaited<ReturnType<typeof deps.instanceSettings.getExperimental>>);
     const actual = issueService(db);
     deps.issuesSvc.listDependencyReadiness.mockImplementation(async (...args) => {
