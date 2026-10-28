@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, routineRuns, routines, workAssessments } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, workAssessments } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { routineService } from "../routines.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 
@@ -19,14 +20,30 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
   async function seed(mode = "matching") {
-    const issueId = randomUUID(), runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID(), invocationId = randomUUID();
-    const [routine] = await db.insert(routines).values({ companyId, title: "Daily summary" }).returning();
+    let issueId: string = randomUUID(), invocationId: string = randomUUID();
+    const runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID(), assessmentId = randomUUID();
+    const [routine] = await db.insert(routines).values({ companyId, title: "Daily summary", assigneeAgentId: agentId }).returning();
     const otherCompanyId = randomUUID();
     if (mode === "foreign-company") await db.insert(companies).values({ id: otherCompanyId, name: "Other fixture", issuePrefix: `X${otherCompanyId.slice(0, 5)}` });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Summary execution", status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
-      originKind: mode === "ordinary" ? "manual" : "routine_execution", originId: mode === "wrong-routine" ? randomUUID() : routine!.id, originRunId: invocationId });
-    await db.insert(routineRuns).values({ id: invocationId, companyId: mode === "foreign-company" ? otherCompanyId : companyId,
-      routineId: routine!.id, linkedIssueId: mode === "wrong-issue" ? null : issueId, source: "manual", status: "issue_created", triggerPayload: { retainedInput: "Launch" } });
+    if (mode === "custom-origin") {
+      const pluginKey = `paperclip.routine-status-${randomUUID()}`, originId = `operation:${randomUUID()}`;
+      const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: pluginKey, version: "0.1.0",
+        manifestJson: { id: pluginKey, apiVersion: 1, version: "0.1.0", displayName: "Routine fixture", description: "Routine fixture",
+          author: "Paperclip", categories: ["automation"], capabilities: ["routines.managed"], entrypoints: { worker: "./worker.js" } } }).returning();
+      await db.insert(pluginManagedResources).values({ companyId, pluginId: plugin!.id, pluginKey, resourceKind: "routine", resourceKey: "summary",
+        resourceId: routine!.id, defaultsJson: { issueTemplate: { originId } } });
+      const invocation = await routineService(db, { heartbeat: { wakeup: async () => undefined } }).runRoutine(routine!.id, { source: "manual", idempotencyKey: randomUUID() });
+      invocationId = invocation.id; issueId = invocation.linkedIssueId!;
+      const [created] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(created).toMatchObject({ originKind: "routine_execution", originId, originRunId: invocationId });
+      expect(created.originId).not.toBe(routine!.id);
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
+    } else {
+      await db.insert(issues).values({ id: issueId, companyId, title: "Summary execution", status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+        originKind: mode === "ordinary" ? "manual" : "routine_execution", originId: routine!.id, originRunId: mode === "wrong-invocation" ? randomUUID() : invocationId });
+      await db.insert(routineRuns).values({ id: invocationId, companyId: mode === "foreign-company" ? otherCompanyId : companyId,
+        routineId: routine!.id, linkedIssueId: mode === "wrong-issue" ? null : issueId, source: "manual", status: "issue_created", triggerPayload: { retainedInput: "Launch" } });
+    }
     await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1",
       policyVersion: "routine-status-test", risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
       contractJson: { revision: "1", objective: "Save summary", criteria: [] }, canonicalSha256: `contract-${contractId}`, createdByActorType: "system", createdByActorId: "test" });
@@ -53,11 +70,15 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
     const replay = await commit(f, status); expect(replay.replayed).toBe(true); expect(replay.decision.id).toBe(first.decision.id);
     expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0]).toEqual(saved);
   });
-  it.each(["ordinary", "wrong-routine", "wrong-issue", "foreign-company"])("does not settle an invocation with %s custody", async mode => {
+  it.each(["ordinary", "wrong-invocation", "wrong-issue", "foreign-company"])("does not settle an invocation with %s custody", async mode => {
     const f = await seed(mode); const [before] = await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId));
     await commit(f, "done");
     expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0]).toEqual(before);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+  });
+  it("settles a publicly dispatched plugin-managed invocation with its supported custom origin", async () => {
+    const f = await seed("custom-origin"); await commit(f, "done");
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0]).toMatchObject({ linkedIssueId: f.issueId, status: "completed", completedAt: expect.any(Date) });
   });
   it("rolls back the task and routine projection together", async () => {
     const f = await seed();

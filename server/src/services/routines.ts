@@ -2029,13 +2029,12 @@ export function routineService(
         companyId: issues.companyId,
         status: issues.status,
         originKind: issues.originKind,
-        originId: issues.originId,
         originRunId: issues.originRunId,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    if (!issue || issue.originKind !== "routine_execution" || !issue.originId || !issue.originRunId) return null;
+    if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
     const run = await executor
       .select({
         id: routineRuns.id,
@@ -2046,7 +2045,7 @@ export function routineService(
       .from(routineRuns)
       .innerJoin(routines, and(eq(routines.id, routineRuns.routineId), eq(routines.companyId, issue.companyId)))
       .where(and(eq(routineRuns.id, issue.originRunId), eq(routineRuns.companyId, issue.companyId),
-        eq(routineRuns.routineId, issue.originId), eq(routineRuns.linkedIssueId, issue.id)))
+        eq(routineRuns.linkedIssueId, issue.id)))
       .then((rows) => rows[0] ?? null);
     if (!run) return null;
     if (issue.status === "done") {
