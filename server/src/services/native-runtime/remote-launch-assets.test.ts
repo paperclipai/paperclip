@@ -136,6 +136,24 @@ describe("remote launch asset staging", () => {
     expect(readFileSync(join(f.remote, "conversation.json"), "utf8")).toBe("saved provider conversation");
   });
 
+  it("delivers flat and nested selected packages without flattening their paths", async () => {
+    const f = await filesystemFixture();
+    const nestedRoot = join(f.root, "nested-skill");
+    mkdirSync(nestedRoot);
+    const body = "---\nname: nested\ndescription: Nested selected skill\n---\nKeep the nested package.\n";
+    writeFileSync(join(nestedRoot, "SKILL.md"), body);
+    f.source.skills.push({ ...f.source.skills[0]!, key: "nested", runtimeName: "group/nested",
+      bundle: { ...f.source.skills[0]!.bundle, rootPath: nestedRoot } });
+    f.input.runtimeContext!.target.skills = f.source.skills.map((skill, index) => ({ ...skill,
+      bundle: { ...skill.bundle, rootPath: `/session/filesystem/context/skills/${index}-digest` } }));
+    await releaseMaterializedNativeRuntimeSkills(join(f.root, "codex-home", "skills"));
+    await prepareIsolatedCodexHome({ context: f.source, codexHome: join(f.root, "codex-home") });
+    await stageRemoteLaunchAssets(f.input);
+    expect(readFileSync(join(f.remote, "skills", "test", "SKILL.md"), "utf8")).toContain("Use a native confirmation.");
+    expect(readFileSync(join(f.remote, "skills", "group", "nested", "SKILL.md"), "utf8")).toBe(body);
+    expect(statSync(join(f.remote, "skills", "group", "nested", "SKILL.md")).mode & 0o222).toBe(0);
+  });
+
   it.each(["symlink", "ambient", "writable"] as const)("rejects an unsafe selected source projection before clearing retained skills: %s", async kind => {
     const f = await filesystemFixture();
     mkdirSync(join(f.remote, "skills"), { recursive: true });
