@@ -983,6 +983,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     requestedStatus === "in_review";
 
   if (!shouldStartWorkflow) {
+    if (
+      existingState?.status === CHANGES_REQUESTED_STATUS &&
+      currentStage &&
+      explicitAssignee &&
+      !principalsEqual(explicitAssignee, currentAssignee) &&
+      !principalsEqual(explicitAssignee, existingState.returnAssignee) &&
+      !stageHasParticipant(currentStage, explicitAssignee)
+    ) {
+      patch.executionState = { ...existingState, returnAssignee: explicitAssignee };
+    }
     return { patch };
   }
 
