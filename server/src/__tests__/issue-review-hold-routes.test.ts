@@ -2,15 +2,13 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-  activityLog,
   agentWakeupRequests,
   agents,
   companies,
   companyMemberships,
   createDb,
-  heartbeatRuns,
   issueComments,
   issueExecutionDecisions,
   issues,
@@ -40,18 +38,6 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
     db = createDb(tempDb.connectionString);
   }, 30_000);
 
-  afterEach(async () => {
-    await db.delete(issueExecutionDecisions);
-    await db.delete(issueComments);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(issues);
-    await db.delete(companyMemberships);
-    await db.delete(agents);
-    await db.delete(companies);
-  });
-
   afterAll(async () => {
     await tempDb?.cleanup();
   });
@@ -73,7 +59,7 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
     const authorAgentId = randomUUID();
     const reviewerAgentId = randomUUID();
     const boardUserId = "hold-board";
-    const prefix = `H${changesRequestedCount}${status === "blocked" ? "B" : "R"}`;
+    const prefix = `H${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     await db.insert(companies).values({
       id: companyId,
       name: `${prefix} Company`,
@@ -251,23 +237,31 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       expect(await commentCount(seeded.issueId)).toBe(2);
     });
 
-    it("rejects an explicit board reopen of the held review through PATCH and the comment route alike", async () => {
+    it("rejects a board PATCH reopen and keeps the cycle on an explicit comment-route reopen", async () => {
       const seeded = await seedHeldReview(count, "blocked");
 
       const patchReopen = await request(seeded.board)
         .patch(`/api/issues/${seeded.issueId}`)
         .send({ comment: "Reopen it.", reopen: true });
-      const routeReopen = await request(seeded.board)
-        .post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Reopen it.", reopen: true });
-
       expect(patchReopen.status, JSON.stringify(patchReopen.body)).toBe(422);
-      expect(routeReopen.status, JSON.stringify(routeReopen.body)).toBe(422);
-      expect(routeReopen.body).toMatchObject(patchReopen.body);
-      const row = await readIssue(seeded.issueId);
+      let row = await readIssue(seeded.issueId);
       expect(row.status).toBe("blocked");
       expect(row.executionState).toEqual(seeded.executionState);
       expect(await commentCount(seeded.issueId)).toBe(0);
+
+      const routeReopen = await request(seeded.board)
+        .post(`/api/issues/${seeded.issueId}/comments`)
+        .send({ body: "Reopen it.", reopen: true });
+      expect(routeReopen.status, JSON.stringify(routeReopen.body)).toBe(201);
+      row = await readIssue(seeded.issueId);
+      expect(row.status).toBe("todo");
+      expect(row.assigneeAgentId).toBe(seeded.reviewerAgentId);
+      expect(row.executionState).toEqual(seeded.executionState);
+      const decisions = await db
+        .select()
+        .from(issueExecutionDecisions)
+        .where(eq(issueExecutionDecisions.issueId, seeded.issueId));
+      expect(decisions).toHaveLength(0);
     });
   });
 });

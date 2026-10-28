@@ -18606,24 +18606,6 @@ export function issueRoutes(
           .json({ error: "Issue follow-up blocked by unresolved blockers" });
         return;
       }
-      const heldReviewReopenPatch =
-        effectiveMoveToTodoRequested &&
-        isBlocked &&
-        !hasUnresolvedFirstClassBlockers &&
-        parseIssueExecutionState(issue.executionState)?.status === "pending"
-          ? applyIssueExecutionPolicyTransition({
-              issue,
-              policy: normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
-              requestedStatus: "todo",
-              requestedAssigneePatch: {},
-              actor: {
-                agentId: actor.agentId ?? null,
-                userId: actor.actorType === "user" ? actor.actorId : null,
-              },
-              allowBoardOverride: req.actor.type === "board" && req.actor.source !== "mcp_oauth",
-              commentBody: null,
-            }).patch
-          : null;
       if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,
@@ -18702,7 +18684,7 @@ export function issueRoutes(
         scheduledRetrySupersededByComment =
           shouldResumeInProgressScheduledRetry &&
           issue.status === "in_progress";
-        const reopenedIssue = await svc.update(id, { status: "todo", ...heldReviewReopenPatch });
+        const reopenedIssue = await svc.update(id, { status: "todo" });
         if (!reopenedIssue) {
           res.status(404).json({ error: "Issue not found" });
           return;
@@ -18722,7 +18704,7 @@ export function issueRoutes(
           entityType: "issue",
           entityId: currentIssue.id,
           details: {
-            status: currentIssue.status,
+            status: "todo",
             ...(reopened
               ? { reopened: true, reopenedFrom: reopenFromStatus }
               : {}),
