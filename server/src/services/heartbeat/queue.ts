@@ -1,3 +1,4 @@
+import { issueExecutionGeneration, parseIssueExecutionState } from "../issue-execution-policy.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
@@ -2185,6 +2186,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const contextSnapshot: Record<string, unknown> = {
       ...(opts.contextSnapshot ?? {}),
     };
+    delete contextSnapshot.reviewerAssignmentGeneration;
     const reason = opts.reason ?? null;
     let payload = opts.payload ? { ...opts.payload } : null;
     // Only the board queue route can record interruption authority on an
@@ -3119,6 +3121,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              responsibleUserId: issues.responsibleUserId,
+              executionPolicy: issues.executionPolicy,
+              executionState: issues.executionState,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -3156,6 +3161,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!,
             })) return { kind: "deferred" as const };
           }
+          const reviewState = parseIssueExecutionState(issue.executionState);
+          const reviewerGeneration = issue.status === "in_review" && reviewState?.status === "pending" &&
+            reviewState.currentStageType === "review" && reviewState.currentParticipant?.type === "agent" &&
+            reviewState.currentParticipant.agentId === agentId ? issueExecutionGeneration(issue) : null;
           const issueStateGuard = opts.issueStateGuard;
           const activeMonitorRun = issueStateGuard?.monitorNextCheckAt === undefined ? null
             : await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
@@ -4348,13 +4357,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
                 : opts.failedRunId ?? automaticParentRunId,
-              contextSnapshot: adoptedComments.length
-                ? withQueuedCommentIdsInRunContext(
-                    enrichedContextSnapshot,
-                    adoptedCommentIds,
-                    adoptedComments.map((wake) => wake.id),
-                  )
-                : enrichedContextSnapshot,
+              contextSnapshot: {
+                ...(adoptedComments.length ? withQueuedCommentIdsInRunContext(
+                  enrichedContextSnapshot, adoptedCommentIds, adoptedComments.map(wake => wake.id),
+                ) : enrichedContextSnapshot), ...(reviewerGeneration ? { reviewerAssignmentGeneration: reviewerGeneration } : {}),
+              },
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId

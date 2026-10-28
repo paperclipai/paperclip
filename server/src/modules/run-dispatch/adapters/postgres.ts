@@ -43,7 +43,7 @@ import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
 } from "../../../services/issue-continuation-summary.js";
-import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import { issueExecutionGeneration, parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
 import type {
   QueuedRunFacts,
@@ -219,7 +219,8 @@ export function createPostgresRunDispatchAdapter(
       // Already-admitted ordinary work owes the budget/run gate, not another
       // continuation or chat-control issue lock. Its authority is captured on
       // the run and reservation; protected recovery retains its admission.
-      const hintedIssueId = input.enforceContinuationOwnership === false ? null
+      const hintedIssueId = input.enforceContinuationOwnership === false &&
+        typeof parseObject(hint.contextSnapshot).reviewerAssignmentGeneration !== "string" ? null
         : readNonEmptyString(parseObject(hint.contextSnapshot).issueId);
 
       const locked = async (typedTx: Db, publications: ActivityPublication[]) => {
@@ -247,7 +248,8 @@ export function createPostgresRunDispatchAdapter(
           .then((rows) => rows[0] ?? null);
         if (!run) return { kind: "missing" as const };
 
-        const lockedIssueId = input.enforceContinuationOwnership === false ? null
+        const lockedIssueId = input.enforceContinuationOwnership === false &&
+          typeof parseObject(run.contextSnapshot).reviewerAssignmentGeneration !== "string" ? null
           : readNonEmptyString(parseObject(run.contextSnapshot).issueId);
         if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
@@ -1013,10 +1015,21 @@ export function createPostgresRunDispatchAdapter(
       };
   }
 
+  async function reviewerGenerationStaleness(tx: Db, run: HeartbeatRun, issueId: string) {
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    if (typeof contextSnapshot.reviewerAssignmentGeneration !== "string") return null;
+    const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+    if (task && contextSnapshot.reviewerAssignmentGeneration === issueExecutionGeneration(task)) return null;
+    return { stale: true as const, errorCode: "issue_review_participant_changed" as const,
+      reason: "The review submission changed before execution. This queued review no longer matches the task.", details: { issueId } };
+  }
+
   async function decideCurrentRunStaleness(tx: Db, run: HeartbeatRun, now: Date, publications?: ActivityPublication[]) {
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, facts: null, executionBlocker: null, decision: { stale: false as const } };
+    const reviewerStaleness = await reviewerGenerationStaleness(tx, run, issueId);
+    if (reviewerStaleness) return { issueId, facts: null, executionBlocker: null, decision: reviewerStaleness };
     if (typeof contextSnapshot.workspaceReconstructionActionId === "string") {
       try {
         await validateReconstructedWorkspaceDispatch(tx, run);
@@ -1162,6 +1175,10 @@ export function createPostgresRunDispatchAdapter(
       if (run.status !== input.expectedStatus || run.resultJson?.cancellation || run.resultJson?.startupCancellation) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
+      const reviewIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const reviewStaleness = reviewIssueId && await reviewerGenerationStaleness(tx, run, reviewIssueId);
+      if (reviewStaleness) return { dispatched: false as const,
+        cancellation: await cancelStaleRunInTx(tx, run, reviewIssueId!, reviewStaleness, input.expectedStatus, input.now, true) };
       if (input.enforceContinuationOwnership !== false) {
         const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
           tx,
@@ -1268,6 +1285,10 @@ export function createPostgresRunDispatchAdapter(
         || ["paused", "terminated", "pending_approval"].includes(scope.agentStatus))
         return { dispatched: false as const, admissionBlockReason: "Execution scope is paused or no longer ready for work" };
 
+      const reviewIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const reviewStaleness = reviewIssueId && await reviewerGenerationStaleness(tx, run, reviewIssueId);
+      if (reviewStaleness) return { dispatched: false as const,
+        cancellation: await cancelStaleRunInTx(tx, run, reviewIssueId!, reviewStaleness, input.expectedStatus, input.now, true) };
       if (input.enforceContinuationOwnership !== false) {
         const contextSnapshot = parseObject(run.contextSnapshot);
         const issueId = readNonEmptyString(contextSnapshot.issueId);
