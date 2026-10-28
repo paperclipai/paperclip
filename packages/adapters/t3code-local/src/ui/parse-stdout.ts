@@ -1,7 +1,6 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 import { parseT3RunResult } from "../server/parse.js";
 
-/** Renders the final `--wait --json` result; every other line is plain output. */
 export function parseT3CodeStdoutLine(line: string, ts: string): TranscriptEntry[] {
   const result = parseT3RunResult(line);
   if (!result) return [{ kind: "stdout", ts, text: line }];

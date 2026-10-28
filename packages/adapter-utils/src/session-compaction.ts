@@ -101,7 +101,6 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     nativeContextManagement: "confirmed",
     defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
   },
-  // T3 Code threads run providers that compact their own context.
   t3code_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",

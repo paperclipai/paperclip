@@ -42,14 +42,12 @@ import {
   type T3RunResult,
 } from "./parse.js";
 
-/** Bound for `project add`; stop confirmation uses its own deadline. */
 const HELPER_TIMEOUT_SEC = 30;
 const STOP_POLL_MS = 1000;
 
 interface Attempt {
   proc: RunProcessResult;
   result: T3RunResult | null;
-  /** The thread the message was sent to; null for `thread start`. */
   threadId: string | null;
   markStopped: () => void;
 }
@@ -69,7 +67,6 @@ function exitedCleanly(proc: RunProcessResult): boolean {
   return !proc.timedOut && proc.signal === null && proc.exitCode !== null;
 }
 
-/** The CLI fails these before it launches or messages a thread. */
 function failedBeforeLaunch(proc: RunProcessResult): boolean {
   return exitedCleanly(proc) && (
     isT3ServerUnavailable(proc.stderr) || isT3ProjectNotFound(proc.stderr) || isT3ThreadNotFound(proc.stderr)
@@ -94,7 +91,6 @@ function stoppedBeforeTurn(): AdapterExecutionResult {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, signal } = ctx;
-  // Register before any setup so a Stop always reaches this run.
   await ctx.onCancellationReady?.();
   if (signal?.aborted) {
     return stoppedBeforeTurn();
@@ -131,8 +127,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     || process.cwd();
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
-  // The env only configures the t3 CLI (for example T3CODE_HOME); T3 Code's
-  // own provider process runs the agent.
   const env = Object.fromEntries(
     Object.entries(parseObject(config.env)).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string" && !isForbiddenConfigEnvKey(entry[0]),
@@ -151,8 +145,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const storedThreadId = asString(sessionParams.threadId, runtime.sessionId ?? "").trim();
   const storedCwd = asString(sessionParams.cwd, "");
   const cwdMatches = storedCwd.length === 0 || path.resolve(storedCwd) === path.resolve(cwd);
-  // A thread keeps the model it started with; an older session without these
-  // fields counts as the project default.
   const storedSelection = `${asString(sessionParams.provider, "")}/${asString(sessionParams.model, "")}`;
   const selectionMatches = storedSelection === `${provider}/${model}`;
   const canResume = storedThreadId.length > 0 && cwdMatches && selectionMatches;
@@ -222,8 +214,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ]);
   };
 
-  // Helper commands get their own process key so they never replace the run's
-  // registered provider invocation.
   const runT3 = (args: string[], options: { helper?: string; stdin?: string; timeoutSec?: number } = {}) =>
     runChildProcess(options.helper ? `${runId}:${options.helper}` : runId, command, args, {
       cwd,
@@ -235,11 +225,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onSpawn: options.helper ? undefined : onSpawn,
     });
 
-  // A unique title lets a timed-out `thread start` be found again and stopped.
   const title = `Paperclip: ${agent.name} (${runId.slice(0, 8)})`;
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
 
-  /** Null when the run was stopped before this turn could start. */
   const runTurn = async (threadId: string | null): Promise<Attempt | null> => {
     if (signal?.aborted) return null;
     const prompt = await buildPrompt(Boolean(threadId));
@@ -267,21 +255,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       promptMetrics: { promptChars: prompt.length, instructionsChars: instructionsPrefix.length },
       context,
     });
-    // Stop may have arrived while onMeta was writing; no child exists yet to stop.
     if (signal?.aborted) return null;
     const markStopped = providerStop.beginInvocation();
     const proc = await runT3(args, { stdin: prompt });
     return { proc, result: parseT3RunResult(proc.stdout), threadId, markStopped };
   };
 
-  /** Falls back to the earlier attempt when a Stop prevents the retry. */
   const startThread = async (): Promise<Attempt | null> => {
     const first = await runTurn(null);
     if (!first || first.result || !exitedCleanly(first.proc) || !isT3ProjectNotFound(first.proc.stderr)) return first;
     if (signal?.aborted) return first;
     await onLog("stdout", `[paperclip] No T3 Code project contains "${cwd}"; adding it as a project.\n`);
     if (signal?.aborted) return first;
-    // Setup runs under its own process key, so Stop must end it directly.
     const helperKey = `${runId}:project-add`;
     const stopSetup = () => {
       const running = runningProcesses.get(helperKey);
@@ -294,10 +279,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return added.exitCode === 0 ? (await runTurn(null)) ?? first : first;
   };
 
-  /** Resolves the attempt's thread and confirms no turn of it is running. */
   const confirmStopped = async (attempt: Attempt): Promise<{ threadId: string | null; error: string | null }> => {
     if (failedBeforeLaunch(attempt.proc)) return { threadId: attempt.threadId, error: null };
-    // Every helper below shares this window, so settlement stays within it.
     const budgetSec = Math.max(graceSec, 5);
     const deadline = Date.now() + budgetSec * 1000;
     const remainingSec = () => Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
@@ -402,7 +385,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : failed && isT3ServerUnavailable(proc.stderr)
             ? "t3code_server_unavailable"
             : null,
-    // T3 Code reports no token usage; close collection with an unknown price.
     usageComplete: true,
     usageBasis: "per_run",
     costStatus: "unpriced",

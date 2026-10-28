@@ -22,7 +22,6 @@ describe("adapters", () => {
       runningProcesses.clear();
     });
 
-    // t3code_local's provider runs inside the T3 Code server, not its waiter PID.
     it.each(["hermes_gateway", "t3code_local"])("reports skipped_non_local_adapter for %s", async (adapterType) => {
       const adapter = createProcessAdapter();
 

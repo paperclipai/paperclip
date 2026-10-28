@@ -1020,8 +1020,6 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-// T3 Code's server runs the provider, so the agent sees no Paperclip env,
-// run JWT, or Paperclip-managed skills; only the message reaches it.
 const t3codeLocalAdapter: ServerAdapterModule = {
   type: "t3code_local",
   runtimeToolDelivery: "invocation_context",

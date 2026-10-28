@@ -31,7 +31,6 @@ function parseJsonObject(line: string): Record<string, unknown> | null {
   }
 }
 
-/** The `--wait --json` result is the last JSON object line on stdout. */
 export function parseT3RunResult(stdout: string): T3RunResult | null {
   const lines = stdout.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -48,7 +47,6 @@ export function parseT3RunResult(stdout: string): T3RunResult | null {
   return null;
 }
 
-/** `t3 thread stop --json` status; the last JSON object line on stdout. */
 export function parseT3StopStatus(stdout: string): string | null {
   const lines = stdout.split(/\r?\n/);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -58,7 +56,6 @@ export function parseT3StopStatus(stdout: string): string | null {
   return null;
 }
 
-/** `t3 thread list --json` prints one JSON array; null when it is absent. */
 export function parseT3ThreadList(stdout: string): Array<{ threadId: string; title: string }> | null {
   const line = stdout.split(/\r?\n/).reverse().find((candidate) => candidate.trim().startsWith("["));
   if (!line) return null;
@@ -76,7 +73,6 @@ export function parseT3ThreadList(stdout: string): Array<{ threadId: string; tit
   }
 }
 
-/** Statuses after which no turn of the thread is running. */
 export const T3_STOPPED_STATUSES = new Set([
   "no_active_run",
   "completed",
@@ -99,7 +95,6 @@ export function isT3ThreadNotFound(text: string): boolean {
   return /thread\b[^\n]*\bwas not found|is not a thread id/i.test(text);
 }
 
-/** A t3 CLI without the subcommand, e.g. `Unknown subcommand "stop" for "t3 thread"`. */
 export function isT3CommandUnsupported(text: string): boolean {
   return /\b(unknown|unrecognized|invalid)\s+(sub)?command\b/i.test(text);
 }

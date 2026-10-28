@@ -1,8 +1,6 @@
 export const type = "t3code_local";
 export const label = "T3 Code (local)";
 
-// T3 Code owns provider and model selection; the project's default applies
-// unless an agent pins a provider instance and model together.
 export const models: Array<{ id: string; label: string }> = [];
 
 export const agentConfigurationDoc = `# t3code_local agent configuration
