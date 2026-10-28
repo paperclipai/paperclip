@@ -129,5 +129,5 @@ Capability ID: `instance-operations/diagnostics`.
 
 Scope: cli
 Storybook: No authored story required for doctor/health command results.
-Production: Run doctor against an owned data directory; check readiness and nonzero failures. A listening port alone does not prove readiness; repair requires observing the repaired result.
+Production: Run doctor against an owned data directory; check readiness and nonzero failures. Instance operators can inspect `GET /api/instance/task-drain?upgradeReadiness=1` before a compatible app replacement. Verify that unknown or unsupported executions prevent readiness and that the read does not hold admission; separately prove same-run continuity through an actual upgrade. A listening port alone does not prove readiness; repair requires observing the repaired result.
 Sources: Source: [doctor.ts](../../cli/src/commands/doctor.ts). Tests: [doctor.test.ts](../../cli/src/__tests__/doctor.test.ts)

@@ -74,6 +74,33 @@ mutations. Qualify a useful model task separately from saving the account.
 
 ### `session`
 
+For a plugin computer, complete a task, let its warm session suspend, then send
+two follow-ups within the next warm window. Verify the first resumes the saved
+session and the second keeps the same provider history without an identity
+mismatch. After a fresh recovery into a repository-free directory, send another
+ordinary follow-up. Verify it retains that directory without Core Git worktree
+preparation. Explicit repository strategies and changed provider owners must
+remain denied. Executor and workspace-preparation regressions cover control
+behavior; they do not establish live provider acceptance.
+
+For a remote OpenCode agent configured with `per_turn`, complete a task, then
+send two follow-ups without resetting its session. Verify that each continuation
+restores its external controller checkpoint, retains provider context and saved
+files, and finishes with no stranded task lock. A missing checkpoint, an active
+prior owner or a mismatched session must still stop admission. The
+rejected active-owner attempt must not prevent a later continuation from reading
+the owner's newer completed checkpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+cover checkpoint restoration and its guards; real-provider acceptance remains
+separate evidence.
+
+After a completed warm turn, change an agent setting that invalidates its
+instruction copy, then send a follow-up. Verify the old runner suspends during
+preparation, saved files remain available, and the follow-up completes once.
+Repeat with an expired or foreign preparation owner and verify that execution
+stays held. The checkpoint integration regression covers the ownership boundary;
+a real provider run remains separate acceptance evidence.
+
 For a repository project that inherits storage-plugin defaults, run a task and
 send two follow-ups. Start with unset task workspace settings, then repeat with
 an explicit isolated mode or strategy. Binding must save `reuse_existing` and
@@ -94,6 +121,11 @@ provider sandbox. Send a follow-up that
 reads the retained file and appends one new line. Verify a replacement sandbox,
 a new provider session, the exact file contents, successful finalization and no
 stranded task lock. Send another follow-up and verify ordinary session reuse.
+
+With external controller checkpoints enabled, also admit a fresh session on a
+reused sandbox lease. Verify startup from canonical controller evidence and
+reject a marker without a registered controller, changed identity or prior turn
+activity. An existing remote session directory must retain its recovery gate.
 
 Repeat without resetting the session: its replacement must restore verified
 history or remain blocked. Missing backup state must not silently start an

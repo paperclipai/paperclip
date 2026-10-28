@@ -2752,6 +2752,27 @@
       "when": 1793152860397,
       "tag": "0394_conscious_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1793159398533,
+      "tag": "0395_tranquil_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1793191988458,
+      "tag": "0396_tan_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1793195976732,
+      "tag": "0397_known_madrox",
+      "breakpoints": true
     }
   ]
 }

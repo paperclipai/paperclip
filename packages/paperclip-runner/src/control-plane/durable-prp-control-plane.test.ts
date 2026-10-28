@@ -31,6 +31,7 @@ import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
+  inspectDurablePrpCheckpointHeader,
   type DurablePrpCheckpoint,
   durableRecoveryInternals,
   SemanticToolNotDispatchedError,
@@ -174,6 +175,10 @@ it("restores the previous checkpoint format and upgrades it on the next capture"
     await core.flushCheckpoint();
     const records = new Map(checkpoint.records);
     const header = JSON.parse(records.get("header")!);
+    expect(inspectDurablePrpCheckpointHeader(records.get("header")!)).toEqual(identity);
+    expect(inspectDurablePrpCheckpointHeader("{}")).toBeNull();
+    expect(inspectDurablePrpCheckpointHeader("{")).toBeNull();
+    expect(inspectDurablePrpCheckpointHeader(JSON.stringify({ ...header, schema: "paperclip.runner.controller-checkpoint.v1" }))).toBeNull();
     const cursor = JSON.parse(records.get("cursor")!);
     records.delete("cursor");
     records.set("header", JSON.stringify({ ...header, schema: "paperclip.runner.controller-checkpoint.v1",

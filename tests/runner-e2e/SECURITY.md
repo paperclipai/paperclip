@@ -322,6 +322,17 @@ in the retained Actions artifact. Credential redaction does not remove hidden
 reasoning or provider session identities, so a text extension never admits a
 file to the public bundle. Graded results remain in `normalized-results.json`.
 
+The normalized result may also contain the reviewed `taskChat` projection:
+task titles/briefs, complete saved comments, visible question/approval copy and
+recorded answers, agent display names, timestamps, and explicitly classified
+native assistant progress. It is captured only from the disposable fixture
+company and credential-redacted before retention. Only these presentation
+fields are admitted by the closed result validator. Arbitrary interaction
+payloads, tool arguments/results, provider/session identities, reasoning and
+raw event envelopes are excluded. No per-attempt snapshot or log becomes public
+as a consequence. Fixture authors must keep task conversation text public just
+as they do the visible content of marked screenshots.
+
 The packaged evidence uploaded as a 30-day GitHub Actions artifact has a
 different, broader boundary. Text is exact-value and key-shape scanned and
 redacted. PNG and WebM are raw-byte scanned; SVG is rejected during packaging

@@ -187,6 +187,68 @@ describe("trusted report catalog discovery", () => {
     ).toThrow("must be unique");
   });
 
+  it("keeps the suite's profile when another suite uses the same profile ID", () => {
+    const known = runnerMatrix[0]!;
+    const other = {
+      ...known,
+      id: `other-suite.shared-profile.${known.environment.id}.existing-case`,
+      suite: { ...known.suite, id: "other-suite" },
+      profile: { ...known.profile, id: "shared-profile", model: "other-model" },
+    };
+    const selected = {
+      ...other,
+      id: `selected-suite.shared-profile.${known.environment.id}.existing-case`,
+      suite: { ...known.suite, id: "selected-suite" },
+      profile: { ...other.profile, label: "Selected profile", model: "selected-model" },
+    };
+    const executionId = `selected-suite.shared-profile.${known.environment.id}.new-case`;
+    const discovered = discoverReportCatalog({
+      catalog: [other, selected],
+      expected: [executionId],
+      results: [{ ...result(), executionId, suiteId: "selected-suite", profileId: "shared-profile",
+        environmentId: known.environment.id, caseId: "new-case", provider: selected.profile.provider, model: selected.profile.model }],
+    }).find(execution => execution.id === executionId);
+    expect(discovered?.profile).toBe(selected.profile);
+    expect(discovered?.profile.model).toBe("selected-model");
+  });
+
+  it("matches a new suite's profile by both recorded provider and model", () => {
+    const known = runnerMatrix[0]!;
+    const selected = {
+      ...known,
+      id: `known-suite.shared-profile.${known.environment.id}.existing-case`,
+      suite: { ...known.suite, id: "known-suite" },
+      profile: { ...known.profile, id: "shared-profile", provider: "selected-provider", model: "selected-model" },
+    };
+    const executionId = `branch-only-chat.shared-profile.${known.environment.id}.conversation`;
+    const discovered = discoverReportCatalog({
+      catalog: [
+        { ...selected, id: `wrong-model.shared-profile.${known.environment.id}.existing-case`, suite: { ...known.suite, id: "wrong-model" }, profile: { ...selected.profile, model: "other-model" } },
+        { ...selected, id: `wrong-provider.shared-profile.${known.environment.id}.existing-case`, suite: { ...known.suite, id: "wrong-provider" }, profile: { ...selected.profile, provider: "other-provider" } },
+        selected,
+      ],
+      expected: [executionId],
+      results: [{ ...result(), executionId, profileId: "shared-profile", environmentId: known.environment.id,
+        provider: "selected-provider", model: "selected-model" }],
+    }).find(execution => execution.id === executionId);
+    expect(discovered?.profile).toBe(selected.profile);
+  });
+
+  it.each([
+    null, [], { title: 12 }, { description: false }, { notes: "not an array" },
+    { notes: [42] }, { links: "not an array" }, { links: [null] },
+    { links: [{ label: "Missing destination" }] }, { links: [{ href: "provenance.json" }] },
+  ])("rejects malformed presentation metadata before rewriting retained measurements (%#)", async presentation => {
+    const bundle = await mkdtemp(path.join(os.tmpdir(), "branch-report-invalid-presentation-"));
+    temporary.push(bundle);
+    const file = path.join(bundle, "normalized-results.json");
+    const retained = JSON.stringify({ ...campaign(), presentation });
+    await writeFile(file, retained);
+    await expect(regenerateRunnerDashboard({ bundle, historyFile: null })).rejects.toThrow("invalid presentation metadata");
+    expect(await readFile(file, "utf8")).toBe(retained);
+    await expect(readFile(path.join(bundle, "index.html"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("regenerates branch-only cards and gallery from persisted JSON using trusted code", async () => {
     const bundle = await mkdtemp(
       path.join(os.tmpdir(), "branch-report-regenerate-"),
@@ -197,10 +259,17 @@ describe("trusted report catalog discovery", () => {
     await writeFile(path.join(evidence, "final-state.png"), "fixture");
     await writeFile(
       path.join(bundle, "normalized-results.json"),
-      JSON.stringify({ ...campaign(), suites: [] }),
+      JSON.stringify({ ...campaign([{ ...result(), targetUrl: "https://qa.example.test", matcherResults: [{ matcher: { kind: "json_path", path: "saved", expected: true }, passed: true, detail: "Saved after reload" }] }]), suites: [], presentation: { title: "QA basics", notes: ["Original measurement retained"], links: [{ label: "Provenance", href: "provenance.json" }, { label: "Unsafe destination", href: "javascript:alert(1)" }] } }),
     );
     await regenerateRunnerDashboard({ bundle, historyFile: null });
     const page = await readFile(path.join(bundle, "index.html"), "utf8");
+    expect(page).toContain('data-gallery-target-url="https://qa.example.test/"');
+    expect(page).toContain('href="https://qa.example.test/" target="_blank"');
+    expect(page).toContain("Saved after reload");
+    expect(page).toContain("Original measurement retained");
+    expect(page).toContain('<a href="provenance.json">Provenance</a>');
+    expect(page).not.toContain("javascript:alert(1)");
+    expect(page).not.toContain("Unsafe destination");
     expect(page).toContain(`data-execution-id="${id}"`);
     expect(page).toContain(`data-execution-id="${missingId}"`);
     expect(page).toContain(
@@ -209,6 +278,8 @@ describe("trusted report catalog discovery", () => {
     const normalized = JSON.parse(
       await readFile(path.join(bundle, "normalized-results.json"), "utf8"),
     );
+    expect(normalized.presentation).toEqual({ title: "QA basics", notes: ["Original measurement retained"], links: [{ label: "Provenance", href: "provenance.json" }, { label: "Unsafe destination", href: "javascript:alert(1)" }] });
+    expect(normalized.results[0].targetUrl).toBe("https://qa.example.test");
     expect(normalized.suites).toEqual([
       expect.objectContaining({
         suiteId: "branch-only-chat",

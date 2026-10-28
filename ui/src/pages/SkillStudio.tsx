@@ -3,6 +3,7 @@ import { interactionReadinessRefetchInterval } from "@/lib/issue-thread-interact
 import { SkillBinaryFile } from "../components/SkillBinaryFile";
 import { SkillSourceProvenance } from "../components/SkillSourceProvenance";
 import { AgentIdentity } from "@/components/AgentIdentity";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -299,6 +300,7 @@ export function SkillStudio() {
     queryFn: () => companySkillsApi.detail(companyId, skillId),
     enabled: Boolean(companyId && skillId && !isCreateMode),
   });
+  const detailView = useQueryView(detailQuery);
   const forkDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.detail(companyId, forkFromSkillId ?? ""),
     queryFn: () => companySkillsApi.detail(companyId, forkFromSkillId!),
@@ -362,10 +364,22 @@ export function SkillStudio() {
       />
     );
   }
-  if (detailQuery.isLoading) {
+  if (detailQuery.isLoading || detailView.kind === "reconnecting") {
     return <StudioMessage message="Loading skill…" />;
   }
-  if (detailQuery.isError || !detailQuery.data) {
+  // "Not found" only for a real 404; an outage never looks like a missing skill.
+  if (detailView.kind === "error" && detailView.errorKind !== "not_found") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={detailQuery.error}
+        action="load this skill"
+        onRetry={detailView.retry}
+        retrying={detailView.isFetching}
+      />
+    );
+  }
+  if (detailView.kind === "error" || !detailQuery.data) {
     return <StudioMessage message="Skill not found." />;
   }
 

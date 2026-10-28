@@ -8,6 +8,7 @@ import { logger } from "../../middleware/logger.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interaction-publications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 
 const obsoletePrompt = "Review the superseding native policy assessment.";
@@ -68,6 +69,7 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
           eq(issues.id, decision.issueId), eq(issues.companyId, decision.companyId),
         )).for("update").then((rows) => rows[0]);
         if (!issue) return;
+        await notifyChatRunMilestones(tx, interaction);
         const now = new Date();
         const [cancelled] = await tx.update(issueThreadInteractions).set({
           status: "cancelled",

@@ -15,6 +15,7 @@ import {
   type ActivityPublication,
 } from "../activity-log.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interaction-publications.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { logger } from "../../middleware/logger.js";
 
@@ -126,6 +127,7 @@ export async function dismissAutomaticCompletionReviews(
           )
           .for("update");
         if (!issue) return;
+        await notifyChatRunMilestones(tx, interaction);
         const now = new Date();
         const [retired] = await tx
           .update(issueThreadInteractions)

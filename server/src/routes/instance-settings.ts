@@ -309,6 +309,12 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.upgradeReadiness === "1") {
+      // This covers all companies and must not expose instance-wide work to a member.
+      assertCanManageInstanceSettings(req);
+      res.json({ ...heartbeat.getTaskDrainStatus(), upgradeReadiness: await heartbeat.readUpgradeReadiness() });
+      return;
+    }
     if (req.query.idleSleepSafety === "1") {
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.

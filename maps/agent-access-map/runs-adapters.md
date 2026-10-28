@@ -271,6 +271,27 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Plugin suspension receipts remain required through recovery and admission, then
+are removed when the admitted session becomes live. A later warm run therefore
+does not inherit an obsolete stopped-run identity. Repository-free fresh plugin
+directories retain their saved company, task, workspace, provider owner and
+attempt bindings on follow-up. This does not grant session-reset authority or
+discard an explicit repository strategy. See the
+[session recipe](../feature-map/runs-adapters.md#session) for the continuation
+checks; source regressions do not establish live provider acceptance.
+
+Scoped source evidence: completed warm-runner retirement can persist maintenance
+under the same process's live, task-bound preparation lease before native
+coordinator admission. Original controller generation, committed-result and
+no-new-work checks remain required. This changes no actor permission or session
+reset authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+for configuration invalidation and expired or foreign owner rejection.
+
+Fresh-session admission with external checkpoints reads current canonical state
+from the registered controller. A local marker does not grant bootstrap or
+session-reset authority. Exact run/session/runner/lease binding, no prior activity,
+backup checks and atomic remote directory admission retain their existing gates.
+
 Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.
@@ -286,6 +307,16 @@ continuation.
 Policy: Task-session listing and execution-context reset require board agent
 management at their HTTP routes. These controls are separate from delegated
 managed AI-account authentication attempts under `model-accounts`.
+
+Ordinary remote `per_turn` continuation restores an external controller marker
+through the existing company/task-bound checkpoint store, with the expected
+normalized session. Prior-owner, lifecycle and backup admission checks remain
+authoritative. Prior-run projections refresh when that checkpoint exists; legacy
+file-backed admission remains available when it does not. This changes no agent
+grant or session-control endpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+provide source-level restoration and denial evidence; live provider continuity
+is a separate verification step.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.

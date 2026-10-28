@@ -1377,6 +1377,16 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
+After a plugin session passes provider recovery and durable run admission, its
+local suspension receipt is removed. The running session then owns authority;
+the old receipt must not conflict with a later warm run's journal identity.
+Failed admission retains the receipt. Normal suspension writes a new receipt.
+
+A repository-free fresh plugin task directory remains the task's directory on
+ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
+owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
+that directory into a Git worktree. Explicit strategy settings still apply.
+
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt
 and controller generation zero, no prior owner, and no process, provider session,
@@ -2073,6 +2083,14 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+Changing configuration can retire a completed warm runner during instruction
+preparation, before the next native coordinator is claimed. Its maintenance
+checkpoints may use the next run's live preparation lease from the same
+controller process, bound to the same company and task. The original controller
+generation and committed result must still match. This permits drain and
+suspension; it grants no new provider work. Expired or foreign preparation
+owners retain the existing recovery hold.
+
 Plugin sandbox reuse during acquisition uses the configured startup timeout or
 the provider's declared acquisition default, with the host RPC margin. Resume
 attempts and transient retries share that deadline. Providers without either
@@ -2088,6 +2106,13 @@ must atomically claim an absent remote session directory under real, readable
 parents. Existing session files, prior activity, missing proof or any saved
 backup retain the verified-restore requirement. Workspace replacement alone
 never authorizes a provider-session reset.
+
+With external controller checkpoints, the local state file is only a marker.
+Fresh-session bootstrap checks use the registered controller's current canonical
+state. Marker identity alone cannot prove an untouched session. The same exact
+identity, zero-activity and pending-bootstrap-command checks apply before the
+remote directory claim; saved history and existing directories still prevent
+an unverified fresh start.
 
 For the native runner, warm mode requests a reusable sandbox lease **before**
 lease acquisition. The environment's explicit runner lifecycle overrides the
@@ -2516,3 +2541,15 @@ restored checkpoint must match the normalized session before writing its local
 projection. This adds a scoped checkpoint read and local reconstruction only
 when warm admission encounters an external marker or an older projection; it
 adds no streaming checkpoint writes or recurring idle work.
+
+Ordinary remote `per_turn` continuations restore a valid external controller
+marker from the referenced run's company/task-bound checkpoint before reading
+its durable identity. The restored checkpoint must match the normalized session.
+An existing prior-run projection also refreshes from that checkpoint, so a
+rejected attempt cannot retain state that its active owner later advances.
+Current-run full state stays owned by its controller. Legacy file-backed state
+retains its existing admission path when no database checkpoint exists.
+The existing prior-owner, suspended-state and backup checks still decide whether
+the next turn may start. Missing checkpoints and ambiguous identity remain
+blocked; restoration does not authorize a new provider session or change the
+configured lifecycle policy.

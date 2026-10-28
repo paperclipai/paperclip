@@ -1,3 +1,11 @@
+import { nativeChatProgressWork } from "../services/chat-native-progress-work.js";
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
+import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
+import { accessService } from "../services/access.js";
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
+import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { deleteCompany } from "../services/company-deletion.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { chatRunSourceMessageId } from "../services/chat-channels/run-origin.js";
 import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
@@ -21,6 +29,7 @@ import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates, enviro
 import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../services/paperclip-cloud-connector.js";
 import { buildSlackAppManifest, SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
+import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
 import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
@@ -36,6 +45,7 @@ import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
+import { GITHUB_INLINE_RETRY_WINDOW_MS } from "../services/chat-channels/github/retry.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
@@ -199,6 +209,8 @@ import {
 } from "../services/chat-interaction-publications.js";
 import {
   enqueueChatRunMilestones,
+  enqueueChatRunLifecycleMilestones,
+  enqueueSafeNativeChatProgress,
   githubRunReplyState,
   resolveChatRunPresentationAuthorizationReason,
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
@@ -798,11 +810,13 @@ class FakeChatSdkRuntime {
 
 const TEST_SLACK_BOT_SCOPES =
   "app_mentions:read,assistant:write,channels:history,channels:read,chat:write,commands,files:read,files:write,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,reactions:read,reactions:write,users:read";
+const discordApplicationPrefix = 1_400_000_000_000_000_000n +
+  BigInt(`0x${randomUUID().replaceAll("-", "").slice(0, 12)}`) * 1000n;
 let discordApplicationSequence = 0n;
 
 function uniqueDiscordApplicationId() {
   discordApplicationSequence += 1n;
-  return (123_456_789_012_345_678n + discordApplicationSequence).toString();
+  return (discordApplicationPrefix + discordApplicationSequence).toString();
 }
 
 function fakeSlackFetch(botId = `U-BOT-${randomUUID()}`) {
@@ -1139,8 +1153,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   const companyPrefixAttempts = 8;
   const freshCompanyPrefix = () => `C${randomUUID().replaceAll("-", "").slice(0, 7).toUpperCase()}`;
 
-  async function seedCompany(nextIssuePrefix = freshCompanyPrefix) {
-    const companyId = randomUUID();
+  async function seedCompany(nextIssuePrefix = freshCompanyPrefix, companyId = randomUUID()) {
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
     let inserted = false;
@@ -1213,6 +1226,81 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("tracks the actual Board Teams claim and retires recovery when its receipt commits", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    context.controls.beforeConsentReceipt = async () => { entered(); await hold; };
+    let send: ReturnType<typeof context.service.publishBoardMessage> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await context.service.registerTeamsAttemptRecoveryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      send = context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "File with an active claim", `teams-attempt-${randomUUID()}`, "owner-user", [attachment.id]);
+      await ready;
+      const [claim] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+      expect(claim.phase).toBe("consent_sending"); expect(context.consentCards).toHaveLength(1);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(coordinator.nextWakeAt()).toBe(claim.attemptExpiresAt!.getTime());
+      }, { timeout: 5000 });
+      release(); await send;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const [settled] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, claim.id));
+      expect(settled.phase).toBe("awaiting_consent"); expect(settled.attemptId).toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      release(); await send;
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+      // This test intentionally leaves unused consent; do not feed the next global expiry fixture.
+      await db.delete(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+    }
+  });
+
+  it("expires Teams consent from the committed Board transfer without periodic maintenance", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      // Register before the ordinary Board producer, with no transfer rows yet.
+      await context.service.registerTeamsConsentExpiryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      const publication = await context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "A file awaiting consent", `teams-expiry-${randomUUID()}`, "owner-user", [attachment.id]);
+      const [transfer] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.publicationId, publication.id));
+      expect(transfer.phase).toBe("awaiting_consent"); expect(context.consentCards).toHaveLength(1);
+      await settle(); expect(coordinator.nextWakeAt()).toBe(transfer.expiresAt.getTime());
+      const reads = vi.spyOn(db, "select");
+      try { await vi.advanceTimersByTimeAsync(10_000); expect(reads).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); }
+      await vi.advanceTimersByTimeAsync(transfer.expiresAt.getTime() - Date.now() + 1000); await settle();
+      const [expired] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, transfer.id));
+      const [projected] = await db.select().from(chatPublications).where(eq(chatPublications.id, publication.id));
+      expect(expired.phase).toBe("expired"); expect(projected.state).toBe("cancelled");
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
 
   it("retries a colliding company fixture prefix and creates a distinct complete fixture", async () => {
     const existing = await seedCompany();
@@ -3857,7 +3945,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const retry = gateway.executeTool(input);
       release();
       expect(await retry).toMatchObject({ result: { data: { actionId: expect.any(String) } } });
-      await expect.poll(async () => (await f.action())?.status).toBe("processed");
+      // A replay may return the durable receipt while the timed-out request
+      // still publishes. Observe the owner's bounded retry window, not the
+      // assertion library's one-second default.
+      await expect.poll(async () => (await f.action())?.status,
+        { timeout: GITHUB_INLINE_RETRY_WINDOW_MS }).toBe("processed");
       expect(await gateway.executeTool(input)).toMatchObject({ result: { data: { status: "processed" } } });
       const actions = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
         eq(chatActions.kind, "github_review_publication")));
@@ -3865,7 +3957,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(actions[0].status).toBe("processed");
       expect(f.responseComments.size).toBe(1);
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
-    });
+    }, 60_000);
     it("rejects changed requests and revoked access before repeating an unstaged review", async () => {
       const f = await publicationRetryFixture();
       let metadataReads = 0;
@@ -5945,6 +6037,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    it("wakes GitHub milestone identity restoration only after outer commit and stays quiet on reconfirmation", async () => {
+      const f = await reviewBotFixture();
+      await f.service.revokeLink(f.endpoint.id, f.principal.id);
+      const verified = { githubUserId: "42", login: "octocat" };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      const link = () => db.select().from(chatIdentityLinks).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id), eq(chatIdentityLinks.principalId, f.principal.id),
+      )).then(rows => rows[0]);
+      try {
+        await expect(db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+          throw new Error("rollback identity restoration");
+        })).rejects.toThrow("rollback identity restoration");
+        expect((await link()).status).toBe("revoked");
+        events.length = 0;
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await link()).status).toBe("linked");
+        events.length = 0;
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
+    it("wakes milestone authority only when GitHub guest settings change, after outer commit", async () => {
+      const f = await reviewBotFixture();
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      const configuration = { ...initial.configuration, people: [{
+        kind: "guest" as const, githubUserId: "84", login: "contributor",
+        sponsorUserId: "owner-user", permissionProfile: "restricted" as const, automaticReviews: false,
+      }] };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      try {
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .saveConfiguration(f.endpoint.id, { expectedRevision: initial.revision, configuration }, "owner-user");
+          expect(events).toEqual(["intent"]);
+          expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(false);
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(true);
+        events.length = 0;
+        const current = await f.management.configuration(f.endpoint.id, "owner-user");
+        await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: current.revision, configuration }, "owner-user");
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
     it("scopes guest tasks and rechecks their sponsor before every bot tool", async () => {
       const f = await reviewBotFixture();
       const initial = await f.management.configuration(
@@ -7090,6 +7244,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...context, endpoint, callbacks };
   }
 
+  async function recoverDiscordCommands(service: ChatChannelService) {
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await service.registerCommandWork(coordinator, () => true).ready;
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      await coordinator.stop();
+    }
+  }
+
   describe("Discord automatic command registration", () => {
     async function retireRegistrationFixture(
       service: ChatChannelService,
@@ -7100,7 +7265,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .select()
           .from(chatDiscordCommandOwners)
           .where(eq(chatDiscordCommandOwners.endpointId, endpointId));
-        await service.configure(endpointId, { action: "remove" }, "owner-user");
+        if ((await service.get(endpointId))?.status !== "archived") {
+          await service.configure(endpointId, { action: "remove" }, "owner-user");
+        }
         expect((await service.get(endpointId))?.status).toBe("archived");
         // Removal retires only this fixture's runtime; immutable application
         // ownership stays available to the no-adoption/tombstone checks.
@@ -7117,6 +7284,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
     async function registrationFixture(
       mode: "success" | "unavailable" | "unknown" = "success",
+      receiverOptions: Partial<Pick<ChatChannelServiceOptions, "discordGatewayLeaseTtlMs" | "discordGatewayLeaseRenewalIntervalMs">> = {},
     ) {
       const fixture = await seedCompany();
       const applicationId = uniqueDiscordApplicationId();
@@ -7174,7 +7342,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           return Response.json(command);
         },
       ) as unknown as typeof globalThis.fetch;
-      const context = createService(new FakeChatSdkRuntime(), providerFetch);
+      const context = createService(new FakeChatSdkRuntime(), providerFetch, receiverOptions);
       const endpoint = await context.service.create(
         fixture.companyId,
         {
@@ -7227,6 +7395,217 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
     }
 
+    it("drives receiver discovery through real configure, rotation, pause, and resume producers", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      const settle = async () => vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const quiet = async () => {
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(20_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+      };
+      try {
+        await f.service.registerReceiverWork(coordinator, () => true).ready;
+        await settle(); await quiet();
+        await f.configure(); await settle();
+        const first = f.runtime.get(f.endpoint.id); expect(first).not.toBeNull();
+        await quiet();
+        await f.service.configure(f.endpoint.id, { action: "reconnect", credentials: { ...f.credentials, botToken: "rotated-receiver-token" } }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).not.toBe(first); expect(first!.shutdown).toHaveBeenCalledOnce();
+        // Pause requires completed onboarding; configure/reconnect intentionally
+        // leave this fixture waiting for its first test conversation.
+        const configured = await f.service.get(f.endpoint.id);
+        await db.update(chatEndpoints).set({ status: "active", setup: { ...configured.setup, step: "complete" } })
+          .where(eq(chatEndpoints.id, f.endpoint.id));
+        await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).toBeNull(); await quiet();
+        await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).not.toBeNull(); await quiet();
+        await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+        await settle(); expect(f.runtime.get(f.endpoint.id)).toBeNull(); await quiet();
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); await f.service.shutdown(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("does not rediscover a receiver stopped by a company removal refresh", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 600_000, discordGatewayLeaseRenewalIntervalMs: 300_000 });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+      const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let reads: ReturnType<typeof vi.spyOn> | undefined;
+      try {
+        await f.configure(); await f.service.registerReceiverWork(coordinator, () => true).ready;
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        const owned = f.runtime.get(f.endpoint.id)!;
+        reads = vi.spyOn(db, "select");
+        await db.transaction(async tx => {
+          await notifyChatCompanyConfiguration(tx, f.fixture.companyId);
+          await tx.delete(chatEndpoints).where(eq(chatEndpoints.id, f.endpoint.id));
+        });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+        expect(owned.shutdown).toHaveBeenCalledOnce();
+        expect(reads).toHaveBeenCalledOnce(); expect(onError).not.toHaveBeenCalled();
+      } finally {
+        reads?.mockRestore(); await coordinator.stop(); vi.useRealTimers(); await f.service.shutdown();
+        await db.update(chatEndpoints).set({ status: "archived" }).where(eq(chatEndpoints.id, f.endpoint.id));
+      }
+    });
+
+    it("takes over a persisted foreign receiver lease at its deadline through the worker", async () => {
+      const f = await registrationFixture();
+      await f.configure(); await f.service.shutdown();
+      const token = randomUUID(), expiresAt = new Date(Date.now() + 500);
+      await db.insert(chatEndpointLeases).values({ companyId: f.fixture.companyId, endpointId: f.endpoint.id,
+        leaseKey: "discord_gateway_runtime", token, expiresAt });
+      const standby = createService(new FakeChatSdkRuntime(), f.providerFetch);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await standby.service.registerReceiverWork(coordinator, () => true).ready;
+        expect(standby.runtime.get(f.endpoint.id)).toBeNull();
+        expect(coordinator.nextWakeAt()).toBeGreaterThanOrEqual(expiresAt.getTime());
+        await vi.waitFor(() => expect(standby.runtime.get(f.endpoint.id)).not.toBeNull(), { timeout: 5000 });
+        const [lease] = await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+        expect(lease.token).not.toBe(token);
+        expect(lease.expiresAt.getTime()).toBeGreaterThan(expiresAt.getTime());
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); await retireRegistrationFixture(standby.service, f.endpoint.id);
+      }
+    });
+
+    it("restarts a receiver after token loss only after the old listener has stopped", async () => {
+      const f = await registrationFixture("success", { discordGatewayLeaseTtlMs: 60_000, discordGatewayLeaseRenewalIntervalMs: 50 });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let release!: () => void;
+      const stopped = new Promise<void>(resolve => { release = resolve; });
+      try {
+        await f.configure();
+        await f.service.registerReceiverWork(coordinator, () => true).ready;
+        const old = f.runtime.get(f.endpoint.id)!;
+        old.shutdown.mockImplementation(async () => { await stopped; });
+        await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
+        await vi.waitFor(() => expect(old.shutdown).toHaveBeenCalledOnce());
+        await db.transaction(tx => notifyChatEndpointConfiguration(tx, f.endpoint));
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        expect(f.runtime.get(f.endpoint.id)).toBeNull();
+        release();
+        await vi.waitFor(async () => {
+          expect(f.runtime.get(f.endpoint.id)).not.toBeNull();
+          expect(f.runtime.get(f.endpoint.id)).not.toBe(old);
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBeNull();
+        });
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        release(); await coordinator.stop(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it("learns the first configured command and cancels its deadline when the endpoint is removed", async () => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await f.configure();
+        expect(f.calls).toEqual(["GET", "POST"]);
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const deadline = coordinator.nextWakeAt();
+        expect(deadline).toBeGreaterThan(Date.now() + 200_000);
+        await f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(idleWorkSnapshot().active).toBe(0);
+          expect(coordinator.nextWakeAt()).toBeNull();
+        });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); }
+        expect(f.calls).toEqual(["GET", "POST"]);
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await coordinator.stop(); vi.useRealTimers();
+        await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
+    it.each(["credential rotation", "company deletion"] as const)("updates scheduled registration after real %s", async (mutation) => {
+      const f = await registrationFixture();
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      let deleted = false;
+      let lifecycle: ReturnType<typeof configureAgentLifecycle> | undefined;
+      try {
+        await f.service.registerCommandWork(coordinator, () => true).ready;
+        await f.configure();
+        await vi.advanceTimersByTimeAsync(31_000);
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now()));
+        const before = coordinator.nextWakeAt()!;
+        const owners = await db.select().from(chatDiscordCommandOwners)
+          .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id));
+        if (mutation === "credential rotation") {
+          await f.service.configure(f.endpoint.id, {
+            action: "reconnect", credentials: { ...f.credentials, botToken: "discord-rotated-secret" },
+          }, "owner-user");
+          const [saved] = await db.select().from(chatActions).where(and(
+            eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "discord_command_registration"),
+          ));
+          const expected = Date.parse(String(saved.result!.retryAt));
+          expect(expected).toBeGreaterThan(before);
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBe(expected));
+          expect(f.calls).toEqual(["GET", "POST", "GET"]);
+        } else {
+          lifecycle = configureAgentLifecycle(db, {
+            requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+          });
+          await deleteCompany(db, f.fixture.companyId);
+          deleted = true;
+          await vi.advanceTimersByTimeAsync(31_000);
+          await vi.waitFor(async () => {
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(idleWorkSnapshot().active).toBe(0);
+            expect(coordinator.nextWakeAt()).toBeNull();
+          });
+          expect(await db.select().from(chatDiscordCommandOwners)
+            .where(eq(chatDiscordCommandOwners.endpointId, f.endpoint.id))).toEqual(owners);
+          await f.service.shutdown();
+          const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+          try {
+            await vi.advanceTimersByTimeAsync(120_000);
+            expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+          } finally { reads.mockRestore(); writes.mockRestore(); }
+          expect(f.calls).toEqual(["GET", "POST"]);
+        }
+        expect(onError).not.toHaveBeenCalled();
+      } finally {
+        await lifecycle?.stop();
+        await coordinator.stop(); vi.useRealTimers();
+        if (deleted) await f.service.shutdown();
+        else await retireRegistrationFixture(f.service, f.endpoint.id);
+      }
+    });
+
     it("keeps mention setup usable on registration failure and upgrades automatically when due", async () => {
       const f = await registrationFixture("unavailable");
       try {
@@ -7240,7 +7619,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         ).toBeTypeOf("function");
         f.available();
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(true);
@@ -7268,6 +7647,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.makeDue();
         restarted = createService(new FakeChatSdkRuntime(), f.providerFetch);
         await restarted.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(restarted.service);
         expect(
           (await restarted.service.get(f.endpoint.id))?.capabilities
             .slashCommands,
@@ -7342,7 +7722,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         };
         f.available(false);
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(f.runtime.endpoints.get(f.endpoint.id)).toBe(original);
         expect(f.runtime.configurations.get(f.endpoint.id)?.callbacks).toBe(
           originalCallbacks,
@@ -7383,7 +7763,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
         );
         await f.makeDue();
-        await f.service.reconcileProviderRuntimes();
+        await recoverDiscordCommands(f.service);
         expect(
           (await f.service.get(f.endpoint.id))?.capabilities.slashCommands,
         ).toBe(false);
@@ -7985,11 +8365,62 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(posts(f)).toHaveLength(1);
         expect(new URLSearchParams(String(posts(f)[0]![1]!.body)).get("channel")).toBe(f.installerId);
       });
-      it("links the actor's own manager identity without requiring a connect command", async () => {
+      it("signals milestone eligibility around the real Slack account link and stays quiet on reconfirmation", async () => {
         const f = await managedFixture(); await f.provision();
         await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
-        expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
-        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        let release!: () => void, acquired!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const locked = new Promise<void>(resolve => { acquired = resolve; });
+        const lock = db.transaction(async tx => {
+          await tx.execute(sql`lock table chat_identity_links in share mode`);
+          acquired(); await gate;
+        });
+        await locked;
+        const linking = f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() });
+        void linking.catch(() => undefined);
+        try {
+          try {
+            await vi.waitFor(async () => {
+              const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+                where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+                  and query like 'insert into "chat_identity_links"%'`);
+              expect(waiting.count).toBeGreaterThan(0);
+            });
+            expect(events).toEqual(["intent"]);
+            expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          } finally { release(); await lock; await linking; }
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id)))
+            .toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+          events.length = 0;
+          expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
+          expect(events).toEqual([]);
+        } finally { unsubscribe(); }
+      });
+      it("settles a failed Slack account-link intent without committing identity or sending a test message", async () => {
+        const f = await managedFixture(); await f.provision();
+        await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        f.provider.mockClear();
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        await db.execute(sql`create function sleep_slack_link_failure() returns trigger language plpgsql as $$ begin raise exception 'link write unavailable'; end $$`);
+        await db.execute(sql`create trigger sleep_slack_link_failure before insert on chat_identity_links for each row execute function sleep_slack_link_failure()`);
+        try {
+          await expect(f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).rejects.toThrow();
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          expect(posts(f)).toHaveLength(0);
+        } finally {
+          unsubscribe();
+          await db.execute(sql`drop trigger sleep_slack_link_failure on chat_identity_links`);
+          await db.execute(sql`drop function sleep_slack_link_failure()`);
+        }
       });
       it("requires a private Slack challenge for an unknown account before linking and sending the test", async () => {
         const f = await managedFixture(); await f.provision();
@@ -34623,7 +35054,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("drains bounded Slack chat-origin milestones without admitting an internal issue run", async () => {
+  it("wakes an existing chat milestone when ordinary ingress reactivates its conversation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, wakeup } = await configuredSlackEndpoint(fixture);
+    const thread = makeThread({ channelId: "C-REOPEN-MILESTONE", id: "slack:C-REOPEN-MILESTONE:4100.1", name: "reopen-milestone" });
+    const send = (id: string) => deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id, text: "@maya continue this conversation", mentioned: true }), trigger: "mention" });
+    await send("4100.1");
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    const [link] = await db.select().from(chatMessageLinks).where(and(
+      eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.providerMessageId, "4100.1")));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "failed", errorCode: "low_trust_isolation_unavailable", updatedAt: new Date(),
+      contextSnapshot: { issueId: conversation.issueId, source: "chat:slack", endpointId: endpoint.id, wakeCommentId: link.commentId },
+    });
+    await db.update(chatConversations).set({ state: "unavailable" }).where(eq(chatConversations.id, conversation.id));
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const notice = () => db.select().from(chatPublications).where(and(eq(chatPublications.issueId, conversation.issueId),
+      eq(chatPublications.idempotencyKey, `run:${runId}:failed:${endpoint.id}`)));
+    try {
+      await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(await notice()).toEqual([]);
+      const wakesBefore = wakeup.mock.calls.length;
+      await send("4100.2");
+      expect(wakeup.mock.calls.length).toBe(wakesBefore + 1);
+      // The harness accepts the new wake without creating a run. Existing
+      // projection debt must wake from ingress, not a later run transition.
+      await expect.poll(notice, { timeout: 5000 }).toEqual([
+        expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${endpoint.id}` }),
+      ]);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
+
+  it.each(["milliseconds", "microseconds"])("drains bounded Slack chat-origin milestones without admitting an internal issue run (%s)", async (precision) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -34718,15 +35186,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })),
     ]);
 
-    const inserted: number[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      inserted.push(
-        await enqueueChatRunMilestones(db, {
-          since: new Date("2026-09-05T14:00:00.000Z"),
-          limit: 1,
-        }),
-      );
+    if (precision === "microseconds") {
+      await db.update(heartbeatRuns).set({
+        updatedAt: sql`'2026-09-05T14:59:00.000123Z'::timestamptz`,
+      }).where(inArray(heartbeatRuns.id, resolverRejectedRuns.map(run => run.id)));
     }
+    // Fail a non-advancing pagination loop explicitly instead of leaving a
+    // background query chain running after the test timeout.
+    const select = db.select.bind(db);
+    let reads = 0;
+    const readGuard = vi.spyOn(db, "select").mockImplementation((...args) => {
+      if (args[0] && "runUpdatedAt" in args[0] && ++reads > 100) {
+        throw new Error("Milestone projection did not advance past rejected candidates");
+      }
+      return select(...args);
+    });
+    const inserted: number[] = [];
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        inserted.push(
+          await enqueueChatRunLifecycleMilestones(db, {
+            since: new Date("2026-09-05T14:00:00.000Z"),
+            limit: 1,
+          }),
+        );
+      }
+    } finally { readGuard.mockRestore(); }
     expect(inserted).toEqual([1, 1, 1, 0]);
     const publications = await db
       .select()
@@ -41417,13 +41902,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async () => {
+  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async ({ onTestFinished }) => {
+    let receiptWakeObserved = false;
     const fixture = await seedCompany();
     const continuationRunId = randomUUID();
     const resolveNativeQuestion = vi.fn(async () => "not_native" as const);
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, {
         resolveNativeQuestion,
+        questionResolutionPersistBarrier: async () => {
+          // Receipt commit must wake projection before the separate answer write.
+          expect(receiptWakeObserved).toBe(true);
+        },
         wakeup: async (agentId, options) => {
           if (options.contextSnapshot?.source !== "issue.interaction.respond") {
             return { accepted: true };
@@ -41746,6 +42236,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ state: "delivery_unknown", providerMessageId: null })
       .where(eq(chatPublications.id, publication.id));
 
+    const unsubscribeReceipt = subscribeDatabaseWork(db, "chat-run-milestones", (event, hints) => {
+      if (event === "settled" && hints?.has(JSON.stringify({ companyId: fixture.companyId, issueId: conversation.issueId }))) {
+        receiptWakeObserved = true;
+      }
+    });
+    onTestFinished(unsubscribeReceipt);
     const providerAcknowledgement = callbacks.onAction(actionEvent());
     await expect(
       Promise.race([
@@ -51492,8 +51988,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const registeredCommandId = "888888888888888819";
     let interactionSequence = 0n;
 
-    async function commandFixture() {
-      const fixture = await seedCompany();
+    async function commandFixture(companyId?: string) {
+      const fixture = await seedCompany(undefined, companyId);
       const applicationId = uniqueDiscordApplicationId();
       let holdWork = false;
       const queued: Array<() => void> = [];
@@ -51809,6 +52305,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           });
           coldContexts.push(cold);
           await cold.service.reconcileProviderRuntimes();
+          await recoverDiscordCommands(cold.service);
           return {
             ...cold,
             adapter: await parser(
@@ -52586,8 +53083,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             : lastFreshDiscordMessageId + 1n;
         return lastFreshDiscordMessageId.toString();
       };
-      async function reopenedFixture(includeDuringConfirmationSource = false) {
-        const f = await commandFixture();
+      async function reopenedFixture(includeDuringConfirmationSource = false, companyId?: string) {
+        const f = await commandFixture(companyId);
         const threadId = `discord:${guildId}:${channelId}:${rootMessageId}`;
         const admitMessage = async (message: ReturnType<typeof makeMessage>) => {
           await deliverMessage({
@@ -52734,6 +53231,193 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           bindRun,
         };
       }
+
+      it.each(["action", "delivery"] as const)("wakes a post-close milestone when interrupted inbound acceptance settles its %s receipt", async receipt => {
+        const f = await reopenedFixture();
+        const onError = vi.fn();
+        const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        const notice = () => db.select().from(chatPublications).where(and(
+          eq(chatPublications.issueId, f.conversation.issueId),
+          eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+        ));
+        try {
+          // Crash boundary: the run/wake is durable, but its inbound action has
+          // not yet recorded settlement. Recovery must not dispatch it again.
+          if (receipt === "action") {
+            await db.update(chatActions).set({ status: "issued", result: {}, updatedAt: new Date() })
+              .where(eq(chatActions.id, f.fresh.action.id));
+          } else {
+            // Operator repair of a failed ledger keeps the already-admitted
+            // action/run. Only delivery acceptance needs to commit again.
+            await db.update(chatDeliveries).set({ state: "retry", processedAt: null, nextAttemptAt: null })
+              .where(eq(chatDeliveries.id, f.delivery.id));
+          }
+          await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(await notice()).toEqual([]);
+          const wakesBefore = f.wakeup.mock.calls.length;
+          await expect.poll(async () => {
+            await f.service.processPendingDeliveries(25, f.delivery.id);
+            const [action] = await db.select().from(chatActions).where(eq(chatActions.id, f.fresh.action.id));
+            const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, f.delivery.id));
+            return [action.status, delivery.state];
+          }, { timeout: 10_000 }).toEqual(["processed", "processed"]);
+          expect(f.wakeup.mock.calls.length).toBe(wakesBefore);
+          await expect.poll(notice, { timeout: 5000 }).toEqual([
+            expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+          ]);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(onError).not.toHaveBeenCalled();
+        } finally { await coordinator.stop(); await f.close(); }
+      });
+
+      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility", "cloud_sync"] as const)(
+        "wakes a post-close milestone when %s authority is restored", async owner => {
+          const stackId = randomUUID();
+          const f = await reopenedFixture(false, owner === "cloud_sync" ? cloudTenantPrimaryCompanyId(stackId) : undefined);
+          const previousToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+          const [previousUser] = owner === "cloud_sync"
+            ? await db.select().from(authUsers).where(eq(authUsers.id, "owner-user"))
+            : [];
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const notice = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId),
+            eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+          ));
+          const access = accessService(db);
+          const membership = (await db.select().from(companyMemberships).where(and(
+            eq(companyMemberships.companyId, f.fixture.companyId), eq(companyMemberships.principalId, "owner-user"),
+          )))[0];
+          try {
+            let restore: () => Promise<unknown>;
+            if (owner === "connection") {
+              await toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: false });
+              restore = () => toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: true });
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else if (owner === "identity" || owner === "unlinked") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              if (owner === "unlinked") {
+                restore = () => f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+              } else {
+                const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+                restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+              }
+            } else if (owner === "visibility") {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            } else {
+              // Model existing denied authority without exercising revocation's
+              // unrelated credential cleanup; restoration uses its actual owner.
+              await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+              if (owner === "member") restore = () => access.updateMember(f.fixture.companyId, membership.id, { status: "active" });
+              else if (owner === "member_permissions") restore = () => access.updateMemberAndPermissions(f.fixture.companyId, membership.id, { status: "active", grants: [] }, "owner-user");
+              else if (owner === "cloud_sync") {
+                process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "milestone-cloud-sync-test";
+                let request = 0;
+                restore = () => resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders({
+                  "x-paperclip-cloud-tenant-token": "milestone-cloud-sync-test",
+                  "x-paperclip-cloud-user-id": "owner-user",
+                  "x-paperclip-cloud-user-email": "owner@example.test",
+                  // Change the profile to force an actual sync on replay. The
+                  // debounce must not hide repeated unchanged membership wakes.
+                  "x-paperclip-cloud-user-name": `Owner ${request++}`,
+                  "x-paperclip-cloud-stack-id": stackId,
+                  "x-paperclip-cloud-stack-role": "owner",
+                }));
+              }
+              else if (owner === "ensure_membership") restore = () => access.ensureMembership(f.fixture.companyId, "user", "owner-user", membership.membershipRole, "active");
+              else {
+                const existing = await db.select().from(companyMemberships).where(and(
+                  eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user"),
+                ));
+                restore = () => access.setUserCompanyAccess("owner-user", existing.map(row => row.companyId));
+              }
+            }
+            await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            expect(await notice()).toEqual([]);
+            await restore();
+            await expect.poll(notice, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+            ]);
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            if (owner !== "identity" && owner !== "connection") {
+              const notices: string[] = [];
+              const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => notices.push(event));
+              try { await restore(); expect(notices).toEqual([]); }
+              finally { unsubscribe(); }
+              expect(await notice()).toHaveLength(1);
+            }
+            expect(onError).not.toHaveBeenCalled();
+          } finally {
+            if (previousToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+            else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = previousToken;
+            await coordinator.stop();
+            if (previousUser) await db.update(authUsers).set({
+              name: previousUser.name, email: previousUser.email,
+              emailVerified: previousUser.emailVerified, updatedAt: previousUser.updatedAt,
+            }).where(eq(authUsers.id, previousUser.id));
+            await f.close();
+          }
+        },
+      );
+
+      it.each(["identity", "resource", "visibility"] as const)(
+        "wakes saved post-close native progress when %s authority returns", async owner => {
+          const f = await reopenedFixture();
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const progress = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId), like(chatPublications.idempotencyKey, "%:native:%"),
+          ));
+          try {
+            await db.insert(chatPublications).values({
+              companyId: f.fixture.companyId, endpointId: f.endpoint.id,
+              conversationId: f.conversation.id, issueId: f.conversation.issueId,
+              idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}`,
+              payload: { text: "Maya is working…", progressState: "working" }, state: "published",
+              createdAt: new Date(Date.now() - 60_000),
+            });
+            await db.insert(heartbeatRunEvents).values({
+              companyId: f.fixture.companyId, agentId: f.fixture.assignedAgentId,
+              runId: f.fresh.runId, seq: 1, eventType: "item.completed",
+            });
+            let restore: () => Promise<unknown>;
+            if (owner === "identity") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+              restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            }
+            await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            expect(await progress()).toEqual([]);
+            await restore();
+            await expect.poll(progress, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}:native:making_progress:1` }),
+            ]);
+            await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
+            const select = vi.spyOn(db, "select");
+            try { await new Promise(resolve => setTimeout(resolve, 1200)); expect(select).not.toHaveBeenCalled(); }
+            finally { select.mockRestore(); }
+            expect(onError).not.toHaveBeenCalled();
+          } finally { await coordinator.stop(); await f.close(); }
+        },
+      );
 
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();
@@ -65014,6 +65698,121 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
+  it.each(["replay", "operator retry"] as const)(
+    "wakes saved native progress when %s restores eligibility", async owner => {
+      const context = await safeNativeProgressFixture("telegram", `12${["replay", "operator retry"].indexOf(owner)}`, "channel", "42", true);
+      const onError = vi.fn();
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+      const progress = () => db.select().from(chatPublications).where(and(
+        eq(chatPublications.issueId, context.conversation.issueId),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      const settled = () => vi.waitFor(() => {
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      try {
+        const run = await context.createRun("saved progress awaiting eligibility");
+        await context.addEvent(run);
+        const [base] = await db.update(chatPublications).set({
+          state: owner === "replay" ? "failed" : "delivery_unknown",
+        }).where(eq(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}`)).returning();
+        const restore = () => owner === "replay"
+          ? context.service.replayPublication(context.endpoint.id, base.id)
+          : context.service.resolvePublication(context.endpoint.id, base.id, "retry_anyway", "owner-user");
+        await nativeChatProgressWork(db).register(coordinator, () => true).ready;
+        await settled(); expect(await progress()).toEqual([]);
+        await restore();
+        await expect.poll(progress, { timeout: 5000 }).toEqual([
+          expect.objectContaining({ idempotencyKey: `run:${run.runId}:working:${context.endpoint.id}:native:making_progress:1` }),
+        ]);
+        await settled();
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1200));
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); }
+        expect(onError).not.toHaveBeenCalled();
+      } finally { await coordinator.stop(); await retirePublicationFixture(context.service, context.endpoint.id); }
+    },
+  );
+
+  it("advances native progress past suppressed candidates with microsecond timestamps", async () => {
+    const context = await safeNativeProgressFixture("telegram", "119");
+    try {
+      const valid = await context.createRun("eligible after rejected page");
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, valid.runId));
+      const rejectedIds = Array.from({ length: 30 }, () => randomUUID());
+      await db.insert(heartbeatRuns).values(rejectedIds.map(id => ({
+        id, companyId: source.companyId, agentId: source.agentId,
+        runtimeMode: "native", status: "running",
+        contextSnapshot: { ...source.contextSnapshot, endpointId: randomUUID() },
+      })));
+      await db.insert(chatPublications).values(rejectedIds.map(id => ({
+        companyId: context.fixture.companyId, endpointId: context.endpoint.id,
+        conversationId: context.conversation.id, issueId: context.conversation.issueId,
+        idempotencyKey: `run:${id}:working:${context.endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" },
+        state: "published", createdAt: valid.baseCreatedAt,
+      })));
+      const eventAt = new Date(valid.baseCreatedAt.getTime() + 30_000);
+      await db.insert(heartbeatRunEvents).values(rejectedIds.map(runId => ({
+        companyId: source.companyId, runId, agentId: source.agentId,
+        seq: 1, eventType: "item.completed",
+        createdAt: sql`${eventAt.toISOString()}::timestamptz + interval '0.000123 seconds'`,
+      })));
+      await context.addEvent(valid, "item.completed", 1, new Date(eventAt.getTime() + 1));
+      const select = db.select.bind(db);
+      let pages = 0;
+      const guard = vi.spyOn(db, "select").mockImplementation((...args) => {
+        if (args[0] && "eventCreatedAt" in args[0] && ++pages > 10) {
+          throw new Error("Native progress pagination did not advance past suppressed candidates");
+        }
+        return select(...args);
+      });
+      try {
+        await expect(enqueueSafeNativeChatProgress(db, { since: eventAt, limit: 1 })).resolves.toBe(1);
+      } finally { guard.mockRestore(); }
+      const progress = await db.select().from(chatPublications).where(and(
+        eq(chatPublications.conversationId, context.conversation.id),
+        like(chatPublications.idempotencyKey, "%:native:%"),
+      ));
+      expect(progress).toEqual([expect.objectContaining({
+        idempotencyKey: `run:${valid.runId}:working:${context.endpoint.id}:native:making_progress:1`,
+      })]);
+    } finally { await retirePublicationFixture(context.service, context.endpoint.id); }
+  });
+
+  it.each(["separate owners", "combined budget"] as const)(
+    "keeps lifecycle and native progress projection independent with %s",
+    async (mode) => {
+      await enqueueChatRunMilestones(db, { since: new Date(0) });
+      const context = await safeNativeProgressFixture("telegram", mode === "separate owners" ? "111" : "112");
+      try {
+        const progressRun = await context.createRun("ongoing work");
+        await context.addEvent(progressRun);
+        const failedRun = await context.createRun("failed work");
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failedRun.runId));
+        const input = { since: new Date(0), limit: 1 };
+        await expect((mode === "separate owners" ? enqueueChatRunLifecycleMilestones : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        const rows = () => db.select({ key: chatPublications.idempotencyKey }).from(chatPublications)
+          .where(eq(chatPublications.conversationId, context.conversation.id));
+        expect((await rows()).map(row => row.key)).toContain(`run:${failedRun.runId}:failed:${context.endpoint.id}`);
+        expect((await rows()).some(row => row.key.includes(":native:"))).toBe(false);
+        if (mode === "separate owners") {
+          await expect(enqueueChatRunLifecycleMilestones(db, input)).resolves.toBe(0);
+        }
+        await expect((mode === "separate owners" ? enqueueSafeNativeChatProgress : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        expect((await rows()).filter(row => row.key.includes(":native:"))).toEqual([
+          { key: `run:${progressRun.runId}:working:${context.endpoint.id}:native:making_progress:1` },
+        ]);
+        await expect(enqueueChatRunMilestones(db, input)).resolves.toBe(0);
+      } finally {
+        await retirePublicationFixture(context.service, context.endpoint.id);
+      }
+    },
+  );
+
   it.each(["issue", "run"] as const)(
     "skips a locked native progress %s while unrelated final and question publications deliver",
     async (lockTarget) => {
@@ -72067,6 +72866,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       service,
     };
   }
+
+  it("restores changed native review metadata once and signals only its committed change", async () => {
+    const context = await committedNativeReviewPublicationFixture("milestone-repair");
+    // Earlier failure cases can leave intent awaiting XID reconciliation on the
+    // suite's shared owner. Subscribing to that owner immediately replays intent.
+    await expect(db.transaction(async tx => {
+      await signalDatabaseWork(tx, "chat-run-milestones");
+      throw new Error("unrelated rolled-back producer");
+    })).rejects.toThrow("unrelated rolled-back producer");
+    const repairDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(repairDb, "chat-run-milestones", event => events.push(event));
+    try {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, context.runId));
+      const input = { companyId: context.fixture.companyId, issueId: coordinator.issueId, runId: context.runId,
+        decisionId: coordinator.decisionId!, resultId: coordinator.resultId!, assessmentId: coordinator.assessmentId! };
+      const savedAt = new Date(Date.now() - 60_000);
+      await db.update(heartbeatRuns).set({ updatedAt: savedAt }).where(eq(heartbeatRuns.id, context.runId));
+      // Already-restored metadata still authorizes materialization by the caller,
+      // but must neither rewrite the run nor wake projection again.
+      await expect(repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
+      expect((await readHeartbeatRunsById(context.runId))[0].updatedAt).toEqual(savedAt);
+      expect(events).toEqual([]);
+      await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+        .where(eq(heartbeatRuns.id, context.runId));
+      await repairDb.transaction(async tx => {
+        expect(await restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input)).toBe(true);
+        expect(events).toEqual(["intent"]);
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toMatchObject({
+        externalChatReviewPresentation: { decisionId: coordinator.decisionId, runId: context.runId },
+      });
+      events.length = 0;
+      await repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
+      expect(events).toEqual([]);
+    } finally {
+      unsubscribe();
+      await repairDb.$client.end({ timeout: 1 });
+      await context.service.shutdown();
+    }
+  });
 
   it.each(["principal_revoked", "gate_changed"] as const)(
     "blocks a committed native review response and selected files at transport after %s",

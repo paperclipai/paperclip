@@ -72,6 +72,7 @@ import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contr
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS } from "./runner-bridge-tools.js";
 import { HttpError } from "../../errors.js";
+import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.js", async () => {
@@ -1254,6 +1255,80 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       } finally { await recovered.stop(); }
     } finally { await authority.stop(); }
   });
+
+  it.each(["idle", "preparing_successor", "unclaimed_successor", "claimed_successor", "expired_preparation", "dispatching_successor", "foreign_preparation", "foreign_native_preparation", "wrong_issue", "new_work", "replaced_controller"] as const)(
+    "settles a completed warm checkpoint during early retirement without granting work: %s",
+    async scenario => {
+      const fixture = await seedRun(`WARM-EARLY-RETIREMENT-${scenario}`);
+      const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
+      const identity = transportOptions(fixture, runtimeRoot).prpIdentity;
+      const authority = new DurablePrpControlPlane({
+        stateDirectory: resolve(runtimeRoot, fixture.runId, "early-retirement", "control-plane"),
+        identity, expectedRunnerVersion: "warm-retirement-fixture",
+        expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+      });
+      await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: successor.bootId,
+        controllerGeneration: 1, leaseOwner: "completed-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000),
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      try {
+        await registerNativeRunnerCheckpoint({ db: fixture.db, binding, bootId: successor.bootId, authority });
+        const [run] = await fixture.db.select({ completionContractId: heartbeatRuns.completionContractId })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        if (!run?.completionContractId) throw new Error("Prepared warm run has no completion contract");
+        const resultId = randomUUID();
+        await fixture.db.insert(nativeRunResults).values({
+          id: resultId, ...binding, turnId: identity.turnId, completionContractId: run.completionContractId,
+          serverFingerprint: `completed-warm-${scenario}`, schemaStatus: "accepted",
+          resultJson: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Completed warm turn." },
+          canonicalSha256: "a".repeat(64),
+        });
+        await fixture.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+          .where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.update(nativeRunFinalizations).set({ phase: "committed", resultId,
+          leaseOwner: null, leaseExpiresAt: null,
+          ...(scenario === "replaced_controller" ? { controllerBootId: randomUUID(), controllerGeneration: 2 } : {}),
+        }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+
+        let nextRunId: string | null = null;
+        if (scenario !== "idle") {
+          nextRunId = randomUUID();
+          const preparing = scenario !== "claimed_successor" && scenario !== "unclaimed_successor";
+          const otherIssue = scenario === "wrong_issue" ? (await seedRun("WARM-OTHER-ISSUE")).issueId : fixture.issueId;
+          await fixture.db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId,
+            issueId: otherIssue, scopeKind: "issue", contextSnapshot: { issueId: otherIssue },
+            ...(preparing ? { runtimeMode: "legacy", executionStage: scenario === "dispatching_successor" ? "dispatching" : "preparing",
+              controllerBootId: scenario === "foreign_preparation" ? randomUUID() : legacyControllerBootId,
+              controllerLeaseExpiresAt: scenario === "expired_preparation" ? new Date(0) : new Date(Date.now() + 60_000),
+              ...(scenario === "foreign_native_preparation" ? { nativeIssueId: fixture.issueId } : {}),
+            } : { runtimeMode: "native", nativeIssueId: fixture.issueId, nativeSessionId: randomUUID() }),
+            status: "running", invocationSource: "manual" });
+          if (!preparing || scenario === "foreign_native_preparation") await fixture.db.insert(nativeRunFinalizations).values({ runId: nextRunId, companyId, issueId: fixture.issueId,
+              phase: "observed", ...(scenario === "claimed_successor" || scenario === "foreign_native_preparation" ? {
+                controllerBootId: scenario === "foreign_native_preparation" ? randomUUID() : successor.bootId,
+                controllerGeneration: 1, leaseOwner: "next-warm-owner", leaseExpiresAt: new Date(Date.now() + 60_000) } : {}),
+            });
+        }
+        await fixture.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, fixture.issueId));
+        const before = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+        authority.queueCommand(scenario === "new_work" ? "turn.start" : "runner.suspend", {}, `early-retirement-${scenario}`);
+        if (!["idle", "preparing_successor", "claimed_successor"].includes(scenario)) {
+          await expect(authority.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
+          expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records).toEqual(before.records);
+        } else {
+          await expect(authority.flushCheckpoint()).resolves.toBeUndefined();
+          const saved = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+          const restoredRoot = resolve(runtimeRoot, fixture.runId, "retirement-proof");
+          saved.restoreSessionDirectory(restoredRoot);
+          const restored = JSON.parse(await readFile(resolve(restoredRoot, "control-plane", "control-plane-state.json"), "utf8"));
+          expect(restored.identity).toEqual(identity);
+          expect(restored.commands).toContainEqual(expect.objectContaining({ type: "runner.suspend", status: "pending" }));
+        }
+        const [task] = await fixture.db.select({ executionRunId: issues.executionRunId }).from(issues)
+          .where(eq(issues.id, fixture.issueId));
+        expect(task.executionRunId).toBe(nextRunId);
+      } finally { await authority.stop(); }
+    },
+  );
 
   it("applies checkpoint deltas in Postgres without rewriting authority and removes only evicted events", async () => {
     const fixture = await seedRun("CHECKPOINT-DELTA");

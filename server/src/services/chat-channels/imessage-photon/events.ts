@@ -1,3 +1,4 @@
+import { notifyChatReceiver } from "../runtime/receiver-work-notifications.js";
 import type { EndpointRow, DbTransaction, RuntimeContext, LifecycleRuntimeFence } from "../../chat-channels/runtime-types.js";
 
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
@@ -104,6 +105,7 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
         "attention",
       ]);
       if (!endpoint) return;
+      await notifyChatReceiver(tx, endpoint);
       await tx
         .update(chatEndpoints)
         .set({

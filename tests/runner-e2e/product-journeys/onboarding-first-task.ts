@@ -7,6 +7,7 @@ import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "../non-executio
 import { JourneyError, type JourneyContext, type OnboardingArtifactEvidence, type TargetSession } from "./types.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
 import { preAcceptanceTaskStatus, preAcceptanceViolations, type OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
+import { isProviderUnstartedWorkspaceDeferral } from "./workspace-deferral.js";
 
 export interface OnboardingFirstTaskInput {
   context: JourneyContext;
@@ -40,6 +41,26 @@ function fail(code: string): never { throw new JourneyError("failed", code); }
 const runIssueId = (run: Row) => run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
 const isProposal = (row: Row) => ["request_confirmation", "request_checkbox_confirmation"].includes(row.kind);
 const isPlanningDocument = (row: Row) => /^(?:plan|proposal)$/.test(row.key);
+const isPendingRun = (run: Row) => activeRuns([run]).length > 0 || run.status === "scheduled_retry";
+
+function sameWorkspaceRetry(source: Row, successor: Row): boolean {
+  const issueIds = (run: Row) => [run.nativeIssueId, run.issueId, run.contextSnapshot?.issueId].filter(value => value != null);
+  const sourceIssues = issueIds(source), successorIssues = issueIds(successor);
+  return source.id !== successor.id && source.companyId === successor.companyId && source.agentId === successor.agentId &&
+    sourceIssues.length > 0 && successorIssues.length > 0 && [...sourceIssues, ...successorIssues].every(id => id === sourceIssues[0]) &&
+    successor.retryOfRunId === source.id && successor.contextSnapshot?.retryOfRunId === source.id &&
+    successor.scheduledRetryReason === "workspace_busy" && successor.contextSnapshot?.retryReason === "workspace_busy" &&
+    successor.contextSnapshot?.wakeReason === "workspace_busy_retry" &&
+    Number.isSafeInteger(successor.scheduledRetryAttempt) &&
+    successor.scheduledRetryAttempt === (source.scheduledRetryReason === "workspace_busy" ? source.scheduledRetryAttempt ?? 0 : 0) + 1;
+}
+
+function unstartedScheduledWorkspaceRetry(run: Row): boolean {
+  return run.status === "scheduled_retry" && run.startedAt === null && run.finishedAt === null &&
+    Number.isFinite(Date.parse(run.scheduledRetryAt)) && run.runtimeMode === "legacy" && run.runtimeModeResolvedAt === null &&
+    ["nativeIssueId", "nativeSessionId", "runnerInstanceId", "processPid", "processStartedAt", "sessionIdAfter"].every(key => run[key] == null) &&
+    run.lastOutputSeq === 0 && run.usageJson == null;
+}
 
 /** Exercise the ordinary onboarding conversation; APIs observe, never submit its actions. */
 export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Promise<OnboardingFirstTaskResult> {
@@ -87,11 +108,38 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
     return { tasks, runs, interactions, comments, documents, attachments };
   };
   const assertRuns = (snapshot: Snapshot, allowedIssues: string[]) => {
+    const runs = [...seen.values()];
+    let workspacePending = false;
+    const successors = new Map<string, Row>();
+    for (const source of runs.filter(isProviderUnstartedWorkspaceDeferral)) {
+      const linked = runs.filter(run => run.retryOfRunId === source.id || run.contextSnapshot?.retryOfRunId === source.id);
+      if (linked.length > 1 || (linked[0] && !sameWorkspaceRetry(source, linked[0]))) fail("onboarding_workspace_retry_lineage_mismatch");
+      if (linked[0]) successors.set(source.id, linked[0]);
+      else workspacePending = true;
+    }
     for (const run of seen.values()) {
       if (run.companyId !== company.id || run.agentId !== agent.id || !allowedIssues.includes(runIssueId(run))) fail("onboarding_run_scope_mismatch");
+      if (isProviderUnstartedWorkspaceDeferral(run)) {
+        const chain = new Set<string>();
+        let tail: Row | undefined = run;
+        while (tail && isProviderUnstartedWorkspaceDeferral(tail)) {
+          if (chain.has(tail.id)) fail("onboarding_workspace_retry_lineage_mismatch");
+          chain.add(tail.id); tail = successors.get(tail.id);
+        }
+        if (!tail || isPendingRun(tail)) workspacePending = true;
+        else if (tail.status !== "succeeded" || tail.runtimeMode !== "native") fail("onboarding_first_task_failed");
+        continue;
+      }
+      if (run.status === "scheduled_retry") {
+        const source = seen.get(run.retryOfRunId);
+        if (!source || !isProviderUnstartedWorkspaceDeferral(source) || !sameWorkspaceRetry(source, run) || !unstartedScheduledWorkspaceRetry(run)) fail("onboarding_workspace_retry_lineage_mismatch");
+        workspacePending = true;
+        continue;
+      }
       if (activeRuns([run]).length || run.status === "succeeded" || isBlockedUnstartedWake(run) || isTerminalUnstartedWake(run, snapshot.tasks)) continue;
       fail("onboarding_first_task_failed");
     }
+    return workspacePending;
   };
   const assertBeforeAcceptance = (snapshot: Snapshot, parentId: string, checkpoint: OnboardingPreAcceptanceEvidence["checkpoint"]) => {
     const observed = {
@@ -106,7 +154,7 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
       input.onPreAcceptanceFailure?.({ version: 1, checkpoint, violations, ...observed });
       fail("onboarding_work_before_acceptance");
     }
-    assertRuns(snapshot, [parentId]);
+    return assertRuns(snapshot, [parentId]);
   };
 
   let snapshot = await load();
@@ -141,12 +189,12 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
   let proposal: Row | undefined;
   while (!proposal) {
     snapshot = await load(parent.id);
-    assertBeforeAcceptance(snapshot, parent.id, "awaiting-proposal");
+    const workspacePending = assertBeforeAcceptance(snapshot, parent.id, "awaiting-proposal");
     const pending = snapshot.interactions.filter(row => row.status === "pending");
     const proposals = pending.filter(isProposal);
     if (proposals.length > 1 || pending.some(row => row.kind === "ask_user_questions" && row.id !== opening[0]!.id)) fail("onboarding_proposal_scope_unclear");
     // Let the producing turn finish before acceptance; this journey does not test overlap.
-    if (proposals.length === 1 && seen.size && !activeRuns([...seen.values()]).length) proposal = proposals[0];
+    if (proposals.length === 1 && seen.size && !workspacePending && ![...seen.values()].some(isPendingRun)) proposal = proposals[0];
     else await wait();
   }
   const target = proposal.payload?.target;
@@ -178,9 +226,10 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
     if (!child && currentParent.status === "done") fail("onboarding_completed_without_child");
     if (child && !childId) { childId = child.id; await input.own({ kind: "issue", name: title, id: child.id }); }
     if (childId && child?.id !== childId) fail("onboarding_approved_child_mismatch");
-    assertRuns(snapshot, [parent.id, ...(childId ? [childId] : [])]);
+    const workspacePending = assertRuns(snapshot, [parent.id, ...(childId ? [childId] : [])]);
     if (snapshot.attachments.some(row => row.issueId !== childId)) fail("onboarding_artifact_created_by_parent");
-    const settled = child && currentParent.status === "done" && firstTaskCompletionSettled(snapshot.tasks, [parent.id], parent.id) && !activeRuns([...seen.values()]).length;
+    const settled = child && currentParent.status === "done" && firstTaskCompletionSettled(snapshot.tasks, [parent.id], parent.id) &&
+      !workspacePending && ![...seen.values()].some(isPendingRun);
     if (settled) {
       const artifacts = snapshot.attachments.filter(row => row.issueId === child.id && row.originalFilename === "connection-proof.json");
       if (artifacts.length !== 1) fail("onboarding_child_artifact_missing");

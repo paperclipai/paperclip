@@ -108,6 +108,23 @@ qualification remains not run.
 
 ## `instructions`
 
+The operator's Advanced YAML editor uses the existing configuration GET/PATCH
+operations plus the owning instructions, skills, tools, channels, permissions,
+secrets, API key, and revision APIs. It does not add aggregate write authority;
+each request retains its own company and actor checks. Resource reads fail closed.
+Observed inherited access/history is read-only. Multi-resource writes are
+sequential, with preflight comparison and explicit partial-failure recovery;
+Core configuration, managed files, and entry revisions enforce their existing
+atomic revision/hash preconditions. External supporting files and other
+unversioned resource writes retain a race window after preflight. Configuration reads include the complete redacted, revisioned fields
+and `configurationRevision`; writes accept an optional
+`expectedConfigurationRevision`, checked again under the write lock. A stale
+write returns `409`. Revision-guarded writes preserve unchanged redacted values
+at their original paths. Configuration read/configure authority, company scope,
+instruction-path restrictions, environment/account checks, revision history, and
+activity attribution still apply. YAML does not expose a permission-grant or
+lifecycle mutation shortcut. See [the format](../../doc/agent-configuration-yaml.md).
+
 Capability ID: `agents/instructions`.
 
 Review: `baseline`.

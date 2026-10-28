@@ -26,6 +26,7 @@ import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetRead
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { connectionContinuationPendingResponse } from "../../../services/satisfied-connection-intents.js";
 import { collectDispositionRepairSourceState } from "../../../services/recovery/disposition-repair.js";
@@ -660,10 +661,12 @@ export function createPostgresRunDispatchAdapter(
   async function promoteDueRetryInTx(
     tx: Db,
     input: PromoteOrCancelDueRetryInput,
+    issueId: string | null,
   ): Promise<
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: issueId ?? undefined });
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -705,6 +708,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId ?? undefined });
     const [row] = await tx
       .update(heartbeatRuns)
       .set({
@@ -873,7 +877,7 @@ export function createPostgresRunDispatchAdapter(
         runId: input.runId,
         companyId: input.companyId,
         now,
-      });
+      }, issueId);
       return promoted.applied
         ? {
             outcome: {
@@ -911,6 +915,7 @@ export function createPostgresRunDispatchAdapter(
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+      await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
       const [row] = await tx
         .update(heartbeatRuns)
         .set({

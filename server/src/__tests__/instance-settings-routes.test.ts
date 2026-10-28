@@ -18,6 +18,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  readUpgradeReadiness: vi.fn(),
   resumeQueuedRunsAfterDrain: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
@@ -120,6 +121,7 @@ describe("instance settings routes", () => {
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
     mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.readUpgradeReadiness.mockReset();
     mockHeartbeatService.resumeQueuedRunsAfterDrain.mockReset();
     mockHeartbeatService.resumeQueuedRunsAfterDrain.mockResolvedValue(undefined);
     mockEnvironmentService.getById.mockReset();
@@ -1064,6 +1066,7 @@ describe("instance settings routes", () => {
       // A drain the mock left active must not carry over into an unrelated
       // test, so every test starts from the idle status again.
       mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.readUpgradeReadiness.mockReset();
       mockHeartbeatService.computeTaskDrain.mockReset();
       mockHeartbeatService.applyTaskDrain.mockReset();
       mockHeartbeatService.stopTaskDrain.mockReset();
@@ -1077,7 +1080,19 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+      expect(mockHeartbeatService.readUpgradeReadiness).not.toHaveBeenCalled();
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+    });
+
+    it("restricts the on-demand upgrade report to instance operators and does not start a drain", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.readUpgradeReadiness.mockResolvedValue({ version: 1, ready: true, activeRuns: 1 });
+      await request(createApp(nonAdminActor)).get("/api/instance/task-drain?upgradeReadiness=1").expect(403);
+      expect(mockHeartbeatService.readUpgradeReadiness).not.toHaveBeenCalled();
+      const res = await request(createApp(adminActor)).get("/api/instance/task-drain?upgradeReadiness=1").expect(200);
+      expect(res.body.upgradeReadiness).toEqual({ version: 1, ready: true, activeRuns: 1 });
+      expect(mockHeartbeatService.computeTaskDrain).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
     });
 
     it("acquires an owned bounded idle hold and forwards its owner for inspection", async () => {

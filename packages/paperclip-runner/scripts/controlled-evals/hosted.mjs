@@ -95,6 +95,7 @@ const safeAdmissionReasons = new Set([
   'Invalid operating overhead component', 'Invalid operating overhead fields', 'Invalid controller observability allocation',
   'Observability capacity requires its operating bound evidence', 'Hosted manifest bytes changed',
   'Cell is outside the controlled selection', 'Hosted controller admission does not match the current first-attempt worker',
+  'Hosted controller requires GitHub-hosted operating origin',
 ]);
 export function hostedAdmissionDiagnostic(error) {
   if (error instanceof Error && safeAdmissionReasons.has(error.message)) return error.message;
