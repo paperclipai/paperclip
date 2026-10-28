@@ -14,7 +14,7 @@ type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | 
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
 
 /** Verify existing access only. This never installs tools, grants access, or adopts an identity. */
-async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retired = false) {
+async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retiredConnectionId?: string) {
   if (intent.kind !== "connection_intent" || intent.status !== "pending"
     || intent.companyId !== task.companyId || intent.issueId !== task.id
     || task.assigneeUserId) return null;
@@ -78,9 +78,10 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   const service = connectionIntentService(db);
   const lookup = { companyId: task.companyId, agentId: payload.requestingAgentId,
     responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug };
-  const exact = () => service.usableConnectionForAgent({ ...lookup, connectionId: accessRequest!.connectionId });
-  const connection = accessRequest && !retired ? await exact()
-    : await service.usableConnectionForAgent(lookup) ?? (accessRequest ? await exact() : null);
+  const exact = (connectionId: string) => service.usableConnectionForAgent({ ...lookup, connectionId });
+  const connection = retiredConnectionId
+    ? await exact(retiredConnectionId) ?? await service.usableConnectionForAgent(lookup)
+    : accessRequest ? await exact(accessRequest.connectionId) : await service.usableConnectionForAgent(lookup);
   if (!connection) return null;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
@@ -89,7 +90,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     heartbeatRunId: policyRunId === undefined ? intent.sourceRunId ?? null : policyRunId,
     issueId: task.id, projectId: task.projectId,
   });
-  if (!accessRequest || retired) return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+  if (!accessRequest || retiredConnectionId) return access.allowedCount + access.askFirstCount > 0 ? connection : null;
   const catalog = await db.select().from(toolCatalogEntries).where(and(
     eq(toolCatalogEntries.companyId, task.companyId), eq(toolCatalogEntries.connectionId, connection.id),
     inArray(toolCatalogEntries.id, accessRequest.tools.map(tool => tool.catalogEntryId)),
@@ -104,9 +105,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   return satisfied ? connection : null;
 }
 
-export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retiredConnectionId?: string) {
   if (!["in_progress", "in_review"].includes(task.status)) return null;
-  return findAvailableToolConnection(db, task, intent, policyRunId);
+  return findAvailableToolConnection(db, task, intent, policyRunId, retiredConnectionId);
 }
 
 /** Recheck both live requests and system-retired cards against the next run. */
@@ -122,10 +123,10 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
-    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId, retired);
+    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId,
+      retired ? (interaction.result as { connectionId: string }).connectionId : undefined);
     // Historical system retirements describe a service need, not a permanent
-    // binding to an account the user may later replace. Delivery and native
-    // response projection still validate their own exact recorded connection.
+    // binding to an account the user may later replace.
     if (!connection) return "interaction";
   }
   const [approval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(

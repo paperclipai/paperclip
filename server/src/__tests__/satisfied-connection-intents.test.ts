@@ -614,6 +614,34 @@ describePostgres("already available connection requests", () => {
     expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBeNull();
   });
 
+  it("delivers a retired access request whose exact tool version changes before delivery", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await grantRequested(f, intent);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+    await db.update(toolCatalogEntries).set({ versionHash: "v2" });
+    const wakeup = vi.fn(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "queued", idempotencyKey: `connection-intent:${intent.id}:expired` });
+      return null;
+    });
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
+    expect(wakeup).toHaveBeenCalledOnce();
+    expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).not.toBeNull();
+  });
+
+  it("projects a retired access request to the native runner after its exact tool version changes", async () => {
+    const f = await seed(); const intent = await requestAccess(f); const run = await retry(f);
+    await grantRequested(f, intent);
+    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    await db.update(toolCatalogEntries).set({ versionHash: "v2" });
+    const input = { db, companyId: f.companyId, issueId: f.issueId, runId: run.id, agentId: f.agentId, interactionIds: [intent.id] };
+    expect(await materializeNativeInteractionResponses(input)).toEqual([expect.objectContaining({
+      kind: "connection_intent", response: expect.objectContaining({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) }) })]);
+    await db.update(connectionGrants).set({ status: "revoked" });
+    await expect(materializeNativeInteractionResponses(input)).rejects.toMatchObject({ code: "native_interaction_unresolved" });
+  });
+
   it.each(["missing", "revoked", "blocked", "weaker", "changed_version", "inactive_tool", "other_connection", "wrong_requester", "wrong_user", "wrong_project", "other_company", "ambiguous"] as const)("keeps an access request pending for %s", async (reason) => {
     const f = await seed();
     let intent = await requestAccess(f, "allowed", reason === "wrong_requester" ? { requestingAgentId: randomUUID() } : {});

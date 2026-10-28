@@ -165,7 +165,8 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId),
           eq(issueThreadInteractions.issueId, loaded.issue.id))).for("update");
         if (!task || !card || card.status !== "expired" || card.result?.outcome !== "expired") return null;
-        const ready = await findSatisfiedToolConnection(tx as unknown as Db, task, { ...card, status: "pending" });
+        const ready = await findSatisfiedToolConnection(tx as unknown as Db, task, { ...card, status: "pending" }, undefined,
+          (card.result as { connectionId: string }).connectionId);
         if (!ready) return null;
         if (ready.id !== (card.result as { connectionId: string }).connectionId) {
           const previousConnectionId = (card.result as { connectionId: string }).connectionId;
