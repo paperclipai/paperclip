@@ -1480,7 +1480,7 @@ export function pluginRoutes(
         {
           key: body.key,
           ...(companyId ? { companyId } : {}),
-          params: body.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1573,7 +1573,7 @@ export function pluginRoutes(
         {
           key: body.key,
           companyId: companyId ?? null,
-          params: body.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
@@ -1668,7 +1668,7 @@ export function pluginRoutes(
         {
           key,
           ...(companyId ? { companyId } : {}),
-          params: body?.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1758,7 +1758,7 @@ export function pluginRoutes(
         {
           key,
           companyId: companyId ?? null,
-          params: body?.params ?? {},
+          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
           actorContext: performActionActorContext(req, companyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },

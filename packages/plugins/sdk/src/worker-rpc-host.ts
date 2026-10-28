@@ -2020,6 +2020,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
     return handler({
       ...params.params,
+      ...(params.companyId ? { companyId: params.companyId } : {}),
       ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
     });
   }
@@ -2054,10 +2055,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!handler) {
       throw new Error(`No action handler registered for key "${params.key}"`);
     }
-    const handlerParams =
-      params.renderEnvironment === undefined
-        ? params.params
-        : { ...params.params, renderEnvironment: params.renderEnvironment };
+    const handlerParams = {
+      ...params.params,
+      ...(params.companyId ? { companyId: params.companyId } : {}),
+      ...(params.renderEnvironment === undefined ? {} : { renderEnvironment: params.renderEnvironment }),
+    };
     return handler(
       handlerParams,
       actionContextFromParams(params),

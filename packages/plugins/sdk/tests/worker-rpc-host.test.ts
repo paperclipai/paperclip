@@ -114,6 +114,7 @@ describe("worker performAction context", () => {
     let nextRequestId = 1;
     const plugin = definePlugin({
       async setup(ctx) {
+        ctx.data.register("inspect", async (params) => params);
         ctx.actions.register("inspect", async (params, context) => ({
           paramsCompanyId: params.companyId,
           actor: context.actor,
@@ -166,6 +167,26 @@ describe("worker performAction context", () => {
         databaseNamespace: null,
       })).resolves.toMatchObject({ ok: true });
 
+      for (const companyId of ["other-company", { id: "other-company" }, null, undefined, "authorized-company"]) {
+        await expect(callWorker("getData", {
+          key: "inspect",
+          companyId: "authorized-company",
+          params: { companyId, view: "compact" },
+        })).resolves.toEqual({ companyId: "authorized-company", view: "compact" });
+        await expect(callWorker("performAction", {
+          key: "inspect",
+          companyId: "authorized-company",
+          params: { companyId },
+        })).resolves.toMatchObject({ paramsCompanyId: "authorized-company", companyId: null });
+      }
+      for (const companyId of [undefined, null]) {
+        await expect(callWorker("getData", {
+          key: "inspect",
+          companyId,
+          params: { companyId: "plugin-owned-company", view: "compact" },
+        })).resolves.toEqual({ companyId: "plugin-owned-company", view: "compact" });
+      }
+
       await expect(callWorker("performAction", {
         key: "inspect",
         params: { companyId: "spoofed-company" },
@@ -193,7 +214,7 @@ describe("worker performAction context", () => {
           companyId: "authorized-company",
         },
       })).resolves.toEqual({
-        paramsCompanyId: "plugin-owned-company",
+        paramsCompanyId: "authorized-company",
         actor: {
           type: "user",
           userId: "user-1",
@@ -341,7 +362,7 @@ describe("worker invocation scope propagation", () => {
       await expect(companyBRequest).resolves.toEqual({
         label: "b",
         company: { id: "company-b" },
-        hasCompanyId: false,
+        hasCompanyId: true,
       });
       await companyAExpectation;
 

@@ -52,6 +52,15 @@ The SDK is stable enough for local development and first-party examples, but the
 
 If you are authoring a plugin for others to deploy, treat npm-packaged installation as the supported path and treat repo-local example installs as a development convenience.
 
+## Bridge company scope
+
+For company-scoped data and action calls, `params.companyId` is reserved for the
+host-authorized tenant. The HTTP bridge and worker dispatcher overwrite any
+caller-supplied value with the authorized company before invoking the handler.
+Use another field, such as `catalogCompanyId`, for plugin-owned identifiers.
+Other handler parameters and the immutable action actor context are preserved.
+Instance-admin calls with no company scope keep their original parameters.
+
 ## Worker quick start
 
 ```ts

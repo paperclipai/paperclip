@@ -712,7 +712,7 @@ describe("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "getData", {
       key: "health",
       companyId: companyA,
-      params: { view: "compact" },
+      params: { view: "compact", companyId: companyA },
       renderEnvironment: null,
     });
   });
@@ -741,7 +741,7 @@ describe("plugin tool and bridge authz", () => {
 
     const pluginCompanyId = "repo-9bffb087:aeon-intelligence/COMPANY.md";
     const params = {
-      companyId: pluginCompanyId,
+      catalogCompanyId: pluginCompanyId,
       agentPath: "agents/ceo/AGENTS.md",
     };
 
@@ -757,7 +757,7 @@ describe("plugin tool and bridge authz", () => {
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key,
       companyId: companyA,
-      params,
+      params: { ...params, companyId: companyA },
       actorContext: {
         type: "user",
         userId: "user-1",
@@ -767,6 +767,41 @@ describe("plugin tool and bridge authz", () => {
       },
       renderEnvironment: null,
     });
+  });
+
+  it.each([
+    ["legacy data", `/api/plugins/${pluginId}/bridge/data`, { key: "health" }, "getData"],
+    ["legacy action", `/api/plugins/${pluginId}/bridge/action`, { key: "sync" }, "performAction"],
+    ["url data", `/api/plugins/${pluginId}/data/health`, {}, "getData"],
+    ["url action", `/api/plugins/${pluginId}/actions/sync`, {}, "performAction"],
+  ] as const)("enforces the authorized tenant for %s handler params", async (_name, path, body, method) => {
+    readyPlugin();
+    const call = vi.fn().mockImplementation(async (_pluginId, _method, input) => ({
+      selectedCompanyId: input.params.companyId,
+      view: input.params.view,
+    }));
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    for (const nestedCompanyId of [companyB, { id: companyB }, null, undefined, companyA]) {
+      const res = await request(app).post(path).send({
+        ...body,
+        companyId: companyA,
+        params: { companyId: nestedCompanyId, view: "compact" },
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ selectedCompanyId: companyA, view: "compact" });
+      expect(call).toHaveBeenLastCalledWith(pluginId, method, expect.objectContaining({
+        companyId: companyA,
+        params: { companyId: companyA, view: "compact" },
+      }));
+    }
+
+    call.mockClear();
+    const denied = await request(app).post(path).send({ ...body, companyId: companyB });
+    expect(denied.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
   });
 
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
@@ -826,7 +861,7 @@ describe("plugin tool and bridge authz", () => {
       key: "sync",
       companyId: companyA,
       params: {
-        companyId: companyB,
+        companyId: companyA,
         reviewerUserId: "spoofed-user",
       },
       actorContext: {
@@ -887,7 +922,7 @@ describe("plugin tool and bridge authz", () => {
       key: "sync",
       companyId: companyA,
       params: {
-        companyId: companyB,
+        companyId: companyA,
         reviewerAgentId: "spoofed-agent",
       },
       actorContext: {
@@ -917,7 +952,7 @@ describe("plugin tool and bridge authz", () => {
       key: "sync",
       companyId: companyA,
       params: {
-        companyId: companyB,
+        companyId: companyA,
         reviewerAgentId: "spoofed-agent",
       },
       actorContext: {
