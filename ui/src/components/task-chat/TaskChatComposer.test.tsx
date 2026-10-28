@@ -202,6 +202,7 @@ afterEach(() => {
   container.remove();
   Range.prototype.getBoundingClientRect = originalRangeRect;
   window.getSelection()?.removeAllRanges();
+  vi.unstubAllGlobals();
 });
 
 function render(ui: ReactElement) {
@@ -872,6 +873,27 @@ describe("TaskChatComposer", () => {
     await flushAsync();
 
     expect(onAdd).toHaveBeenCalledWith("hello there", undefined, undefined, undefined, expect.any(String));
+    expect(editable().textContent).toBe("");
+  });
+
+  it("sends on a plain-HTTP origin when crypto.randomUUID is unavailable", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => {
+        for (let index = 0; index < bytes.length; index += 1) bytes[index] = index;
+        return bytes;
+      },
+    });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" />);
+
+    typeText("LAN message");
+    await act(async () => sendButton().click());
+
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(onAdd.mock.calls[0]?.[0]).toBe("LAN message");
+    expect(onAdd.mock.calls[0]?.[4]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
     expect(editable().textContent).toBe("");
   });
 
