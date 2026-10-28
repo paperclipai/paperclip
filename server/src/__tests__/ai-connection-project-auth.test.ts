@@ -21,7 +21,6 @@ describe("managed AI project authentication", () => {
     const parent = path.join(root, "parent");
     const cwd = path.join(parent, "workspace");
     await mkdir(cwd, { recursive: true });
-    // TMPDIR may inherit conflicting provider settings outside this fixture.
     const inheritedResult = await assertManagedAiProjectAuth({ cwd }, provider.provider)
       .catch((error: unknown) => error);
     await writeFile(path.join(parent, provider.directory), "not a configuration directory");

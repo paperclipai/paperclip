@@ -203,8 +203,6 @@ done`,
         }
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
-        // A non-directory .codex/.claude entry cannot contain configuration.
-        // Keep checking ancestors; other read failures remain blocking.
         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       }
     }
