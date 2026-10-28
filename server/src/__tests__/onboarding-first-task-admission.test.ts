@@ -1,16 +1,34 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { documentService } from "../services/documents.js";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId = randomUUID()) {
+  const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
+  const recipes = [...skill.matchAll(/^ {0,3}```json\n([\s\S]*?)^ {0,3}```/gm)].map(match => JSON.parse(match[1]!) as Record<string, unknown>);
+  const matches = recipes.filter(recipe => recipe.interactionKind === kind);
+  expect(matches, `one executable native ${kind} recipe must ship with the first-task skill`).toHaveLength(1);
+  return JSON.parse(JSON.stringify(matches[0]).replaceAll("<child-title>", "Approved child")
+    .replaceAll("<plan-revision-id>", planRevisionId)) as Record<string, unknown>;
+}
+
+it.each(["confirmation", "checkbox"] as const)("ships a native %s recipe accepted by the production interaction schema", async kind => {
+  const recipe = await nativeProposalRecipe(kind);
+  const parsed = createIssueThreadInteractionSchema.parse({ kind: kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation",
+    idempotencyKey: recipe.idempotencyKey, title: recipe.title, continuationPolicy: recipe.continuationPolicy,
+    payload: { ...(recipe.payload as Record<string, unknown>), version: 1, prompt: recipe.prompt } });
+  expect(parsed.kind).toBe(kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation");
+});
+
 if (!support.supported) console.warn(`Skipping first-task admission database tests: ${support.reason}`);
 describe.skipIf(!support.supported)("onboarding first-task execution admission", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -85,6 +103,44 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
   const accept = async (f: Awaited<ReturnType<typeof fixture>>, p: Awaited<ReturnType<typeof proposal>>) => {
     await p.svc.acceptInteraction(p.issue, p.card.id, p.plan ? { selectedOptionIds: ["execute"] } : {}, { userId: f.responsibleUserId! });
   };
+
+  it("an explicit Approve/Revise question remains input rather than proposal authority after the human answers", async () => {
+    const f = await fixture();
+    const issueIds = (await f.snapshot()).issues.map(issue => issue.id).sort();
+    const { interaction } = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: {
+      idempotencyKey: "first-task-proposal-1", interactionKind: "questions", title: "Approve child task",
+      prompt: "I propose exactly one child task and will wait for approval.", continuationPolicy: "wake_assignee",
+      payload: { questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "approve_child_task",
+        prompt: 'Approve exactly one child task named "Approved child"?', required: true, answerMode: "single_select",
+        options: [{ id: "approve", label: "Approve" }, { id: "revise", label: "Revise" }] }] } },
+    } }) as { interaction: { id: string; kind: string } };
+    expect(interaction.kind).toBe("ask_user_questions");
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+    const answered = await issueThreadInteractionService(server.db).answerQuestions({ id: f.issueId, companyId: f.companyId }, interaction.id,
+      { answers: [{ questionId: "approve_child_task", optionIds: ["approve"] }] }, { userId: f.responsibleUserId! });
+    expect(answered).toMatchObject({ status: "answered", resolvedByUserId: f.responsibleUserId,
+      result: { answers: [{ questionId: "approve_child_task", optionIds: ["approve"] }] } });
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+    expect((await f.snapshot()).issues.map(issue => issue.id).sort()).toEqual(issueIds);
+  });
+
+  it.each(["confirmation", "checkbox"] as const)("the shipped native %s recipe requires a human decision before it admits child work", async kind => {
+    for (const actor of ["human", "agent"] as const) {
+      const f = await fixture();
+      const plan = kind === "checkbox" ? (await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: "plan",
+        title: "Approved child plan", format: "markdown", body: "Create one child for the proposed deliverable.",
+        createdByAgentId: f.agentId, createdByRunId: f.runId })).document : null;
+      const args = await nativeProposalRecipe(kind, plan?.latestRevisionId ?? undefined);
+      const { interaction } = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: args }) as { interaction: { id: string; kind: string } };
+      expect(interaction.kind).toBe(kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation");
+      await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+      const selectedOptionIds = kind === "checkbox" ? ((args.payload as { options: { id: string }[] }).options.map(option => option.id)) : undefined;
+      await issueThreadInteractionService(server.db).acceptInteraction({ id: f.issueId, companyId: f.companyId }, interaction.id,
+        selectedOptionIds ? { selectedOptionIds } : {}, actor === "human" ? { userId: f.responsibleUserId! } : { agentId: f.agentId, runId: f.runId });
+      if (actor === "human") await expect(create(f)).resolves.toMatchObject({ task: { parentId: f.issueId } });
+      else await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+    }
+  });
 
   it.each([false, true])("admits persisted human proposal acceptance (checkbox=%s)", async checkbox => {
     const f = await fixture();
