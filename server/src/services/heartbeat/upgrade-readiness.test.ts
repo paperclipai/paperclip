@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agents, applyPendingMigrations, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, environmentLeases, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -75,7 +75,7 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     const root = await mkdtemp(join(tmpdir(), "upgrade-checkpoint-"));
     const core = new DurablePrpControlPlane({ stateDirectory: root,
       identity: { runId, runnerInstanceId: execution.runnerInstanceId, normalizedSessionId: execution.nativeSessionId,
-        environmentLeaseId: workspace.leaseId, turnId: "turn", itemId: "item" },
+        environmentLeaseId: workspace.workspaceId, turnId: "turn", itemId: "item" },
       expectedRunnerVersion: "0.3.0", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
     let header = "";
     const writer = nativeRunnerCheckpointWriter(db, { ...binding, ...lease, bootId: owner.bootId,
@@ -88,10 +88,22 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     finally { await core.stop(); await rm(root, { recursive: true, force: true }); }
     expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, recoverableRuns: 1 });
     const cipher = createLocalEncryptedCipher("write");
+    // Real staging headers contain retained launch metadata around 113 KiB.
+    const representativeHeader = JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(100_000) });
+    await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: representativeHeader })) })
+      .where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
     for (const contents of ["{", "{}", JSON.stringify({ ...JSON.parse(header), schema: "paperclip.runner.controller-checkpoint.v1" }),
-      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(100_000) }),
+      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(400_000) }),
       JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state, identity: { ...JSON.parse(header).state.identity, runId: randomUUID() } } })]) {
       await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents })) })
+        .where(eq(nativeRunnerCheckpoints.runId, runId));
+      expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
+    }
+    for (const field of ["runnerInstanceId", "normalizedSessionId", "environmentLeaseId"]) {
+      const mismatch = JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state,
+        identity: { ...JSON.parse(header).state.identity, [field]: randomUUID() } } });
+      await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: mismatch })) })
         .where(eq(nativeRunnerCheckpoints.runId, runId));
       expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
     }
@@ -108,6 +120,27 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
       expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
       await db.update(nativeRunFinalizations).set({ ...lease, failureCode: null }).where(eq(nativeRunFinalizations.runId, runId));
     }
+    // Plugin task admission owns an environment lease identity and deliberately has no workspace-sync record.
+    const pluginLeaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: pluginLeaseId, companyId, heartbeatRunId: runId, issueId,
+      provider: "plugin", providerLeaseId: "synthetic-task", metadata: { runnerTaskLease: true, runnerTaskDispatched: true } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // workspace identity is not plugin task authority
+    const pluginHeader = JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state,
+      identity: { ...JSON.parse(header).state.identity, environmentLeaseId: pluginLeaseId } } });
+    await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: pluginHeader })) })
+      .where(eq(nativeRunnerCheckpoints.runId, runId));
+    expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
+    for (const patch of [{ status: "released" }, { metadata: { runnerTaskLease: true, runnerTaskDispatched: false } },
+      { metadata: { runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: true } }]) {
+      await db.update(environmentLeases).set(patch).where(eq(environmentLeases.id, pluginLeaseId));
+      expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
+      await db.update(environmentLeases).set({ status: "active", metadata: { runnerTaskLease: true, runnerTaskDispatched: true } }).where(eq(environmentLeases.id, pluginLeaseId));
+    }
+    await db.delete(environmentLeases).where(eq(environmentLeases.id, pluginLeaseId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: execution.runnerProfileJson }).where(eq(heartbeatRuns.id, runId));
+    await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: header })) })
+      .where(eq(nativeRunnerCheckpoints.runId, runId));
     await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, agentId));
