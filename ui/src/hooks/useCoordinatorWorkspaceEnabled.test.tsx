@@ -30,7 +30,7 @@ describe("useCoordinatorWorkspaceEnabled", () => {
     client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
-  afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
+  afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); vi.unstubAllGlobals(); });
   async function mount(provider = true) {
     flushSync(() => root.render(provider ? <QueryClientProvider client={client}><Probe /></QueryClientProvider> : <Probe />));
     await flush();
@@ -63,6 +63,28 @@ describe("useCoordinatorWorkspaceEnabled", () => {
     resolve(preference("a", true)); await pending; await flush();
     expect(current).toMatchObject({ userId: "b", enabled: false });
     expect(client.getQueryData(queryKeys.workspacePreferences.mine("a"))).toMatchObject({ coordinatorWorkspaceEnabled: true });
+  });
+  it("loads the new account's saved choice while the previous account's real GET is still pending", async () => {
+    const { workspacePreferencesApi } = await vi.importActual<typeof import("@/api/workspacePreferences")>("@/api/workspacePreferences");
+    let resolvePrevious!: (response: Response) => void;
+    const previous = new Promise<Response>(resolve => { resolvePrevious = resolve; });
+    const fetchMock = vi.fn().mockReturnValueOnce(previous).mockResolvedValueOnce(Response.json(preference("b", true)));
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.get.mockImplementation(() => workspacePreferencesApi.get());
+    await mount();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    try {
+      client.setQueryData(queryKeys.auth.session, session("b"));
+      await vi.waitFor(() => expect(current).toMatchObject({ userId: "b", enabled: true, loaded: true }));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/workspace-preferences/me", "/api/workspace-preferences/me"]);
+    } finally {
+      resolvePrevious(Response.json(preference("a", false)));
+      await flush();
+    }
+    expect(current).toMatchObject({ userId: "b", enabled: true });
+    expect(client.getQueryData(queryKeys.workspacePreferences.mine("a"))).toMatchObject(preference("a", false));
+    expect(client.getQueryData(queryKeys.workspacePreferences.mine("b"))).toMatchObject(preference("b", true));
   });
   it("does not treat anonymous sessions as local board, even with an enabled cached local choice", async () => {
     mocks.session.mockResolvedValue(null);
