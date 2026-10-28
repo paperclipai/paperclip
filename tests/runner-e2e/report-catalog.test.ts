@@ -234,6 +234,21 @@ describe("trusted report catalog discovery", () => {
     expect(discovered?.profile).toBe(selected.profile);
   });
 
+  it.each([
+    null, [], { title: 12 }, { description: false }, { notes: "not an array" },
+    { notes: [42] }, { links: "not an array" }, { links: [null] },
+    { links: [{ label: "Missing destination" }] }, { links: [{ href: "provenance.json" }] },
+  ])("rejects malformed presentation metadata before rewriting retained measurements (%#)", async presentation => {
+    const bundle = await mkdtemp(path.join(os.tmpdir(), "branch-report-invalid-presentation-"));
+    temporary.push(bundle);
+    const file = path.join(bundle, "normalized-results.json");
+    const retained = JSON.stringify({ ...campaign(), presentation });
+    await writeFile(file, retained);
+    await expect(regenerateRunnerDashboard({ bundle, historyFile: null })).rejects.toThrow("invalid presentation metadata");
+    expect(await readFile(file, "utf8")).toBe(retained);
+    await expect(readFile(path.join(bundle, "index.html"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("regenerates branch-only cards and gallery from persisted JSON using trusted code", async () => {
     const bundle = await mkdtemp(
       path.join(os.tmpdir(), "branch-report-regenerate-"),

@@ -33,6 +33,24 @@ interface PublishedCampaign {
   presentation?: RunnerDashboardInput["presentation"];
 }
 
+function validatePresentation(value: unknown) {
+  if (value === undefined) return;
+  const invalid = () => {
+    throw new Error("Published bundle has invalid presentation metadata in normalized-results.json");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const presentation = value as Record<string, unknown>;
+  for (const field of ["title", "description"]) {
+    if (presentation[field] !== undefined && typeof presentation[field] !== "string") invalid();
+  }
+  if (presentation.notes !== undefined &&
+      (!Array.isArray(presentation.notes) || presentation.notes.some(note => typeof note !== "string"))) invalid();
+  if (presentation.links !== undefined &&
+      (!Array.isArray(presentation.links) || presentation.links.some(link =>
+        !link || typeof link !== "object" || Array.isArray(link) ||
+        typeof link.label !== "string" || typeof link.href !== "string"))) invalid();
+}
+
 async function relativeFiles(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true }).catch(
     () => [],
@@ -90,6 +108,7 @@ export async function regenerateRunnerDashboard(input: {
   ) {
     throw new Error("Published bundle has an invalid normalized-results.json");
   }
+  validatePresentation(normalized.presentation);
 
   const results = normalized.results.map(upgradeRunnerResult);
   const expected = normalized.expected.map(canonicalExecutionId);
