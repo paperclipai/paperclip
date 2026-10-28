@@ -1692,6 +1692,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     expect(application).toMatchObject({ applicationKey: "app-gallery:github-copilot", name: "GitHub Copilot", metadata: { sourceTemplateKey: "github-copilot" } });
   });
 
+  it("leaves archived connections out of the selectable list", async () => {
+    const base = { provider: "openai", method: "api_key", ownership: "personal", allAgents: true, agentIds: [] } as const;
+    const routing = (host: string) => ({ kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: `https://${host}.example/v1`, models: [{ id: "m" }] }) as const;
+    await service.save(companyId, "alice", { ...base, name: "Archived list kept", routing: routing("list-kept") }, "kept-credential");
+    const removed = await service.save(companyId, "alice", { ...base, name: "Archived list removed", routing: routing("list-removed") }, "removed-credential");
+    await db.update(toolConnections).set({ status: "archived", enabled: false }).where(eq(toolConnections.id, removed.connectionId));
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, removed.connectionId));
+    const names = (await service.list(companyId, "alice")).map((account) => account.name);
+    expect(names).toContain("Archived list kept");
+    expect(names).not.toContain("Archived list removed");
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
