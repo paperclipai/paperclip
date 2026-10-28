@@ -323,6 +323,8 @@ export interface RunnerE2EResult {
   provider: string | null;
   model: string | null;
   runtimeMode: RunnerGeneration | "none";
+  /** Recorded application URL; retained by reviewed public evidence projections. */
+  targetUrl?: string;
   issueId?: string;
   issueIdentifier?: string | null;
   runIds?: string[];

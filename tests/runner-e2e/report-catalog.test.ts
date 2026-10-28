@@ -197,10 +197,14 @@ describe("trusted report catalog discovery", () => {
     await writeFile(path.join(evidence, "final-state.png"), "fixture");
     await writeFile(
       path.join(bundle, "normalized-results.json"),
-      JSON.stringify({ ...campaign(), suites: [] }),
+      JSON.stringify({ ...campaign([{ ...result(), targetUrl: "https://qa.example.test", matcherResults: [{ matcher: { kind: "json_path", path: "saved", expected: true }, passed: true, detail: "Saved after reload" }] }]), suites: [], presentation: { title: "QA basics", notes: ["Original measurement retained"] } }),
     );
     await regenerateRunnerDashboard({ bundle, historyFile: null });
     const page = await readFile(path.join(bundle, "index.html"), "utf8");
+    expect(page).toContain('data-gallery-target-url="https://qa.example.test/"');
+    expect(page).toContain('href="https://qa.example.test/" target="_blank"');
+    expect(page).toContain("Saved after reload");
+    expect(page).toContain("Original measurement retained");
     expect(page).toContain(`data-execution-id="${id}"`);
     expect(page).toContain(`data-execution-id="${missingId}"`);
     expect(page).toContain(
@@ -209,6 +213,8 @@ describe("trusted report catalog discovery", () => {
     const normalized = JSON.parse(
       await readFile(path.join(bundle, "normalized-results.json"), "utf8"),
     );
+    expect(normalized.presentation).toEqual({ title: "QA basics", notes: ["Original measurement retained"] });
+    expect(normalized.results[0].targetUrl).toBe("https://qa.example.test");
     expect(normalized.suites).toEqual([
       expect.objectContaining({
         suiteId: "branch-only-chat",

@@ -184,7 +184,7 @@ describe("runner E2E report aggregation", () => {
     expect(normalized.results[0].startupReuse).toHaveLength(runIds.length);
     expect(normalized.results[0].startupReuse.every((reuse: { warmth: string; providerLaunchCount: number | null }) =>
       reuse.warmth === "unknown" && reuse.providerLaunchCount === null)).toBe(true);
-    expect(dashboard).toContain("Startup reuse evidence");
+    expect(dashboard).not.toContain("<caption>Startup reuse evidence</caption>");
   });
 
   it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {
