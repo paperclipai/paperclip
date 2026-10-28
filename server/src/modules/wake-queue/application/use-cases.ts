@@ -558,22 +558,12 @@ async function runReleaseRecoveryTail(
         })
       : false;
 
+  const reviewerOwnsBlockerWake = reviewParticipantApplies && issue.assigneeAgentId === currentParticipant?.agentId;
+  const blockerQuery = { companyId: issue.companyId, issueId: issue.id };
   const hasExplicitBlockerPath =
-    (reviewParticipantApplies && issue.assigneeAgentId === currentParticipant?.agentId) || immediateApplies
-      ? await transaction.hasExplicitBlockerPath({
-          companyId: issue.companyId,
-          issueId: issue.id,
-        })
-      : false;
-
+    reviewerOwnsBlockerWake || immediateApplies ? await transaction.hasExplicitBlockerPath(blockerQuery) : false;
   const hasReviewBlockerWait =
-    reviewParticipantApplies &&
-    issue.assigneeAgentId === currentParticipant?.agentId &&
-    (hasExplicitBlockerPath ||
-      (await transaction.hasPendingFinalizeBlocker({
-        companyId: issue.companyId,
-        issueId: issue.id,
-      })));
+    reviewerOwnsBlockerWake && (hasExplicitBlockerPath || (await transaction.hasPendingFinalizeBlocker(blockerQuery)));
 
   const expectedRetryReason:
     "assignment_recovery" | "issue_continuation_needed" =
