@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  authUsers,
+  companyMemberships,
   agentWakeupRequests,
   companies,
   completionContracts,
@@ -28,6 +30,18 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { heartbeatService } from "../services/heartbeat.ts";
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "ok" })),
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -39,6 +53,8 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-dependency-wake-");
     db = createDb(temporary.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Owner", email: "owner@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
   }, 30_000);
 
   afterAll(async () => temporary?.cleanup());
@@ -52,16 +68,20 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
       name: "Dependency wake",
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+      status: "active", membershipRole: "member" });
+    const runtimeConfig = { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } };
     await db.insert(agents).values([
-      { id: agentId, companyId, name: "Owner", adapterType: "codex_local", status: agentStatus },
-      { id: otherAgentId, companyId, name: "New owner", adapterType: "codex_local", status: "idle" },
+      { id: agentId, companyId, name: "Owner", adapterType: "codex_local", status: agentStatus, runtimeConfig },
+      { id: otherAgentId, companyId, name: "New owner", adapterType: "codex_local", status: "idle", runtimeConfig },
     ]);
     return { companyId, agentId, otherAgentId };
   }
 
   async function seedIssue(companyId: string, values: Partial<typeof issues.$inferInsert> = {}) {
     const id = randomUUID();
-    await db.insert(issues).values({ id, companyId, title: "Fixture", status: "in_progress", workMode: "standard", ...values });
+    await db.insert(issues).values({ id, companyId, title: "Fixture", status: "in_progress", workMode: "standard",
+      responsibleUserId: "responsible-user", ...values });
     return id;
   }
 
@@ -250,7 +270,10 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
     expect(wakes.map((wake) => wake.id)).toEqual([legacy!.id]);
   });
 
-  it("wakes exactly once when the last two blockers complete concurrently", async () => {
+  it.each([
+    ["A then B", false],
+    ["B then A", true],
+  ])("wakes exactly once when the last two blockers commit in order %s", async (_label, reverse) => {
     const { companyId, agentId } = await seedCompany();
     const blockerA = await seedIssue(companyId, { assigneeAgentId: agentId });
     const blockerB = await seedIssue(companyId, { assigneeAgentId: agentId });
@@ -259,8 +282,14 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
     await startBlockedCycle(dependent, new Date("2026-10-28T01:00:00.000Z"));
     const completeA = await prepareCompletion(companyId, agentId, blockerA);
     const completeB = await prepareCompletion(companyId, agentId, blockerB);
+    const [first, second] = reverse ? [completeB, completeA] : [completeA, completeB];
 
-    await Promise.all([completeA(), completeB()]);
+    await first();
+    expect(await dependencyWakes(companyId, dependent)).toHaveLength(0);
+    await second();
+    expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
+    expect((await first()).replayed).toBe(true);
+    expect((await second()).replayed).toBe(true);
     expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
   });
 
@@ -277,11 +306,79 @@ describeEmbeddedPostgres("native completion dependency wakes across blocked cycl
     await startBlockedCycle(foreignDependent, new Date("2026-10-28T01:00:00.000Z"));
 
     const commit = await prepareCompletion(companyId, agentId, blocker);
-    await expect(commit("status_projection")).rejects.toThrow();
+    const trigger = `fail_dependency_wake_${blocker.replace(/-/g, "")}`;
+    await db.execute(sql.raw(`
+      CREATE FUNCTION ${trigger}() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.effect_kind = 'dependency_wake' AND NEW.issue_id = '${blocker}' THEN
+          RAISE EXCEPTION 'dependency wake effect failpoint';
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql;
+      CREATE TRIGGER ${trigger} BEFORE INSERT ON status_decision_effects
+        FOR EACH ROW EXECUTE FUNCTION ${trigger}();
+    `));
+    try {
+      await expect(commit()).rejects.toThrow();
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER ${trigger} ON status_decision_effects; DROP FUNCTION ${trigger}();`));
+    }
     expect(await dependencyWakes(companyId, dependent)).toHaveLength(0);
+    expect(await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, blocker))).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, blocker)))[0]).toMatchObject({ status: "in_progress" });
 
     await commit();
     expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
+    expect((await db.select().from(issues).where(eq(issues.id, blocker)))[0]).toMatchObject({ status: "done" });
     expect(await dependencyWakes(outside.companyId, foreignDependent)).toHaveLength(0);
+  });
+
+  async function issueRuns(companyId: string, dependentId: string) {
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    return runs.filter((run) => (run.contextSnapshot as Record<string, unknown> | null)?.issueId === dependentId
+      && run.nativeIssueId === null);
+  }
+
+  it.each(["manual", "budget"])(
+    "does not start or repeat the wake while the owner is paused (%s)",
+    async (pauseReason) => {
+      const heartbeat = heartbeatService(db);
+      const { companyId, agentId } = await seedCompany("paused");
+      await db.update(agents).set({ pauseReason }).where(eq(agents.id, agentId));
+      const blocker = await seedIssue(companyId, { assigneeAgentId: agentId });
+      const dependent = await seedIssue(companyId, { assigneeAgentId: agentId });
+      await block(companyId, dependent, [blocker]);
+      await startBlockedCycle(dependent, new Date("2026-10-28T01:00:00.000Z"));
+      await complete(companyId, agentId, blocker);
+      expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+      }
+      await heartbeat.drainActiveRunExecutions();
+      expect(await issueRuns(companyId, dependent)).toHaveLength(0);
+      expect(await dependencyWakes(companyId, dependent)).toHaveLength(1);
+      const requests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      expect(requests).toHaveLength(2);
+    },
+  );
+
+  it("does not start the former owner when the dependent is reassigned before dispatch", async () => {
+    const heartbeat = heartbeatService(db);
+    const { companyId, agentId, otherAgentId } = await seedCompany();
+    const blocker = await seedIssue(companyId, { assigneeAgentId: agentId });
+    const dependent = await seedIssue(companyId, { assigneeAgentId: agentId });
+    await block(companyId, dependent, [blocker]);
+    await startBlockedCycle(dependent, new Date("2026-10-28T01:00:00.000Z"));
+    await complete(companyId, agentId, blocker);
+    const [wake] = await dependencyWakes(companyId, dependent);
+    expect(wake).toMatchObject({ agentId, status: "queued" });
+
+    await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, dependent));
+    await heartbeat.dispatchPendingNativeStatusWakeups({ companyId });
+    await heartbeat.drainActiveRunExecutions();
+    expect(await issueRuns(companyId, dependent)).toHaveLength(0);
+    expect((await dependencyWakes(companyId, dependent)).find((row) => row.id === wake!.id))
+      .toMatchObject({ status: "skipped", error: "Native status wake target has a different assignee" });
   });
 });
