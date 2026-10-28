@@ -52,7 +52,7 @@ const { WebSocket, WebSocketServer } = require("ws") as {
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
 import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 import { canActorReadCase } from "../services/case-access.js";
-import { hasClientMembershipFor } from "../services/company-member-roles.js";
+import { hasClientMembershipFor, isClientMembershipRole } from "../services/company-member-roles.js";
 
 interface UpgradeContext {
   actor: AuthorizationActor;
@@ -325,12 +325,19 @@ export function setupLiveEventsWebSocketServer(
           .where(and(eq(agentApiKeys.id, context!.apiKeyId), isNull(agentApiKeys.revokedAt))).limit(1);
         if (!active.length) return null;
       } else {
-        const membership = await db.select({ id: companyMemberships.id }).from(companyMemberships)
+        const membership = await db.select({ id: companyMemberships.id, membershipRole: companyMemberships.membershipRole })
+          .from(companyMemberships)
           .where(and(eq(companyMemberships.companyId, context!.companyId), eq(companyMemberships.principalType, "user"),
             eq(companyMemberships.principalId, context!.actorId), eq(companyMemberships.status, "active"))).limit(1);
         const admin = context!.actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
           .where(and(eq(instanceUserRoles.userId, context!.actorId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
         if (!membership.length && !admin) return null;
+        // Re-read the role per event, not only at connect time. This re-read
+        // already exists to catch a membership that changes while the socket
+        // stays open, so it has to read the role too: an owner can change a
+        // connected staff member to `client` mid-stream, and the membership
+        // stays active across that change. An instance admin still receives.
+        if (!admin && isClientMembershipRole(membership[0]?.membershipRole)) return null;
       }
       const payload = event.payload;
       const issueId = typeof payload.issueId === "string" ? payload.issueId
