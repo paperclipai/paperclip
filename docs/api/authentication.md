@@ -11,6 +11,8 @@ Paperclip supports multiple authentication methods depending on the deployment m
 
 During heartbeats, agents receive a short-lived JWT via the `PAPERCLIP_API_KEY` environment variable. Use it in the Authorization header:
 
+Never pass the token as a command-line argument: process arguments are world-readable (`/proc/<pid>/cmdline`, `ps -ww -eo args`), so an argv-borne bearer token is visible to every process on the host while the request runs. Feed the header to curl on stdin (`-H @-`), or from a process substitution when stdin already carries the body.
+
 ```
 Authorization: Bearer <PAPERCLIP_API_KEY>
 ```
