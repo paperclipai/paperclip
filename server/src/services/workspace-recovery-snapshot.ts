@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { and, desc, eq, sql } from "drizzle-orm";
-import { workspaceOperations, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { environmentLeases, workspaceOperations, type Db } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createCommandManagedRuntimeClient } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { createTarballFromDirectory, exportSandboxWorkspaceSnapshot, restoreVerifiedSnapshotArchive } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
@@ -31,6 +31,26 @@ export function readSnapshot(value: unknown, companyId: string, runId: string) {
   if (s.archive.objectKey !== `${prefix}${s.archive.sha256}.tar` || s.manifest.objectKey !== `${prefix}${s.manifest.sha256}.jsonl`)
     throw new SystemRecoveryFailure("snapshot_verification_failed", "service_required");
   return s;
+}
+
+export async function verifiedWorkspaceSnapshotReceipt(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actionId: string; operationIds: string[];
+  leaseId?: string; providerLeaseId?: string;
+}) {
+  if (!input.operationIds.length) return null;
+  const [operation] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata })
+    .from(workspaceOperations).innerJoin(environmentLeases, and(
+      eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
+      sql`${environmentLeases.id}::text = ${workspaceOperations.metadata}->>'leaseId'`,
+      sql`${environmentLeases.providerLeaseId} = ${workspaceOperations.metadata}->>'providerLeaseId'`,
+    )).where(and(inArray(workspaceOperations.id, input.operationIds),
+      eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, input.issueId),
+      eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),
+      eq(workspaceOperations.status, "succeeded"), sql`${workspaceOperations.metadata}->>'recoveryActionId' = ${input.actionId}`,
+      input.leaseId ? eq(environmentLeases.id, input.leaseId) : undefined,
+      input.providerLeaseId ? eq(environmentLeases.providerLeaseId, input.providerLeaseId) : undefined,
+    )).limit(1);
+  return operation ? { id: operation.id, snapshot: readSnapshot(operation.metadata, input.companyId, input.runId) } : null;
 }
 
 async function digest(stream: AsyncIterable<Buffer | string>, limit = Number.MAX_SAFE_INTEGER) {

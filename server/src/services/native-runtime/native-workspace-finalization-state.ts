@@ -6,25 +6,53 @@ import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 type WorkspaceSourceLease = Pick<typeof environmentLeases.$inferSelect,
   "id" | "companyId" | "heartbeatRunId" | "provider" | "providerLeaseId">;
 
-export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
-  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+function nativeWorkspaceRunProjection() {
   const input = sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`;
-  const [run] = await db.select({
+  return {
     id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
     issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
     runtimeMode: heartbeatRuns.runtimeMode, driverKind: heartbeatRuns.driverKind,
     reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
     executionScope: sql<Record<string, unknown>>`jsonb_build_object(
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
-      'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}'))`,
-  }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
-    eq(heartbeatRuns.runtimeMode, "native"),
-  )).limit(1);
-  if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
+      'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}', 'bridgeRevision', ${input}#>'{provider,bridgeRevision}'))`,
+  };
+}
+
+function nativeWorkspaceSourcePending(run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "issueId" | "nativeIssueId" | "runtimeMode" | "driverKind"> & {
+    reference: unknown; executionScope: Record<string, unknown>;
+  }, lease: WorkspaceSourceLease) {
+  if (nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id
     && reference.providerLeaseId === lease.providerLeaseId;
+}
+
+export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
+  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+  const [run] = await db.select(nativeWorkspaceRunProjection()).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  )).limit(1);
+  return Boolean(run && nativeWorkspaceSourcePending(run, lease));
+}
+
+export async function nativeWorkspaceExportPendingForResource(db: Db, lease: WorkspaceSourceLease, resumingRunId: string | null) {
+  if (!lease.provider || !lease.providerLeaseId || lease.provider === "local") return false;
+  const sources = await db.select({ lease: { id: environmentLeases.id, companyId: environmentLeases.companyId,
+    heartbeatRunId: environmentLeases.heartbeatRunId, provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId },
+    run: nativeWorkspaceRunProjection(),
+  }).from(environmentLeases).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, environmentLeases.companyId),
+    eq(heartbeatRuns.id, environmentLeases.heartbeatRunId))).where(and(
+    eq(environmentLeases.provider, lease.provider), eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
+    eq(heartbeatRuns.runtimeMode, "native"), sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}' = 'prepared'`,
+  ));
+  for (const source of sources) {
+    if (source.lease.id === lease.id && source.lease.heartbeatRunId === resumingRunId) continue;
+    if (nativeWorkspaceSourcePending(source.run, source.lease)) return true;
+  }
+  return false;
 }
 
 /**

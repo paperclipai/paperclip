@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 
 /** Re-enter the existing finalizer only after preservation. This does not
  * recreate a result, grant an executor budget, or apply it over newer work. */
@@ -36,6 +37,7 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
     )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1);
     const recovery = readSystemRecovery(action?.evidence);
     if (!result || recovery?.state !== "complete" || !recovery.preservationOperationIds.length) return false;
+    if (!await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return false;
     const [intent] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.reason, "task_retry"),
