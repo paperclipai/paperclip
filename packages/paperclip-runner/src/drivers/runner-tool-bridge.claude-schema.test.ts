@@ -13,12 +13,12 @@ it("keeps the human-input tool available in the pinned Claude client", async () 
   const root = await mkdtemp(join(tmpdir(), "claude-question-schema-"));
   const config = join(root, "config"), cwd = join(root, "workspace");
   await Promise.all([mkdir(config), mkdir(cwd)]);
-  const offered: string[][] = [];
+  const offered: Array<Array<{ name: string; input_schema: Record<string, unknown> }>> = [];
   const api = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
     const body = JSON.parse(raw || "{}");
-    if (Array.isArray(body.tools)) offered.push(body.tools.map((tool: { name: string }) => tool.name));
+    if (Array.isArray(body.tools)) offered.push(body.tools);
     response.writeHead(200, { "content-type": "text/event-stream" });
     // The real client reaches only this local API, which never asks it to run tools.
     const frames = [
@@ -50,8 +50,13 @@ it("keeps the human-input tool available in the pinned Claude client", async () 
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", ENABLE_TOOL_SEARCH: "false",
     } });
     expect(offered.length).toBeGreaterThan(0);
-    expect(offered.at(-1)).toContain("mcp__paperclip__write_document");
-    expect(offered.at(-1)).toContain("mcp__paperclip__request_human_input");
+    expect(offered.at(-1)?.map(tool => tool.name)).toContain("mcp__paperclip__write_document");
+    const question = offered.at(-1)?.find(tool => tool.name === "mcp__paperclip__request_human_input");
+    expect(question).toBeDefined();
+    expect(question!.input_schema).toMatchObject({ type: "object", properties: {
+      idempotencyKey: { type: "string" }, interactionKind: { enum: expect.arrayContaining(["questions", "confirmation"]) },
+      title: { type: "string" }, prompt: { type: "string" }, payload: { type: "object" },
+    }, required: expect.arrayContaining(["idempotencyKey", "interactionKind", "title", "prompt", "continuationPolicy"]) });
   } finally {
     api.closeAllConnections();
     await new Promise<void>(resolve => api.close(() => resolve()));

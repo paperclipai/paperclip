@@ -86,8 +86,8 @@ export const requestHumanInputAction = {
         "skill_test"
       ],
       "inputSchema": {
-        // A root allOf can hide this tool in Claude and its arguments in Codex.
-        // The direct conditional preserves the same validation on an object root.
+        // The pinned Claude client drops a tool with this conditional in root allOf.
+        // Keep the equivalent direct condition on the concrete object root.
         ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
