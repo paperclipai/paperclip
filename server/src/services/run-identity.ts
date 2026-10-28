@@ -601,13 +601,17 @@ export async function readRunIdentityContext(
         eq(heartbeatRuns.agentId, input.agentId),
       ),
     );
-  if (!run?.activeIdentityContextId) return null;
+  if (!run) return { settled: true as const, context: null };
   const [pending] = await db
     .select()
     .from(runIdentityContexts)
     .where(and(eq(runIdentityContexts.runId, run.id), eq(runIdentityContexts.status, "pending")))
     .limit(1);
-  if (pending && await storedSteeringAcknowledgement(db, pending)) return pending;
+  if (pending)
+    return await storedSteeringAcknowledgement(db, pending)
+      ? { settled: true as const, context: pending }
+      : { settled: false as const };
+  if (!run.activeIdentityContextId) return { settled: true as const, context: null };
   const [context] = await db
     .select()
     .from(runIdentityContexts)
@@ -617,7 +621,7 @@ export async function readRunIdentityContext(
         eq(runIdentityContexts.runId, run.id),
       ),
     );
-  return context ?? null;
+  return { settled: true as const, context: context ?? null };
 }
 
 export async function listRunIdentityContexts(

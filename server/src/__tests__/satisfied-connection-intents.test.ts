@@ -3,13 +3,13 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
-  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, principalPermissionGrants, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
+  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, issueComments, principalPermissionGrants, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
   toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles, toolPolicies,
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { connectionIntentService } from "../services/connection-intents.js";
-import { initializeRunIdentity } from "../services/run-identity.js";
+import { initializeRunIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -706,6 +706,43 @@ describePostgres("already available connection requests", () => {
     expect(wakeup).toHaveBeenCalledTimes(status === "expired" ? 1 : 0);
     expect((await db.select().from(connectionIntentDeliveries)).map((delivery) => delivery.deliveredAt !== null))
       .toEqual(status === "expired" ? [true] : []);
+  });
+
+  it("keeps a Google card pending while a steered identity awaits its acknowledgement, then reads the steered identity", async () => {
+    const f = await seed();
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" } });
+    await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" });
+    const readonly = { oauth: { scopes: ["https://www.googleapis.com/auth/gmail.readonly"], scopeSource: "provider" as const } };
+    await db.update(connectionGrants).set({ providerTenant: readonly });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "steering-user", status: "active", membershipRole: "member" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "running",
+      responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId } }).returning();
+    await initializeRunIdentity(db, { companyId: f.companyId, runId: run!.id, issueId: f.issueId, messageIds: [], responsibleUserId: "connection-owner", cause: "instruction" });
+    const [message] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorUserId: "steering-user", body: "Steer" }).returning();
+    await reserveSteeredIdentity(db, { companyId: f.companyId, runId: run!.id, issueId: f.issueId, messageId: message!.id });
+    await db.update(issueThreadInteractions).set({ sourceRunId: run!.id }).where(eq(issueThreadInteractions.id, f.intent.id));
+    const google = { ...f, tool: { ...f.tool, toolName: "gmail__get_message" } };
+    const intent = await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" });
+    await grantRequested(google, intent);
+    const wakeup = vi.fn(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "queued", idempotencyKey: `connection-intent:${intent.id}:expired` });
+      return null;
+    });
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: run!.id, agentId: f.agentId, seq: 1, eventType: "item.completed",
+      sourceEventId: randomUUID(), payload: { prpEvent: { turnId: "turn-1", itemId: `turn-1:steer:${message!.id}`, payload: { kind: "steering_acknowledgement" } } } });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    expect(wakeup).not.toHaveBeenCalled();
+    expect(await db.select().from(connectionIntentDeliveries)).toEqual([]);
+    await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: f.connection.id, kind: "user", subjectUserId: "steering-user", status: "active", providerTenant: readonly });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+    expect(wakeup).toHaveBeenCalledOnce();
+    expect((await db.select().from(connectionIntentDeliveries)).map((delivery) => delivery.deliveredAt !== null)).toEqual([true]);
   });
 
   it("moves a retired request to an installed replacement when its recorded connection fails the gateway", async () => {

@@ -9621,10 +9621,11 @@ export function createToolGatewayService(
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
       };
-      const context = input.heartbeatRunId
+      const identity = input.heartbeatRunId
         ? await readRunIdentityContext(db, { companyId: input.companyId, runId: input.heartbeatRunId, agentId: input.agentId })
-        : null;
-      const identified = context ? sessionWithIdentityContext(session, context) : session;
+        : { settled: true as const, context: null };
+      if (!identity.settled) return [];
+      const identified = identity.context ? sessionWithIdentityContext(session, identity.context) : session;
       try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(identified, connection, false)); }
       catch { return []; }
     },
