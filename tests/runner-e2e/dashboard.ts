@@ -2,7 +2,7 @@ import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming,
 import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
 import { reportBrowserScript } from "./report-browser.js";
-import { reportTargetUrl } from "./report-target.js";
+import { reportEvidenceHref, reportTargetUrl } from "./report-target.js";
 import { isIncompleteFirstTaskResult, renderCaseOutcome } from "./case-outcome.js";
 import { latencyIntervalLabel } from "./latency-timing.js";
 import { campaignSuiteSummaryStyles, renderCampaignSuiteSummary, renderSuiteCaseIndex } from "./campaign-summary.js";
@@ -398,6 +398,10 @@ function renderSuiteResults(input: {
 }
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  const presentationLinks = (input.presentation?.links ?? []).flatMap(link => {
+    const href = reportEvidenceHref(link.href);
+    return href ? [{ ...link, href }] : [];
+  });
   const expected = new Set(input.expected);
   const catalog = discoverReportCatalog({
     catalog: input.catalog,
@@ -879,7 +883,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
-    ${input.presentation?.notes?.length || input.presentation?.links?.length ? `<details class="campaign-billing-details campaign-notes"><summary>About this run</summary>${input.presentation.notes?.map(note => `<p class="detail">${html(note)}</p>`).join("") ?? ""}${input.presentation.links?.length ? `<nav class="evidence-links" aria-label="Campaign evidence">${input.presentation.links.map(link => `<a href="${html(link.href)}">${html(link.label)}</a>`).join("")}</nav>` : ""}</details>` : ""}
+    ${input.presentation?.notes?.length || presentationLinks.length ? `<details class="campaign-billing-details campaign-notes"><summary>About this run</summary>${input.presentation?.notes?.map(note => `<p class="detail">${html(note)}</p>`).join("") ?? ""}${presentationLinks.length ? `<nav class="evidence-links" aria-label="Campaign evidence">${presentationLinks.map(link => `<a href="${html(link.href)}">${html(link.label)}</a>`).join("")}</nav>` : ""}</details>` : ""}
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
