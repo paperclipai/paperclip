@@ -220,8 +220,12 @@ vi.mock("./IssueLinkQuicklook", () => ({
   ),
 }));
 
+const { issueRuntimeMock } = vi.hoisted(() => ({
+  issueRuntimeMock: vi.fn((_options: unknown) => ({})),
+}));
+
 vi.mock("../hooks/usePaperclipIssueRuntime", () => ({
-  usePaperclipIssueRuntime: () => ({}),
+  usePaperclipIssueRuntime: issueRuntimeMock,
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3916,6 +3920,35 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("sends runtime messages without randomUUID on HTTP origins", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", {
+      getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto),
+    });
+    const root = createRoot(container);
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    try {
+      await act(async () => renderIssueThread(root, { onAdd }));
+      const runtimeOptions = issueRuntimeMock.mock.calls.at(-1)?.[0] as unknown as {
+        onSend: (options: { body: string; attachmentIds: string[] }) => Promise<void>;
+      };
+      await act(async () => {
+        await runtimeOptions.onSend({ body: "HTTP runtime message", attachmentIds: ["image-1"] });
+      });
+      expect(onAdd).toHaveBeenCalledTimes(1);
+      expect(onAdd).toHaveBeenCalledWith(
+        "HTTP runtime message",
+        undefined,
+        undefined,
+        ["image-1"],
+        expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+      );
+    } finally {
+      await act(async () => root.unmount());
+      vi.unstubAllGlobals();
+    }
   });
 
   it("restores a cancelled queued draft into the composer handle", () => {

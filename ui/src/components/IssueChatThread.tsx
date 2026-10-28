@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
 import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
@@ -6119,7 +6120,7 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
+      clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId);
       try {
         await (runSettings
