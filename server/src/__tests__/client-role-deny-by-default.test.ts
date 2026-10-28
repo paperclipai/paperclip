@@ -1,110 +1,470 @@
+import { readFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { assertCompanyAccess, hasCompanyAccess } from "../routes/authz.js";
-import { grantsForHumanRole, normalizeHumanRole, resolveHumanInviteRole } from "../services/company-member-roles.js";
+import {
+  assertBoardOrgAccess,
+  assertCompanyAccess,
+  getAccessibleResource,
+  hasBoardOrgAccess,
+  hasCompanyAccess,
+  isCompanyClientReachable,
+  markCompanyClientReachable,
+} from "../routes/authz.js";
+import {
+  filterStaffCompanyIds,
+  grantsForHumanRole,
+  hasActiveStaffMembership,
+  normalizeHumanRole,
+  resolveHumanInviteRole,
+} from "../services/company-member-roles.js";
 
 /**
- * Characterization tests for the deny-by-default `client` membership role RFC.
+ * Security tests for the deny-by-default `client` membership role.
  *
- * These describe how the CURRENT code treats an unrecognized membership role
- * such as `client`. They all pass on master: that is the point. They encode the
- * three fail-open behaviors a client role has to contend with, so that the
- * implementation PR can invert each assertion and have a regression test that
- * genuinely covers the change.
- *
- * Each block is labeled with the hazard number used in the RFC.
+ * A `client` is an authenticated company member whose default surface is
+ * empty. These tests are the invariant behind that sentence: they fail if a
+ * client can read or write any company-scoped core route, reach the org-level
+ * surface, or acquire a single permission grant by default.
  */
 
-function makeReq(input: { method?: string; actor: Express.Request["actor"] }) {
-  return {
-    method: input.method ?? "GET",
-    actor: input.actor,
-  } as Express.Request;
+const SAFE_METHODS = ["GET", "HEAD", "OPTIONS"] as const;
+const UNSAFE_METHODS = ["POST", "PATCH", "PUT", "DELETE"] as const;
+const ALL_METHODS = [...SAFE_METHODS, ...UNSAFE_METHODS];
+const STAFF_ROLES = ["owner", "admin", "operator", "viewer"] as const;
+
+type Membership = { companyId: string; membershipRole?: string | null; status?: string };
+
+function makeReq(input: {
+  method?: string;
+  actor: Express.Request["actor"];
+}) {
+  return { method: input.method ?? "GET", actor: input.actor } as Express.Request;
 }
 
-/** A session actor holding a single `client` membership in company-1. */
-function clientActor(): Express.Request["actor"] {
+function boardActor(memberships: Membership[], extra: Record<string, unknown> = {}) {
   return {
     type: "board",
-    userId: "client-user-1",
+    userId: "user-1",
     source: "session",
-    // auth.ts derives companyIds from every ACTIVE membership, regardless of role.
-    companyIds: ["company-1"],
-    memberships: [{ companyId: "company-1", membershipRole: "client", status: "active" }],
-  };
+    // auth.ts derives companyIds from every ACTIVE membership regardless of
+    // role, so a client membership lands here like any other.
+    companyIds: memberships.map((m) => m.companyId),
+    memberships,
+    ...extra,
+  } as Express.Request["actor"];
 }
 
-describe("hazard 1: hasCompanyAccess ignores membershipRole", () => {
-  it("admits a client membership, so every getAccessibleResource read path admits it too", () => {
-    // getAccessibleResource gates existence on hasCompanyAccess alone. There are
-    // 241 getAccessibleResource call sites on master; all of them would return
-    // the resource to a client principal.
-    expect(hasCompanyAccess(makeReq({ actor: clientActor() }), "company-1")).toBe(true);
-  });
+const clientActor = () => boardActor([
+  { companyId: "company-1", membershipRole: "client", status: "active" },
+]);
 
-  it("is the only gate that distinguishes 404 from a real read, and it is role-blind", () => {
-    const viewerLike = makeReq({
-      actor: {
-        type: "board",
-        userId: "u",
-        source: "session",
-        companyIds: ["company-1"],
-        memberships: [{ companyId: "company-1", membershipRole: "viewer", status: "active" }],
-      },
-    });
-    // A client is indistinguishable from a viewer here: both pass.
-    expect(hasCompanyAccess(viewerLike, "company-1")).toBe(true);
-    expect(hasCompanyAccess(makeReq({ actor: clientActor() }), "company-1")).toBe(true);
-  });
-});
+/** Minimal `res` double that records what `getAccessibleResource` sent. */
+function makeRes() {
+  const sent: { status?: number; body?: unknown } = {};
+  const res = {
+    status(code: number) {
+      sent.status = code;
+      return res;
+    },
+    json(body: unknown) {
+      sent.body = body;
+      return res;
+    },
+  };
+  return { res: res as unknown as import("express").Response, sent };
+}
 
-describe("hazard 2: assertCompanyAccess only role-gates writes, and only for viewer", () => {
-  it("admits a client GET to any company-scoped core route", () => {
-    const req = makeReq({ method: "GET", actor: clientActor() });
-    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
-  });
-
-  it("admits a client WRITE, because the write gate names only viewer", () => {
-    for (const method of ["POST", "PATCH", "PUT", "DELETE"]) {
+describe("client principals are denied on every company-scoped core route", () => {
+  it("is denied by assertCompanyAccess on every method, safe ones included", () => {
+    for (const method of ALL_METHODS) {
       const req = makeReq({ method, actor: clientActor() });
-      expect(() => assertCompanyAccess(req, "company-1"), `${method} should currently be allowed`).not.toThrow();
+      expect(
+        () => assertCompanyAccess(req, "company-1"),
+        `${method} must be denied for a client`,
+      ).toThrowError(/Client access is limited/);
+    }
+  });
+
+  it("is denied by hasCompanyAccess, so every getAccessibleResource site denies it", () => {
+    expect(hasCompanyAccess(makeReq({ actor: clientActor() }), "company-1")).toBe(false);
+  });
+
+  it("gets the tenant-safe 404 from getAccessibleResource, with no existence oracle", async () => {
+    const missing = makeRes();
+    const existing = makeRes();
+
+    const forMissing = await getAccessibleResource(
+      makeReq({ actor: clientActor() }),
+      missing.res,
+      null,
+      "Issue not found",
+    );
+    const forExisting = await getAccessibleResource(
+      makeReq({ actor: clientActor() }),
+      existing.res,
+      { companyId: "company-1", id: "issue-1" },
+      "Issue not found",
+    );
+
+    expect(forMissing).toBeNull();
+    expect(forExisting).toBeNull();
+    // "No such resource" and "exists, and you may not see it" are identical.
+    expect(missing.sent).toEqual(existing.sent);
+    expect(existing.sent.status).toBe(404);
+  });
+
+  it("gets no org-level surface, which is what ~100 assertBoardOrgAccess routes gate on", () => {
+    const req = makeReq({ actor: clientActor() });
+    expect(hasBoardOrgAccess(req)).toBe(false);
+    expect(() => assertBoardOrgAccess(req)).toThrowError(/membership or instance admin/i);
+  });
+
+  it("cannot lend its authority to an agent run, on any method", () => {
+    for (const method of ALL_METHODS) {
+      const req = makeReq({
+        method,
+        actor: {
+          type: "agent",
+          agentId: "agent-1",
+          companyId: "company-1",
+          source: "agent_key",
+          onBehalfOfUserId: "user-1",
+          onBehalfOfMemberships: [
+            { companyId: "company-1", membershipRole: "client", status: "active" },
+          ],
+        } as Express.Request["actor"],
+      });
+      expect(
+        () => assertCompanyAccess(req, "company-1"),
+        `${method} on behalf of a client must be denied`,
+      ).toThrowError(/Client access is limited/);
+    }
+  });
+
+  it("is denied per company: a staff membership elsewhere does not carry over", () => {
+    const actor = boardActor([
+      { companyId: "company-1", membershipRole: "client", status: "active" },
+      { companyId: "company-2", membershipRole: "admin", status: "active" },
+    ]);
+    expect(hasCompanyAccess(makeReq({ actor }), "company-1")).toBe(false);
+    expect(hasCompanyAccess(makeReq({ actor }), "company-2")).toBe(true);
+    // Being staff somewhere does restore the org surface -- it is not
+    // company-scoped -- but company-1 stays closed.
+    expect(hasBoardOrgAccess(makeReq({ actor }))).toBe(true);
+    expect(() => assertCompanyAccess(makeReq({ actor }), "company-2")).not.toThrow();
+  });
+
+  it("is denied when its membership is not active, because it leaves companyIds", () => {
+    // auth.ts builds companyIds from ACTIVE memberships only, so a
+    // non-active client never reaches the role check -- it fails the
+    // company-id check first. Assert the realistic actor shape.
+    for (const status of ["pending", "suspended", "archived"]) {
+      const actor = {
+        type: "board",
+        userId: "user-1",
+        source: "session",
+        companyIds: [],
+        memberships: [{ companyId: "company-1", membershipRole: "client", status }],
+      } as Express.Request["actor"];
+      expect(hasCompanyAccess(makeReq({ actor }), "company-1"), status).toBe(false);
+      expect(() => assertCompanyAccess(makeReq({ actor }), "company-1"), status).toThrow();
     }
   });
 });
 
-describe("hazard 3: an unknown role silently normalizes to operator", () => {
-  it("normalizeHumanRole('client') returns operator", () => {
-    expect(normalizeHumanRole("client")).toBe("operator");
+describe("the client deny is opt-in-able, and only by server code", () => {
+  it("denies until the request is explicitly marked client-reachable", () => {
+    const req = makeReq({ actor: clientActor() });
+    expect(isCompanyClientReachable(req, "company-1")).toBe(false);
+    expect(hasCompanyAccess(req, "company-1")).toBe(false);
+
+    markCompanyClientReachable(req, "company-1");
+
+    expect(isCompanyClientReachable(req, "company-1")).toBe(true);
+    expect(hasCompanyAccess(req, "company-1")).toBe(true);
+    expect(() => assertCompanyAccess(req, "company-1")).not.toThrow();
   });
 
-  it("an invite asking for role 'client' mints an operator membership", () => {
-    // resolveHumanInviteRole is what POST /join-requests/:id/approve feeds into
-    // access.ensureMembership + access.setPrincipalGrants.
-    expect(resolveHumanInviteRole({ human: { role: "client" } })).toBe("operator");
-  });
-
-  it("and that operator is seeded with tools:admin and users:invite", () => {
-    const seeded = grantsForHumanRole(resolveHumanInviteRole({ human: { role: "client" } }))
-      .map((grant) => grant.permissionKey);
-    expect(seeded).toContain("tools:admin");
-    expect(seeded).toContain("users:invite");
-    expect(seeded).toContain("agents:create");
-  });
-
-  it("the human role list is duplicated in server/src/services/company-member-roles.ts", async () => {
-    // Adding "client" to the shared HUMAN_COMPANY_MEMBERSHIP_ROLES does not reach
-    // the local copy that normalizeHumanRole actually consults, so the fallback
-    // above survives a partial rollout. Guard the duplication explicitly.
-    const shared = await import("@paperclipai/shared");
-    expect([...shared.HUMAN_COMPANY_MEMBERSHIP_ROLES]).toEqual([
-      "owner",
-      "admin",
-      "operator",
-      "viewer",
+  it("marks one company at a time", () => {
+    const actor = boardActor([
+      { companyId: "company-1", membershipRole: "client", status: "active" },
+      { companyId: "company-2", membershipRole: "client", status: "active" },
     ]);
-    // Same four values, declared a second time, in the module under test.
-    expect(normalizeHumanRole("owner")).toBe("owner");
-    expect(normalizeHumanRole("admin")).toBe("admin");
-    expect(normalizeHumanRole("operator")).toBe("operator");
-    expect(normalizeHumanRole("viewer")).toBe("viewer");
+    const req = makeReq({ actor });
+    markCompanyClientReachable(req, "company-1");
+    expect(hasCompanyAccess(req, "company-1")).toBe(true);
+    expect(hasCompanyAccess(req, "company-2")).toBe(false);
+  });
+
+  it("cannot be forged from request-controlled input", () => {
+    // The marker is keyed by a module-private Symbol, so no body, query or
+    // header value -- all string-keyed -- can produce it.
+    const req = makeReq({ actor: clientActor() });
+    Object.assign(req, {
+      paperclipClientReachableCompanyIds: new Set(["company-1"]),
+      "Symbol(paperclipClientReachableCompanyIds)": new Set(["company-1"]),
+    });
+    for (const key of Object.keys(req)) {
+      expect(typeof key).toBe("string");
+    }
+    expect(isCompanyClientReachable(req, "company-1")).toBe(false);
+    expect(hasCompanyAccess(req, "company-1")).toBe(false);
+  });
+
+  it("does not leak into serialization of the request", () => {
+    const req = makeReq({ actor: clientActor() });
+    const before = JSON.stringify(req);
+    markCompanyClientReachable(req, "company-1");
+    // The marker is non-enumerable, so marking changes nothing observable in
+    // request logging or any JSON view of the request.
+    expect(JSON.stringify(req)).toBe(before);
+    expect(Object.keys(req)).not.toContain("paperclipClientReachableCompanyIds");
+  });
+});
+
+describe("the client role carries no authority", () => {
+  it("has an empty default grant set", () => {
+    expect(grantsForHumanRole("client")).toEqual([]);
+  });
+
+  it("has strictly fewer grants than viewer, the weakest staff role", () => {
+    expect(grantsForHumanRole("viewer").length).toBeGreaterThan(0);
+    expect(grantsForHumanRole("client").length).toBe(0);
+  });
+
+  it("contributes no company to a staff read scope", () => {
+    const memberships: Membership[] = [
+      { companyId: "company-1", membershipRole: "client", status: "active" },
+      { companyId: "company-2", membershipRole: "operator", status: "active" },
+    ];
+    expect(filterStaffCompanyIds(["company-1", "company-2"], memberships)).toEqual(["company-2"]);
+    expect(hasActiveStaffMembership([memberships[0]])).toBe(false);
+    expect(hasActiveStaffMembership(memberships)).toBe(true);
+  });
+});
+
+describe("role resolution fails closed", () => {
+  it("recognizes client, because the role list is no longer duplicated", () => {
+    // This is the regression that makes a staged rollout safe: before, the
+    // server kept its own copy of the role list, so a role added to
+    // @paperclipai/shared stayed "unrecognized" here and fell back to the
+    // fallback role.
+    expect(normalizeHumanRole("client")).toBe("client");
+  });
+
+  it("resolves an unrecognized invite role to the least privileged role, not operator", () => {
+    const resolved = resolveHumanInviteRole({ human: { role: "wizard" } });
+    expect(resolved).toBe("client");
+    expect(grantsForHumanRole(resolved)).toEqual([]);
+  });
+
+  it("keeps the historical operator default when an invite names no role", () => {
+    expect(resolveHumanInviteRole(null)).toBe("operator");
+    expect(resolveHumanInviteRole({})).toBe("operator");
+    expect(resolveHumanInviteRole({ human: {} })).toBe("operator");
+    expect(resolveHumanInviteRole({ human: { role: null } })).toBe("operator");
+  });
+
+  it("honors an explicit client invite role", () => {
+    expect(resolveHumanInviteRole({ human: { role: "client" } })).toBe("client");
+  });
+
+  it("still maps the legacy member role to operator", () => {
+    expect(normalizeHumanRole("member")).toBe("operator");
+  });
+});
+
+describe("staff roles are unchanged", () => {
+  it("still reach company-scoped routes exactly as before", () => {
+    for (const role of STAFF_ROLES) {
+      const actor = boardActor([{ companyId: "company-1", membershipRole: role, status: "active" }]);
+      expect(hasCompanyAccess(makeReq({ actor }), "company-1"), role).toBe(true);
+      expect(hasBoardOrgAccess(makeReq({ actor })), role).toBe(true);
+      for (const method of SAFE_METHODS) {
+        expect(
+          () => assertCompanyAccess(makeReq({ method, actor }), "company-1"),
+          `${role} ${method}`,
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it("keeps viewer read-only and keeps the other three writable", () => {
+    for (const method of UNSAFE_METHODS) {
+      const viewer = boardActor([
+        { companyId: "company-1", membershipRole: "viewer", status: "active" },
+      ]);
+      expect(() => assertCompanyAccess(makeReq({ method, actor: viewer }), "company-1"))
+        .toThrowError(/read-only/);
+
+      for (const role of ["owner", "admin", "operator"] as const) {
+        const staff = boardActor([
+          { companyId: "company-1", membershipRole: role, status: "active" },
+        ]);
+        expect(
+          () => assertCompanyAccess(makeReq({ method, actor: staff }), "company-1"),
+          `${role} ${method}`,
+        ).not.toThrow();
+      }
+    }
+  });
+
+  it("leaves the on-box CLI and cross-company denial alone", () => {
+    const local = makeReq({ actor: { type: "board", userId: "u", source: "local_implicit" } });
+    expect(hasCompanyAccess(local, "company-1")).toBe(true);
+    expect(() => assertCompanyAccess(local, "company-1")).not.toThrow();
+
+    const outsider = boardActor([
+      { companyId: "company-2", membershipRole: "admin", status: "active" },
+    ]);
+    expect(() => assertCompanyAccess(makeReq({ actor: outsider }), "company-1"))
+      .toThrowError(/does not have access to this company/);
+  });
+
+  it("classifies an actor with no membership data exactly as before", () => {
+    // Deny-by-default subtracts the client role; it must not start denying
+    // actors whose roles we cannot read.
+    const actor = { type: "board", userId: "u", source: "session", companyIds: ["company-1"] } as
+      Express.Request["actor"];
+    expect(hasCompanyAccess(makeReq({ actor }), "company-1")).toBe(true);
+    expect(hasBoardOrgAccess(makeReq({ actor }))).toBe(true);
+  });
+});
+
+/**
+ * The deny above lives in three shared helpers, which is what makes it
+ * reviewable: ~600 company-scoped call sites inherit it, and a route added
+ * tomorrow inherits it too.
+ *
+ * The risk is a route that decides company scope *without* those helpers --
+ * a hand-rolled `companyIds.includes(...)`. Each such site has to repeat the
+ * deny, and this sweep is what stops a new one from appearing unnoticed: it
+ * reads the source tree and fails on any company-scope decision outside
+ * `routes/authz.ts` that does not consult the membership role.
+ */
+describe("no company-scope decision bypasses the role check", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const serverSrc = join(here, "..");
+
+  /**
+   * Any module that reads an actor's `companyIds` is making, or feeding, a
+   * company-scope decision. Detecting the *read* rather than a particular
+   * comparison shape keeps the sweep from being defeated by assigning
+   * `companyIds` to a local first, which is how the real code is written:
+   *
+   *     const allowedCompanies = req.actor.companyIds ?? [];
+   *     if (!allowedCompanies.includes(companyId)) throw forbidden(...)
+   */
+  const READS_ACTOR_COMPANY_IDS = /\b\w*(?:[Aa]ctor|access)\??\.companyIds\b/;
+
+  /**
+   * Modules that read an actor's company scope and repeat the client deny.
+   * Pins the sweep to reality: if one of these stops being detected, the
+   * detector has drifted and this test says so instead of quietly passing.
+   */
+  const KNOWN_COMPANY_SCOPE_SITES = [
+    "realtime/live-events-ws.ts",
+    "routes/cases.ts",
+    "routes/environments.ts",
+    "routes/issues.ts",
+    "routes/plugins.ts",
+    "services/case-handoffs.ts",
+    "services/decisions.ts",
+    "services/skill-access.ts",
+  ] as const;
+
+  /**
+   * Company-scope reads that are deliberately role-blind, with the reason.
+   * None of them returns company data to the caller.
+   */
+  const ROLE_BLIND_BY_DESIGN: Record<string, string> = {
+    // Builds the actor in the first place.
+    "middleware/auth.ts": "derives companyIds from memberships",
+    // Lists the companies an actor belongs to. A client must still see the
+    // company it is a client of, or it could never reach a portal at all.
+    "routes/companies.ts": "company list/switcher scope, not a read of company data",
+    // Request body, not an actor scope.
+    "routes/access.ts": "reads companyIds from the request body",
+    // Chooses which company a session is scoped to at login.
+    "services/board-auth.ts": "session company selection",
+    // Identity continuity for a handoff; returns no company data.
+    "services/case-handoff-authority.ts": "handoff identity continuity check",
+    // Builds a downstream actor from an already-authorized request.
+    "services/plugin-host-services.ts": "constructs an actor for an authorized plugin call",
+    // Mints the actor for a consented MCP grant.
+    "services/public-mcp/oauth.ts": "constructs the actor for a consented grant",
+    // Wires the resolver; the deny is applied in live-events-ws.ts.
+    "index.ts": "passes the cloud actor through to the websocket upgrade",
+  };
+
+  async function sourceFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const found: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        found.push(...(await sourceFiles(full)));
+        continue;
+      }
+      if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) found.push(full);
+    }
+    return found;
+  }
+
+  async function companyScopeReaders() {
+    const files = await sourceFiles(serverSrc);
+    const readers = new Map<string, string>();
+    for (const file of files) {
+      const rel = relative(serverSrc, file).split("\\").join("/");
+      const source = readFileSync(file, "utf8");
+      if (READS_ACTOR_COMPANY_IDS.test(source)) readers.set(rel, source);
+    }
+    return readers;
+  }
+
+  it("every company-scope decision outside authz.ts also consults the membership role", async () => {
+    const readers = await companyScopeReaders();
+    const offenders: string[] = [];
+
+    for (const [rel, source] of readers) {
+      if (rel === "routes/authz.ts") continue;
+      if (rel in ROLE_BLIND_BY_DESIGN) continue;
+      if (!source.includes("company-member-roles.js")) offenders.push(rel);
+    }
+
+    expect(offenders.sort(), [
+      "These modules scope by company id without consulting the membership role,",
+      "so a `client` principal would pass them. Either route the decision through",
+      "routes/authz.ts, repeat the deny with a company-member-roles helper, or",
+      "add it to ROLE_BLIND_BY_DESIGN with a reason.",
+    ].join(" ")).toEqual([]);
+  });
+
+  it("still detects the company-scope sites it is meant to cover", async () => {
+    const readers = await companyScopeReaders();
+    for (const known of KNOWN_COMPANY_SCOPE_SITES) {
+      expect([...readers.keys()], `${known} should still be detected by the sweep`)
+        .toContain(known);
+    }
+  });
+
+  it("recognizes the real-world shape of a hand-rolled scope check", () => {
+    // The detector has to survive the local-variable form, which is what
+    // defeated an earlier version of this sweep.
+    expect(READS_ACTOR_COMPANY_IDS.test(
+      "const allowedCompanies = req.actor.companyIds ?? [];",
+    )).toBe(true);
+    expect(READS_ACTOR_COMPANY_IDS.test("return (req.actor.companyIds ?? []).includes(id);"))
+      .toBe(true);
+    expect(READS_ACTOR_COMPANY_IDS.test("new Set(req.actor.companyIds ?? [])")).toBe(true);
+    expect(READS_ACTOR_COMPANY_IDS.test("actor.companyIds?.includes(companyId)")).toBe(true);
+    expect(READS_ACTOR_COMPANY_IDS.test("access.companyIds.includes(row.companyId)")).toBe(true);
+    // Any identifier that names an actor, not just the literal `actor`.
+    expect(READS_ACTOR_COMPANY_IDS.test("cloudActor.companyIds.includes(companyId)")).toBe(true);
+    expect(READS_ACTOR_COMPANY_IDS.test("const companyIds = [];")).toBe(false);
+    expect(READS_ACTOR_COMPANY_IDS.test("input.companyIds ?? []")).toBe(false);
   });
 });

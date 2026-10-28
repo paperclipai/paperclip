@@ -3,6 +3,11 @@ import type { SecretBindingTargetType } from "@paperclipai/shared";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+import {
+  hasActiveStaffMembership,
+  hasClientMembershipFor,
+  isClientMembershipRole,
+} from "../services/company-member-roles.js";
 
 function throwOrShadowResponsibleUserCompanyAccessDeny(
   req: Request,
@@ -21,6 +26,77 @@ function throwOrShadowResponsibleUserCompanyAccessDeny(
   }, "responsible-user company access intersection denied");
   if (responsibleUserAuthzShadowMode()) return;
   throw new HttpError(403, message, { code });
+}
+
+/**
+ * Deny-by-default support for the `client` membership role.
+ *
+ * `client` is not a weaker staff role. It is a principal class whose default
+ * surface is empty: every company-scoped core route denies it, and the only
+ * things it can reach are the ones that explicitly opt in.
+ *
+ * The deny lives here, inside the three shared company-scope helpers, rather
+ * than at their ~600 call sites. That is deliberate: a per-call-site allowlist
+ * could not be reviewed, and any route added later would default to *allow*.
+ * Here, a core route that has never heard of clients denies them for free.
+ *
+ * The opt-in is a request-scoped marker keyed by a module-private `Symbol`.
+ * A symbol cannot be produced by JSON body/query parsing, so no amount of
+ * request-controlled input can forge the marker; only server code holding a
+ * reference to `markCompanyClientReachable` can set it. Default state is
+ * unmarked.
+ */
+const CLIENT_REACHABLE_COMPANY_IDS = Symbol("paperclipClientReachableCompanyIds");
+
+type ClientReachableCarrier = {
+  [CLIENT_REACHABLE_COMPANY_IDS]?: Set<string>;
+};
+
+/**
+ * Mark the current request as permitted to serve a `client` principal for one
+ * company. Intended for the plugin route dispatcher, which knows a declared
+ * route is client-reachable and has resolved the caller's own client record.
+ * Core routes must never call this.
+ */
+export function markCompanyClientReachable(req: Request, companyId: string) {
+  const carrier = req as unknown as ClientReachableCarrier;
+  const existing = carrier[CLIENT_REACHABLE_COMPANY_IDS];
+  if (existing) {
+    existing.add(companyId);
+    return;
+  }
+  // Non-enumerable so the marker never leaks into request logging or any
+  // serialization of the request object.
+  Object.defineProperty(req, CLIENT_REACHABLE_COMPANY_IDS, {
+    value: new Set([companyId]),
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+}
+
+export function isCompanyClientReachable(req: Request, companyId: string): boolean {
+  const carrier = req as unknown as ClientReachableCarrier;
+  return carrier[CLIENT_REACHABLE_COMPANY_IDS]?.has(companyId) ?? false;
+}
+
+/**
+ * True when the actor's own membership in `companyId` is a `client`
+ * membership. Every board actor source populates `actor.memberships`
+ * (`session`, `board_key`, `mcp_oauth`, `cloud_tenant`); `local_implicit` is
+ * the on-box CLI and is never a company member, so it is excluded before we
+ * look. If memberships are absent we report `false`, which preserves today's
+ * behavior exactly for the four staff roles rather than denying an actor we
+ * cannot classify.
+ */
+export function isClientMembership(req: Request, companyId: string): boolean {
+  if (req.actor.type !== "board") return false;
+  if (req.actor.source === "local_implicit") return false;
+  return hasClientMembershipFor(req.actor.memberships, companyId);
+}
+
+function isClientDenied(req: Request, companyId: string): boolean {
+  return isClientMembership(req, companyId) && !isCompanyClientReachable(req, companyId);
 }
 
 export function assertAuthenticated(req: Request) {
@@ -42,7 +118,15 @@ export function hasBoardOrgAccess(req: Request) {
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return true;
   }
-  return Array.isArray(req.actor.companyIds) && req.actor.companyIds.length > 0;
+  if (!Array.isArray(req.actor.companyIds) || req.actor.companyIds.length === 0) {
+    return false;
+  }
+  // Org-level routes are staff surface, and they are not company-scoped, so
+  // `assertCompanyAccess` never runs on them. A principal whose only
+  // memberships are `client` memberships is staff nowhere and gets no org
+  // access -- without this, the ~100 routes guarded by `assertBoardOrgAccess`
+  // and `assertBoardOrAgent` would stay reachable by a client.
+  return hasActiveStaffMembership(req.actor.memberships);
 }
 
 export function assertBoardOrgAccess(req: Request) {
@@ -90,6 +174,15 @@ export function assertCompanyAccess(req: Request, companyId: string) {
       );
       return;
     }
+    // A client can never lend its authority to an agent, on any method. This
+    // is not routed through the shadow-mode helper on purpose: shadow mode
+    // exists to roll the responsible-user intersection out over memberships
+    // that already exist in the wild, and no deployment can have a `client`
+    // membership before this change ships. There is nothing to shadow, and
+    // failing open here would undo the deny for every agent-run route.
+    if (isClientMembershipRole(membership.membershipRole)) {
+      throw forbidden("Client access is limited to client-facing routes");
+    }
     const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
     const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
     if (!isSafeMethod && membership.membershipRole === "viewer") {
@@ -105,6 +198,12 @@ export function assertCompanyAccess(req: Request, companyId: string) {
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
       throw forbidden("User does not have access to this company");
+    }
+    // Deny clients on EVERY method, safe ones included. Unlike `viewer`, a
+    // client is not a read-only staff member: it has no default read surface
+    // at all.
+    if (isClientDenied(req, companyId)) {
+      throw forbidden("Client access is limited to client-facing routes");
     }
     const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
     const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
@@ -158,7 +257,13 @@ export function hasCompanyAccess(req: Request, companyId: string): boolean {
   if (req.actor.type === "none") return false;
   if (req.actor.type === "agent") return req.actor.companyId === companyId;
   if (req.actor.source === "local_implicit") return true;
-  return (req.actor.companyIds ?? []).includes(companyId);
+  if (!(req.actor.companyIds ?? []).includes(companyId)) return false;
+  // A client membership lands in `companyIds` like any other active
+  // membership, so the role has to be consulted here too -- otherwise every
+  // `getAccessibleResource` call site would hand a client the resource.
+  // Returning false (rather than throwing) keeps the tenant-safe 404 and the
+  // existing no-existence-oracle property.
+  return !isClientDenied(req, companyId);
 }
 
 /**

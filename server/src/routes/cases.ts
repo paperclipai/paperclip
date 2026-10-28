@@ -60,6 +60,7 @@ import { listCaseTaskDocuments } from "../services/case-task-documents.js";
 import { authorizeCaseCreation, authorizeCaseMutation } from "../services/case-mutation-authorization.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { filterStaffCompanyIds } from "../services/company-member-roles.js";
 
 type CaseRouteTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type CaseRouteDb = Db | CaseRouteTransaction;
@@ -158,7 +159,10 @@ function caseLookupCompanyIds(req: Request) {
   if (req.actor.type === "agent") return req.actor.companyId ? [req.actor.companyId] : [];
   if (req.actor.type === "board" && req.actor.source === "local_implicit") return undefined;
   if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length > 0) {
-    return req.actor.companyIds;
+    // Narrow the lookup to companies where the actor is staff. `hasCompanyAccess`
+    // gates the result either way; this keeps the query from matching rows the
+    // caller could never be shown.
+    return filterStaffCompanyIds(req.actor.companyIds, req.actor.memberships);
   }
   if (req.actor.type === "board" && req.actor.isInstanceAdmin) return undefined;
   return [];

@@ -1270,6 +1270,9 @@ async function loadCompanyMemberRecords(
 type CompanyMemberRecord = Awaited<ReturnType<typeof loadCompanyMemberRecords>>[number];
 
 const humanRoleRank: Record<HumanCompanyMembershipRole, number> = {
+  // A client sits below every staff role, so any staff member outranks it and
+  // a client outranks nobody.
+  client: 0,
   viewer: 1,
   operator: 2,
   admin: 3,
