@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
+import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { parseProviderMode } from "../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "../drivers/acpx/profile-activity.js";
 
@@ -302,15 +304,26 @@ async function dispatch(
         mode: params.mode,
         piThinkingLevel: params.piThinkingLevel,
         claudeEffort: params.claudeEffort,
+        grokEffort: params.grokEffort, grokDisableWebSearch: params.grokDisableWebSearch,
         providerPolicy: params.providerPolicy,
         systemInstructions: params.systemInstructions,
         runtimeContext: params.runtimeContext,
-        environment: createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
+        environment: params.agent === "claude" ? {
+          ...createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
+          // Claude's HTTP MCP client otherwise aborts at 60s, before the
+          // native Runner connection lease. Cancellation and Runner shutdown
+          // still revoke the pending call; this is not a new authority lease.
+          MCP_TOOL_TIMEOUT: String(60 * 60 * 1_000),
+        } : createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
         expectedIdentity: params.expectedIdentity,
         assignedMcpTransport: "prp",
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+          // These calls are durable PRP requests. A controller outage must not
+          // turn a queued write into a provider-visible failure and retry.
+          // Runner lease expiry, turn cancellation and bridge close own them.
+          timeoutMs: null,
           ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {
@@ -1228,13 +1241,15 @@ function safeOutput(value: unknown): Record<string, unknown> {
 function parseOpenParams(
   value: Record<string, unknown>,
 ): AcpxSidecarOpenParams {
-  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "claudeEffort", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
+  const fields = new Set(["runtimeDirectory", "normalizedSessionId", "workingDirectory", "agent", "model", "permissionMode", "mode", "piThinkingLevel", "claudeEffort", "grokEffort", "grokDisableWebSearch", "permissionModePinned", "providerPolicy", "systemInstructions", "runtimeContext", "tools", "providerSessionKey", "expectedIdentity"]);
   if (Object.keys(value).some(key => !fields.has(key))) throw new Error("ACPX open parameters include an unsupported field");
   const agent = requireQualifiedAgent(value.agent);
   const model = requiredText(value.model, "model");
   if (value.mode !== undefined && agent !== "cursor") throw new Error("mode is supported only for Cursor");
   const piThinkingLevel = resolvePiThinkingLevel(agent, value.piThinkingLevel);
   const claudeEffort = resolveClaudeEffort(agent, value.claudeEffort);
+  const grokEffort = resolveGrokEffort(agent, value.grokEffort);
+  const grokDisableWebSearch = resolveGrokDisableWebSearch(agent, value.grokDisableWebSearch);
   resolveQualifiedAcpxProfile(agent, model);
   if (
     value.providerSessionKey !== undefined &&
@@ -1257,6 +1272,8 @@ function parseOpenParams(
     ...(value.mode === undefined ? {} : { mode: parseProviderMode(value.mode) }),
     ...(piThinkingLevel ? { piThinkingLevel } : {}),
     ...(claudeEffort ? { claudeEffort } : {}),
+    ...(grokEffort ? { grokEffort } : {}),
+    ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
     permissionModePinned: value.permissionModePinned === true,
     ...(value.providerPolicy == null ? {} : { providerPolicy: parseProviderPolicy(value.providerPolicy) }),
     systemInstructions: boundedText(
@@ -1329,6 +1346,8 @@ function parseExpectedIdentity(value: unknown): AcpxExpectedSessionIdentity {
     ...(input.mode === undefined ? {} : { mode: parseProviderMode(input.mode) }),
     ...(input.piThinkingLevel === undefined ? {} : { piThinkingLevel: resolvePiThinkingLevel("pi", input.piThinkingLevel) }),
     ...(input.claudeEffort === undefined ? {} : { claudeEffort: resolveClaudeEffort("claude", input.claudeEffort) }),
+    ...(input.grokEffort === undefined ? {} : { grokEffort: resolveGrokEffort("grok", input.grokEffort) }),
+    ...(input.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: resolveGrokDisableWebSearch("grok", input.grokDisableWebSearch) }),
     providerLifetimeFenceCandidates: requiredFenceCandidates(
       input.providerLifetimeFenceCandidates,
     ),

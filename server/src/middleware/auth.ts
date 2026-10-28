@@ -36,32 +36,7 @@ export {
   retryIdempotentDatabaseOperation as retryOnTransientDbConnectionError,
 } from "../database-retry.js";
 
-const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
-const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
-const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, { fingerprint: string; syncedAt: number }>>();
-
-function cloudTenantWriteDebounceFor(db: Db) {
-  let debounce = cloudTenantWriteDebounces.get(db);
-  if (!debounce) {
-    debounce = new Map();
-    cloudTenantWriteDebounces.set(db, debounce);
-  }
-  return debounce;
-}
-
-function pruneCloudTenantWriteDebounce(
-  debounce: Map<string, { fingerprint: string; syncedAt: number }>,
-  nowMs: number,
-) {
-  for (const [subject, entry] of debounce) {
-    if (entry.syncedAt <= nowMs - CLOUD_TENANT_WRITE_DEBOUNCE_MS) debounce.delete(subject);
-  }
-  while (debounce.size > CLOUD_TENANT_WRITE_DEBOUNCE_MAX) {
-    const oldestSubject = debounce.keys().next().value;
-    if (!oldestSubject) break;
-    debounce.delete(oldestSubject);
-  }
-}
+import { syncCloudTenantWrites } from "./cloud-tenant-sync.js";
 import { resolveOwnerInstanceAdmin } from "../services/cloud-tenant-authority.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
@@ -429,7 +404,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
       if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
+        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
+          { readScope: "request_authentication" });
         identityRun.activeIdentityContextId = captured.context?.id ?? null;
         identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
       }
@@ -623,40 +599,15 @@ async function resolveCloudTenantActorOnce(
     ?.trim();
   const companyId = cloudTenantCompanyId(stackId);
   const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
-  const now = new Date();
   const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const syncFingerprint = [userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
-  const cloudTenantWriteDebounce = cloudTenantWriteDebounceFor(db);
-  pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, now.getTime());
-  const previousSync = cloudTenantWriteDebounce.get(userId);
-  const shouldSync = previousSync?.fingerprint !== syncFingerprint
-    || previousSync.syncedAt <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  const syncFingerprint = JSON.stringify([
+    userEmail, userName, stackId, stackRole, paperclipCompanyId ?? "", paperclipCompanyName ?? "",
+  ]);
   let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
     companyId,
     membershipRole,
     status: "active",
   };
-
-  if (shouldSync) await db
-    .insert(authUsers)
-    .values({
-      id: userId,
-      name: userName,
-      email: userEmail,
-      emailVerified: true,
-      image: null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: authUsers.id,
-      set: {
-        name: userName,
-        email: userEmail,
-        emailVerified: true,
-        updatedAt: now,
-      },
-    });
 
   // Earlier cloud_tenant builds granted every tenant user `instance_admin`.
   // Stale rows from those deployments would still elevate this user through
@@ -667,67 +618,63 @@ async function resolveCloudTenantActorOnce(
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  if (shouldSync) await insertCloudTenantCompany(db, { companyId, companyName, now });
-
-  if (shouldSync && paperclipCompanyName) {
-    await repairCloudTenantCompanyName(db, {
-      companyId,
-      paperclipCompanyId,
-      paperclipCompanyName,
-      now,
-    });
-  }
-
-  // Runs after the name repair so the prefix derives from the repaired name.
-  // The helper self-gates on the legacy markers, so it is a no-op once the
-  // company has been repaired or was claimed by a current build.
-  if (shouldSync) {
-    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
-  }
-
-  effectiveMembership = shouldSync ? await db
-    .insert(companyMemberships)
-    .values({
-      companyId,
-      principalType: "user",
-      principalId: userId,
-      status: "active",
-      membershipRole,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [
-        companyMemberships.companyId,
-        companyMemberships.principalType,
-        companyMemberships.principalId,
-      ],
-      set: {
-        status: "active",
-        membershipRole,
+  await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
+    const now = new Date();
+    await db
+      .insert(authUsers)
+      .values({
+        id: userId,
+        name: userName,
+        email: userEmail,
+        emailVerified: true,
+        image: null,
+        createdAt: now,
         updatedAt: now,
-      },
-    })
-    .returning()
-    .then((rows) => rows[0] ?? {
-      companyId,
-      membershipRole,
-      status: "active",
-    }) : { companyId, membershipRole, status: "active" as const };
+      })
+      .onConflictDoUpdate({
+        target: authUsers.id,
+        set: { name: userName, email: userEmail, emailVerified: true, updatedAt: now },
+        setWhere: sql`${authUsers.name} is distinct from ${userName}
+          or ${authUsers.email} is distinct from ${userEmail}
+          or ${authUsers.emailVerified} is distinct from true`,
+      });
 
-  // Without instance-admin elevation, cloud tenant users are authorized purely
-  // through company-scoped permission grants — seed the same role defaults the
-  // regular membership flows create.
-  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
-    companyId,
-    principalId: userId,
-    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
-    grantedByUserId: null,
+    await insertCloudTenantCompany(db, { companyId, companyName, now });
+    if (paperclipCompanyName) {
+      await repairCloudTenantCompanyName(db, {
+        companyId,
+        paperclipCompanyId,
+        paperclipCompanyName,
+        now,
+      });
+    }
+    // Derive any legacy prefix from the repaired name, preserving the helper's
+    // exact legacy-marker guards and the operator's own edits.
+    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
+
+    effectiveMembership = await db
+      .insert(companyMemberships)
+      .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
+        set: { status: "active", membershipRole, updatedAt: now },
+        setWhere: sql`${companyMemberships.status} is distinct from 'active'
+          or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
+      })
+      .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
+      // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
+      // That condition itself proves the existing role/status match the input.
+      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
+
+    // An unchanged membership can still lack default grants after a partial
+    // sync or an older deployment; keep this repair inside every actual sync.
+    await ensureHumanRoleDefaultGrants(db, {
+      companyId,
+      principalId: userId,
+      membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+      grantedByUserId: null,
+    });
   });
-  if (shouldSync) {
-    cloudTenantWriteDebounce.delete(userId);
-    cloudTenantWriteDebounce.set(userId, { fingerprint: syncFingerprint, syncedAt: Date.now() });
-    pruneCloudTenantWriteDebounce(cloudTenantWriteDebounce, Date.now());
-  }
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company

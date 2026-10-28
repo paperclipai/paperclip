@@ -1,5 +1,17 @@
 # Runner E2E fixture authoring
 
+[Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
+only company, agents and project context through public APIs. Both agents use
+production role instructions; evaluator outcomes are never injected. Real browser
+submission, task audits, worker document provenance, completion delivery and
+reload readback establish the outcome. The existing fixture registry, subscription
+credential staging and whole-company cleanup own setup and teardown.
+
+[Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
+fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
+argument preserves the existing all-fixtures behavior. A verified onboarding
+context may seed the graph; independent setup is labeled as recipe provenance.
+
 ## Connection creation fixtures
 
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
@@ -1006,3 +1018,35 @@ The arithmetic journey records four delivered agent handoffs and one completed
 terminal intent. The final case is `done` at handoff version 5, while the same
 four provider work runs and unchanged workflow document revision finish the task.
 The oracle rejects a missing or pending terminal intent.
+
+## Feedback persistence (explicit only)
+
+`--suite feedback-persistence` selects four native Claude/Codex cells across local and Daytona execution.
+Each creates one standard task through the browser, asks for two distinct
+synthetic feedback items, and requires the real `submit_complaint` and
+`submit_suggestion` tools. The case expects one task work run and disables
+automatic retries. Local attempts have five minutes; Daytona inherits the
+15-minute remote deadline. Company and agent accounted-work budgets are $10.
+Setup probes and any background work must also pass through the separately
+budgeted gateway when using an operations manifest. Local compute is unmetered.
+Daytona cells require an immutable image and the existing provider credential.
+Their ephemeral sandboxes carry the 60-minute provider lifetime. Historical local
+measurements remain separate; Daytona cost and time are unknown until measured.
+These registrations do not qualify remote behavior or change daily/weekly selections.
+The runner E2E maintainers own this manual case; `--all` excludes it.
+
+After collection and fixture teardown, the oracle reads the retained evidence
+file and requires exact nonce-bearing bodies, the original company/agent/task
+and observed run, plus one completed native receipt for each tool. Missing or
+partial collection, prose-only claims, foreign attribution, duplicate records,
+and failed submissions cannot pass. Full bodies stay in private evidence;
+public reports retain counts, fingerprints, and closed oracle checks. The usual
+result screenshot, trace, secret scanning and supervisor cleanup still apply.
+This case proves explicit submission and persistence, not spontaneous feedback
+quality or survival after an abrupt worker kill.
+
+```sh
+pnpm test:e2e:runner -- --list --suite feedback-persistence
+pnpm test:e2e:runner -- --list --suite feedback-persistence --environment daytona
+pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
+```

@@ -8,7 +8,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, companies, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
+import * as instructionModule from "../services/agent-instructions.js";
+import { pluginAgentRuntimeState, pluginAgentRuntimeIdentity } from "../services/plugin-agent-runtime-state.js";
 import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
 import { registerPluginLifecycleDelivery } from "../services/plugin-lifecycle-delivery.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -171,6 +172,31 @@ describeDatabase("agent runtime synchronization hooks", () => {
     const read = vi.spyOn(fs, "readFile");
     expect(await pluginAgentRuntimeState(db, pluginId, companyId, agentId)).toMatchObject({ instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" });
     expect(read.mock.calls.filter(([file]) => String(file).startsWith(`${root}${path.sep}`))).toEqual([]);
+  });
+
+  it("reads fresh runtime identity without building instructions, skills or connection assignments", async () => {
+    const hydrate = vi.spyOn(instructionModule, "agentInstructionsService").mockImplementation(() => { throw new Error("full runtime hydration must not run"); });
+    const first = await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId);
+    expect(first).toEqual({ revision: String((await events()).at(-1)!.id), instanceSecrets: {},
+      agent: expect.objectContaining({ id: agentId, companyId }) });
+    expect(Object.keys(first!.agent).sort()).toEqual(["companyId", "id", "lifecycleState", "lifecycleVersion", "status"]);
+    await db.update(agents).set({ status: "paused", lifecycleState: "pausing", lifecycleVersion: 2 }).where(eq(agents.id, agentId));
+    const paused = await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId);
+    expect(paused!.agent).toMatchObject({ status: "paused", lifecycleState: "pausing", lifecycleVersion: 2 });
+    expect(paused!.revision).toBe(first!.revision);
+    await db.update(agents).set({ name: "Updated runtime" }).where(eq(agents.id, agentId));
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId))!.revision).not.toBe(first!.revision);
+    expect(hydrate).not.toHaveBeenCalled();
+  });
+
+  it("keeps compact runtime reads scoped to the enabled owning plugin", async () => {
+    expect(await pluginAgentRuntimeIdentity(db, pluginId, randomUUID(), agentId)).toBeNull();
+    await expect(pluginAgentRuntimeIdentity(db, randomUUID(), companyId, agentId)).rejects.toMatchObject({ status: 403 });
+    await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: false });
+    await expect(pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId)).rejects.toMatchObject({ status: 403 });
+    await db.delete(pluginCompanySettings).where(eq(pluginCompanySettings.pluginId, pluginId));
+    await db.update(agents).set({ lifecycleRequiredPluginIds: [] }).where(eq(agents.id, agentId));
+    await expect(pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId)).rejects.toMatchObject({ status: 403 });
   });
 
   it("uses the company reporting graph for runtime health data", async () => {

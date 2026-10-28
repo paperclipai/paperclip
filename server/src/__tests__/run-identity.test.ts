@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, applyPendingMigrations, createDb, closeRegisteredClients, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable execution identity", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
-    db = createDb(database.connectionString);
+    if (externalDatabaseUrl) { await applyPendingMigrations(externalDatabaseUrl); db = createDb(externalDatabaseUrl); }
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
+      db = createDb(database.connectionString);
+    }
   }, 30_000);
-  afterAll(async () => { await database?.cleanup(); }, 60_000);
+  afterAll(async () => { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl); await database?.cleanup(); }, 60_000);
 
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -29,6 +33,23 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     return { companyId, agentId, issueId, runId, messageIds };
   }
+  it.each(["github_credentials", "request_authentication"] as const)("retains typed trust bindings for %s and keeps other identity reads complete", async (readScope) => {
+    const input = await seed();
+    await initializeRunIdentity(db, { ...input, responsibleUserId: "owner", cause: "queued" });
+    for (const value of [null, true, 42, " padded ", [], {}, { future: { opaque: true } }]) {
+      const contextSnapshot = { issueId: input.issueId, projectId: value, executionPolicy: value, savedInput: { retained: true } };
+      const runnerProfileJson = { nativeExecutionInput: { opaque: value }, savedInput: "retained" };
+      await db.update(heartbeatRuns).set({ contextSnapshot, runnerProfileJson }).where(eq(heartbeatRuns.id, input.runId));
+      const narrow = await captureRunIdentity(db, input, { readScope });
+      expect(narrow.run.contextSnapshot).toEqual({ issueId: input.issueId, taskId: null, projectId: value, executionPolicy: value });
+      expect(narrow.run.runnerProfileJson).toBeNull();
+      const full = await captureRunIdentity(db, input);
+      expect(full.run.contextSnapshot).toEqual(contextSnapshot);
+      expect(full.run.runnerProfileJson).toEqual(runnerProfileJson);
+      expect(narrow.context).toEqual(full.context);
+    }
+  });
+
   it("retains mixed-author delivery order without rewriting task ownership", async () => {
     const input = await seed();
     await initializeRunIdentity(db, { ...input, responsibleUserId: "owner", cause: "queued" });
@@ -106,24 +127,25 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
-  it("holds acquisition during uncertain steering, preserves snapshots, and never rewinds on replay", async () => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("holds acquisition during uncertain steering and never rewinds on replay with %s", async (readScope) => {
+    const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [input.messageIds[0]], responsibleUserId: "A", cause: "instruction" });
-    const startedUnderA = await captureRunIdentity(db, input);
+    const startedUnderA = await captureRunIdentity(db, input, options);
     const b = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] });
     expect(b).not.toBeNull();
-    await expect(captureRunIdentity(db, input)).rejects.toThrow(/reconciled/);
+    await expect(captureRunIdentity(db, input, options)).rejects.toThrow(/reconciled/);
     await expect(reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[2] })).rejects.toThrow(/reconciled/);
     await db.transaction(async tx => {
       await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)).for("update");
       await acceptSteeredIdentity(tx, b!);
     });
-    expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("B");
+    expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("B");
     expect(startedUnderA.context?.responsibleUserId).toBe("A");
     const a = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[2] });
     await acceptSteeredIdentity(db, a!);
     await acceptSteeredIdentity(db, b!);
-    expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("A");
+    expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("A");
   });
   it("keeps rejected steering unchanged and preserves the originating identity on retry", async () => {
     const input = await seed();
@@ -158,16 +180,17 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(captured.run.responsibleUserId).toBeNull();
     expect(captured.context?.parentContextId).toBe(origin.id);
   });
-  it("recovers an uncertain acknowledgement from the authenticated native event journal", async () => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("recovers an uncertain native acknowledgement with %s", async (readScope) => {
+    const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
     const pending = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] });
-    await expect(captureRunIdentity(db, input)).rejects.toThrow(/reconciled/);
+    await expect(captureRunIdentity(db, input, options)).rejects.toThrow(/reconciled/);
     await db.insert(heartbeatRunEvents).values({ companyId: input.companyId, runId: input.runId,
       agentId: input.agentId, seq: 1, eventType: "item.completed", sourceEventId: randomUUID(),
       payload: { prpEvent: { turnId: "turn-1", itemId: `turn-1:steer:${pending!.messageId}`, payload: {kind: "steering_acknowledgement"} } },
     });
-    expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("B");
+    expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("B");
     await db.update(heartbeatRuns).set({status: "succeeded"}).where(eq(heartbeatRuns.id, input.runId));
     expect((await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] }))?.status).toBe("accepted");
   });
@@ -241,9 +264,9 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(initialization).resolves.toMatchObject({ responsibleUserId: "A" });
   });
 
-  it.each(["initialize", "capture"] as const)(
-    "can %s identity while an audit append holds foreign-key locks",
-    async (operation) => {
+  it.each((["initialize", "capture"] as const).flatMap(operation => [false, true].map(withQuery => ({ operation, withQuery }))))(
+    "can $operation identity while an audit append holds foreign-key locks (query: $withQuery)",
+    async ({ operation, withQuery }) => {
       const input = await seed();
       if (operation === "capture") {
         await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
@@ -251,11 +274,22 @@ const support = await getEmbeddedPostgresTestSupport();
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+      const identityUrl = new URL(externalDatabaseUrl ?? database.connectionString);
+      if (withQuery) {
+        identityUrl.searchParams.set("application_name", "identity-query-test");
+        identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c statement_timeout=5000"].filter(Boolean).join(" "));
+      }
+      identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c lock_timeout=1000"].filter(Boolean).join(" "));
+      const identityDb = createDb(identityUrl.toString(), {
         maxConnections: 1,
       });
       const [settings] = await identityDb.execute(sql`show lock_timeout`);
       expect(settings?.lock_timeout).toBe("1s");
+      if (withQuery) {
+        expect(identityUrl.searchParams.get("application_name")).toBe("identity-query-test");
+        const [timeouts] = await identityDb.execute(sql`show statement_timeout`);
+        expect(timeouts?.statement_timeout).toBe("5s");
+      }
       await db.transaction(async (audit) => {
         await audit.insert(secretAccessEvents).values({
           companyId: input.companyId,

@@ -1112,21 +1112,20 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("keeps a pending request composer-only while preserving its group boundary", () => {
+  it("keeps a pending request in the feed while preserving its group boundary", () => {
     const rows = buildTurnTimelineRows(
       [tool("before"), request("pending", "pending"), tool("after")],
       true,
     );
 
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.kind === "activity_phase")).toBe(true);
+    expect(rows).toHaveLength(3);
     expect(
       rows.map((row) =>
-        row.kind === "activity_phase" ? row.items[0]?.id : null,
+        row.kind === "activity_phase" ? row.items[0]?.id : row.id,
       ),
-    ).toEqual(["before", "after"]);
+    ).toEqual(["before", "pending:pending", "after"]);
     expect(rows[0]).toMatchObject({ kind: "activity_phase", active: false });
-    expect(rows[1]).toMatchObject({ kind: "activity_phase", active: true });
+    expect(rows[2]).toMatchObject({ kind: "activity_phase", active: true });
   });
 
   it("retains progress-only phases and uses the same row order for settled assembly", () => {

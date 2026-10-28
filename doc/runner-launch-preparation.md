@@ -32,6 +32,26 @@ descriptor. The transport checks Core's selected profile and policy before
 registration and launch. Core still supplies authorized tools and completion
 criteria through PRP. A failed preparation does not enable a fallback launch.
 
+### Working directory
+
+In this mode the environment chooses the provider working directory. Core does
+not supply one. The backend uses `workingDirectoryAuthority:
+"runner_prepared_launch"`, and its controller environment stays empty.
+
+- Core authorizes the agent, task, projects, and workspace binding.
+- The environment resolves that assignment into mounts and the descriptor's
+  `cwd`. For a projectless task it selects its own default directory.
+- The transport accepts only a normalized absolute `cwd` that is not a
+  filesystem root. Runnerd validates the directory on its own filesystem.
+- The transport reports that `cwd` to the driver. The driver records it in
+  session context, snapshots, and recovery, and ignores the caller's directory.
+- Recovery and run attachment must keep the same `cwd`. A runner snapshot or
+  recovered thread that reports another directory fails recovery. Core does not
+  substitute a controller-local or temporary directory.
+
+`remote_runner` remains the mode in which Core assigns the remote directory
+through `PAPERCLIP_WORKSPACE_CWD`.
+
 The transport saves the exact requirements and prepared configuration in its
 private `launch-preparation.json` file. The file holds at most two records.
 A new attachment keeps the active run's record. Runner commands contain the

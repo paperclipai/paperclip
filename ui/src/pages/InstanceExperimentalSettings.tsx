@@ -307,6 +307,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Artifacts V1"
+          description="Show artifacts the way the artifact directions lab settled: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread."
+          footnote="Presentation only. Turning this off restores the current cards; no data changes."
+          checked={experimentalQuery.data?.enableArtifactsV1 ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableArtifactsV1: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableArtifactsV1"
+          managed={managedKeys.enableArtifactsV1}
+          ariaLabel="Toggle artifacts V1 experimental setting"
+        />
+
+        <ExperimentalToggleCard
           title="Assistant connections (MCP)"
           description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
           footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}

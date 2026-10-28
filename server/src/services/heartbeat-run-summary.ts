@@ -194,7 +194,8 @@ function record(value: unknown): Record<string, unknown> {
 
 function requiresChatOriginProof(source: string): boolean {
   return source === "tool_action_review" || source === "issue.monitor" || source === "native_status_decision" ||
-    source.startsWith("issue.comment") || source === "issue.update";
+    source.startsWith("issue.comment") || source.startsWith("issue.interaction.") ||
+    source === "external_chat.interaction.resolve" || source === "connection_intent.resolved" || source === "issue.update";
 }
 
 export function isExternalChatPresentationContext(
@@ -297,7 +298,7 @@ export function readAcceptedTaskContinuationSummary(
   const result = record(resultJson);
   if (result.finalizationPhase !== "committed") return null;
   const kind = result.finalizationReasonCode === "live_continuation_registered" ? "same_agent"
-    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
+    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched", "scheduled_monitor_preserved"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
   if (!kind) return null;
   for (const candidate of semanticResultCandidates(result)) {
     const continuation = record(candidate.continuation);

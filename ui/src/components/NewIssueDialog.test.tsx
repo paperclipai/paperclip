@@ -425,6 +425,33 @@ describe("NewIssueDialog", () => {
     { id: "ceo", name: "CEO", role: "ceo", status: "idle", adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
   ];
 
+  it("accepts a draft while agents and projects load, then fills defaults in place", async () => {
+    let resolveAgents!: (agents: typeof defaultAgents) => void;
+    let resolveProjects!: (projects: { id: string; name: string; archivedAt: null }[]) => void;
+    mockAgentsApi.list.mockImplementationOnce(() => new Promise((resolve) => { resolveAgents = resolve; }));
+    mockProjectsApi.list.mockImplementationOnce(() => new Promise((resolve) => { resolveProjects = resolve; }));
+    trackRecentProject("project-1", "company-1");
+
+    const { root } = renderDialog(container);
+    try {
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      expect(editor).not.toBeNull();
+      expect(editor.disabled).toBe(false);
+      await typeTextareaValue(editor, "Keep writing while the lists load");
+
+      resolveAgents(defaultAgents);
+      resolveProjects([{ id: "project-1", name: "Alpha", archivedAt: null }]);
+      await waitForAssertion(() => {
+        expect(container.querySelector('[data-slot="new-issue-compact-control"]')?.textContent).toContain("project-1");
+        expect(container.textContent).toContain("CEO");
+      });
+      expect(container.querySelector('textarea[aria-label="Describe a task…"]')).toBe(editor);
+      expect(editor.value).toBe("Keep writing while the lists load");
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it.each([
     { remembered: "project-1", expected: "project-1" },
     { remembered: "", expected: "Project" },

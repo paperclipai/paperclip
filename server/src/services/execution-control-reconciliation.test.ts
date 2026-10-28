@@ -2,7 +2,7 @@ import { enableRunFailureReporting } from "../__tests__/helpers/run-failure-repo
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
+import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -152,6 +152,65 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     // guard applies and no second "failed" write happens.
     expect(result.surfaced).toBe(1);
     expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
+  });
+
+  it.each(["prepared", "finalized", "mismatched", "reassigned", "accepted"] as const)("preserves only an exact unfinished native workspace after its deadline (%s)", async state => {
+    const f = await seedAbandonedRunFixture();
+    const [environment] = await db.insert(environments).values({ name: `Deadline ${f.runId}`, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "reuse_by_environment", metadata: { remoteCwd: "/work" },
+    }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId, runnerProfileJson: {
+      nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: state === "finalized" ? state : "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: f.runId, leaseId: lease.id, providerLeaseId: state === "mismatched" ? randomUUID() : lease.providerLeaseId,
+        remoteCwd: "/work", resourceDisposition: "keep_running" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ runId: f.runId, companyId: f.companyId, issueId: f.issueId,
+      phase: "observed", leaseOwner: "abandoned-controller", controlDeadlineAt: new Date(Date.now() - 60_000) });
+    if (state === "reassigned") {
+      const nextAgentId = randomUUID();
+      await db.insert(agents).values({ id: nextAgentId, companyId: f.companyId, name: "New owner", adapterType: "codex_local" });
+      await db.update(issues).set({ assigneeAgentId: nextAgentId, executionRunId: null, checkoutRunId: null })
+        .where(eq(issues.id, f.issueId));
+    }
+    if (state === "accepted") {
+      const contractId = randomUUID(), resultId = randomUUID();
+      await db.insert(completionContracts).values({ id: contractId, companyId: f.companyId, issueId: f.issueId,
+        revision: 1, schemaVersion: "1", policyVersion: "test", risk: "low", completionAuthority: "agent_claim_policy",
+        incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: randomUUID(), createdByActorType: "agent", createdByActorId: f.agentId });
+      await db.update(heartbeatRuns).set({ completionContractId: contractId }).where(eq(heartbeatRuns.id, f.runId));
+      await db.insert(nativeRunResults).values({ id: resultId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+        completionContractId: contractId, serverFingerprint: randomUUID(), schemaStatus: "valid", resultJson: {}, canonicalSha256: randomUUID() });
+      await db.update(nativeRunFinalizations).set({ resultId }).where(eq(nativeRunFinalizations.runId, f.runId));
+    }
+
+    await reconcileAbandonedExecutionControl(db);
+    await reconcileAbandonedExecutionControl(db);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [retained] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
+    expect(run).toMatchObject(state === "accepted" ? { status: "running", errorCode: null }
+      : { status: "failed", errorCode: "execution_finalization_deadline_exceeded" });
+    if (state === "prepared" || state === "reassigned") {
+      expect(run.resultJson).toMatchObject({ workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+      expect(retained).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
+        metadata: { sandboxStopAndRetain: { runId: f.runId, providerLeaseId: lease.providerLeaseId } } });
+      const recovery = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      expect(recovery.filter(action => action.evidence?.workspaceRestoreRecovery)).toMatchObject([
+        { evidence: { runId: f.runId, workspaceRestoreRecovery: { leaseIds: [lease.id] } } },
+      ]);
+    } else {
+      expect(run.resultJson ?? {}).not.toHaveProperty("workspaceRestoreRecovery");
+      expect(retained).toMatchObject({ status: "active", leasePolicy: "reuse_by_environment" });
+    }
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    if (state === "reassigned") {
+      expect(task.assigneeAgentId).not.toBe(f.agentId);
+      expect(task).toMatchObject({ status: "in_progress", executionRunId: null, checkoutRunId: null });
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
   });
 });
 

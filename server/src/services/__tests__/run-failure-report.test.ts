@@ -430,6 +430,42 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
   });
 
+  function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
+    return buildRun({
+      error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",
+      errorCode: "claude_auth_required", executionStage: "dispatching", exitCode: 1, signal: null,
+      resultJson: {
+        stopReason: "adapter_failed",
+        terminalSessionFailure: { category: "access", title: "Invalid API key · Fix external API key" },
+      },
+      ...overrides,
+    });
+  }
+
+  it.each(["claude_auth_required", "acpx_auth_required"])("keeps a typed ACP provider access failure (%s) local", async (errorCode) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    for (const phase of [undefined, "execute"] as const) await reportRunFailure(db, providerAccessRun({ errorCode }), { phase });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: "timed_out" }, { signal: "SIGTERM" }, { errorCode: "acpx_turn_failed" }, { errorCode: "adapter_failed" },
+    { resultJson: {} }, { resultJson: null }, { resultJson: { terminalSessionFailure: { category: "service" } } },
+    { resultJson: { terminalSessionFailure: "access" } },
+  ])("reports a provider auth outcome without typed ACP access evidence: %j", async (overrides) => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(overrides), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a typed ACP provider access failure during setup or in all mode", async () => {
+    await seedCompanyAndAgent({ adapterType: "claude_local" });
+    await reportRunFailure(db, providerAccessRun(), { phase: "setup" });
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, providerAccessRun(), { phase: "execute" });
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
+  });
+
   function restartInterruptedSetupRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       error: "Process lost -- server may have restarted; retrying once",

@@ -209,7 +209,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       name: "Plugin worktree", providerType: "plugin", providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
       mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" }).returning();
     input.workspace.persistedExecutionWorkspace = workspace;
-    const inspect = vi.spyOn(pluginWorkspaces, "inspectPluginWorkspace").mockResolvedValue({ kind: "inspection",
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
       branchName: branch === "expected" ? "task-branch" : "other-branch", headSha: "a".repeat(40),
       hasDirtyTrackedFiles: true, hasUntrackedFiles: false, hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
     try {
@@ -221,7 +221,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
         await expect(result).rejects.toThrow("plugin_workspace_branch_mismatch");
         expect((await finalizations()).some(row => row.status === "succeeded")).toBe(false);
       }
-      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }));
+      expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id, providerRef: workspace.providerRef }), { agentId: input.agent.id, runId: input.run.id });
     } finally { inspect.mockRestore(); }
   });
 

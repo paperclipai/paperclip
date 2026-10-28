@@ -76,6 +76,7 @@ export async function probeEnvironment(
     resolvedConfig?: ParsedEnvironmentConfig;
     applyCustomImageTemplate?: boolean;
     acquireSandboxRuntimeLease?: boolean;
+    assertCompanyBinding?: boolean;
   } = {},
 ): Promise<EnvironmentProbeResult> {
   const resolvedCompanyId = options.companyId ?? null;
@@ -148,6 +149,7 @@ export async function probeEnvironment(
           persistedExecutionWorkspace: null,
           adapterType: null,
           resolveSnapshotIdentity: true,
+          assertCompanyBinding: options.assertCompanyBinding,
           applyCustomImageTemplate: options.applyCustomImageTemplate === true,
         });
         const metadata = leaseRecord.lease.metadata ?? {};

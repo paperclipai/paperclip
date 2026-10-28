@@ -1,3 +1,9 @@
+import { voiceReplySchedule } from "./voice-reply-schedule.js";
+import { registerVoiceReplyWork } from "./voice-reply-work.js";
+import { voiceSessionRecovery } from "./voice-session-recovery.js";
+import { registerVoiceRecoveryWork } from "./voice-recovery-work.js";
+import { notifyVoiceChange, withVoiceSessionChange } from "./voice-recovery-notifications.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { logger } from "../../middleware/logger.js";
 import { captureVoiceDeliveryDiagnostics } from "./voice-delivery-diagnostics.js";
 import { pushVoiceReplies } from "./voice-reply-push.js";
@@ -92,7 +98,7 @@ export function voiceSessionService(db: Db, options: {
     // browser response must inspect/end this attempt, never blindly create again.
     if (!reserved.created || input.mode === "inbound_phone") return { session: serializeVoiceSession(reserved.session) };
     const session = reserved.session;
-    const [claim] = await db.update(chatVoiceSessions).set({ state: "creating", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "reserved"))).returning({ id: chatVoiceSessions.id });
+    const [claim] = await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: "creating", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "reserved"))).returning({ id: chatVoiceSessions.id }));
     if (!claim) throw conflict("The call was ended before Speko connected");
     let client: ReturnType<typeof createSpekoProvider> | undefined;
     let created: { sessionId: string; transportToken?: string; transportUrl?: string };
@@ -107,13 +113,13 @@ export function voiceSessionService(db: Db, options: {
         : await client.createBrowserSession({ ...shared, systemPrompt: VOICE_PROMPT });
     } catch (error) {
       const known = error instanceof SpekoProviderError && !error.outcomeUnknown || error instanceof HttpError && [403, 404].includes(error.status);
-      await db.update(chatVoiceSessions).set({ state: known ? "failed" : "creation_unknown", errorCode: error instanceof SpekoProviderError ? error.code : "provider_unavailable", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "creating")));
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: known ? "failed" : "creation_unknown", errorCode: error instanceof SpekoProviderError ? error.code : "provider_unavailable", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "creating"))));
       if (error instanceof SpekoProviderError && error.code === "insufficient_credits") throw conflict("Speko needs credits before starting a call. Add credits in Speko, then try again.", {code: "voice_credits_required", sessionId: session.id});
       throw conflict(known ? "Speko could not start the call. Check connection status before trying again." : "Speko may have started this call. Inspect this attempt before starting another.", { code: known ? "voice_creation_failed" : "voice_creation_unknown", sessionId: session.id });
     }
     let bound: VoiceSessionRow | undefined;
     try {
-    [bound] = await db.update(chatVoiceSessions).set({ providerSessionId: created.sessionId, state: "connecting", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "creating"))).returning();
+    [bound] = await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ providerSessionId: created.sessionId, state: "connecting", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), eq(chatVoiceSessions.state, "creating"))).returning());
     } catch (error) {
       // If the provider started but persistence failed, stop that exact call.
       // Never return media or retry creation on an uncertain database outcome.
@@ -122,7 +128,7 @@ export function voiceSessionService(db: Db, options: {
     }
     if (!bound) {
       // A concurrent end must still learn the provider identity for reconciliation.
-      await db.update(chatVoiceSessions).set({ providerSessionId: created.sessionId, state: "ending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ providerSessionId: created.sessionId, state: "ending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id)));
       await closeProvider({ ...session, providerSessionId: created.sessionId, state: "ending" });
       throw conflict("The call was ended while Speko was connecting");
     }
@@ -141,6 +147,7 @@ export function voiceSessionService(db: Db, options: {
   async function closeProviderOnce(session: VoiceSessionRow) {
     if (terminalStates.some(state => state === session.state)) return session;
     await db.transaction(async (tx) => {
+      await notifyVoiceChange(tx, { kind: "session", id: session.id });
       const [changed] = await tx.update(chatVoiceSessions).set({ state: "ending", updatedAt: new Date() }).where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, [...liveStates].filter((state) => state !== "ending")))).returning({ id: chatVoiceSessions.id });
       if (changed) await tx.insert(activityLog).values({ companyId: session.companyId, actorType: "system", actorId: "voice-session-service", action: "voice.session.ending", entityType: "voice_session", entityId: session.id, details: { issueId: session.issueId } });
     });
@@ -156,11 +163,11 @@ export function voiceSessionService(db: Db, options: {
         try { confirmed = Boolean((await client.inspectSession(session.providerSessionId)).endedAt); }
         catch (error) { if (!(error instanceof SpekoProviderError)) throw error; }
       }
-      await db.update(chatVoiceSessions).set(confirmed
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set(confirmed
         ? { state: "ended", endedAt: new Date(), errorCode: null, updatedAt: new Date() }
-        : { errorCode: "cleanup_pending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
+        : { errorCode: "cleanup_pending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id)));
     } else if (session.state === "reserved") {
-      await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
+      await withVoiceSessionChange(db, session.id, tx => tx.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id)));
     }
     return db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, session.id)).then((rows) => rows[0]);
   }
@@ -170,7 +177,7 @@ export function voiceSessionService(db: Db, options: {
       const endpoint = await endpointFor(companyId, session.endpointId), credentials = await options.credentials(endpoint);
       const state = await provider(credentials.apiKey).inspectSession(session.providerSessionId);
       if (state.endedAt) {
-        [session] = await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, sessionId)).returning();
+        [session] = await withVoiceSessionChange(db, sessionId, tx => tx.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, sessionId)).returning());
       }
     }
     return serializeVoiceSession(session);
@@ -199,51 +206,41 @@ export function voiceSessionService(db: Db, options: {
     if (verified.envelope.tool === "answer_question") options.onQuestionAnswered(verified.envelope.args.interactionId);
     return session.mode === "inbound_phone" ? {...result, authorization: session.authority === "guest_intake" ? "guest_intake" : "approved"} : result;
   }
+  const replies = voiceReplySchedule(db, {
+    store, push: sessionId => pushVoiceReplies(db, { store, credentials: options.credentials, provider, limit: 1, sessionId, recoverDispatches: false }),
+  });
+  const recovery = voiceSessionRecovery(db, {
+    authorize: async session => {
+      await db.transaction(async tx => {
+        await store.authorizeSession(tx, session.companyId, session.id);
+        await replies.authorityAvailable(tx, session.id);
+      });
+    },
+    inspect: async session => {
+      const endpoint = await endpointFor(session.companyId, session.endpointId);
+      const credentials = await options.credentials(endpoint);
+      return session.providerSessionId ? provider(credentials.apiKey).inspectSession(session.providerSessionId) : null;
+    },
+    close: closeProvider,
+  });
+  function registerRecoveryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerVoiceRecoveryWork(coordinator, recovery, canRun);
+  }
+  function registerReplyWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerVoiceReplyWork(coordinator, replies, canRun);
+  }
+  async function reconcileMaintenance(limit = 25) {
+    await inbound.pruneHistory();
+    await reconcileReports(limit);
+  }
+  /** Explicit one-shot recovery for diagnostics/tests; never register on a recurring lane. */
   async function reconcile(limit = 25) {
-    // Provider maximum duration is the final bound even if creation response was
-    // lost. Unknown attempts remain reserved until that bound plus teardown grace.
-    const enabled = (await instanceSettingsService(db).getExperimental()).enableChatConnectors;
-    const rows = await db.select({ session: chatVoiceSessions }).from(chatVoiceSessions)
-      .innerJoin(chatEndpoints, eq(chatEndpoints.id, chatVoiceSessions.endpointId))
-      .innerJoin(toolConnections, eq(toolConnections.id, chatEndpoints.connectionId))
-      .where(and(inArray(chatVoiceSessions.state, [...liveStates]), or(
-        enabled ? undefined : sql`true`,
-        lte(chatVoiceSessions.expiresAt, new Date()), eq(chatVoiceSessions.state, "ending"),
-        notInArray(chatEndpoints.status, ["active", "verifying"]), eq(toolConnections.enabled, false),
-        sql`${chatVoiceSessions.generation} <> coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer, 0)`,
-        // Recheck membership and bindings periodically even without callbacks.
-        and(inArray(chatVoiceSessions.state, ["connecting", "active"]), lte(chatVoiceSessions.updatedAt, new Date(Date.now() - 30_000))),
-      ))).orderBy(asc(chatVoiceSessions.updatedAt)).limit(limit);
-    for (const { session } of rows) {
-      try {
-        let authorized = false;
-        if (enabled && ["connecting", "active"].includes(session.state) && session.callerAuthority === "guest_intake" && session.expiresAt.getTime() > Date.now()) {
-          authorized = await inbound.authorizeGuest(session.id);
-        } else if (enabled && ["connecting", "active"].includes(session.state)) {
-          try { await db.transaction((tx) => store.authorizeSession(tx, session.companyId, session.id)); authorized = true; } catch { /* revoked, changed binding, or expired */ }
-        }
-        if (authorized) {
-          // A caller can hang up without a final browser request. Poll provider
-          // state as well as permissions so a missed callback releases the task.
-          const endpoint = await endpointFor(session.companyId, session.endpointId);
-          const credentials = await options.credentials(endpoint);
-          const state = session.providerSessionId ? await provider(credentials.apiKey).inspectSession(session.providerSessionId) : null;
-          await db.update(chatVoiceSessions).set({
-            ...(state?.endedAt ? { state: "ended", endedAt: new Date(), errorCode: null } : {}),
-            updatedAt: new Date(),
-          }).where(and(eq(chatVoiceSessions.id, session.id), inArray(chatVoiceSessions.state, ["connecting", "active"])));
-          continue;
-        }
-        if (session.providerSessionId) await closeProvider(session);
-        else if (session.expiresAt.getTime() + 120_000 < Date.now()) await db.update(chatVoiceSessions).set({ state: "expired", endedAt: new Date(), updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
-      } catch {
-        await db.update(chatVoiceSessions).set({ errorCode: "cleanup_pending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
-      }
-    }
+    const due = (await recovery.load()).filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, limit);
+    for (const row of due) await recovery.check(row.id).catch(() => undefined);
     await pushReplies(limit);
     await inbound.reconcile(limit);
     await reconcileReports(limit);
-    return rows.length;
+    return due.length;
   }
   async function pushReplies(limit = 25, companyId?: string, endpointId?: string) {
     return pushVoiceReplies(db, {store, credentials: options.credentials, provider, limit, companyId, endpointId});
@@ -355,7 +352,7 @@ export function voiceSessionService(db: Db, options: {
     const result = await start({ ...binding, mode: "outbound_phone", phoneNumber: preference.phoneNumber, idempotencyKey: invocationId, maxDurationSeconds: 600 });
     return { session: result.session };
   });
-  return { start, inspect, end, tool, reconcile, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools };
+  return { start, inspect, end, tool, reconcile, reconcileMaintenance, registerRecoveryWork, registerReplyWork, pushReplies, inbound, notification: store.notification, callbackPreference, saveCallbackPreference, history, callDetail, unregisterAgentTools };
 
 }
 export type VoiceSessionService = ReturnType<typeof voiceSessionService>;

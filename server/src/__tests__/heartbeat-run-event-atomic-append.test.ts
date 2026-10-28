@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -96,6 +97,45 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     expect((await readRun(runId)).nextEventSeq).toBe(41);
   });
 
+  it.each(["native", "retry-exhaustion"])("locks only run bindings for %s events with large run payloads", async (kind) => {
+    const runId = await makeRun();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { prompt: randomBytes(128 * 1024).toString("hex") },
+      runnerProfileJson: { configuration: randomBytes(128 * 1024).toString("hex") },
+      resultJson: { providerData: randomBytes(128 * 1024).toString("hex") },
+    }).where(eq(heartbeatRuns.id, runId));
+    const statements: string[] = [];
+    const recorded = drizzle(db.$client, {
+      schema: db._.fullSchema,
+      logger: { logQuery: query => statements.push(query) },
+    }) as typeof db;
+    const exhaustion = { retryReason: "transient_failure", scheduledRetryAttempt: 1, maxAttempts: 1 };
+    const input = {
+      companyId, agentId, runId, eventType: "lifecycle",
+      message: "Bounded retry exhausted after one attempt",
+      ...(kind === "native" ? {
+        nativeSource: { sourceInstanceId: "native-writer", sourceEventId: "event-one",
+          sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayload: { ordinal: 1 } },
+      } : { retryExhaustion: exhaustion, payload: exhaustion }),
+    };
+    const committed = await appendHeartbeatRunEvent(recorded, input);
+    const replay = await appendHeartbeatRunEvent(recorded, input);
+    expect(committed.disposition).toBe("committed");
+    expect(committed.row.seq).toBe(1);
+    expect(replay.disposition).toBe("duplicate");
+    expect(replay.row.id).toBe(committed.row.id);
+    expect(replay.highestContiguousSourceSeq).toBe(kind === "native" ? 1 : 0);
+    expect((await readRun(runId)).nextEventSeq).toBe(2);
+    expect(await readEvents(runId)).toEqual([committed.row]);
+    const lockReads = statements.filter(query => query.startsWith("select ") &&
+      query.includes('from "heartbeat_runs"') && query.endsWith("for update"));
+    expect(lockReads).toHaveLength(2);
+    for (const query of lockReads) {
+      expect(query).toMatch(/^select "company_id", "agent_id" from "heartbeat_runs" /);
+      expect(query).not.toMatch(/context_snapshot|runner_profile_json|result_json|stdout_excerpt/);
+    }
+  });
+
   it("rejects mismatched authority without changing either run", async () => {
     const runId = await makeRun();
     const otherRunId = "30000000-0000-4000-8000-000000000099";
@@ -108,8 +148,15 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       { companyId, agentId, runId: otherRunId },
       { companyId, agentId, runId: "30000000-0000-4000-8000-000000000098" },
     ]) {
-      await expect(appendHeartbeatRunEvent(db, { ...authority, eventType: "stdout" }))
-        .rejects.toThrow("heartbeat_run_event_binding_mismatch");
+      for (const source of [
+        {},
+        { nativeSource: { sourceInstanceId: "native-writer", sourceEventId: "mismatched-event",
+          sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayload: { ordinal: 1 } } },
+        { retryExhaustion: { retryReason: "transient_failure", scheduledRetryAttempt: 1, maxAttempts: 1 } },
+      ]) {
+        await expect(appendHeartbeatRunEvent(db, { ...authority, ...source, eventType: "stdout" }))
+          .rejects.toThrow("heartbeat_run_event_binding_mismatch");
+      }
     }
     expect([await readRun(runId), await readRun(otherRunId)]).toEqual(before);
     expect(await readEvents(runId)).toEqual([]);

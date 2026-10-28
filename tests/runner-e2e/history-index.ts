@@ -25,7 +25,8 @@ function usd(value: number | null) {
   return `$${value.toFixed(value < 0.01 ? 6 : 2)}`;
 }
 
-function duration(durationMs: number) {
+function duration(durationMs: number | null) {
+  if (durationMs === null) return "Unknown";
   const seconds = Math.round(durationMs / 1_000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);

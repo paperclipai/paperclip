@@ -36,6 +36,36 @@ describe("runner E2E Daytona image contract", () => {
     expect(path.matchesGlob("packages/paperclip-runner/test/fixtures/copilot-live-denial-2026-09-28.json", exception)).toBe(false);
   });
 
+  it("invalidates the image content ID when the active Copilot identity changes", async () => {
+    const generator = await readFile(
+      path.join(repositoryRoot, "packages/paperclip-runner/scripts/copilot-profile-identity.mjs"),
+      "utf8",
+    );
+    const fixture = generator.match(/const fixture = resolve\(root, "([^"]+)"\)/)?.[1];
+    expect(fixture).toBeDefined();
+    const fixturePath = `packages/paperclip-runner/${fixture}`;
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-daytona-copilot-identity-"));
+    const options = {
+      repositoryRoot: root,
+      inputPaths: DAYTONA_IMAGE_INPUT_PATHS.filter(inputPath => inputPath === fixturePath),
+      baseImages: [`example.test/base:1@sha256:${"a".repeat(64)}`],
+      frontendDigest: `sha256:${"c".repeat(64)}`,
+    } as const;
+    try {
+      await mkdir(path.dirname(path.join(root, fixturePath)), { recursive: true });
+      await writeFile(path.join(root, fixturePath), '{"commandDigest":"before"}\n');
+      const before = await computeDaytonaImageContentId(options);
+      expect(await computeDaytonaImageContentId(options)).toBe(before);
+      const withoutCopilot = { ...options, inputPaths: [] };
+      const unrelatedBefore = await computeDaytonaImageContentId(withoutCopilot);
+      await writeFile(path.join(root, fixturePath), '{"commandDigest":"after"}\n');
+      expect(await computeDaytonaImageContentId(options)).not.toBe(before);
+      expect(await computeDaytonaImageContentId(withoutCopilot)).toBe(unrelatedBefore);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the qualified native Grok binary separate from the legacy command", async () => {
     const [dockerfile, packBuilder, runnerPackage] = await Promise.all([
       readFile(path.join(repositoryRoot, "docker/daytona-runner/Dockerfile"), "utf8"),

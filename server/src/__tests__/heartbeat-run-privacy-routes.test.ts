@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -20,6 +22,7 @@ import {
   toolConnections,
   workspaceOperations,
 } from "@paperclipai/db";
+import * as schema from "@paperclipai/db/schema/index";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -28,7 +31,7 @@ import { errorHandler } from "../middleware/index.js";
 import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
 import { authorizationService } from "../services/authorization.js";
-import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
+import { canActorReadWorkspaceOperation, getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -219,7 +222,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     };
   }
 
-  function createApp(companyId: string, agentId: string) {
+  function createApp(companyId: string, agentId: string, sourceDb = db) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -231,8 +234,8 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       };
       next();
     });
-    app.use("/api", agentRoutes(db));
-    app.use("/api", activityRoutes(db));
+    app.use("/api", agentRoutes(sourceDb));
+    app.use("/api", activityRoutes(sourceDb));
     app.use(errorHandler);
     return app;
   }
@@ -254,6 +257,29 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     app.use(errorHandler);
     return app;
   }
+
+  it("lists workspace operations with small run reads and checks a revoked issue grant again", async () => {
+    const f = await seedFixture(), payload = "workspace-operation-saved-input🙂".repeat(25_000);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, prompt: payload },
+      runnerProfileJson: { instructions: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).where(eq(heartbeatRuns.id, f.privateRunId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const app = createApp(f.companyId, f.grantedAgentId, observed);
+      const response = await request(app).get(`/api/heartbeat-runs/${f.privateRunId}/workspace-operations`).expect(200);
+      expect(response.body).toEqual([expect.objectContaining({ id: f.operationId })]);
+      capture.flush();
+      const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(2048);
+      await db.delete(issueAccessGrants).where(eq(issueAccessGrants.subjectId, f.grantedAgentId));
+      await request(app).get(`/api/heartbeat-runs/${f.privateRunId}/workspace-operations`).expect(404);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId)))[0]).toEqual(before);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
 
   it("returns 404 for direct private-run content and metadata-only list stubs to a non-member", async () => {
     const fixture = await seedFixture();
@@ -300,6 +326,37 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const maintenance = await request(app).get(`/api/heartbeat-runs/${fixture.maintenanceRunId}`);
     expect(maintenance.status).toBe(200);
     expect(maintenance.body.resultJson.summary).toBe("Maintenance complete");
+  });
+
+  it("filters latest failures within the requested run window and preserves private-run redaction", async () => {
+    const f = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", createdAt: new Date("2026-10-26T10:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.privateRunId));
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-10-26T09:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.maintenanceRunId));
+    const timeoutId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: timeoutId, companyId: f.companyId, agentId: f.otherAgentId, scopeKind: "company",
+      invocationSource: "timer", status: "timed_out", createdAt: new Date("2026-10-26T11:00:00Z"),
+    });
+    const app = createApp(f.companyId, f.otherAgentId);
+    const path = `/api/companies/${f.companyId}/heartbeat-runs?summary=true&latestFailuresOnly=true`;
+    const response = await request(app).get(path).expect(200);
+    expect(response.body.map((run: { id: string }) => run.id)).toEqual([timeoutId, f.privateRunId]);
+    const privateStub = response.body[1];
+    expect(privateStub).toMatchObject({ redacted: true, status: "failed" });
+    expect(privateStub).not.toHaveProperty("issueId");
+    expect(privateStub).not.toHaveProperty("contextSnapshot");
+    expect(JSON.stringify(response.body)).not.toContain("Confidential email triage");
+    const bounded = await request(app).get(`${path}&limit=1`).expect(200);
+    expect(bounded.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
+    const agentOnly = await request(app).get(`${path}&agentId=${f.ownerAgentId}`).expect(200);
+    expect(agentOnly.body.map((run: { id: string }) => run.id)).toEqual([f.privateRunId]);
+    // A newer success suppresses an older failure rather than selecting the latest failure alone.
+    await db.update(heartbeatRuns).set({ createdAt: new Date("2026-10-26T12:00:00Z") })
+      .where(eq(heartbeatRuns.id, f.maintenanceRunId));
+    const recovered = await request(app).get(path).expect(200);
+    expect(recovered.body.map((run: { id: string }) => run.id)).toEqual([timeoutId]);
   });
 
   it("returns full private-run content to the owner and an explicitly granted agent", async () => {
@@ -457,6 +514,105 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
     }
   });
+  it("batches distinct issue bindings without changing current authorization decisions", async () => {
+    const fixture = await seedFixture();
+    const ids = Array.from({ length: 64 }, () => randomUUID());
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId: fixture.companyId, title: `History ${index}`, status: "in_progress",
+      visibility: index % 2 ? "private" : "open", privacyRootIssueId: index % 2 ? id : null,
+      assigneeAgentId: fixture.ownerAgentId, responsibleUserId: fixture.ownerUserId,
+    })));
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as typeof db;
+    const access = authorizationService(observedDb);
+    const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.grantedAgentId };
+    const bindings = [...ids, fixture.issueId].map(issueId => ({ companyId: fixture.companyId, scopeKind: "issue" as const, issueId }));
+    const runs = [...bindings, ...bindings, { ...bindings[0], companyId: randomUUID() },
+      { ...bindings[0], issueId: randomUUID() }, { companyId: fixture.companyId, scopeKind: "company" as const },
+      { companyId: fixture.companyId, scopeKind: "issue" as const }];
+    const individual = await getHeartbeatRunReadDecisions(observedDb, { decide: access.decide }, actor, runs);
+    const individualCount = queries.length;
+    queries.length = 0;
+    const batched = await getHeartbeatRunReadDecisions(observedDb, access, actor, runs);
+    expect(batched).toEqual(individual);
+    expect(batched.slice(0, 64)).toEqual(ids.map((_, index) => index % 2 === 0));
+    expect(batched.at(64)).toBe(true);
+    expect(batched.slice(-4)).toEqual([false, false, true, false]);
+    expect(queries.length).toBeLessThan(25);
+    expect(queries.length).toBeLessThan(individualCount / 4);
+    await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.subjectId, fixture.grantedAgentId));
+    expect((await getHeartbeatRunReadDecisions(observedDb, access, actor, runs)).at(64)).toBe(false);
+  });
+
+  it.each(["enforce", "shadow", "off"])("keeps missing and foreign issue bindings closed in %s mode", async mode => {
+    const fixture = await seedFixture();
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = mode;
+    try {
+      const access = authorizationService(db);
+      const actor = { type: "board" as const, userId: fixture.ownerUserId };
+      const binding = { companyId: fixture.companyId, scopeKind: "issue" as const, issueId: fixture.issueId };
+      const runs = [binding, { ...binding, issueId: randomUUID() }, { ...binding, companyId: randomUUID() }];
+      const expected = await getHeartbeatRunReadDecisions(db, { decide: access.decide }, actor, runs);
+      expect(await getHeartbeatRunReadDecisions(db, access, actor, runs)).toEqual(expected);
+      expect(expected).toEqual([true, false, false]);
+      await db.delete(companyMemberships).where(eq(companyMemberships.principalId, fixture.ownerUserId));
+      expect(await getHeartbeatRunReadDecisions(db, access, actor, [binding])).toEqual(
+        await getHeartbeatRunReadDecisions(db, { decide: access.decide }, actor, [binding]),
+      );
+    } finally { process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce"; }
+  });
+
+  it("checks more than 500 task bindings with bounded company-scoped queries", async () => {
+    const fixture = await seedFixture();
+    const ids = Array.from({ length: 501 }, () => randomUUID());
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId: fixture.companyId, title: `Batch ${index}`, visibility: "open", status: "in_progress",
+    })));
+    const queries: { query: string; params: unknown[] }[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query, params) { queries.push({ query, params }); } } }) as typeof db;
+    const access = authorizationService(observedDb);
+    const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
+    const runs = ids.map(issueId => ({ companyId: fixture.companyId, scopeKind: "issue" as const, issueId }));
+    expect(await getHeartbeatRunReadDecisions(observedDb, access, actor, runs)).toEqual(ids.map(() => true));
+    const existence = queries.filter(({ query }) => query.startsWith('select "id" from "issues"'));
+    expect(existence.map(({ params }) => params.length).sort((a, b) => a - b)).toEqual([2, 501]);
+    expect(existence.every(({ query, params }) => query.includes('"company_id"') && params[0] === fixture.companyId)).toBe(true);
+  });
+
+  it("captures batch inputs before awaiting reads and rejects a failed batch", async () => {
+    const fixture = await seedFixture();
+    const access = authorizationService(db);
+    const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
+    const binding = { companyId: fixture.companyId, scopeKind: "issue" as const, issueId: fixture.issueId };
+    const decideReads = vi.spyOn(access, "decideReads");
+    const pending = getHeartbeatRunReadDecisions(db, access, actor, [binding, binding]);
+    binding.issueId = randomUUID();
+    expect(await pending).toEqual([true, true]);
+    expect(decideReads).toHaveBeenCalledExactlyOnceWith(actor, [expect.objectContaining({ issueId: fixture.issueId })]);
+    const error = new Error("authorization unavailable");
+    decideReads.mockRejectedValueOnce(error);
+    const current = { ...binding, issueId: fixture.issueId };
+    await expect(getHeartbeatRunReadDecisions(db, access, actor, [current])).rejects.toBe(error);
+    const transient = Object.assign(new Error("temporary disconnect"), { code: "CONNECTION_CLOSED" });
+    decideReads.mockRejectedValueOnce(transient);
+    expect(await getHeartbeatRunReadDecisions(db, access, actor, [current])).toEqual([true]);
+  });
+
+  it("does no database or authorization work for company-only or empty batches", async () => {
+    const fixture = await seedFixture();
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as typeof db;
+    const access = authorizationService(observedDb);
+    const decideReads = vi.spyOn(access, "decideReads");
+    const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
+    expect(await getHeartbeatRunReadDecisions(observedDb, access, actor, [])).toEqual([]);
+    expect(await getHeartbeatRunReadDecisions(observedDb, access, actor, [
+      { companyId: fixture.companyId, scopeKind: "company" }, { companyId: fixture.companyId, scopeKind: "issue" },
+    ])).toEqual([true, false]);
+    expect(queries).toEqual([]);
+    expect(decideReads).not.toHaveBeenCalled();
+  });
+
   it.each(["owner", "outsider"])("checks concurrent duplicate issue runs once for the %s", async (viewer) => {
     const fixture = await seedFixture();
     const access = authorizationService(db);
@@ -467,7 +623,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       agentId: viewer === "owner" ? fixture.ownerAgentId : fixture.otherAgentId,
     };
     const binding = { companyId: fixture.companyId, scopeKind: "issue" as const, issueId: fixture.issueId };
-    const decisions = await getHeartbeatRunReadDecisions(db, access, actor, Array.from({ length: 200 }, () => ({ ...binding })));
+    const decisions = await getHeartbeatRunReadDecisions(db, { decide: access.decide }, actor, Array.from({ length: 200 }, () => ({ ...binding })));
     expect(decisions).toEqual(Array(200).fill(viewer === "owner"));
     expect(decide).toHaveBeenCalledTimes(1);
     decide.mockRestore();
@@ -491,7 +647,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const decide = vi.spyOn(access, "decide");
     const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
     const binding = { companyId: fixture.companyId, scopeKind: "issue" as const, issueId: fixture.issueId };
-    const pending = getHeartbeatRunReadDecisions(db, access, actor, [binding, binding]);
+    const pending = getHeartbeatRunReadDecisions(db, { decide: access.decide }, actor, [binding, binding]);
     binding.issueId = randomUUID();
     expect(await pending).toEqual([true, true]);
     expect(decide).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -506,6 +662,31 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
     expect(await getHeartbeatRunReadDecisions(db, access, actor, [binding])).toEqual([true]);
     expect(await getHeartbeatRunReadDecisions(db, access, { ...actor, agentId: fixture.otherAgentId }, [binding])).toEqual([false]);
+  });
+
+  it("keeps event and operation authorization reads narrow for large runs", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: fixture.issueId, prompt: "large-private-context".repeat(65_536) },
+      runnerProfileJson: { instructions: "large-private-profile".repeat(65_536) },
+    }).where(eq(heartbeatRuns.id, fixture.privateRunId));
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as typeof db;
+    const app = createApp(fixture.companyId, fixture.grantedAgentId, observedDb);
+    const response = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/events`);
+    expect(response.status).toBe(200);
+    expect(response.body[0].message).toBe("private@example.test");
+    expect(queries.some(query => query.startsWith('select "id", "company_id", "scope_kind", "issue_id" from "heartbeat_runs"'))).toBe(true);
+    expect(queries.filter(query => query.startsWith("select ")).join("\n")).not.toMatch(/"runner_profile_json"|"stdout_excerpt"/);
+    queries.length = 0;
+    const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, fixture.operationId));
+    expect(await canActorReadWorkspaceOperation(observedDb, authorizationService(observedDb), {
+      type: "agent", companyId: fixture.companyId, agentId: fixture.grantedAgentId,
+    }, operation)).toBe(true);
+    expect(queries.some(query => query.startsWith('select "company_id", "scope_kind", "issue_id" from "heartbeat_runs"'))).toBe(true);
+    expect(queries.filter(query => query.startsWith("select ")).join("\n")).not.toMatch(/"runner_profile_json"|"stdout_excerpt"/);
+    await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.subjectId, fixture.grantedAgentId));
+    expect((await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}/events`)).status).toBe(404);
   });
 
   it("rechecks a revoked grant on the next history request", async () => {
@@ -540,7 +721,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     const decide = vi.spyOn(access, "decide").mockRejectedValue(error);
     const actor = { type: "agent" as const, companyId: fixture.companyId, agentId: fixture.ownerAgentId };
     const binding = { companyId: fixture.companyId, scopeKind: "issue" as const, issueId: fixture.issueId };
-    await expect(getHeartbeatRunReadDecisions(db, access, actor, Array(20).fill(binding))).rejects.toBe(error);
+    await expect(getHeartbeatRunReadDecisions(db, { decide: access.decide }, actor, Array(20).fill(binding))).rejects.toBe(error);
     expect(decide).toHaveBeenCalledTimes(1);
     decide.mockRestore();
     expect(await getHeartbeatRunReadDecisions(db, access, actor, [binding])).toEqual([true]);

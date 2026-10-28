@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -237,6 +237,12 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
 
   it("recovers the accepted continuation explanation after interrupted finalization without another provider result", async () => {
     const f = await fixture();
+    const executionPayload = randomBytes(128 * 1024).toString("base64");
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { ...f.source.contextSnapshot, largePrompt: executionPayload,
+        paperclipWake: { prompt: executionPayload } },
+      runnerProfileJson: { instructions: executionPayload }, stdoutExcerpt: executionPayload,
+    }).where(eq(heartbeatRuns.id, f.source.id));
     const [contract] = await db.insert(completionContracts).values({ companyId: f.company.id, issueId: f.issue.id,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
       completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
@@ -270,6 +276,9 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
     expect(coordinator).toMatchObject({ phase: "committed" });
     const [settledRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.source.id));
     expect(settledRun).toMatchObject({ status: "succeeded", resultJson: { finalizationPhase: "committed" } });
+    expect(settledRun.contextSnapshot?.largePrompt).toBe(executionPayload);
+    expect(settledRun.runnerProfileJson?.instructions).toBe(executionPayload);
+    expect(settledRun.stdoutExcerpt).toBe(executionPayload);
     const priorComments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.createdByRunId, f.source.id));
     expect(priorComments).toEqual([{ body: summary }]);
     expect(await repair()).toBe(false);

@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, projects } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, heartbeatRuns, plugins, projects } from "@paperclipai/db";
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
 import { createRequest, parseMessage, serializeMessage, isJsonRpcSuccessResponse, isJsonRpcErrorResponse } from "../../../packages/plugins/sdk/src/protocol.js";
@@ -19,11 +19,10 @@ import { environmentRunOrchestrator } from "../services/environment-run-orchestr
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import { createPluginRunnerTaskOwner } from "../services/native-runtime/plugin-runner-task.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const ingress = vi.hoisted(() => ({ connect: vi.fn() }));
 vi.mock("../realtime/runner-prp-outbound.js", () => ({ connectRunnerPrpIngress: ingress.connect }));
-const support = await getEmbeddedPostgresTestSupport();
 const databaseSuite = support.supported ? describe : describe.skip;
 
 /** Real SDK serialization and dispatch with synthetic provider resources. */
@@ -59,10 +58,34 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
   let db!: ReturnType<typeof createDb>;
   let stopDb: (() => Promise<void>) | undefined;
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("plugin-runner-task");
-    stopDb = started.stop; db = createDb(started.connectionString);
-  });
+    const started = await startRecoveryPostgres("plugin-runner-task");
+    stopDb = started.cleanup; db = createDb(started.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await stopDb?.(); });
+
+  it("does not allocate agent-dependent setup leases before the agent is prepared", async () => {
+    const companyId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Setup lease fixture", issuePrefix: "SETUP" });
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "@test/agent-owned-tasks", version: "1.0.0", status: "ready",
+      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, requiresAgent: true }] } as never });
+    await db.insert(environments).values({ id: environmentId, name: "Agent computer", driver: "plugin", status: "active",
+      config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
+    const call = vi.fn();
+    const setup = agentEnvironmentTestService(db, { call } as never);
+    const input = { companyId, environmentId, adapterType: "paperclip_runner" };
+    expect((await setup.resolveAdapterTestExecutionContext(input)).fallbackChecks).toMatchObject([{ code: "environment_agent_required", level: "warn" }]);
+    await db.insert(agents).values({ id: agentId, companyId, name: "Draft", lifecycleState: "preparing", lifecycleHolds: ["setup"], status: "paused" });
+    expect((await setup.resolveAdapterTestExecutionContext({ ...input, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_preparing", level: "warn" }]);
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ lifecycleState: "paused", pauseReason: "setup" }).where(eq(agents.id, agentId));
+    expect((await setup.resolveAdapterTestExecutionContext({ ...input, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_approval_required", level: "warn" }]);
+    const foreign = randomUUID();
+    await db.insert(companies).values({ id: foreign, name: "Other company", issuePrefix: "OTHER" });
+    expect((await setup.resolveAdapterTestExecutionContext({ ...input, companyId: foreign, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_preparing" }]);
+    expect(call).not.toHaveBeenCalled();
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.environmentId, environmentId))).toEqual([]);
+  });
 
   it("uses an acquired lease through SDK RPC, native dispatch, connection, stop proof and release", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
@@ -84,6 +107,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       version: "1.0.0", apiVersion: 1, categories: ["automation"], manifestJson: manifest, status: "ready" });
     const calls: PluginEnvironmentTaskOperation[] = [];
     let executionStopped = false, stopRequested = false, acquisition = 0, releaseFailure = false;
+    let projectAuthAllowed = true;
     const released = vi.fn(), complete = vi.fn();
     const plugin = definePlugin({
       async setup() {},
@@ -102,7 +126,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
             }),
           } };
           case "check_project_auth": return { kind: "project_auth", taskId: params.taskId,
-            configurationId: params.operation.configurationId, provider: params.operation.provider, allowed: true };
+            configurationId: params.operation.configurationId, provider: params.operation.provider, allowed: projectAuthAllowed };
           case "read_state": return { kind: "state", taskId: params.taskId, state: {
             schema: "paperclip.runner.durable.state.v1", ...params.operation.identity, lifecycle: "suspended",
           } };
@@ -163,7 +187,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
         warnings: [], created: false, branchCreatedByRuntime: false },
       effectiveExecutionWorkspaceMode: null, persistedExecutionWorkspace: null });
     const target = realization.executionTarget;
-    expect(target).toMatchObject({ kind: "remote", transport: "sandbox", remoteCwd: "/local/project", leaseId: acquired.lease.id });
+    expect(target).toMatchObject({ kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: acquired.lease.id });
     if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw new Error("Missing plugin target");
     expect(target.runner).toBeUndefined();
     await expect(target.runnerTask({ kind: "describe" }))
@@ -209,6 +233,35 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
       expect(saved.metadata?.runnerTaskDispatched).toBe(true);
       expect(JSON.stringify(saved.metadata)).not.toMatch(/synthetic-account-key|synthetic-launch-key|synthetic-bootstrap-ticket|synthetic-fixture/);
+      const acquisitionBefore = acquisition;
+      const callsBefore = calls.length;
+      const recovered = await environmentRunOrchestrator(db, { environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workers }) }).acquireForRun({
+        companyId, selectedEnvironmentId: environmentId, localEnvironmentId: randomUUID(), agentId,
+        issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+        executionWorkspaceSettings: null, adapterType: "paperclip_runner",
+        reattachRemoteLease: { kind: "plugin_task", leaseId: saved.id },
+      });
+      expect(recovered.lease.id).toBe(saved.id);
+      const adopted = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+        projectAuthCheckVersion: 1, adoptIdentity: identity });
+      await adopted.driver.authorizeRunnerAdoption!(prepared.configurationId, identity);
+      const adoptedRegistration = await adopted.registration({} as never, runId);
+      adoptedRegistration.activate(); await adoptedRegistration.ready();
+      await adoptedRegistration.release("detach");
+      expect(acquisition).toBe(acquisitionBefore);
+      expect(calls.slice(callsBefore).some(op => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
+      expect(executionStopped).toBe(false);
+      projectAuthAllowed = false;
+      const revoked = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+        projectAuthCheckVersion: 1, adoptIdentity: identity });
+      const connectionsBeforeRevocation = calls.filter(op => op.kind === "connection").length;
+      await expect(revoked.driver.authorizeRunnerAdoption!(prepared.configurationId, identity)).rejects.toThrow("project authentication conflicts");
+      expect(calls.filter(op => op.kind === "connection")).toHaveLength(connectionsBeforeRevocation);
+      expect(calls.slice(callsBefore).filter(op => op.kind === "check_project_auth")).toEqual(Array(2).fill({
+        kind: "check_project_auth", configurationId: prepared.configurationId, provider: "openai", projectIds: [projectId],
+      }));
+      projectAuthAllowed = true;
+      close.mockClear();
       await expect(runtime.task({ companyId: randomUUID(), leaseId: acquired.lease.id, operation: { kind: "stop" } })).rejects.toThrow("lease unavailable");
       const before = calls.filter(value => value.kind === "submit").length;
       await expect(runtime.task({ companyId, leaseId: acquired.lease.id, operation: { ...submit!, projectIds: [randomUUID()] } as never })).rejects.toThrow("project unavailable");
@@ -255,7 +308,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       expect(cleaned).toMatchObject({ status: "expired", cleanupStatus: "success", environmentId: null,
         metadata: { runnerTaskDispatched: false, remoteExecutionTermination: { state: "stopped" } } });
     } finally { executionStopped = true; handle.child.kill(); await handle.completion.catch(() => {}); harness.stop(); }
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each([false, true])("replaces a same-run task only after the provider confirms termination (%s)", async stopped => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID(), oldLeaseId = randomUUID();

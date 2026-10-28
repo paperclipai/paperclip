@@ -35,7 +35,10 @@ export function observabilitySecretValues(launch: ProviderObservabilityLaunch | 
   const headers = ((launch.otelConfig?.exporter as Record<string, unknown> | undefined)?.["otlp-http"] as { headers?: Record<string, string> } | undefined)?.headers;
   const encoded = launch.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
   const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
-  const values = [...Object.values(headers ?? {}).flatMap(value => [value, decoded(value)]), ...(encoded ? [encoded, ...encoded.split(",").map(item => decoded(item.slice(item.indexOf("=") + 1)))] : [])];
+  const values = [...Object.values(headers ?? {}).flatMap(value => [value, decoded(value)]), ...(encoded ? [encoded, ...encoded.split(",").flatMap(item => {
+    const value = item.slice(item.indexOf("=") + 1);
+    return [value, decoded(value)];
+  })] : [])];
   return [...new Set(values.flatMap(value => [value, value.replace(/^Bearer /i, ""), JSON.stringify(value).slice(1, -1)]).filter(Boolean))];
 }
 
@@ -50,10 +53,11 @@ export function buildProviderObservabilityLaunch(input: {
     OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000", OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: "3000",
   };
   if (kind === "codex") {
-    // Codex passes these through opentelemetry-otlp 0.31's with_headers, which
-    // percent-decodes values. Encode once so literal percent sequences survive.
-    const headers = Object.fromEntries(Object.entries(input.headers ?? {}).map(([name, value]) => [name, encodeURIComponent(value)]));
-    const exporter = (endpoint: string | undefined) => enabled ? { "otlp-http": { endpoint, protocol: "binary", headers } } : "none";
+    if (enabled) Object.assign(environment, {
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+    });
+    const exporter = (endpoint: string | undefined) => enabled ? { "otlp-http": { endpoint, protocol: "binary", headers: {} } } : "none";
     return { kind, compatibilityKey, environment, otelConfig: {
       exporter: exporter(input.logsEndpoint), trace_exporter: exporter(input.tracesEndpoint), metrics_exporter: "none",
       log_user_prompt: enabled && capture.userPrompts, log_agent_responses: enabled && capture.assistantResponses,

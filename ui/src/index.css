@@ -393,6 +393,8 @@
   --new-issue-visual-viewport-offset-top: 0px;
   --new-issue-dialog-top-gap: max(1rem, env(safe-area-inset-top));
   --new-issue-dialog-bottom-gap: max(1rem, env(safe-area-inset-bottom));
+  /* Connection banner offset: clear the notch/status bar under viewport-fit=cover. */
+  --connection-banner-top: calc(0.5rem + env(safe-area-inset-top, 0px));
   --mobile-entity-picker-visual-viewport-height: 100dvh;
   --mobile-entity-picker-backdrop: color-mix(in oklab, var(--foreground) 50%, transparent);
 
@@ -461,6 +463,8 @@
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --motion-pane-reveal: var(--motion-duration-slow);
+  --motion-ease-pane-reveal: var(--motion-ease-out-expo);
   --motion-pane-width-reset: 200ms;
   --motion-ease-pane-width-reset: ease-in-out;
   --motion-side-panel-tab: var(--motion-duration-fast);
@@ -492,6 +496,43 @@
   --side-panel-streamlined-tab-hover-bg: oklch(0.9675 0 0);
   --side-panel-streamlined-tab-active-bg: oklch(0.9581 0 0);
   --radius-task-composer: 16px;
+  /* Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): the artifact
+     directions lab's measurements, from the PCLP-Core mocks. Light values
+     here; .dark overrides the fills and shadows. */
+  --artifact-font-mono: var(--font-paper-mono);
+  --artifact-paper: #fafafa; /* the sheet and the print's border, both themes */
+  --artifact-paper-ink: #262626; /* a preview sheet's title */
+  --artifact-ink: #333333; /* an icon sheet's type label, the play disc */
+  --artifact-ink-faint: #d2d2d2; /* 20% ink over the paper, kept opaque so stroked glyphs do not darken where they overlap */
+  --artifact-sheet-radius: 12px;
+  --artifact-sheet-stroke: rgba(26, 26, 26, 0.1); /* 1px inner stroke on sheets and backings */
+  --artifact-sheet-inset-stroke: inset 0 0 0 1px var(--artifact-sheet-stroke);
+  --artifact-print-radius: 6px;
+  --artifact-shadow-sheet: drop-shadow(0 3.406px 10px rgba(26, 26, 26, 0.0924));
+  --artifact-shadow-print: 0 3.406px 20px rgba(26, 26, 26, 0.0924);
+  --artifact-sheet-title-size: 15.248px;
+  --artifact-sheet-title-leading: 18px;
+  --artifact-sheet-title-tracking: -0.6172px;
+  --artifact-icon-label-size: 24px;
+  --artifact-icon-label-leading: 54px;
+  --artifact-grid-min: 330px;
+  --artifact-grid: repeat(auto-fill, minmax(min(100%, var(--artifact-grid-min)), 1fr)); /* one column still fits a 320px phone */
+  --artifact-frame-h: 254px;
+  --artifact-tile-h: 370px;
+  --artifact-tile-radius: 12px;
+  --artifact-tile-hover: var(--accent);
+  --artifact-pill: var(--muted);
+  --artifact-pill-hover: var(--border); /* the light hover fill is --muted's value, so the pill steps down while hovered */
+  --artifact-pill-ink: var(--foreground);
+  --artifact-row: var(--muted);
+  --artifact-row-hover: #eeeeee;
+  --artifact-row-radius: 6.4px;
+  --artifact-row-gap: 12px;
+  --artifact-row-ink: #fafafa; /* the type label and glyph on the row's document icon */
+  --artifact-row-icon-label-size: 11px;
+  --artifact-row-icon-label-leading: 15px;
+  --artifact-play-scrim: rgba(0, 0, 0, 0.55);
+  --artifact-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
   --tc-interaction-card-max-h: 50dvh;
   --shadow-task-composer: 0 2px 8px -2px color-mix(in oklab, var(--foreground) 7%, transparent),
     0 12px 32px -8px color-mix(in oklab, var(--foreground) 12%, transparent);
@@ -546,6 +587,8 @@
      leaves 6px below the dock; its pb-1 adds 4px for a 10px card-to-nav gap.
      Desktop and the classic thread use the safe-area default. */
   --tc-composer-bottom: var(--sz-calc-8);
+  --mobile-chat-viewport-height: 100dvh;
+  --tc-composer-editor-max-height: min(var(--sz-28dvh), calc(var(--mobile-chat-viewport-height) * 0.4));
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
@@ -554,6 +597,13 @@
 .dark {
   --background: oklch(0.205 0 0);
   --foreground: oklch(0.985 0 0);
+  --artifact-shadow-sheet: drop-shadow(0 3.406px 10px rgba(26, 26, 26, 0.18));
+  --artifact-shadow-print: 0 3.406px 20px rgba(26, 26, 26, 0.18);
+  --artifact-tile-hover: #202020;
+  --artifact-pill: #333333;
+  --artifact-pill-hover: #333333;
+  --artifact-row: #262626;
+  --artifact-row-hover: #2c2c2c;
   --side-panel-bg: var(--background);
   --side-panel-fg: oklch(0.985 0 0);
   --streamlined-task-detail-bg: var(--background);
@@ -841,6 +891,62 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
 
 .mobile-nav-composer {
   transition: bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
+}
+
+/* Mobile conversations use the same single message scroller + normal footer as
+   desktop. Opt in from the rendered task shell, so classic tasks, lists, and
+   the empty agent-chat picker retain their existing document layout. */
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+}
+
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body,
+html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root {
+  height: 100%;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  height: var(--mobile-chat-viewport-height);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) :is(.app-main-row, .app-content-row) {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-content-column {
+  flex: 1;
+  min-height: 0;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-breadcrumb {
+  flex-shrink: 0;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) #main-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: var(--tc-composer-visible-nav-offset);
+}
+
+.paperclip-app-shell[data-mobile="true"][data-keyboard-open="true"]:has([data-task-chat-shell]) #main-content {
+  padding-bottom: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1282,6 +1388,10 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+.properties-panel-docked {
+  transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
+    opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);
+}
 .sidebar-shell[data-width-resetting="true"],
 .sidebar-shell[data-width-resetting="true"] > .sidebar-shell-panel { transition: width var(--motion-pane-width-reset) var(--motion-ease-pane-width-reset); }
 .design-page-aside[data-width-resetting="true"] { transition: flex-basis var(--motion-pane-width-reset) var(--motion-ease-pane-width-reset); }
@@ -1355,6 +1465,7 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
   .tc-turn-metrics,
   .tc-line-scroll-inner,
   .tc-pane-glide,
+  .properties-panel-docked,
   .side-panel-tab-motion,
   .side-panel-tab-close-motion { transition: none; }
   /* The pill keyframes carry the X-centering; with animation:none restore it. */
@@ -3075,7 +3186,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --tp-max-height: max-height; /* Extracted from ui/src/components/FoldCurtain.tsx (transition-[max-height]). */
   --tp-border-color-background-color-box-shadow: border-color,background-color,box-shadow; /* Extracted from ui/src/components/IssueChatThread.tsx (transition-[border-color,background-color,box-shadow]). */
   --tp-width-min-width: width,min-width; /* Extracted from ui/src/components/KanbanBoard.tsx (transition-[width,min-width]). */
-  --tp-width-opacity: width,opacity; /* Extracted from ui/src/components/OnboardingWizard.tsx (transition-[width,opacity]). */
   --tp-background-color-right: background-color,right; /* Extracted from ui/src/components/ScrollToBottom.tsx (transition-[background-color,right]). */
   --tp-background-color-border-color-color: background-color,border-color,color; /* Extracted from ui/src/components/SystemNotice.tsx (transition-[background-color,border-color,color]). */
   --tp-transform-opacity: transform,opacity; /* Extracted from ui/src/components/ToastViewport.tsx (transition-[transform,opacity]). */
@@ -3246,10 +3356,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .task-chat-scroll-viewport {
   overflow-anchor: none;
   scrollbar-gutter: stable;
-}
-
-.task-chat-window-scroll {
-  overflow-anchor: none;
 }
 
 .task-chat-loading-shell .animate-pulse {
@@ -3581,6 +3687,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 :root, .dark {
   --task-row-height-comfortable: calc(var(--spacing) * 11);
   --task-row-height-compact: calc(var(--spacing) * 8);
+  --task-row-recovery-width: calc(var(--spacing) * 32);
+  --task-row-external-width: calc(var(--spacing) * 10);
   --task-row-padding-inline: calc(var(--spacing) * 4);
   --task-row-gap: calc(var(--spacing) * 2);
   --task-row-indent-step: calc(var(--spacing) * 6);
@@ -3618,6 +3726,40 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 .task-row-group + .task-row-group { border-top: 0; }
 
+.task-row-stable, .task-row-skeleton {
+  height: var(--task-row-height-comfortable);
+  min-height: var(--task-row-height-comfortable);
+}
+.task-row-stable { align-items: center; }
+.task-row-stable [data-slot="task-row-leading"] { align-items: center; padding-top: 0; }
+.task-row-stable [data-slot="task-row-title"] {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.task-row-stable [data-slot="task-row-recovery"] {
+  width: var(--task-row-control-size);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-row-stable [data-slot="task-row-external"] {
+  width: var(--task-row-external-width);
+  flex-shrink: 0;
+}
+.task-row-stable [data-slot="task-row-metadata"] {
+  width: var(--task-row-time-width);
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.task-row-stable [data-slot="task-row-content"] { align-self: center; }
+@media (min-width: 640px) {
+  .task-row-stable [data-slot="task-row-recovery"] { width: var(--task-row-recovery-width); }
+}
+.task-row-skeleton { display: flex; align-items: center; gap: var(--task-row-gap); padding-inline: var(--task-row-padding-inline); }
 .task-row-refreshed {
   --task-row-height: var(--task-row-height-comfortable);
   --task-row-guide-end-gap: calc((var(--task-row-height) - var(--task-row-control-size)) / 2);
@@ -4724,4 +4866,57 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   height: var(--collection-toolbar-height);
   border-radius: var(--collection-toolbar-radius);
   border-color: var(--collection-toolbar-border);
+}
+
+/* ── Artifacts V1 component rules (ui/src/components/artifacts/v1) ──────────
+   Sheets, prints, the task pill and the hover movement. Movement only for
+   people who have not asked for reduced motion; colour fades stay. */
+.artifact-sheet {
+  width: 180px;
+  height: 216px;
+  border-radius: var(--artifact-sheet-radius);
+  filter: var(--artifact-shadow-sheet);
+}
+.artifact-sheet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: var(--artifact-sheet-inset-stroke);
+  pointer-events: none;
+}
+.artifact-print {
+  border-style: solid;
+  border-color: var(--artifact-paper);
+  border-radius: var(--artifact-print-radius);
+  background: var(--artifact-paper);
+  box-shadow: var(--artifact-shadow-print);
+}
+.artifact-backing {
+  filter: var(--artifact-shadow-sheet);
+}
+.artifact-pill {
+  font-family: var(--artifact-font-mono);
+  background: var(--artifact-pill);
+  color: var(--artifact-pill-ink);
+}
+.artifact-tile:is(:hover, :focus-visible) .artifact-pill {
+  background: var(--artifact-pill-hover);
+}
+[data-artifact-rotate] {
+  transform: rotate(var(--artifact-base, 0deg));
+}
+@media (prefers-reduced-motion: no-preference) {
+  .artifact-tile :is([data-artifact-rotate][data-artifact-spread], [data-artifact-front]) {
+    transition: transform var(--artifact-hover-ease);
+  }
+  .artifact-tile:hover [data-artifact-front] {
+    transform: translateY(-6px);
+  }
+  .artifact-tile:hover [data-artifact-spread="left"] {
+    transform: rotate(calc(var(--artifact-base, 0deg) + 5deg));
+  }
+  .artifact-tile:hover [data-artifact-spread="right"] {
+    transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
+  }
 }

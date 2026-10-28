@@ -17,6 +17,10 @@ import {
 import { currentWorkspaceWorker, requestWorkspaceWorkerStopProof, type WorkspaceWorker, type WorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
 
 const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
+
+export function nativeWorkspaceFinalizationLockKey(companyId: string, runId: string): string {
+  return `native-workspace-finalization:${companyId}:${runId}`;
+}
 const activeOwnerTokens = new Set<string>();
 // Positive same-boot evidence, retained only when durable cleanup could not be
 // confirmed. Absence from the active set alone never proves another token joined.
@@ -75,7 +79,7 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
   const finishAcquisition = beginRunPhase("execution.workspace_ownership_wait");
   try {
     return await withDedicatedDbConnection(input.db, (dedicated) => dedicated.transaction(async (lock) => {
-      const rows = await lock.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`native-workspace-finalization:${input.companyId}:${input.runId}`}, 0)) as acquired,
+      const rows = await lock.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${nativeWorkspaceFinalizationLockKey(input.companyId, input.runId)}, 0)) as acquired,
         (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
       if (rows[0]?.acquired !== true) return { acquired: false } as const;
       return withWorkspaceLockKeepalive(lock as unknown as Db, Number(rows[0].idle_timeout_ms), async () => {

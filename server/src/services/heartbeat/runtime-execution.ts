@@ -284,7 +284,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         )
       : persistedExecutionWorkspace;
     pluginWorkspaceFinalization = workspaceRecord
-      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id)
+      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
       : null;
     if (pluginWorkspaceFinalization || workspaceRecord?.strategyType !== "git_worktree") return null;
 

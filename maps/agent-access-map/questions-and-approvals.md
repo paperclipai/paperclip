@@ -112,7 +112,7 @@ Capability ID: `questions-and-approvals/dismiss-and-reopen`.
 
 Review: `operation-reviewed`.
 
-Local presentation and drafts remain distinct from server response state.
+Saved dismissal, local drafts, and response decisions are distinct states.
 
 ### `read-pending`
 
@@ -126,21 +126,21 @@ Evidence: `source-only` — [dismissal state](../../ui/src/hooks/useDismissedTas
 
 Verification: `not-run` — Read the same pending question before and after browser dismissal; compare its ID, pending status and absence of a response-delivery record. Reject inaccessible task/company reads.
 
-Gaps: No server/account-wide synchronization promised for presentation state.
+Gaps: Drafts and raw runtime dismissal remain browser-local.
 
-### `dismiss-locally`
+### `dismiss`
 
-API: `not-applicable` — browser-only presentation through the task thread and useDismissedTaskQuestions localStorage; no domain write is needed.
+API: `present` — POST /api/issues/{id}/interactions/{interactionId}/dismiss.
 
-Agent access: `not-applicable` — the browser owns this presentation preference. Agents can read the shared interaction separately.
+Agent access: `restricted` — board-only; an agent cannot dismiss its own pending request. Authorized agents can read dismissal in interaction/task context.
 
-Policy: Scope dismissal by browser user and task. It hides the composer form without creating an answer, approval or wake. A new ordinary comment can hide the composer while the default question remains pending.
+Policy: Task/company read access and resolver audience apply. Current issue review policy is rechecked under the task lock; an excluded review requester cannot defer the review. Saves dismissal under task/interaction locks without resolving, executing, or waking. Ordinary requests stop gating completion. Tool/secret/connection/document/company-policy and configured review gates retain authority, with no repeated reminder. Raw runtime dismissal remains a browser preference.
 
-Evidence: `source-only` — [dismissal state](../../ui/src/hooks/useDismissedTaskQuestions.ts), [task thread](../../ui/src/components/TaskChatThread.tsx), [interaction service](../../server/src/services/issue-thread-interactions.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
+Evidence: `source-only` — [route](../../server/src/routes/issues.ts), [service](../../server/src/services/issue-thread-interactions.ts), [completion predicate](../../server/src/services/issue-question-context.ts), and [task thread](../../ui/src/components/TaskChatThread.tsx).
 
-Verification: `not-run` — Dismiss without submitting, reload in the same browser, and inspect the still-pending shared request. Another user/task must not reuse the preference; unavailable local storage must not alter server state.
+Verification: `not-run` — Dismiss, reload, reopen the original request; verify persisted dismissal with no answer, approval, or wake. Reject agents, foreign or unreadable private tasks, wrong audiences, and review requesters excluded by current policy. Check ordinary completion review and protected tool action separately.
 
-Gaps: No server/account-wide synchronization promised for presentation state.
+Gaps: Browser drafts and raw runtime request dismissal do not synchronize across devices.
 
 ### `reopen-draft`
 
@@ -619,5 +619,22 @@ Policy: External chat source cannot steer/coalesce into unrelated provider turn.
 Evidence: `source-only` — [answer delivery](../../server/src/services/question-response-delivery.ts), [channel authority](../../server/src/services/chat-channels.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live proof.
 
 Verification: `not-run` — Answer in actual configured channel -> one persisted result/useful originating reply; wrong/unlinked/expired sender denied. Overlap two conversations and verify no cross-delivery/replay.
+
+Slack presentation uses opaque native response tokens for text, choices,
+multiple selections, custom answers, validated text, ordinary confirmations,
+checklists, item verdicts, suggested tasks, and connection decline. Permission
+grants, governed approvals, and forms that exceed native limits retain authenticated
+Paperclip review. Link clicks are passive and confer no decision authority.
+Current company, audience, identity, connection, and governed-action checks apply.
+Selections map back to the canonical response through the existing transaction
+and callback receipt. Terminal cards retain the submitted answer only in the
+original authorized conversation. Native multi-choice continuation validates the
+exact saved selection mapping; a native answer token cannot be substituted by a
+Board receipt. Later review replies follow the
+[existing wake and connection-delivery receipts](../../server/src/services/chat-interaction-continuation.ts).
+For automation-origin connection requests, validated receipts can recover the
+conversation from the published prompt. Local Slack proof covers eleven formats
+with a deterministic protocol fixture; production agent authority and other
+provider paths retain their independent verification requirements.
 
 Gaps: Slack/Discord/Telegram/email/iMessage and runtime paths independently not-run until driven.

@@ -1,9 +1,16 @@
-import { runnerE2EPlaywrightInvocation } from "./web-server-command.js";
+import { readUpgradeArtifacts, verifyUpgradeArtifact, upgradeArtifactKey } from "./upgrade-artifacts.js";
+import { recoverWorkerTiming } from "./worker-timing.js";
+import { openEvalOperations, type EvalOperations } from "./operations.js";
+import { readRecoveredFeedback } from "./feedback-recovery.js";
+import { readInterruptedAttemptTrace } from "./trace-recovery.js";
+import { EVAL_OBSERVABILITY_SECRET_NAMES, evalBraintrustConfig, finalizeEvalAttemptTrace } from "./braintrust.js";
+import { finalizeEvalAttemptThroughRelay } from "./eval-finalization-relay.js";
+import { runnerE2EPlaywrightInvocation, runnerE2EPlaywrightShutdownSignal } from "./web-server-command.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { createRunnerE2ETemporaryRoot } from "./server-config.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
@@ -26,11 +33,14 @@ import {
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { packageEvidence } from "./evidence.js";
+import { copySharedEvidence } from "./shared-evidence.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { mustPreserveRecoveryState, shouldKeepFailedDiagnostics } from "./cleanup-verification.js";
 import { effectiveAutomaticRetryLimit, executeWithAutomaticRetry } from "./automatic-retry.js";
 import { buildRunnerCampaign } from "./history.js";
+import { readEvalOperationsReport } from "./operations-report.js";
 import {
+  applyEvalGatewayEnvironment,
   buildRunnerE2EProcessEnvironment,
   resolvePaperclipRemoteRunnerBinaryForHarness,
   resolvePaperclipRunnerBinaryForHarness,
@@ -305,7 +315,7 @@ async function runProcess(
   const cleanupFinished = new Promise<number>(resolve => { cleanupSettled = () => resolve(1); });
   const stopChildTree = (_diagnostic?: ProcessTreeDiagnostic) => {
     if (boundedCleanup) return;
-    boundedCleanup = stopOwnedProcessTree(child, processOwner)
+    boundedCleanup = stopOwnedProcessTree(child, processOwner, 45_000, 5_000, runnerE2EPlaywrightShutdownSignal)
       .then(() => null, error => error instanceof Error ? error.message : String(error))
       .finally(cleanupSettled);
     activeProcessCleanup.set(child.pid!, boundedCleanup);
@@ -443,32 +453,18 @@ async function readResult(resultPath: string, fallback: RunnerE2EResult) {
   }
 }
 
-async function copySharedEvidence(privateRoot: string, casePrivateDir: string) {
-  for (const relative of [
-    "server.log",
-    "playwright.log",
-    "junit.xml",
-    "html-report",
-    "blob-report",
-    "playwright-output",
-  ]) {
-    await cp(
-      path.join(privateRoot, relative),
-      path.join(casePrivateDir, relative),
-      { recursive: true, force: true },
-    ).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-    });
-  }
-}
 
 async function runAttempt(input: {
   executions: readonly MatrixExecution[];
   attempt: number;
   campaignId: string;
   options: ReturnType<typeof parseRunnerSelectors>;
+  operations?: EvalOperations;
 }): Promise<RunnerE2EResult[]> {
   const { executions, attempt, campaignId, options } = input;
+  const accountingCampaignId = input.operations?.manifest.limits.campaignId ?? process.env.PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID ?? campaignId;
+  const accountingAttemptId = randomBytes(16).toString("hex");
+  const traceConfig = evalBraintrustConfig({ ...process.env, PAPERCLIP_E2E_OTLP_RELAY_URL: undefined });
   const execution = executions[0];
   if (!execution) throw new Error("A runner E2E cell must contain a task case");
   if (
@@ -482,6 +478,15 @@ async function runAttempt(input: {
       "One isolated runner E2E harness cannot mix profiles or environments",
     );
   }
+  const upgrades = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
+  if (upgrades) {
+    // All attempts and the browser use A's installed fixture admission. The
+    // supervisor changes only the server artifact; the original sandbox lives on.
+    Object.assign(process.env, upgrades.artifacts.A.pins);
+    for (const artifact of [upgrades.artifacts.A, upgrades.artifacts.B]) {
+      await verifyUpgradeArtifact(artifact, process.env, executions);
+    }
+  }
   assertInstalledCliSelection(process.env, executions);
   const installedCli = await verifyInstalledCli(process.env, executions);
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
@@ -494,6 +499,7 @@ async function runAttempt(input: {
   let attemptSecrets: string[] = [];
   let processCleanupFailed = false;
   let startupReceiptPath: string | undefined;
+  let gateway: Awaited<ReturnType<EvalOperations["start"]>> | undefined;
   const rawCleanupResults: Array<{ cleanup: string; synthetic: boolean; status: string }> = [];
   try {
     const paperclipHome = path.join(temporaryRoot, "paperclip-home");
@@ -523,8 +529,11 @@ async function runAttempt(input: {
     const decisionSigningSecret = secret(48);
     const toolActionSigningSecret = secret(48);
     const betterAuthSecret = secret(48);
+    gateway = await input.operations?.start(execution, accountingAttemptId, attempt);
     const credentialSources = {
-      ...Object.fromEntries(CREDENTIAL_NAMES.map((name) => [name, process.env[name]])),
+      PAPERCLIP_E2E_GATEWAY_TOKEN: gateway?.token,
+      PAPERCLIP_E2E_OTLP_RELAY_TOKEN: gateway?.observability?.token,
+      ...Object.fromEntries([...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => [name, process.env[name]])),
       PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
       PAPERCLIP_DECISION_SIGNING_SECRET: decisionSigningSecret,
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
@@ -545,6 +554,8 @@ async function runAttempt(input: {
         executions.map((candidate) => candidate.id),
       ),
       PAPERCLIP_RUNNER_E2E_ATTEMPT: String(attempt),
+      PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: accountingCampaignId,
+      PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID: accountingAttemptId,
       PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY: options.installedStartupOnly ? "1" : undefined,
       PAPERCLIP_RUNNER_E2E_PUBLIC_MCP: executions.some(candidate => candidate.task.flow === "public_mcp") ? "1" : "0",
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
@@ -575,6 +586,12 @@ async function runAttempt(input: {
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
       BETTER_AUTH_SECRET: betterAuthSecret,
     };
+    if (gateway) {
+      applyEvalGatewayEnvironment(childEnv, execution.profile.credential, gateway);
+      // The fixture/server controller needs Daytona provisioning access. The
+      // remote provider still receives only the scoped model and OTLP tokens.
+      if (execution.environment.id === "daytona") childEnv.DAYTONA_API_KEY = process.env.DAYTONA_API_KEY;
+    }
     // The database URLs are stripped here and again at the Playwright web-server
     // boundary so a developer's shell can never redirect this paid test.
     delete childEnv.DATABASE_URL;
@@ -600,7 +617,7 @@ async function runAttempt(input: {
           ) +
           5 * 60_000;
     const processResult = await runProcess(
-      runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs, Boolean(installedCli)),
+      runnerE2EPlaywrightInvocation(repositoryRoot, playwrightArgs),
       childEnv,
       watchdog,
       path.join(privateDir, "playwright.log"),
@@ -653,6 +670,16 @@ async function runAttempt(input: {
           processFailureClass,
         );
         const result = await readResult(resultPath, fallback);
+        if (!result.workerTiming) result.workerTiming = await recoverWorkerTiming(path.join(path.dirname(resultPath), "snapshots", "worker-timing.json"),
+          { executionId: candidate.id, attempt, startedAt: result.startedAt, finishedAt: result.finishedAt });
+        if (result === fallback) {
+          result.feedback = await readRecoveredFeedback(path.dirname(resultPath), {
+            campaignId: accountingCampaignId, attemptId: accountingAttemptId, executionId: candidate.id,
+          });
+          if (traceConfig) result.tracing = await readInterruptedAttemptTrace(path.dirname(resultPath), {
+            projectId: traceConfig.projectId, executionId: candidate.id,
+          });
+        }
         // Keep cleanup authority before evidence copying/publication can fail.
         rawCleanupResults.push({ cleanup: result.cleanup, synthetic: result === fallback, status: result.status });
         return enforceResultProcessIntegrity(result, processResult);
@@ -684,6 +711,7 @@ async function runAttempt(input: {
             const leak = await findSecretLeakInDirectory(directory, credentials, {
               includeShapes: false,
               sources: credentialSources,
+              ...(label === "Paperclip home" ? { privateCodexRuntimeIdentityRoot: paperclipHome } : {}),
               ignoreFile: (file) => expectedEphemeralCredentials.has(file),
               allowDisappearedFile: (file) =>
                 label === "Paperclip home" &&
@@ -712,7 +740,10 @@ async function runAttempt(input: {
       }
     }
     for (const [index, candidate] of executions.entries()) {
-      let result = results[index];
+      let result = {
+        ...results[index],
+        accountingIdentity: { campaignId: accountingCampaignId, attemptId: accountingAttemptId },
+      };
       if (
         isolationError &&
         result.failureClass !== "cleanup_failure" &&
@@ -778,7 +809,7 @@ async function runAttempt(input: {
         `attempt-${attempt}`,
       );
       await mkdir(casePrivateDir, { recursive: true });
-      await copySharedEvidence(privateDir, casePrivateDir);
+      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials);
       if (persistedStateError && persistenceCheckedExecutions.includes(candidate)) {
         const snapshots = path.join(casePrivateDir, "snapshots");
         await mkdir(snapshots, { recursive: true });
@@ -836,6 +867,8 @@ async function runAttempt(input: {
     }
     return [...publishedResults];
   } finally {
+    let gatewayCleanupError: unknown;
+    try { await gateway?.close(); } catch (error) { gatewayCleanupError = error; }
     if (!processCleanupFailed) reapNewDetachedDarwinSharedMemory(sharedMemoryBaseline);
     let cleanupError: unknown;
     const resourceAdmissionStarted = await access(path.join(temporaryRoot, "artifacts-private", "resource-admission-started"))
@@ -877,6 +910,7 @@ async function runAttempt(input: {
         `Refusing to remove unexpected temporary path ${temporaryRoot}`,
       );
     }
+    if (gatewayCleanupError) cleanupError = new AggregateError([cleanupError, gatewayCleanupError].filter(Boolean), "Eval gateway cleanup failed");
     if (startupReceiptPath) {
       const receipt = JSON.parse(await readFile(startupReceiptPath, "utf8"));
       receipt.status = cleanupError ? "installed_launch_chain_cleanup_failed" : "installed_launch_chain_passed";
@@ -909,6 +943,26 @@ async function runAttempt(input: {
       console.error(message);
       if (options.installedStartupOnly) throw new Error(message);
     }
+    for (const result of publishedResults) {
+      const resultPath = publishedResultPaths.get(result.executionId);
+      const candidate = executions.find(candidate => candidate.id === result.executionId);
+      if (!traceConfig || !result.tracing || !resultPath || !candidate) continue;
+      const finalizationInput = {
+        receipt: result.tracing,
+        identity: { campaignId: accountingCampaignId, attemptId: accountingAttemptId, executionId: candidate.id,
+          provider: candidate.profile.provider, model: candidate.profile.model, environment: candidate.environment.id },
+        provenance: { suiteId: candidate.suite.id, suiteDefinitionHash: candidate.suiteDefinitionHash, profileId: candidate.profile.id,
+          caseId: candidate.task.id, sourceRevision: resolveRunnerE2ESource().sha },
+        result,
+      };
+      result.tracing.finalization = input.operations
+        ? await finalizeEvalAttemptThroughRelay(traceConfig, finalizationInput,
+          path.join(`${input.operations.manifest.ledgerPath}.otlp`, `${createHash("sha256").update(accountingAttemptId).digest("hex")}-finalization.jsonl`))
+        : await finalizeEvalAttemptTrace(traceConfig, finalizationInput);
+      const safeResult = `${JSON.stringify(sanitizeJson(result, attemptSecrets), null, 2)}\n`;
+      assertSecretFree(safeResult, attemptSecrets, resultPath);
+      await writeFile(resultPath, safeResult, "utf8");
+    }
   }
 }
 
@@ -932,6 +986,8 @@ async function runExecutionWithRetry(input: {
   execution: MatrixExecution;
   campaignId: string;
   options: ReturnType<typeof parseRunnerSelectors>;
+  onAttempt: (result: RunnerE2EResult) => void;
+  operations?: EvalOperations;
 }): Promise<RunnerE2EResult> {
   const { execution, campaignId, options } = input;
   return executeWithAutomaticRetry({
@@ -942,8 +998,9 @@ async function runExecutionWithRetry(input: {
       `Retrying ${execution.id} in a fresh isolated harness after ${result.failureClass!.replaceAll("_", " ")}`,
     ),
     runAttempt: async attempt => {
-      const [result] = await runAttempt({ executions: [execution], attempt, campaignId, options });
+      const [result] = await runAttempt({ executions: [execution], attempt, campaignId, options, operations: input.operations });
       if (!result) throw new Error(`No result produced for ${execution.id} attempt ${attempt}`);
+      input.onAttempt(result);
       return result;
     },
   });
@@ -968,11 +1025,18 @@ async function runWithConcurrency<T, R>(
       }
     },
   );
-  await Promise.all(workers);
+  const settled = await Promise.allSettled(workers);
+  const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Eval campaign workers failed");
   return results;
 }
 
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.includes("--target-config") || args.includes("product-journeys")) {
+    const { launchProductJourneys } = await import("./product-journeys/launch.js");
+    return launchProductJourneys(args, repositoryRoot);
+  }
   let options: ReturnType<typeof parseRunnerSelectors>;
   try {
     options = parseRunnerSelectors(process.argv.slice(2));
@@ -1006,6 +1070,14 @@ async function main() {
     return;
   }
 
+  if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST && executions.some(execution => execution.task.flow === "provider_connection")) throw new Error("Provider connection campaign has no budgeted routing qualification");
+  if (executions.some(execution => execution.task.flow === "github_review_journey")) {
+    if (options.connectionConfig) throw new Error("Use --github-review-config for the GitHub journey.");
+    const { runGitHubReviewCampaign } = await import("./github-review-launch.js");
+    await runGitHubReviewCampaign({ executions, catalog: runnerMatrix, configFile: options.githubReviewConfig, repositoryRoot, provisionRepository: options.provisionGitHubRepository });
+    return;
+  }
+  if (options.githubReviewConfig || options.provisionGitHubRepository) throw new Error("GitHub journey options require an explicit GitHub review journey selection.");
   if (executions.some(execution => execution.task.flow === "provider_connection")) {
     const { runConnectionCampaign } = await import("./connection-launch.js");
     await runConnectionCampaign({ executions, catalog: runnerMatrix, configFile: options.connectionConfig, repositoryRoot });
@@ -1036,7 +1108,7 @@ async function main() {
 
   await loadLocalEnvironment(process.env);
   assertRemoteNativeEvidencePrerequisites(executions, process.env);
-  const missingCredentials = [
+  const missingCredentials = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST ? [] : [
     ...new Set(
       executions.flatMap((execution) => execution.requiredCredentials),
     ),
@@ -1079,21 +1151,35 @@ async function main() {
   console.log(
     `Running ${executions.length} isolated execution(s) with max parallelism ${requestedParallelism}`,
   );
-  const finalResults = await runWithConcurrency(
-    executions,
-    requestedParallelism,
-    (execution) => runExecutionWithRetry({ execution, campaignId, options }),
-  );
+  const attempts: RunnerE2EResult[] = [];
+  const operations = process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST
+    ? await openEvalOperations(process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST, executions, options.maxAutomaticRetries, process.env) : undefined;
+  let finalResults: RunnerE2EResult[] = [];
+  let campaignFailed = false;
+  try {
+    if (operations) await writeFile(path.join(summaryDir, "operations-preflight.json"), `${JSON.stringify(operations.manifest, null, 2)}\n`, { mode: 0o600 });
+    finalResults = await runWithConcurrency(executions, operations ? Math.min(requestedParallelism, operations.manifest.limits.maxConcurrent) : requestedParallelism,
+      execution => runExecutionWithRetry({ execution, campaignId, options, operations, onAttempt: result => attempts.push(result) }));
+  } catch {
+    campaignFailed = true;
+    finalResults = [...new Map(attempts.map(result => [result.executionId, result])).values()];
+  } finally {
+    try { await operations?.close(); } catch { campaignFailed = true; }
+  }
 
   const generatedAt = new Date().toISOString();
+  const operationsReport = operations ? await readEvalOperationsReport(operations.manifest.ledgerPath) : undefined;
+  if (operationsReport?.status === "unavailable") campaignFailed = true;
   const campaign = buildRunnerCampaign({
     campaignId,
     generatedAt,
     expected: executions.map((execution) => execution.id),
     results: finalResults,
+    attempts,
+    ...(operationsReport ? { operations: operationsReport } : {}),
   });
   const campaignSecrets = normalizedSecrets(
-    CREDENTIAL_NAMES.map((name) => process.env[name]),
+    [...CREDENTIAL_NAMES, ...EVAL_OBSERVABILITY_SECRET_NAMES].map((name) => process.env[name]),
   );
   const safeCampaign = sanitizeJson(
     campaign,
@@ -1133,7 +1219,8 @@ async function main() {
   console.log(
     `Campaign ${campaignId}: ${safeCampaign.passed}/${safeCampaign.selected} passed`,
   );
-  if (safeCampaign.failed > 0) process.exitCode = 1;
+  if (campaignFailed) console.error("Campaign finalization incomplete; inspect retained attempt artifacts and the operations ledger.");
+  if (campaignFailed || safeCampaign.failed > 0) process.exitCode = 1;
 }
 
 await main().catch((error) => {

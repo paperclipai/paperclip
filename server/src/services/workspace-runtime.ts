@@ -1,6 +1,9 @@
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
 import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
+import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit } from "./git-restore-point-storage.js";
+import { getStorageService } from "../storage/index.js";
+import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
@@ -112,6 +115,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { collectNestedRepositoryWorktrees, releaseNestedRepositoryWorktrees } from "./nested-repository-worktrees.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -3779,6 +3783,8 @@ function isPersistedTaskDirectory(workspace: {
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   prepareRestoredLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
   persistContentsRestoredAt?: (at: string | null) => Promise<void>;
+  persistRestorePointAppliedAt?: (at: string) => Promise<void>;
+  restorePointStorage?: StorageService;
   db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
@@ -3880,10 +3886,31 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     currentRecipe = { ...currentRecipe as Record<string, unknown>, contentsRestoredAt: at };
     input.workspace.metadata!.gitCacheRestoration = currentRecipe;
   };
+  const applyRestorePoint = async (repositoryCwd: string, worktreePath: string) => {
+    const ref = restoration?.restorePoint;
+    if (!ref || ref.appliedAt || !input.workspace.id) return;
+    await applyGitRestorePointToWorktree({ storage: input.restorePointStorage ?? getStorageService(),
+      workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref, repositoryCwd, worktreePath })
+      .catch(() => { throw new GitCacheRestorationFailure(); });
+    const at = new Date().toISOString();
+    if (input.persistRestorePointAppliedAt) await input.persistRestorePointAppliedAt(at);
+    else {
+      if (!input.db) throw new GitCacheRestorationFailure();
+      const updated = await input.db.update(executionWorkspaces).set({
+        metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration,restorePoint,appliedAt}', ${JSON.stringify(at)}::jsonb)`,
+      }).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.agent.companyId),
+        sql`${executionWorkspaces.metadata}->'gitCacheRestoration'->'restorePoint'->>'id' = ${ref.id}`))
+        .returning({ id: executionWorkspaces.id });
+      if (updated.length !== 1) throw new GitCacheRestorationFailure();
+    }
+    ref.appliedAt = at;
+    currentRecipe = { ...currentRecipe as Record<string, unknown>, restorePoint: { ...ref } };
+    input.workspace.metadata!.gitCacheRestoration = currentRecipe;
+  };
   const restoreContents = async () => {
     if (!restoration?.contents || !input.workspace.id) return;
     await restoreGitWorkspaceContents({ cwd, companyId: input.agent.companyId, workspaceId: input.workspace.id,
-      contents: restoration.contents, resolveGitAuth: async url => {
+      projectId: input.workspace.projectId, contents: restoration.contents, resolveGitAuth: async url => {
         const auth = await input.resolveGitAuth?.(url);
         if (!auth) return null;
         const source = auth.source;
@@ -3980,6 +4007,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
     await input.afterSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
+    await applyRestorePoint(repoRoot, realized.worktreePath ?? cwd);
     if (restoration && !restoration.contentsRestored) await restoreContents();
     await provisionExecutionWorktree({
       skipHostProvision: input.skipHostProvision,
@@ -4009,6 +4037,11 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
   if (savedCommit) {
+    if (restoration?.restorePoint && input.workspace.id) {
+      await ensureGitRestorePointCommit({ storage: input.restorePointStorage ?? getStorageService(),
+        workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref: restoration.restorePoint, repositoryCwd: repoRoot })
+        .catch(() => { throw new GitCacheRestorationFailure(); });
+    }
     await ensureSavedGitCommit(repoRoot, input.workspace.repoUrl ?? input.base.repoUrl!, savedCommit, input.resolveGitAuth ?? (async () => null));
     const existingTip = await resolveBaseRefSha(repoRoot, `refs/heads/${branchName}`);
     // Once restored, subsequent task commits own this branch. The saved commit
@@ -4083,6 +4116,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   });
 
   await input.afterSourceCopy?.(repoRoot, worktreePath);
+  await applyRestorePoint(repoRoot, worktreePath);
   await restoreContents();
   await provisionExecutionWorktree({
     skipHostProvision: input.skipHostProvision,
@@ -4259,6 +4293,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   // Callers can require the workspace to match an assessed snapshot before
   // cleanup begins. Destructive paths recheck immediately before removal.
   await input.assertSafeToCleanup?.();
+  const nestedWorktrees = workspacePath ? await collectNestedRepositoryWorktrees(workspacePath).catch((err) => {
+    warnings.push(`Could not inspect nested repository worktrees: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }) : [];
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -4437,6 +4475,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     !workspacePath ||
     retainsUnownedLocalDirectory ||
     !(await directoryExists(workspacePath));
+  if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
   return {
     cleanedPath: workspacePath,

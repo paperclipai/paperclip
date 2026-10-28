@@ -228,6 +228,51 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each([false, true].flatMap(recovered => [
+    { recovered, cwd: "/home/agent" },
+    { recovered, cwd: "/projects/repository/worktrees/task" },
+    { recovered, cwd: undefined },
+  ]))("uses the admitted session cwd in the task envelope (recovered=$recovered, cwd=$cwd)", async ({ recovered, cwd }) => {
+    const executionInput = preparedInput();
+    const originalWorkspace = structuredClone(executionInput.workspace);
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+    const snapshot: PersistedNativeSession = {
+      backendKind: "mock", sessionId: "driver-recovery", identity, providerSessionId: "provider-recovery",
+      workingDirectory: cwd, cursor: null, activeTurnId: null, semanticResult: null, terminal: null,
+      terminalTurns: [], pendingRuntimeRequests: [], lineage: [],
+    };
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => ({ turnId: "turn-recovery" }));
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return capabilities; },
+      async *events() {
+        yield runnerEvent(1, "run.result.proposed", result);
+        yield runnerEvent(2, "turn.completed");
+      },
+      startTurn,
+      async result() { return { result, terminal, turnId: "turn-recovery" }; },
+      async snapshot() { return structuredClone(snapshot); },
+      async close() {},
+    };
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "workspace-fixture", version: "1", capabilities,
+        runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+      async openSession() { return session; },
+      async recoverSession() { return { recovered: true, session }; },
+    };
+    const port: ControlPlanePort = {
+      async openRun() {}, async checkpointSession() {},
+      async loadSessionCheckpoint() { return recovered ? structuredClone(snapshot) : null; },
+      async appendEvent(event) { return { cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq, disposition: "committed" }; },
+      async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+      async completeRun() {},
+    };
+    await executeNativeSession({ input: executionInput, backend, controlPlane: port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" });
+    expect(JSON.parse(startTurn.mock.calls[0]![0].message.text).workspace).toEqual({ cwd: cwd ?? originalWorkspace.cwd });
+    expect(executionInput.workspace).toEqual(originalWorkspace);
+  });
+
   it.each([
     "completed", "pending", "duplicate", "conflicting", "other turn", "newer turn",
     "wrong session", "invalid",

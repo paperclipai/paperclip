@@ -1,14 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, paperclipRunnerSupportsPlatform, PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION, createAgentSchema, updateAgentSchema, testAdapterEnvironmentSchema } from "@paperclipai/shared";
-const state = vi.hoisted(() => ({ disabled: [] as string[], overridden: new Set<string>(), settings: {} as Record<string, unknown>, getEnvironment: vi.fn(), bindings: vi.fn(), managedEnvironment: vi.fn(), kubernetesEnvironment: vi.fn(), ensureKubernetesEnvironment: vi.fn(), ssh: vi.fn(), resolveEnvironment: vi.fn(), sandboxQualification: vi.fn() }));
+const state = vi.hoisted(() => ({ disabled: [] as string[], overridden: new Set<string>(), settings: {} as Record<string, unknown>, getEnvironment: vi.fn(), bindings: vi.fn(), managedEnvironment: vi.fn(), kubernetesEnvironment: vi.fn(), ensureKubernetesEnvironment: vi.fn(), ssh: vi.fn(), resolveEnvironment: vi.fn(), sandboxQualification: vi.fn(), pluginByKey: vi.fn() }));
 vi.mock("../adapters/registry.js", () => ({ findActiveServerAdapter: (type: string) => ({ type }), hasActiveAdapterOverride: (type: string) => state.overridden.has(type), waitForExternalAdapters: async () => {} }));
 vi.mock("./adapter-plugin-store.js", () => ({ getDisabledAdapterTypes: () => state.disabled }));
 vi.mock("./instance-settings.js", () => ({ instanceSettingsService: () => ({ get: async () => state.settings }) }));
 vi.mock("./environments.js", () => ({ environmentService: () => ({ getById: state.getEnvironment, listBoundCompanyIds: state.bindings, findManagedSandboxEnvironment: state.managedEnvironment, findKubernetesEnvironment: state.kubernetesEnvironment, ensureKubernetesEnvironment: state.ensureKubernetesEnvironment }) }));
 vi.mock("./environment-probe.js", () => ({ readSandboxPlatformQualification: state.sandboxQualification }));
-vi.mock("./environment-config.js", () => ({ resolveEnvironmentDriverConfigForRuntime: state.resolveEnvironment }));
+vi.mock("./environment-config.js", async () => ({
+  parseEnvironmentDriverConfig: (await vi.importActual<typeof import("./environment-config.js")>("./environment-config.js")).parseEnvironmentDriverConfig,
+  resolveEnvironmentDriverConfigForRuntime: state.resolveEnvironment,
+}));
+vi.mock("./plugin-registry.js", () => ({ pluginRegistryService: () => ({ getByKey: state.pluginByKey }) }));
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({ runSshCommand: state.ssh }));
-import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, resolveAgentRunnerTaskDriverForCompany, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { buildCodexAcpConfig, resolveCodexExecutionEngine } from "@paperclipai/adapter-codex-local/server";
 import { secretService } from "./secrets.js";
 import * as localPlatform from "../lib/agent-runner-platform.js";
@@ -70,11 +74,11 @@ describe("server-owned Codex runner selection", () => {
     const input = { adapterType: "codex_local", target, adapterConfig: { model: "gpt-5.6-sol", modelReasoningEffort: "high", env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret" } }, cwd: "/workspace", instructionsFilePath: "/workspace/AGENTS.md", workspaceStrategy: { type: "git_worktree" }, timeoutSec: 60, search: false, fastMode: false, dangerouslyBypassApprovalsAndSandbox: true } };
     const resolved = resolveNewAgentRunner(input);
     expect(resolved).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", codexPermissionMode: "never", modelReasoningEffort: "high", env: input.adapterConfig.env, workspaceStrategy: input.adapterConfig.workspaceStrategy, timeoutSec: 60 } });
-    expect(resolved.adapterConfig).not.toHaveProperty("search");
+    expect(resolved.adapterConfig).toHaveProperty("search", false);
     expect(resolveNewAgentRunner(resolved)).toEqual(resolved);
     expect(input.adapterConfig).toHaveProperty("search", false);
   });
-  it.each(["grok_local", "cursor", "process", "external"])("keeps %s default unchanged", adapterType => {
+  it.each(["cursor", "process", "external"])("keeps %s default unchanged", adapterType => {
     expect(resolveNewAgentRunner({ adapterType, target, adapterConfig: { custom: "preserved" } })).toEqual({ adapterType, adapterConfig: { custom: "preserved" } });
   });
   it.each(qualifiedTargets.filter(target => !(target.platform === "linux" && target.architecture === "arm64")))("defaults Pi to native on $platform/$architecture and round trips exact thinking", target => {
@@ -464,13 +468,60 @@ describe("server-owned Codex runner selection", () => {
   });
 });
 
+describe("Grok runner migration", () => {
+  const target = { driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc" as const, glibcVersion: "2.39" };
+  beforeEach(() => { state.disabled = []; state.overridden.clear(); });
+  it("selects Grok's native profile and preserves the model and account", () => {
+    const aiConnection = { mode: "fixed", connectionId: "grok-account" };
+    const adapterConfig = { model: "grok-4.7", reasoningEffort: "high", command: "grok", aiConnection, cwd: "/workspace" };
+    expect(paperclipRunnerProfileForHarness("grok_local")).toEqual({ provider: "acpx", acpxAgent: "grok" });
+    expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", adapterConfig, target }))
+      .toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true, aiConnection, cwd: "/workspace", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } });
+  });
+  it.each([undefined, "", "grok-build"])("resolves legacy default model %s before native admission", model => {
+    expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { model } }).adapterConfig)
+      .toMatchObject({ model: "grok-4.7", disableWebSearch: true });
+  });
+  it.each([undefined, true, false])("preserves effective legacy web search policy %s", disableWebSearch => {
+    const result = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { disableWebSearch } });
+    expect(result.adapterConfig.disableWebSearch).toBe(disableWebSearch ?? true);
+  });
+  it.each([
+    { platform: "darwin", architecture: "x64" },
+    { platform: "linux", architecture: "arm64" },
+    { platform: "win32", architecture: "x64" },
+  ])("keeps unqualified Grok $platform/$architecture on Legacy", platform => {
+    expect(agentRunnerAvailability("grok_local", { ...target, ...platform }).supportedRunners).toEqual(["legacy"]);
+  });
+  it("retains High effort when switching back and rejects restricted native permission loss", () => {
+    const selected = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target,
+      adapterConfig: { model: "grok-4.7", reasoningEffort: "high" } });
+    expect(resolveNewAgentRunner({ ...selected, runner: "legacy", target })).toEqual({
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true },
+    });
+    expect(() => resolveNewAgentRunner({ ...selected, runner: "legacy", target,
+      adapterConfig: { ...selected.adapterConfig, acpxPermissionMode: "deny-all" } })).toThrow("cannot honor");
+  });
+  it.each(["modelReasoningEffort", "effort"])("preserves native %s when switching to Legacy", key => {
+    const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", [key]: "high" } };
+    expect(resolveNewAgentRunner({ ...saved, runner: "legacy", target })).toEqual({
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: false },
+    });
+  });
+  it.each([{ command: "custom-grok" }, { extraArgs: ["--unsafe"] }, { permissionMode: "dontAsk" }, { alwaysApprove: false }, { maxTurns: 5 }])("rejects incompatible settings %j without mutating them", adapterConfig => {
+    const before = structuredClone(adapterConfig);
+    expect(() => resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", adapterConfig, target })).toThrow("cannot honor");
+    expect(adapterConfig).toEqual(before);
+  });
+});
+
 describe("Codex creation runner contract", () => {
   it("graduates qualified harnesses and retains saved provider identity", () => {
     expect(paperclipRunnerProfileForHarness("codex_local")).toEqual({ provider: "codex" });
     expect(paperclipRunnerProfileForHarness("claude_local")).toEqual({ provider: "acpx", acpxAgent: "claude" });
     expect(paperclipRunnerProfileForHarness("opencode_local")).toEqual({ provider: "opencode" });
     expect(paperclipRunnerProfileForHarness("pi_local")).toEqual({ provider: "acpx", acpxAgent: "pi" });
-    for (const harness of ["grok_local", "cursor", "process"]) expect(paperclipRunnerProfileForHarness(harness)).toBeUndefined();
+    for (const harness of ["cursor", "process"]) expect(paperclipRunnerProfileForHarness(harness)).toBeUndefined();
     expect(agentHarnessType("paperclip_runner", { provider: "codex" })).toBe("codex_local");
     expect(agentHarnessType("paperclip_runner", { provider: "acpx", acpxAgent: "claude" })).toBe("claude_local");
     expect(agentHarnessType("paperclip_runner", { provider: "unknown" })).toBe("unknown");
@@ -496,6 +547,69 @@ describe("Codex creation runner contract", () => {
   });
 });
 
+
+describe("Runner-only plugin environments", () => {
+  const pluginEnvironment = { id: "computer", driver: "plugin", status: "active", config: { pluginKey: "acme.computers", driverKey: "tasks", driverConfig: {} } };
+  const plugin = (driver: Record<string, unknown>, capabilities = ["environment.drivers.register"]) => ({
+    id: "plugin-id", status: "ready", manifestJson: { capabilities, environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: {}, ...driver }] },
+  });
+  beforeEach(() => {
+    state.disabled = []; state.overridden.clear(); state.settings = {};
+    state.getEnvironment.mockReset().mockResolvedValue(pluginEnvironment); state.bindings.mockReset().mockResolvedValue([]);
+    state.kubernetesEnvironment.mockReset().mockResolvedValue(null); state.ssh.mockReset(); state.sandboxQualification.mockReset();
+    state.pluginByKey.mockReset().mockResolvedValue(plugin({ supportsTasks: true }));
+  });
+  it("offers only Paperclip Runner for Codex and Claude without a platform", async () => {
+    const target = await resolveAgentRunnerTargetForCompany({} as never, "company", "computer");
+    expect(target).toEqual({ driver: "plugin", runnerTasks: true });
+    expect(state.pluginByKey).toHaveBeenCalledWith("acme.computers");
+    for (const harness of ["codex_local", "claude_local"]) {
+      expect(agentRunnerAvailability(harness, target)).toEqual({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
+    }
+    expect(agentRunnerAvailability("gemini_local", target)).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
+    expect(state.ssh).not.toHaveBeenCalled();
+  });
+  it("carries warm task capability from the selected driver without provider gates", async () => {
+    state.pluginByKey.mockResolvedValue(plugin({ supportsTasks: true, warmTaskVersion: 1 }));
+    expect(await resolveAgentRunnerTargetForCompany({} as never, "company", "computer"))
+      .toEqual({ driver: "plugin", runnerTasks: true, warmTaskVersion: 1 });
+    expect(await resolveAgentRunnerTaskDriverForCompany({} as never, "company", "computer"))
+      .toMatchObject({ driverKey: "tasks", supportsTasks: true, warmTaskVersion: 1 });
+  });
+
+  it.each(["ssh", "sandbox"])("does not qualify a %s runner while inspecting hire defaults", async driver => {
+    state.getEnvironment.mockResolvedValue({ ...pluginEnvironment, driver, config: { provider: "fake" } });
+    expect(await resolveAgentRunnerTaskDriverForCompany({} as never, "company", "computer")).toBeUndefined();
+    expect(state.ssh).not.toHaveBeenCalled();
+    expect(state.sandboxQualification).not.toHaveBeenCalled();
+    expect(state.pluginByKey).not.toHaveBeenCalled();
+    if (driver === "sandbox") await expect(resolveAgentRunnerTargetForCompany({} as never, "company", "computer"))
+      .rejects.toThrow("The fake sandbox provider cannot execute runs.");
+  });
+
+  it("saves a Claude agent on the plugin environment as Paperclip Runner", async () => {
+    const saved = await resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "claude_local", defaultEnvironmentId: "computer" });
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } });
+    const explicit = await resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "claude_local", runner: "paperclip", defaultEnvironmentId: "computer" });
+    expect(explicit.adapterType).toBe("paperclip_runner");
+  });
+  it.each([
+    ["a driver without Runner tasks", plugin({})],
+    ["a different driver key", { ...plugin({ supportsTasks: true }), manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "other", supportsTasks: true }] } }],
+    ["a plugin without the driver capability", plugin({ supportsTasks: true }, [])],
+    ["an unknown plugin", null],
+  ])("keeps the existing plugin target for %s", async (_label, record) => {
+    state.pluginByKey.mockResolvedValue(record);
+    const target = await resolveAgentRunnerTargetForCompany({} as never, "company", "computer");
+    expect(target).toEqual({ driver: "plugin" });
+    expect(agentRunnerAvailability("claude_local", target)).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
+  });
+  it("ignores a malformed plugin environment config", async () => {
+    state.getEnvironment.mockResolvedValue({ ...pluginEnvironment, config: { pluginKey: "acme.computers" } });
+    expect(await resolveAgentRunnerTargetForCompany({} as never, "company", "computer")).toEqual({ driver: "plugin" });
+    expect(state.pluginByKey).not.toHaveBeenCalled();
+  });
+});
 
 describe("Claude runner defaults", () => {
   const mac = { driver: "local", platform: "darwin", architecture: "arm64" };
@@ -567,7 +681,17 @@ describe("Claude runner defaults", () => {
     expect(resolveNewAgentRunner({ ...saved, runner: "legacy" })).toEqual({ adapterType: "claude_local", adapterConfig: { model: "custom", dangerouslySkipPermissions: true } });
     expect(() => resolveNewAgentRunner({ ...saved, runner: "legacy", adapterConfig: { ...saved.adapterConfig, acpxPermissionMode: "deny-all" } })).toThrow("cannot honor");
   });
-  it.each(["chrome", "agentCommand", "maxTurnsPerRun", "networkScope"])("rejects unsupported %s without fallback", key => {
+  it.each(["maxTurnsPerRun", "chrome", "warmHandleIdleMs", "acpWarmHandleIdleMs"])("warns and ignores obsolete Claude %s on conversion and native saves", field => {
+    for (const adapterType of ["claude_local", "paperclip_runner"]) {
+      const onConfigurationWarnings = vi.fn();
+      const result = resolveNewAgentRunner({ adapterType, target: mac, runner: "paperclip",
+        adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", [field]: 1000 }, onConfigurationWarnings });
+      expect(result.adapterType).toBe("paperclip_runner");
+      expect(result.adapterConfig).not.toHaveProperty(field);
+      expect(onConfigurationWarnings).toHaveBeenCalledWith([expect.objectContaining({ field, code: "runner_option_ignored" })]);
+    }
+  });
+  it.each(["agentCommand", "networkScope"])("rejects unsupported %s without fallback", key => {
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow("Legacy runner");
   });
   it.each(["low", "medium", "high", "xhigh", "max"])("translates Claude effort %s and preserves it on an explicit Legacy switch", effort => {

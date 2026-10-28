@@ -84,7 +84,7 @@ Gaps: Bounded native search and one-page CLI local match are not complete compan
 
 ### `read-task-and-summaries`
 
-API: `present` — GET /api/issues/{id}; GET /api/companies/{companyId}/issues/summaries?ids=... .
+API: `present` — GET /api/issues/{id} (optional `view=core` omits related enrichment); GET /api/companies/{companyId}/issues/summaries?ids=... .
 
 Agent access: `partial` — REST/CLI issue get; native get_task_context reads CURRENT task only; call_api for eligible arbitrary task/summaries. No dedicated summaries CLI/tool.
 
@@ -254,7 +254,7 @@ Read, append/retry, author-delete or queued-cancel messages, attach allowed file
 
 ### `read-history-comment`
 
-API: `present` — GET /api/issues/{id}/comments and /comments/{commentId}.
+API: `present` — GET /api/issues/{id}/comments and /comments/{commentId}; GET /api/issues/{id}/recent-comments returns four latest comments plus the latest human comment, a cursor, and `hasMore`. The compact read also includes the first human instruction when there is no description. Cold task views use `GET /api/issues/{id}/activity?view=recent` (50 rows) and `/runs?view=recent` (two summaries) without changing the default full-read contracts. It uses the same issue authorization and run/trust redaction.
 
 Agent access: `available` — REST/call_api, CLI issue comments/comment:get; native get_task_history CURRENT task only, declared limit 1..200 but production clamps to 1..100 (default 50).
 
@@ -264,7 +264,9 @@ Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7
 
 Verification: `not-run` — Read multipage history and exact comment, reload same content; reject inaccessible task, foreign/mismatched comment and inspect trust redaction. Request native limit 200 and confirm at most 100 comments.
 
-Gaps: Native bounded history is not an arbitrary-task/paginated API substitute.
+The same authorized activity route supports `view=comment-inputs&commentIds=<comma-separated UUIDs>` for original comment/steering facts. Each request accepts at most 100 comment IDs and returns at most two facts per comment, scoped to the accessible issue and company. This preserves delivered-input state when its receipt is older than the recent activity window.
+
+Gaps: Native bounded history is not an arbitrary-task/paginated API substitute. The new UI preview route has no dedicated native tool or CLI command. Existing full comment reads remain available.
 
 ### `append-retry-comment`
 

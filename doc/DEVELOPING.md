@@ -107,6 +107,12 @@ and service tests do not establish that a live model followed the workflow.
 See [implementation and acceptance](plans/2026-10-19-persistent-case-handoffs.md)
 and the [agent case reference](../skills/paperclip/references/cases.md).
 
+Task detail, heartbeat context, and closed-workspace admission guards read stored
+workspace metadata. They do not inspect Git or refresh live runtime health.
+Task context includes persisted runtime service state; delivery state is unknown
+until an explicit workspace read or lifecycle inspection computes it. Use the
+workspace detail and close-readiness APIs for current Git safety checks.
+
 ## Deployment Modes
 
 For mode definitions and intended CLI behavior, see `doc/DEPLOYMENT-MODES.md`.
@@ -354,6 +360,9 @@ pending card.
 Use **Chat & Comments → Task Chat Unanswered Questions → Test Drive** to
 try a regular task question: dismiss it, reload, reopen its compact feed entry,
 and submit the preserved draft. The composer has no question pending badge.
+The **Completion review** story exercises the same dismissal and reopening
+behavior for review cards. Its dismissal save and decisions are simulated;
+server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
 
@@ -554,16 +563,59 @@ owns committed updates.
 
 ## Hot-Restart Deploys
 
-During a restart, the board's health, session, and access checks retry temporary
-network/gateway failures and non-JSON API responses every five seconds. A new
-page shows **Reconnecting to Paperclip** with a **Try again** action and waits
-for startup health to become ready. Valid startup metadata remains available to
-sign-in and invitation pages. An already
-open page stays mounted during temporary background failures so unsaved edits
-survive. Successful checks resume the same route and refresh other failed reads;
-this recovery does not reload the browser or replay mutations. Authorization
-failures still require sign-in or an explicit retry. Storybook **App / Connection
-recovery** shows the startup recovery states.
+During a restart, the UI's connectivity store (`ui/src/lib/connectivity.ts`)
+confirms an outage with a `/api/health` probe, then polls health with backoff
+(1s, 2s, 5s, 10s, then every 15s; a longer `Retry-After` wins). While the server
+is unreachable, React Query pauses reads and `meta.replay = "idempotent"`
+mutations instead of failing them; on recovery they resume and live queries
+refresh once. Other mutations fail fast with readable copy and are not replayed.
+Transient errors (network drops, non-JSON responses, 408/425/429/502/503/504,
+and gateway codes such as `tenant_app_unavailable` in any status) are classified
+in `ui/src/api/errors.ts`.
+
+A new page shows **Reconnecting to Paperclip** with a **Try again** action and
+waits for startup health to become ready. Valid startup metadata remains
+available to sign-in and invitation pages. An already open page stays mounted
+during temporary background failures so unsaved edits survive; after about two
+seconds of continuous trouble, one app-level **Connection interrupted** banner
+appears, followed briefly by **Back online**. Recovery does not reload the
+browser. Authorization failures still require sign-in or an explicit retry.
+Storybook **App / Connection recovery** shows the startup screens and banner.
+
+To reproduce a deploy blip in a dev or QA build, set the outage simulator in the
+browser console and remove it to end the outage:
+
+```js
+localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable"    // until removed
+localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable@20" // for 20 seconds
+localStorage.paperclipSimulateOutage = "network"                       // dropped connection
+localStorage.removeItem("paperclipSimulateOutage")
+```
+
+Reads render through `useQueryView(query)` or `<QueryView>`
+(`ui/src/components/QueryView.tsx`). The view state is one of `loading`,
+`ready`, `stale` (data plus a transient failure: render the data, no red
+text), `reconnecting` (no data yet while the app-wide connectivity state is
+not `online`: a quiet placeholder that fills in by itself when the probe loop
+recovers), or `error` (a real failure: `describeError` copy with a Retry
+button). A transient failure with no data while the server is reachable (a
+429, one plugin worker restarting, a 504 on one slow route) is also `error`
+once the retry policy gives up, because no recovery loop would refetch it.
+"Not found" renders only when `classifyError` says `not_found`, never for an
+outage. `<QueryErrorState>` is the error presentation on its own, in `page`,
+`panel`, and `inline` sizes. Plugin chrome (`usePluginSlots`,
+`usePluginLaunchers`) is the one exception: it never reports a transient
+failure and stays collapsed instead.
+
+`node scripts/check-query-error-rendering.mjs --summary` reports UI code that renders raw query errors
+(`{error.message}`, `isError ?`) or sets `retry: false`. It is report-only for
+the long tail; pass `--enforce` to fail on every finding. Files listed in
+`ENFORCED_FILES` in the script have already migrated, and a finding in one of
+them fails the check in every mode. Add a file to that list when you migrate
+it. For an intentional exception (a mutation result rendered inline, a
+prop that is already outage-aware), end the line with `// query-error-ok:
+<reason>`. Reads that must fail fast use `retry: retryTransientOnly(0)`
+instead of `retry: false`.
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
 
@@ -829,6 +881,41 @@ Set `SEARCH_EVAL_SCALE=1` to additionally measure a disposable 10,000-task,
 30,000-comment dataset. `SEARCH_EVAL_REPORT=/tmp/search-quality.json` saves
 per-query results and latency measurements; scale measurements are opt-in.
 
+### Native skill preparation benchmark
+
+Measure native skill preparation through the production service, real PostgreSQL,
+and an in-memory OpenTelemetry exporter:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-native-skill-preparation.ts
+```
+
+The default fixture has a 208-file repository of about 10.8 MB. The report includes
+cold and warm resolution, a fresh service instance, detailed phase timings, and
+regular-pool SQL statement counts (excluding the separate cache-lock connection).
+Every delivered file is checked outside the timed section. No provider is started.
+`--snapshot-file=/absolute/path/snapshot.json --entrypoint=skills/example/SKILL.md`
+uses a captured repository file inventory instead. `--network-delay-ms=25` adds
+25 ms in each direction through a local TCP relay; this is simulated transport
+latency, not a measurement of a hosted database.
+
+`--actor=agent` adds a real agent, run, and responsible user, then records version
+pins through the same callback boundary as execution. `--staging-shape=true`
+seeds 14 projects, 10 sources, 8 bindings, and 156 other skills. These match one
+observed staging inventory's counts; their content is synthetic. Combine these
+options to include authorization and unselected library rows in the measurement.
+
+By default, spans stay in memory. `--export-otlp=true` also exports them using
+the operator's `OTEL_EXPORTER_OTLP_ENDPOINT`, protocol, and headers. Keep header
+values out of command arguments and reports. The report records source hashes,
+the export mode, and trace IDs. Exported traces identify this local diagnostic
+in their service version; they are not evidence of staging performance.
+
+If creating another embedded cluster is impractical, `--postgres-port=55448
+--postgres-user=paperclip` uses an existing **local** server. It creates and migrates
+a uniquely named disposable database and drops that database afterward; it does
+not reuse an application database.
+
 ### Repository workspace admission benchmark
 
 Measure a fresh checkout with and without the repository object cache:
@@ -898,6 +985,15 @@ can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
 
+### Run history authorization reads
+
+Run history reuses the authorization service's batch read API for distinct task
+bindings. Existence checks remain company-scoped and use batches of at most 500
+IDs. Missing or foreign tasks stay unreadable in every privacy mode. The batch
+snapshot lasts for one request only; the next request checks current grants,
+membership, and run restrictions again. Adapters that expose only `decide`
+retain the individual-read path with duplicate bindings shared within the request.
+
 ### Local Linux runner qualification
 
 Before serving requests, the server reads `getconf GNU_LIBC_VERSION` once with
@@ -921,8 +1017,11 @@ as the source Runner package.
 
 For native OpenCode and Cursor on Daytona, a complete installed Paperclip release
 also selects its packaged Linux daemon and provider-pack identity automatically.
-Use the matching Paperclip Daytona image: the controller verifies the image's
-pack manifest, executable hashes, bridge tree, and pinned versions before launch.
+Use a qualified Paperclip Daytona image. For an OS-protected pack, startup
+checks the selected provider interface and platform from its small manifest in
+the existing runner metadata query. It does not rescan the pack or require the
+same app source revision. Writable or legacy installations retain full content
+verification.
 The controller's operating system does not determine the remote daemon target.
 
 Native Claude remote execution also selects the Linux x64 or ARM64 daemon and
@@ -1294,7 +1393,7 @@ publication receipts, binding checks, and lifecycle locks remain authoritative.
 
 ## Project Repository Checkouts
 
-Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable, independent Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent.
+Tasks use every distinct repository attached to their project, including repository-only sources with no local folder. Paperclip creates a managed checkout when no local folder is configured. The selected repository remains at the task workspace root. Other project repositories have editable Git checkouts under `.paperclip-repositories/<name>-<key>`. Workspace hints expose each checkout path to the agent. A repository without a configured local folder is checked out as a Git worktree of one shared managed clone per project and repository URL, on its own `paperclip/<id>/<branch>` branch tracking `origin/<branch>`, so its objects are stored once; see [Recoverable disk cleanup](recoverable-disk-cleanup.md#nested-project-repository-worktrees). Existing standalone checkouts keep working.
 
 When an additional repository has a configured local checkout, Paperclip seeds the task copy from its current commit and uncommitted files. Git-ignored files stay out of that copy. Subsequent task edits stay in the task copy. They do not overwrite the configured source folder. Existing task copies retain their work across runs.
 
@@ -1748,6 +1847,13 @@ overrides, scoped credentials, managed AI identity, and runtime skill delivery.
 The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
+
+On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
+preparation to the normal Runner launch. After the selected account completes
+its provider hello probe or live API-key check, that specific deferred check is
+informational. Authentication failures, unsupported platforms, other warnings,
+and self-hosted or SSH runtime checks retain their status. A passed connection
+test does not replace Runner package verification before execution.
 Public-path tests are in `server/src/__tests__/heartbeat-execution-configuration.test.ts`.
 
 Concurrent skill preparations join the company inventory refresh before taking
@@ -1766,6 +1872,11 @@ identity, then resolves adapter session identity and compaction after workspace
 preparation. Both phases keep their original ordering in `heartbeat.ts`; they
 acquire no runtime resources. Public-path characterization tests live in
 `server/src/__tests__/heartbeat-session-preparation.test.ts`.
+
+Session compatibility uses effective workspace policy and settings. Generic issue
+and project row timestamps do not reset a session. This includes the first
+project-owned directory binding. Changes to effective execution configuration
+still require a fresh session.
 
 Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
 stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
@@ -1793,14 +1904,50 @@ dispatch with cancellation and execution, and re-exports the existing
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
 
+Queued-comment display reads select only wake identity, queue state, typed comment
+and interaction bindings, the displayed wait reason, and fresh-session flags.
+They read only the queued run's runtime mode. Mutation locks retain complete
+wake and run rows, so edits, ordering, interruption, and saved execution inputs
+keep their existing write contract.
+
 Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
 It owns bounded run projections, database encoding checks, task session reads and
 writes, explicit resumes, session compaction, and usage/billing helpers.
 `createHeartbeatRunState(db)` binds these operations without doing database work
 during construction. The encoding-check cache belongs to each factory instance.
+Queued-comment polling reads current issue control fields, the typed issue binding,
+and the selected adapter type. Mutation and execution paths retain their full run reads.
+Workspace-operation polling reads the current run access scope and typed workspace
+binding, then applies the existing run and operation permission checks.
 `heartbeat.ts` keeps run execution and re-exports the
 existing public helpers. Keep session policy changes separate from run
 orchestration changes.
+
+Explicit continuation admission reads only task/comment identity and dispatch
+evidence from the saved context. Its preflight reads the historical adapter type
+and workspace sync receipt. The coordinator and run locks retain their order.
+The locked reread retains the complete Runner profile because suspended-session
+and quarantined-cleanup proofs parse the exact saved execution input. Other run
+and dispatch paths retain their existing reads.
+
+Measure these two admission queries with
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-continuation-run-reads.ts --baseline-ref=<pre-fix-commit>`.
+The synthetic PostgreSQL fixture compares the admission result and reports exact
+text-format DataRow frame bytes, SQL samples, and execution plans. It excludes
+TLS and protocol metadata. To use an isolated external database, set
+`PAPERCLIP_CONTINUATION_BENCHMARK_DATABASE_URL` to a disposable database ending
+in `_test`. The harness applies migrations there and adds synthetic fixtures.
+
+Continuation history reads select completed tool receipts and the typed
+conversation/workspace recovery fields used to choose the prior terminal run.
+Every completed receipt keeps its full result. Receipt order, company/agent/task
+scope, and the complete retained history stay unchanged. Saved results remain
+available to detail, recovery, and execution paths.
+Use `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-continuation-history.ts --baseline-ref=<pre-fix-commit>`
+to compare generated SQL, complete continuation envelopes, and DataRow bytes.
+The benchmark includes a large required-receipt control. Its external database
+option is `PAPERCLIP_CONTINUATION_HISTORY_BENCHMARK_DATABASE_URL`, with the same
+disposable `_test` database restriction.
 
 Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
 retry schedules, connection and workspace contention deferrals, shared-workspace
@@ -1933,7 +2080,7 @@ agent conversion are outside this playbook.
 
 ## Paperclip Runner Adapter Conversion
 
-Paperclip Runner offers native Codex, OpenCode, **ACPX Claude**, and **ACPX Pi**. New
+Paperclip Runner offers native Codex, OpenCode, **ACPX Claude**, **ACPX Grok Build**, and **ACPX Pi**. New
 Claude Code agents default to ACPX Claude on Apple Silicon, Intel Mac, Linux x64
 and Linux ARM64 with supported glibc. New OpenCode and Pi agents default to their native
 runtimes on Apple Silicon, Intel Mac, and Linux x64 with supported glibc;
@@ -1944,11 +2091,23 @@ requires matching remote assets. The runner override is in Advanced. Ordinary Cl
 and provider routing remain authoritative. Existing agents keep their saved runner. Converting an existing Claude, Codex, OpenCode, or Pi agent selects its
 corresponding provider, preserves compatible models, credentials, workspace,
 and instructions, and resets execution sessions while retaining run history.
+Grok Build uses its qualified macOS ARM64 and Linux x64 targets. Its conversion
+preserves the selected model, account, and explicit reasoning effort through ACP.
+Custom commands, extra arguments, legacy permission modes, search flags, and
+nonzero turn limits require Legacy; conversion rejects them before saving.
 Other adapters require an explicit provider choice. Legacy ACPX Codex agent
 settings normalize to native Codex on configuration updates and before fresh
 runs; immutable run descriptors remain readable. The **Paperclip Runner**
 experimental setting applies to other native providers. Native Codex, OpenCode,
-ACPX Claude, and ACPX Pi do not require it. Company access checks still apply.
+ACPX Claude, ACPX Grok Build, and ACPX Pi do not require it. Company access checks still apply.
+
+Native Codex preserves an explicit `adapterConfig.search: false` when converting
+or saving an agent. The disabled hosted-search policy is recorded in the native
+execution input and launch requirements, so prepared launches and recovery keep
+it. An absent setting retains the provider default; this does not add support
+for converting a Legacy agent with `search: true`. Authentication hello probes
+always disable hosted web search because they only verify the selected account
+and model.
 
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
@@ -1957,6 +2116,18 @@ selection uses `allow` permissions and a `per_turn` lifecycle. Native `ask` and
 extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
 Saved OpenCode agents keep their runner and runtime policies.
+
+Plugin environment drivers can declare `requiresAgent: true` when their leases
+need an agent-owned resource. Setup saves the draft and environment, runs its
+existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
+The worker becomes idle there until the user finishes hiring. Connection tests
+use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
+blocked. Environment changes save immediately, preserve the selected account,
+and invalidate the previous test. Tests without an agent report that prerequisite
+without allocating a lease. Finishing setup still verifies the saved configuration.
+Companies that require hire approval keep drafts paused and defer allocation and
+verification until that approval. The wizard saves the account with a pending
+verification warning instead of requiring a pre-approval computer.
 
 Pi also requires an explicit `provider/model` before testing or hiring; inactive
 setup drafts may precede model selection. Install its pinned runtime on the
@@ -1974,6 +2145,13 @@ and command/extra arguments are folded under **Configuration → Advanced**.
 Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
 Policy**. Permission selectors with a single valid mode are hidden; a saved
 unsupported mode still exposes remediation.
+
+Saving an existing agent compares AI connection bindings by value, independent
+of PostgreSQL JSONB key order. Identity, thinking-effort and run-policy edits
+avoid the connection-adoption runtime probe when the connection and execution
+selection stay the same. Connection, harness, model, provider, engine and
+environment changes still validate adoption. Explicit runtime tests and
+required Copilot metadata checks keep their existing behavior.
 
 Model catalogs and refresh follow the selected provider. ACPX Claude uses the
 normal Claude catalog and accepts custom model IDs; the exact ID is sent to
@@ -2100,9 +2278,23 @@ concurrent listings do not skip healthy logs because another listing is busy.
 
 ### Preinstalled remote runner runtime
 
+Claude CLI tests and runs prepare a compatible runtime when a managed sandbox's
+default `claude` command is older than the selected model requires. Preparation
+installs the exact minimum supported package into a versioned workspace runtime
+directory, then verifies and launches that executable. It does not replace the
+image's global CLI or change the model, account, or execution engine. Compatible
+private installations are reused. Custom commands, local and SSH targets retain
+their existing operator-managed version checks. Installation failure or an
+unverified version still blocks launch. Cloud onboarding omits manual shell
+debugging instructions and legacy operator hints while retaining check messages
+and details; self-hosted onboarding retains that guidance after deployment
+metadata is known.
+
 For fast sandbox startup, bake `paperclip-runnerd` and the latest stable agent
-CLIs into the sandbox image. Keep one version of each CLI shared by native and
-local adapters; never retain an older global CLI beside a newer private copy.
+CLIs into the sandbox image. Image builds should keep one current version of each
+CLI shared by native and local adapters rather than baking multiple versions.
+The private compatibility preparation above is a fallback for existing stale
+images; refreshing the image remains the preferred startup path.
 Pin the resolved releases at image build time for reproducibility and refresh
 the runner's qualification versions and binary digests together with those pins.
 The ACP bridges remain separately qualified protocol dependencies.
@@ -2137,7 +2329,15 @@ Historical v1 `provider-pack.tar.zst` receipts remain readable. Missing sidecars
 remote zstd, compatible GNU tar/checksum tools, or the Node 18+ helper retain
 directory staging; invalid sidecars fail
 closed. Keep transport files outside the pack so they cannot include themselves.
-Matching staged/preinstalled packs remain preferred and never transfer archives.
+Compatible protected image packs remain preferred and never transfer archives.
+The Runner's `src/live/provider-pack-contract.json` declares interface revisions;
+bump only the affected interface when its runner/pack contract breaks. Qualify
+and seal packs at image publication. The fast path requires root-owned,
+non-writable ancestors and manifest, and rejects writable aliases. The selected
+pack's own artifact identities feed launch and the recovery receipt. Reattachment
+keeps that exact identity; compatibility is a fresh-launch selection rule.
+Older packs without the declaration retain content verification until the image
+is updated. Selected ACPX agent profile checks remain in force.
 Daytona detects gzip/zstd headers and skips redundant transport compression.
 
 ### Remote GitHub launcher staging
@@ -2296,6 +2496,34 @@ incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
 
 ## App-Shipped Skills Catalog
+
+Plugin environment drivers can declare `skillKeys` that reference their own
+manifest-managed skills. Selecting that environment adds those skills to the
+normal authorized skill selection, including an explicitly empty optional
+selection. Core installs a missing managed skill in the current company's
+library during lifecycle reconciliation or new-run admission and preserves existing
+skill edits and explicit version pins. New managed skills use
+`plugin-<short-plugin-id>-<skill-slug>` for both the library slug and SKILL.md name.
+The short ID is the final dot-separated plugin ID component, without a leading
+`plugin-`. An unrelated skill can keep the same slug in a separate canonical
+record. The required environment skill wins during delivery: a selected company
+skill with the same slug or name is omitted and reported as shadowed. Stored agent
+assignments and both library records remain unchanged. Run warnings and snapshots,
+and the plugin runtime response, identify the omitted key and the winning key. Existing company copies keep their edits and names
+until reset. Lifecycle callers request installation with
+`agents.getRuntime(agentId, companyId, undefined, true)`; ordinary runtime reads and
+recovery do not install newly declared skills. Run
+preparation captures the same immutable versions as ordinary assignments;
+recovery uses the saved selection. The lifecycle runtime reader includes the
+effective default environment's skills before synchronizing the persistent home.
+A task provider can pass its selected environment ID to `agents.getRuntime` when
+a task overrides that default. This
+contract currently applies to `driver: "plugin"` environments. Other drivers
+and plugin drivers without `skillKeys` keep their existing behavior. No agent
+configuration is rewritten, and no background scan is added. Changes to implicitly
+selected skills, the effective default environment, or plugin requirements enqueue
+normal durable runtime events, so an idle ready computer receives updates without
+a new run. Failed synchronization retains the event for the existing retry path.
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
 catalog is a workspace package at `packages/skills-catalog`:
@@ -2580,6 +2808,42 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+- `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
+  session continuity-break archives and quarantined session state are kept (see
+  `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
+  negative, empty, or non-numeric value falls back to the default. The backup
+  expiration enabled and dry-run switches apply to it as well.
+- `PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DAYS=<days>` sets how long a settled
+  run's native workspace sync folder (descriptor, manifest and seed archives under
+  `<instance>/native-workspace-sync/<run>`) is kept (see
+  `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
+  negative, empty, or non-numeric value falls back to the default.
+  `PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_ENABLED=false` turns retention off, and
+  `PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DRY_RUN=true` only reports candidates.
+- `PAPERCLIP_GIT_RESTORE_POINTS_ENABLED=true` lets git cache expiration remove closed
+  worktrees with unpushed or uncommitted work after saving an encrypted restore point
+  (see `doc/recoverable-disk-cleanup.md`). It is off by default.
+  `PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS=<days>` sets how long the issues that
+  use the workspace (the source issue and descendants bound to it) must be closed first. The default is `3`. A negative, empty, or non-numeric value falls
+  back to the default.
+  `PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS=<days>` sets how long an open issue tree's
+  worktree must go untouched before it is removed the same way; runs restore it
+  automatically. The default is `7`, and `0` turns this off.
+- `PAPERCLIP_TASK_DIRECTORY_RETENTION_ENABLED=true` lets the terminal workspace reaper
+  save and remove plain task directories under `<instance>/isolated-workspaces/` once
+  their issue tree has been closed for `PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS`,
+  and remove orphaned ones (see `doc/recoverable-disk-cleanup.md`). It is off by default
+  and runs as a dry run until `PAPERCLIP_TASK_DIRECTORY_RETENTION_DRY_RUN=false`. Removal
+  needs `PAPERCLIP_GIT_RESTORE_POINTS_ENABLED=true`, because the files are saved in an
+  encrypted restore point first and restored on reopen.
+  `PAPERCLIP_TASK_DIRECTORY_ORPHAN_GRACE_DAYS=<days>` sets how long an orphaned
+  directory's issue tree must be closed and its contents unchanged. The default is `7`
+  and the minimum is `1`. A negative, empty, or non-numeric value falls back to the
+  default.
+- `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS=<days>` sets how long a git workspace
+  restore point is kept after its issue tree closes (see
+  `doc/recoverable-disk-cleanup.md`). The default is `90` and the minimum is `1`. A
+  negative, empty, or non-numeric value falls back to the default.
 
 Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
 `db-backup-to-s3.failure` in the backup directory, beside the backup directory,
@@ -2828,6 +3092,31 @@ package avatar PNGs using the API renderer; static hosting needs no API proxy.
 
 ### Investigating polling load
 
+Deferred-message recovery reads run admission fields before calling the release
+policy. The release coordinator reads authentication evidence and then refreshes
+completion identity after post-commit effects. These checks do not load stored
+prompts, Runner profiles, or output excerpts. Full execution and detail reads
+retain those fields. Queue cadence, delivery admission, and cleanup ownership
+remain unchanged.
+
+Runtime progress updates recheck the persisted run status before publication.
+This check selects only the run ID, company ID, agent ID, and status through
+`createHeartbeatRunState().getRunStatus`. It does not fetch prompts, runner
+configuration, or provider results. Keep this read fresh so terminal or deleted
+runs cannot publish late progress from an old executor snapshot.
+
+Native event and retry-exhaustion ingestion lock the run row to verify its
+company and agent bindings. That lock reads only those two fields. Sequence
+allocation, replay checks, and event insertion remain in the same transaction.
+
+Sandbox-provider driver lookup filters plugin manifests by driver key and kind
+in Postgres before returning rows. Install order, status and worker checks still
+select the provider. Each lookup reads current registry state without a cache.
+
+Run-to-issue links authorize through `getRunReadAccess`, which reads only the run
+ID, company ID, scope kind, and issue ID. The existing visibility policy then
+filters linked issues without loading the run's prompt, output, or result.
+
 Run the deterministic native event replay with the normal server test runner:
 
 ```sh
@@ -2875,6 +3164,12 @@ Hidden browser tabs suspend the company live-events connection and transcript
 log reads. Returning to a visible tab refreshes active queries once and resumes
 transcript reads from their retained offsets. A queued live-event invalidation
 that flushes after the tab hides marks data stale without starting a refetch.
+
+Live-event delivery and workspace-operation run checks select only the stored
+company, run scope, and task binding. Event-list access also selects the run ID.
+These checks do not load run context, runner configuration, results, or output.
+Every delivery and request still checks current permissions. Grant revocation,
+deleted tasks, missing runs, and cross-company run IDs remain fail-closed.
 The developer-server health poll also stops in hidden tabs.
 
 Workspace detail responses share concurrent Git inspections and reuse their
@@ -2959,7 +3254,10 @@ the project's repositories and it passes the same checks as the worktree
 state), stock Git storage (no custom hooks), no linked worktrees, no
 unreachable objects, and every commit reachable from its refs or reflogs is
 reachable from a current upstream branch or tag, read fresh from the project
-repository's URL with the company's Git identity. Task repositories
+repository's URL with the company's Git identity. A checkout that is a worktree of the project's shared clone is
+checked against its own `HEAD`, `HEAD` reflog, index and branches under its
+`paperclip/<id>/` prefix instead of the clone's storage and other tasks' refs.
+Task repositories
 (`task-repo-*`) always prevent deletion. Inspection runs Git with
 `core.fsmonitor` disabled, so a repository's local config cannot make it run a
 command. Standard linked-worktree `FETCH_HEAD` records are retained unless every
@@ -2992,6 +3290,33 @@ the composer keeps an editable draft and permits retry after access is restored.
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner
 backups, non-Git workspaces, and immutable skill snapshots are unaffected.
+
+### Isolated repository source re-home
+
+Workspaces created with a private per-issue clone under
+`isolated-repository-sources/` can be moved onto the project's shared managed
+clone, after which the private clone is deleted. Enable it with
+`PAPERCLIP_ISOLATED_SOURCE_REHOME_ENABLED=true`; it runs only when
+`PAPERCLIP_GIT_CACHE_EXPIRATION_ENABLED=true` and defaults off. Set
+`PAPERCLIP_ISOLATED_SOURCE_REHOME_DRY_RUN=true` to log candidates without changing
+anything. Each attempt logs `execution_workspace.isolated_source_rehome` with its
+outcome, skip reason and reclaimed bytes. See
+[recoverable disk cleanup](recoverable-disk-cleanup.md#isolated-repository-sources)
+for the conditions and the verification it performs.
+
+### Nested clone migration
+
+Tasks prepared before nested project repositories became worktrees of a shared
+clone still hold a full standalone clone in each `.paperclip-repositories/`
+checkout. Enable `PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED=true` (default off) to
+let the terminal workspace reaper convert those checkouts in open tasks into
+worktrees of the project's shared clone, keeping their exact state and local
+history, and delete the standalone clones. Set
+`PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` to log candidates without changing
+anything. Each attempt logs `execution_workspace.nested_clone_migration` with its
+outcome, skip reason and reclaimed bytes. See
+[recoverable disk cleanup](recoverable-disk-cleanup.md#converting-existing-standalone-nested-clones)
+for the conditions, verification and crash recovery.
 
 ### Terminal workspace compaction
 
@@ -3113,6 +3438,35 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-prepar
 
 It compares actual preparation guards with synthetic history. Local timings are
 separate from Git materialization, environment acquisition, and provider startup.
+
+### Sidebar badge run-query benchmark
+
+The badge query keeps the newest 200 runs of nonterminated same-company agents.
+It selects each agent's first observed run before status or Mine filters. An
+observation ordinal preserves equal-time input order. Per-agent ranking orders
+by full creation time first, then that ordinal for exact ties. SQL returns only failure
+IDs, issue bindings, and creation times. Dismissals and fresh issue authorization
+still run in the service.
+
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+
+```sh
+PAPERCLIP_LOG_LEVEL=error SIDEBAR_REQUIRE_BYTE_REDUCTION=1 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-sidebar-badges.ts --baseline-ref=bf3ef12f3a78d0b15a32ad57f7e16520fbf6cd5e
+```
+
+The harness starts disposable embedded PostgreSQL by default. To use an existing
+isolated test database with current migrations, set
+`PAPERCLIP_SIDEBAR_TEST_DATABASE_URL` to a dedicated database whose name ends in
+`_test`. The harness removes only its own synthetic company fixtures. Do not use
+a development or hosted company database.
+
+The report includes service-generated SQL, complete badge equality, candidate
+bindings, alternating warm samples, plans, and UTF-8 response-value bytes before
+Drizzle decoding. This byte count excludes protocol framing. The mixed fixture
+covers shared agents, superseding successes, timestamp ties, Mine users,
+dismissal equality, private and deleted issues, and more than 200 runs. The
+all-failed, all-succeeded, and empty controls expose neutral or slower paths.
+Timings describe local SQL work and do not establish hosted request latency.
 
 ### Budget accounting performance
 

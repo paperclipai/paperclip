@@ -212,23 +212,20 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
-  it("starts an administrator-selected run with raw provider tracing", async () => {
-    render(makeAgent(), { canRunWithProviderTrace: true });
+  it.each([false, true])("keeps the normal run action when persistent tracing is %s", async tracingEnabled => {
+    render(makeAgent({ runtimeConfig: tracingEnabled ? { debug: { providerTrace: "raw" } } : {} }));
     await flushReact();
 
-    const traceButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Run with provider trace"),
-    );
-    expect(traceButton).toBeTruthy();
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.some(button => button.textContent?.includes("Run with provider trace"))).toBe(false);
+    expect(container.textContent?.includes("Raw tracing on")).toBe(tracingEnabled);
 
     await act(async () => {
-      traceButton?.click();
+      buttons.find(button => button.textContent === "Run Heartbeat")!.click();
     });
     await flushReact();
 
-    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
-      debug: { providerTrace: "raw" },
-    });
+    expect(mockAgentsApi.invoke).toHaveBeenCalledExactlyOnceWith("agent-1", "company-1");
     expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
   });
 

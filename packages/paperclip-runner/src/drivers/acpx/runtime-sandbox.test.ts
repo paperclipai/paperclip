@@ -99,6 +99,14 @@ describe("ACPX runtime sandbox", () => {
     expect((await stat(requirementsPath)).mode & 0o777).toBe(0o600);
   });
 
+  it.each([true, false])("preserves Grok search policy %s above compatible project settings", async disabled => {
+    const fixture = await sandboxFixture("grok");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, grokDisableWebSearch: disabled }, agent: "grok" });
+    expect(await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8")).toContain(`disable_web_search = ${disabled}`);
+    const requirements = await readFile(join(sandbox.agentHomeDirectory, "requirements.toml"), "utf8");
+    expect(requirements.includes("disable_web_search = true")).toBe(disabled);
+  });
+
   it("keeps provider credentials outside identity-enabled Codex shell commands", async () => {
     const fixture = await sandboxFixture("codex");
     const sandbox = await prepareAcpxRuntimeSandbox({

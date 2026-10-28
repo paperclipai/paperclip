@@ -13,7 +13,8 @@ message LogRecord { fixed64 time_unix_nano = 1; int32 severity_number = 2; strin
 message ScopeLogs { Scope scope = 1; repeated LogRecord log_records = 2; }
 message ResourceLogs { Resource resource = 1; repeated ScopeLogs scope_logs = 2; }
 message ExportLogsServiceRequest { repeated ResourceLogs resource_logs = 1; }
-message Span { bytes trace_id = 1; bytes span_id = 2; bytes parent_span_id = 4; string name = 5; int32 kind = 6; fixed64 start_time_unix_nano = 7; fixed64 end_time_unix_nano = 8; repeated KeyValue attributes = 9; }
+message Status { string message = 2; int32 code = 3; }
+message Span { bytes trace_id = 1; bytes span_id = 2; bytes parent_span_id = 4; string name = 5; int32 kind = 6; fixed64 start_time_unix_nano = 7; fixed64 end_time_unix_nano = 8; repeated KeyValue attributes = 9; Status status = 15; }
 message ScopeSpans { Scope scope = 1; repeated Span spans = 2; }
 message ResourceSpans { Resource resource = 1; repeated ScopeSpans scope_spans = 2; }
 message ExportTraceServiceRequest { repeated ResourceSpans resource_spans = 1; }

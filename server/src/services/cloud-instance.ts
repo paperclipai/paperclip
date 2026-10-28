@@ -7,6 +7,7 @@ const CLOUD_STAGING_EXPERIMENTAL_KEYS: ReadonlySet<string> = new Set([
   "enableBetaSkills",
   "enableBuiltInAgents",
   "enableCases",
+  "enableArtifactsV1",
   "enableChatConnectors",
   "enableClassicTaskInterface",
   "enableCombinedInboxTasks",

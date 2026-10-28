@@ -94,6 +94,12 @@ remaining operations before qualifying the whole capability.
 Gaps: Agent handoff is implemented; execution readiness, assignment permission, and
 repository access still apply.
 
+Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
+exercise native task creation and completion delivery through the real chat UI.
+The [chat directive](../../server/src/services/agent-conversations.ts) tells agents
+to use company-prefixed relative task links or platform-supplied absolute origins.
+This adds no permission and does not qualify the whole capability or its denied cases.
+
 ## `conference-room`
 
 Capability ID: `agent-chat/conference-room`.

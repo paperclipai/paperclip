@@ -145,6 +145,10 @@ struct AcpxProviderDescriptor {
     pi_thinking_level: Option<PiThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_disable_web_search: Option<bool>,
     permission_mode_pinned: bool,
     #[serde(default)]
     provider_policy: Option<AcpxProviderRuntimePolicy>,
@@ -273,6 +277,14 @@ impl AcpxProviderDescriptor {
                 self.agent != "claude"
                     || !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
             })
+            || (self.grok_disable_web_search.is_some() && self.agent != "grok")
+            || self.grok_effort.as_ref().is_some_and(|effort| {
+                self.agent != "grok"
+                    || !matches!(
+                        effort.as_str(),
+                        "minimal" | "low" | "medium" | "high" | "xhigh"
+                    )
+            })
             || self.mode.as_ref().is_some_and(|mode| {
                 mode.trim().is_empty()
                     || mode.chars().count() > 240
@@ -375,6 +387,8 @@ impl AcpxProviderDescriptor {
             mode: self.mode.clone(),
             pi_thinking_level: self.pi_thinking_level,
             claude_effort: self.claude_effort.clone(),
+            grok_effort: self.grok_effort.clone(),
+            grok_disable_web_search: self.grok_disable_web_search.clone(),
             permission_mode_pinned: self.permission_mode_pinned,
             provider_policy: self.provider_policy.clone(),
             system_instructions: self.instructions.clone(),
@@ -481,6 +495,12 @@ impl AcpxProviderDescriptor {
         });
         if let Some(effort) = &self.claude_effort {
             descriptor["claudeEffort"] = json!(effort);
+        }
+        if let Some(effort) = &self.grok_effort {
+            descriptor["grokEffort"] = json!(effort);
+        }
+        if let Some(disabled) = self.grok_disable_web_search {
+            descriptor["grokDisableWebSearch"] = json!(disabled);
         }
         if let Some(level) = self.pi_thinking_level {
             descriptor["piThinkingLevel"] = json!(level);
@@ -622,6 +642,8 @@ impl AcpxDurableState {
                 || identity.mode != self.descriptor.mode
                 || identity.pi_thinking_level != self.descriptor.pi_thinking_level
                 || identity.claude_effort != self.descriptor.claude_effort
+                || identity.grok_effort != self.descriptor.grok_effort
+                || identity.grok_disable_web_search != self.descriptor.grok_disable_web_search
             {
                 return Err(DurableRunnerError::invalid(
                     "ACPX durable identity no longer matches its qualified profile or provider mode",
@@ -1308,6 +1330,12 @@ impl AcpxCommandExecutor {
         });
         if let Some(effort) = &identity.claude_effort {
             result["claudeEffort"] = json!(effort);
+        }
+        if let Some(effort) = &identity.grok_effort {
+            result["grokEffort"] = json!(effort);
+        }
+        if let Some(disabled) = identity.grok_disable_web_search {
+            result["grokDisableWebSearch"] = json!(disabled);
         }
         if let Some(level) = identity.pi_thinking_level {
             // This identity is admitted only after the sidecar's effective-mode ACK.
@@ -1998,9 +2026,11 @@ impl AcpxCommandExecutor {
                     state.lifecycle = "closed".to_owned();
                     state.provider_exit_unconfirmed = true;
                     if let Some(turn_id) = failed_turn {
+                        let message = crate::durable::redact_text(&error.to_string());
                         state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
                             payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
-                                "code":"acpx_provider_transport_failed","message":crate::durable::redact_text(&error.to_string())}) })?;
+                                "code":"acpx_provider_transport_failed","message":message,
+                                "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
                         state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
                             payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"unknown","provider":"acpx"}) })?;
                     }
@@ -2781,6 +2811,8 @@ mod tests {
                 mode: descriptor.mode.clone(),
                 pi_thinking_level: descriptor.pi_thinking_level,
                 claude_effort: descriptor.claude_effort.clone(),
+                grok_effort: descriptor.grok_effort.clone(),
+                grok_disable_web_search: descriptor.grok_disable_web_search.clone(),
                 provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
             };
             let operations = Vec::new();
@@ -3058,6 +3090,8 @@ mod tests {
             mode: None,
             pi_thinking_level: None,
             claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
 
@@ -3212,7 +3246,7 @@ mod tests {
     #[test]
     fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
         let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v28-identity.json"
+            "../../../../test-fixtures/pi-acp/profile-v30-identity.json"
         ))
         .unwrap();
         let mut value = descriptor("codex");
@@ -3229,6 +3263,8 @@ mod tests {
         current.validate(&context()).unwrap();
 
         for prior in [
+            include_str!("../../../../test-fixtures/pi-acp/profile-v29-identity.json"),
+            include_str!("../../../../test-fixtures/pi-acp/profile-v28-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v24-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v23-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v15-identity.json"),
@@ -3547,6 +3583,8 @@ mod tests {
             mode: original_descriptor.mode.clone(),
             pi_thinking_level: original_descriptor.pi_thinking_level,
             claude_effort: original_descriptor.claude_effort.clone(),
+            grok_effort: original_descriptor.grok_effort.clone(),
+            grok_disable_web_search: original_descriptor.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -3833,6 +3871,8 @@ mod tests {
             mode: original_descriptor.mode.clone(),
             pi_thinking_level: original_descriptor.pi_thinking_level,
             claude_effort: original_descriptor.claude_effort.clone(),
+            grok_effort: original_descriptor.grok_effort.clone(),
+            grok_disable_web_search: original_descriptor.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -4152,6 +4192,8 @@ mod tests {
             mode: original_descriptor.mode.clone(),
             pi_thinking_level: None,
             claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         };
         let operations = Vec::new();
@@ -4401,6 +4443,8 @@ mod tests {
             mode: descriptor.mode.clone(),
             pi_thinking_level: descriptor.pi_thinking_level,
             claude_effort: descriptor.claude_effort.clone(),
+            grok_effort: descriptor.grok_effort.clone(),
+            grok_disable_web_search: descriptor.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates,
         };
         let operations = Vec::new();
@@ -4575,6 +4619,8 @@ mod tests {
             mode: provider_descriptor.mode.clone(),
             pi_thinking_level: provider_descriptor.pi_thinking_level,
             claude_effort: provider_descriptor.claude_effort.clone(),
+            grok_effort: provider_descriptor.grok_effort.clone(),
+            grok_disable_web_search: provider_descriptor.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates,
         });
         state.provider_exit_unconfirmed = true;

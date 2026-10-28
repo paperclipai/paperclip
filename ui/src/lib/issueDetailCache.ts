@@ -38,7 +38,8 @@ function isCompleteIssueSnapshot(value: unknown): value is Issue {
   if (typeof value !== "object" || value === null) return false;
   const issue = value as Partial<Issue>;
   return (
-    isNonEmptyString(issue.id)
+    issue.listProjection === undefined
+    && isNonEmptyString(issue.id)
     && isNonEmptyString(issue.companyId)
     && typeof issue.title === "string"
     && typeof issue.status === "string"
@@ -84,6 +85,9 @@ export function getCachedIssueDetail(
 
   const cachedEntries = queryClient.getQueriesData<Issue>({ queryKey: ISSUE_DETAIL_QUERY_PREFIX });
   return cachedEntries
+    // Core reads share invalidation/mutation updates with detail, but cannot
+    // stand in for its related data or suppress the enrichment request.
+    .filter(([key]) => key.length === ISSUE_DETAIL_QUERY_PREFIX.length + 1)
     .map(([, cachedIssue]) => cachedIssue)
     .find((cachedIssue): cachedIssue is Issue =>
       isCompleteIssueSnapshot(cachedIssue) && matchesIssueRef(cachedIssue, refs)

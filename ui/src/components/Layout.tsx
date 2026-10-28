@@ -40,6 +40,7 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { useMobileNavVisibility } from "../hooks/useMobileNavVisibility";
+import { useMobileVisualViewport } from "../hooks/useMobileVisualViewport";
 import { healthApi } from "../api/health";
 import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
@@ -143,6 +144,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);
+  const mobileViewportRef = useMobileVisualViewport(isMobile);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -574,8 +576,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   return (
     <ChatSetupSidebarProvider>
       <div
+      ref={mobileViewportRef}
+      data-mobile={isMobile ? "true" : undefined}
       className={cn(
-        "bg-background text-foreground pt-(--sz-safe-top)",
+        "paperclip-app-shell bg-background text-foreground pt-(--sz-safe-top)",
         // overflow-x-clip on mobile keeps a stray wide descendant from making the
         // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
         // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -591,7 +595,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </a>
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
+      <div className={cn("app-main-row min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
         {isMobile && sidebarOpen && (
           <button
             type="button"
@@ -656,9 +660,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </SecondarySidebar>
         ) : null}
 
-        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
+        <div className={cn("app-content-column flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
           <div
             className={cn(
+              "app-breadcrumb",
               !isMobile && useStreamlinedTaskDetailShell && "hidden",
               isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
             )}
@@ -672,6 +677,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             ) : null}
           </div>
           <div className={cn(
+            "app-content-row",
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>

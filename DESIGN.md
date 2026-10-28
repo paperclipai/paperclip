@@ -47,6 +47,10 @@ Completed Slack setup is a success view: show the full agent avatar, success mes
 and one centered Done action. Omit Save & exit after the connection has been
 confirmed. The shared footer rule applies to its unfinished setup steps.
 
+The New task form opens immediately. Load its code with the board and fill
+agent and project choices in place as their requests finish. Keep text entered
+while those requests are pending.
+
 ## Mobile navigation and text fields
 
 The fixed bottom navigation uses an opaque surface so scrolling content cannot
@@ -56,16 +60,23 @@ title sizes remain larger.
 
 The bottom navigation responds to accumulated scrolling, ignoring small
 reversals and Safari's edge bounce. It glides out and eases back in with shared
-motion tokens; the task composer follows the same motion. Keep page padding
-stable while the navigation moves, and honor reduced-motion preferences.
+motion tokens. Keep page padding stable while the navigation moves, and honor
+reduced-motion preferences.
 
-Task conversations reveal their initial comments, interaction cards, plan, and
-relevant run history together after positioning the latest message. Keep the
-mobile loading surface at a stable viewport height while that history loads;
-concealed content must not stretch the document. Background refreshes keep an
-already revealed conversation and composer mounted and visible.
-Bound the initial wait to 15 seconds. If a request stalls, reveal the available
-conversation and composer with a notice that some history is still loading.
+Mobile task conversations size their shell to the visible viewport, with one
+message scroller and a normal flex footer for the composer. Navigation stays at
+the layout viewport bottom, behind the keyboard.
+
+Cold task opens reveal the instruction and recent conversation independently of
+plans, related metadata, and historical run activity. Show the latest human
+follow-up, recent saved replies, and text or pending requests from the latest run.
+Put older messages and diagnostic activity behind **More messages**. Fetch those
+only when expanded; never download all history just to calculate a count.
+Retain messages and runs observed while the task stays open, preserve expansion
+on return within the session, and load linked older comments when requested.
+Background refreshes and history expansion keep the conversation and composer
+mounted. A failed history request shows an inline retry without hiding readable
+content. Full-history and classic views retain the bounded 15-second initial wait.
 
 Only the viewer's own human comments sit on the right in blue bubbles. Agents
 and other humans sit on the left on the page surface, with their own name and
@@ -76,10 +87,18 @@ that relayed a message from another channel.
 
 ## Contextual feedback
 
-Keep the runner turn's avatar, name, Working header and current-activity slot
+Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
+Saving the human comment does not end startup feedback. Keep the identity mounted
+until its run appears or a newer execution outcome ends admission.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
+
+A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
+admission. Reserve `Working` and `Thinking` for execution. A saved message that
+starts this queued turn stays in history, including when it reopens an older
+task. This placement is not a consumption receipt. Later follow-ups remain in
+the composer queue with their existing edit, order and discard controls.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -854,7 +873,9 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
   block collapses the duration/stagger tokens to zero, cascading to every scoped token,
   in addition to each animation's own component-level guard.
 
-Agent Chat and regular task chats keep pending questions as compact “Unanswered question” entries at their original position in history. Dismissing the form or sending a newer user message clears it from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+Agent Chat and regular task chats keep pending questions and requests as compact, reopenable entries at their original position in history. Dismissing any composer request—including completion reviews, confirmations, choices, suggested tasks, item verdicts, and runtime input—removes its form and pending reminder. Saved interactions record human dismissal on the server; raw runtime requests retain a browser-local preference. Dismissal is not an answer, approval, or rejection. Sending a newer user message also clears an ordinary question from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+
+Desktop properties panels keep a zero-width, noninteractive host while their content is unknown. Late content expands the panel and moves the thread in the same width transition. Removing content on navigation clears the pane immediately, including maximized geometry. The motion uses `--motion-pane-reveal` and `--motion-ease-pane-reveal`; reduced motion disables it. A saved hidden preference stays hidden, and pointer resizing stays immediate.
 
 ## Canonical proposal toolbars
 
@@ -932,14 +953,14 @@ labelled primitive compositions with local state. Page navigation and
 collection filters remain in Tabs. This comparison does not migrate app styles
 or certify backend behavior or keyboard accessibility.
 
-Agents and Connectors compose the same `ToolbarSearch` with canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
+Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, status/source selection next, and view/actions last where present.
+first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
-Agents status navigation retains route-backed Tabs with its associated roster
-panel. Agent search intersects the chosen status/built-in filter, matches name,
-role and title words, and retains ancestor context for matching org-chart nodes.
+Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.
+Agent search matches name, role and title words, and retains ancestor context
+for matching org-chart nodes.
 
 Projects uses `ProjectsToolbar` for shared search, the existing name/updated/
 created/target-date sort choices and direction toggling, and Add Project. Project

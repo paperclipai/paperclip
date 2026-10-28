@@ -1,3 +1,7 @@
+import { TranscriptSequence } from "../lib/transcript-sequence";
+import { readTranscriptRequest } from "../components/transcript/read-transcript-request";
+import { useTranscriptLiveStream } from "../context/LiveUpdatesProvider";
+import { liveRunEvent, mergeRunEvents } from "../lib/live-run-event";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { grokBotApi } from "@/api/grokBot";
 import { GrokBotWorkSummary } from "@/components/GrokBotWorkSummary";
@@ -9,9 +13,9 @@ import { InstructionHistory } from "../components/InstructionHistory";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
 import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
-import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
+import { usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
+import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -58,18 +62,18 @@ import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, queryViewKind, useQueryView } from "../components/QueryView";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { TrustPresetSection } from "../components/TrustPresetSection";
+import { AgentProjectAccessSettings } from "../components/AgentProjectAccessSettings";
 import { FileTree, buildFileTree } from "../components/FileTree";
 import { ScrollToBottom } from "../components/ScrollToBottom";
 import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallout";
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
-import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { tryCreateWebSocket } from "../lib/websocket";
 import { formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal, hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { RunRetryDetails } from "../components/RunRetryDetails";
@@ -106,7 +110,6 @@ import { RunTranscriptView, type TranscriptMode } from "../components/transcript
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
 import {
-  appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
   MAX_LIVE_EVENTS,
   MAX_LIVE_LOG_LINES,
@@ -780,6 +783,7 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView: AgentDetailView = urlRunId ? "run-detail"
@@ -819,11 +823,13 @@ export function AgentDetail() {
   const prepareAgentNavigation = useCallback(() => {
     return confirmAgentConfigNavigation(configDirty);
   }, [configDirty]);
-  const { data: agent, isLoading, error } = useQuery<AgentDetailRecord>({
+  const agentQuery = useQuery<AgentDetailRecord>({
     queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
     queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
+  const { data: agent, isLoading, error } = agentQuery;
+  const agentView = useQueryView(agentQuery);
   const lifecycle = useAgentLifecycleStatus(agent);
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
@@ -836,7 +842,6 @@ export function AgentDetail() {
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const canUseProviderTrace =
     boardAccess?.source === "local_implicit" ||
@@ -983,10 +988,10 @@ export function AgentDetail() {
     if (legacyAuditSection) return;
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
+      navigate(`${agentDetailHref(canonicalAgentRef, canonicalTab)}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1165,8 +1170,10 @@ export function AgentDetail() {
     return () => window.removeEventListener("popstate", handlePopState, true);
   }, [configDirty, prepareAgentNavigation]);
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (isLoading || agentView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (agentView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this agent" onRetry={agentView.retry} retrying={agentView.isFetching} />;
+  }
   if (!agent) return null;
   if (!urlRunId && legacyAuditSection) {
     return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
@@ -1294,7 +1301,6 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            canRunWithProviderTrace={canUseProviderTrace && supportsRawProviderTrace(currentAgent.adapterType, currentAgent.adapterConfig)}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -1759,7 +1765,6 @@ export function AgentOverview({
     queryKey: queryKeys.access.companyUserDirectory(agent.companyId),
     queryFn: () => accessApi.listUserDirectory(agent.companyId),
     enabled: hasHumanCreator,
-    retry: false,
   });
   const creatorLabel = resolveAgentCreatorLabel(agent.createdByUserId, userDirectory.data?.users);
   return (
@@ -1783,14 +1788,14 @@ export function AgentOverview({
               ) : <span className="text-sm">Board</span>}
             </SummaryRow>
             <SummaryRow label="Direct reports"><span className="text-sm tabular-nums">{directReportCount}</span></SummaryRow>
-            {hasHumanCreator && userDirectory.isError ? (
+            {hasHumanCreator && queryViewKind(userDirectory) === "error" ? (
               <SummaryRow label="Created by"><span className="text-sm text-destructive">Could not load creator</span></SummaryRow>
             ) : creatorLabel ? (
               <SummaryRow label="Created by"><span className="text-sm">{creatorLabel}</span></SummaryRow>
             ) : null}
             <SummaryRow label="Public key">
-              {identity.isPending ? <span className="text-sm text-muted-foreground">Loading…</span>
-                : identity.isError ? <span className="text-sm text-destructive">Could not load public key</span>
+              {identity.isPending || queryViewKind(identity) === "reconnecting" ? <span className="text-sm text-muted-foreground">Loading…</span>
+                : queryViewKind(identity) === "error" ? <span className="text-sm text-muted-foreground">Could not load public key</span>
                 : identity.data ? (
                   <CopyText text={identity.data.publicKeyPem} ariaLabel="Copy public key" title="Copy public key">
                     <span className="font-mono text-sm">{identity.data.keyId.slice(0, 19)}…</span>
@@ -2061,7 +2066,8 @@ export function ConfigurationTab({
         || !syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.urlKey) });
       }
-      pushToast({ title: "Agent saved", tone: "success" });
+      pushToast({ title: "Agent saved", tone: updated.configurationWarnings?.length ? "warn" : "success",
+        body: updated.configurationWarnings?.map(warning => warning.message).join("\n") });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);
@@ -2135,6 +2141,7 @@ export function ConfigurationTab({
 
 
       {content === "permissions" ? <TrustPresetSection
+        projectAccessEditor={<AgentProjectAccessSettings agent={agent} />}
         permissions={agent.permissions}
         disabled={updatePermissions.isPending}
         companyId={companyId}
@@ -3465,7 +3472,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const { data: boardAccess } = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
   const canUseProviderTrace =
     boardAccess?.source === "local_implicit" ||
@@ -3481,7 +3487,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.providerTraceMetadata(run.companyId, [run.id]),
     queryFn: () => heartbeatsApi.providerTraceMetadata(run.companyId, [run.id]),
     enabled: canUseProviderTrace,
-    retry: false,
     refetchInterval:
       run.status === "running" || run.status === "queued" ? 3000 : false,
   });
@@ -3491,7 +3496,6 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     queryKey: queryKeys.access.companyUserDirectory(run.companyId),
     queryFn: () => accessApi.listUserDirectory(run.companyId),
     enabled: Boolean(run.companyId && run.responsibleUserId),
-    retry: false,
   });
   const responsibleUserName = useMemo(() => {
     if (!run.responsibleUserId) return null;
@@ -3792,12 +3796,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </ol>
               </details>
             )}
-            {resumeRun.isError && (
+            {resumeRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
               </div>
             )}
-            {retryRun.isError && (
+            {retryRun.isError && ( // query-error-ok: mutation result, not a query
               <div className="text-xs text-destructive">
                 {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
               </div>
@@ -3838,7 +3842,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 >
                   {runClaudeLogin.isPending ? "Running claude login..." : "Login to Claude Code"}
                 </Button>
-                {runClaudeLogin.isError && (
+                {runClaudeLogin.isError && ( // query-error-ok: mutation result, not a query
                   <p className="text-xs text-destructive">
                     {runClaudeLogin.error instanceof Error
                       ? runClaudeLogin.error.message
@@ -3936,7 +3940,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                         ? "clearing session..."
                         : "clear session for these tasks"}
                     </button>
-                    {clearSessionsForTouchedIssues.isError && (
+                    {clearSessionsForTouchedIssues.isError && ( // query-error-ok: mutation result, not a query
                       <p className="text-(length:--text-micro) text-destructive mt-1">
                         {clearSessionsForTouchedIssues.error instanceof Error
                           ? clearSessionsForTouchedIssues.error.message
@@ -4019,6 +4023,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
   const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const hasMoreEventsRef = useRef(false);
+  const [loadingMoreEvents, setLoadingMoreEvents] = useState(false);
+  const loadMoreEventsRef = useRef<(() => void) | null>(null);
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
@@ -4033,7 +4042,6 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   const [hasMoreLog, setHasMoreLog] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
-  const [isStreamingConnected, setIsStreamingConnected] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
   const logEndRef = useRef<HTMLDivElement>(null);
   const pendingLogLineRef = useRef("");
@@ -4083,7 +4091,9 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
+        const seq = readChunkSeq(raw.seq);
+        logSequenceRef.current.confirm(seq);
+        parsed.push({ ts, stream, chunk, seq });
       } catch {
         // ignore malformed lines
       }
@@ -4096,18 +4106,145 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     }
   }
 
-  // Fetch events
-  const { data: initialEvents } = useQuery({
-    queryKey: ["run-events", run.id],
-    queryFn: () => heartbeatsApi.events(run.id, 0, 200),
+  const refreshEventsRef = useRef<((force?: boolean) => void) | null>(null);
+  const refreshLogRef = useRef<((force?: boolean) => void) | null>(null);
+  const eventSequenceRef = useRef(new TranscriptSequence());
+  const logSequenceRef = useRef(new TranscriptSequence());
+  const eventsReadCursorRef = useRef(0);
+  const eventsCatchupCursorRef = useRef(0);
+  const retainedEventHistoryThroughRef = useRef(0);
+  const logIdentityRef = useRef<string | null>(run.logRef ?? null);
+  const retiredLogRefs = useRef(new Set<string>());
+  const wasLiveRef = useRef(isLive);
+  const bindLog = (ref: unknown): "same" | "changed" | "stale" => {
+    if (typeof ref !== "string" || !ref || ref === logIdentityRef.current) return "same";
+    if (retiredLogRefs.current.has(ref)) return "stale";
+    const prior = logIdentityRef.current;
+    logIdentityRef.current = ref;
+    if (!prior) return "same";
+    retiredLogRefs.current.add(prior);
+    if (retiredLogRefs.current.size > 8) retiredLogRefs.current.delete(retiredLogRefs.current.values().next().value!);
+    pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
+    logSequenceRef.current = new TranscriptSequence();
+    setLogLines([]); setLogOffset(0);
+    return "changed";
+  };
+  useEffect(() => {
+    eventsReadCursorRef.current = 0; eventsCatchupCursorRef.current = 0; retainedEventHistoryThroughRef.current = 0; eventSequenceRef.current = new TranscriptSequence(); logSequenceRef.current = new TranscriptSequence();
+    wasLiveRef.current = isLive;
+    logIdentityRef.current = run.logRef ?? null; retiredLogRefs.current.clear();
+    hasMoreEventsRef.current = false; setHasMoreEvents(false); setLoadingMoreEvents(false); setEventsError(null);
+    setEvents([]); setLoading(true);
+  }, [run.id, run.companyId]);
+  useEffect(() => { if (isLive) wasLiveRef.current = true; }, [isLive]);
+
+  function appendEvents(rows: HeartbeatRunEvent[], retainHistory = false) {
+    if (retainHistory) retainedEventHistoryThroughRef.current = Math.max(
+      retainedEventHistoryThroughRef.current, rows.at(-1)?.seq ?? 0,
+    );
+    setEvents(previous => {
+      const merged = mergeRunEvents(previous, rows);
+      if (!isLive && !wasLiveRef.current) return merged;
+      const retainedThrough = Math.max(200, retainedEventHistoryThroughRef.current);
+      const prefix = merged.filter(row => row.seq <= retainedThrough);
+      const tail = merged.filter(row => row.seq > retainedThrough);
+      return [...prefix, ...tail.slice(-MAX_LIVE_EVENTS)];
+    });
+  }
+
+  const stream = useTranscriptLiveStream(isLive ? [run.id] : [], { companyId: run.companyId, enabled: visible }, event => {
+    if (event.companyId !== run.companyId) return;
+    const payload = asRecord(event.payload);
+    if (!payload || payload.runId !== run.id) return;
+    if (event.type === "heartbeat.run.log") {
+      const binding = bindLog(payload.logRef);
+      if (binding === "stale") return;
+      const seq = readChunkSeq(payload.seq);
+      if (payload.truncated === true) logSequenceRef.current.requireHistory(seq);
+      const gap = logSequenceRef.current.observe(seq);
+      if (binding === "changed" || payload.truncated === true || gap) refreshLogRef.current?.();
+      if (payload.truncated === true) return;
+      const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
+      if (!chunk) return;
+      const channel = payload.stream === "stderr" || payload.stream === "system" ? payload.stream : "stdout";
+      appendLogLines([{ ts: asNonEmptyString(payload.ts) ?? event.createdAt, stream: channel, chunk, seq }]);
+      return;
+    }
+    if (event.type === "heartbeat.run.progress") {
+      const line = buildHeartbeatProgressLogLine(payload, event.createdAt);
+      if (!line) return;
+      const key = heartbeatProgressLogLineKey(line);
+      if (seenProgressLogLineKeysRef.current.has(key)) return;
+      seenProgressLogLineKeysRef.current.add(key); appendLogLines([line]);
+      return;
+    }
+    if (event.type === "heartbeat.run.status") {
+      refreshEventsRef.current?.(true); refreshLogRef.current?.(true); return;
+    }
+    const row = liveRunEvent(event);
+    if (!row) return;
+    const commitSignal = row.message === null && row.payload === null;
+    if (commitSignal) eventSequenceRef.current.requireHistory(row.seq);
+    if (eventSequenceRef.current.observe(row.seq)) refreshEventsRef.current?.();
+    if (commitSignal) return;
+    appendEvents([row]);
   });
 
   useEffect(() => {
-    if (initialEvents) {
-      setEvents(initialEvents);
-      setLoading(false);
-    }
-  }, [initialEvents]);
+    setLoadingMoreEvents(false);
+    if (!visible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const abort = new AbortController();
+    let reading = false;
+    let pendingRefresh = false;
+    let failedRead: { requested: boolean; catchup: boolean } | null = null;
+    const read = async (requested = false, catchup = false) => {
+      if (cancelled) return;
+      if (reading) { if (catchup) pendingRefresh = true; return; }
+      if (hasMoreEventsRef.current && !requested && !catchup) return;
+      reading = true; pendingRefresh = false; setLoadingMoreEvents(true); setEventsError(null);
+      window.clearTimeout(timer); timer = undefined;
+      let failed = false;
+      try {
+        const cursor = catchup ? Math.max(eventsCatchupCursorRef.current, eventsReadCursorRef.current) : eventsReadCursorRef.current;
+        const initializesHistory = eventsReadCursorRef.current === 0;
+        const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
+        if (cancelled) return;
+        appendEvents(rows, !catchup || initializesHistory);
+        const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
+        eventsCatchupCursorRef.current = Math.max(eventsCatchupCursorRef.current, next);
+        eventSequenceRef.current.confirm(next);
+        if (catchup) {
+          if (rows.length === 1000 && next > cursor) pendingRefresh = true;
+        }
+        if (!catchup || initializesHistory) {
+          eventsReadCursorRef.current = next;
+          hasMoreEventsRef.current = rows.length === 1000 && next > cursor;
+          setHasMoreEvents(hasMoreEventsRef.current);
+        }
+        failed = eventSequenceRef.current.needsCatchup;
+        failedRead = null;
+      } catch {
+        failed = true; failedRead = { requested, catchup };
+        if (!cancelled) setEventsError("Could not load events. Try again.");
+      }
+      if (cancelled) return;
+      reading = false; setLoadingMoreEvents(false); setLoading(false);
+      if (pendingRefresh) void read(false, true);
+      else if (failed || (isLive && !stream.healthy && !hasMoreEventsRef.current)) {
+        timer = window.setTimeout(() => void read(requested, catchup || eventSequenceRef.current.needsCatchup), 2000);
+      }
+    };
+    refreshEventsRef.current = () => { void read(false, wasLiveRef.current); };
+    loadMoreEventsRef.current = () => { void read(failedRead?.requested ?? true, failedRead?.catchup ?? false); };
+    void read(false, wasLiveRef.current && (stream.healthy || eventsReadCursorRef.current > 0));
+    return () => {
+      cancelled = true; refreshEventsRef.current = null; loadMoreEventsRef.current = null;
+      abort.abort(); if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [visible, run.id, run.companyId, run.status, stream.healthy, stream.epoch]);
 
   const getScrollContainer = useCallback((): ScrollContainer => {
     if (scrollContainerRef.current) return scrollContainerRef.current;
@@ -4202,45 +4339,50 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     setLogError(null);
   }, [run.id, run.logRef, setLogOffset]);
 
-  // Fetch persisted shell log, retaining partial rows and offsets across hides.
   useEffect(() => {
     if (!visible) return;
+    if (!run.logRef && !shouldPollShellLog) { setLogLoading(false); return; }
     let cancelled = false;
-    const offset = logOffsetRef.current;
-    if (!run.logRef && !shouldPollShellLog) {
-      setLogLoading(false);
-      return () => {
-        cancelled = true;
-      };
-    }
-
+    let timer: number | undefined;
+    const abort = new AbortController();
     setLogLoading(true);
+    let reading = false;
+    let pendingRefresh = false;
     const load = async () => {
+      if (cancelled || reading) return;
+      reading = true; pendingRefresh = false;
+      window.clearTimeout(timer); timer = undefined;
+      let failed = false;
       try {
-        const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
-        if (cancelled) return;
-        appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? offset + result.content.length;
-        setLogOffset(next);
-        setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
-      } catch (err) {
-        if (!cancelled) {
-          if (shouldPollShellLog && isRunLogUnavailable(err)) {
-            setLogLoading(false);
-            return;
-          }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+        for (;;) {
+          const offset = logOffsetRef.current;
+          const result = await readTranscriptRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), abort.signal);
+          if (cancelled) return;
+          const binding = bindLog(result.logRef);
+          if (binding === "stale") { failed = true; break; }
+          if (binding === "changed" && offset !== 0) continue;
+          appendLogContent(result.content, result.nextOffset === undefined);
+          const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
+          setLogOffset(next); setLogError(null);
+          setHasMoreLog(!wasLiveRef.current && result.nextOffset !== undefined && !!result.content);
+          if (!wasLiveRef.current || result.nextOffset === undefined || !result.content || next <= offset) break;
         }
-      } finally {
-        if (!cancelled) setLogLoading(false);
+        failed ||= logSequenceRef.current.needsCatchup;
+      } catch (err) {
+        if (cancelled) return;
+        failed = shouldPollShellLog || !isRunLogUnavailable(err);
+        if (!isRunLogUnavailable(err)) setLogError(err instanceof Error ? err.message : "Failed to load run log");
       }
+      if (cancelled) return;
+      reading = false;
+      setLogLoading(false);
+      if (pendingRefresh) void load();
+      else if (failed || (shouldPollShellLog && !stream.healthy)) timer = window.setTimeout(() => void load(), 2000);
     };
-
+    refreshLogRef.current = (force = false) => { if (force) pendingRefresh = true; void load(); };
     void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+    return () => { cancelled = true; refreshLogRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [visible, run.id, run.companyId, run.logRef, isLive ? null : run.logBytes, shouldPollShellLog, stream.healthy, stream.epoch]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -4249,7 +4391,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     try {
       const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
       appendLogContent(result.content, result.nextOffset === undefined);
-      const next = result.nextOffset ?? logOffset + result.content.length;
+      const next = result.nextOffset ?? logOffset + new TextEncoder().encode(result.content).byteLength;
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
@@ -4258,192 +4400,6 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       setLoadingMoreLog(false);
     }
   }
-
-  // Poll for live updates
-  useEffect(() => {
-    if (!visible || !isLive || isStreamingConnected) return;
-    let pending = false;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      if (pending || cancelled || !getPageVisibility().visible) return;
-      pending = true;
-      const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
-      try {
-        const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
-        if (cancelled) return;
-        if (newEvents.length > 0) {
-          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
-        }
-      } catch {
-        // ignore polling errors
-      } finally {
-        pending = false;
-      }
-    }, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [visible, run.id, isLive, isStreamingConnected, events]);
-
-  // Poll shell log for running runs
-  useEffect(() => {
-    if (!visible || !shouldPollShellLog || isStreamingConnected) return;
-    let pending = false;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      if (pending || cancelled || !getPageVisibility().visible) return;
-      pending = true;
-      try {
-        const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
-        if (cancelled) return;
-        if (result.content) {
-          appendLogContent(result.content, result.nextOffset === undefined);
-        }
-        if (result.nextOffset !== undefined) {
-          setLogOffset(result.nextOffset);
-        } else if (result.content.length > 0) {
-          setLogOffset((prev) => prev + result.content.length);
-        }
-      } catch (err) {
-        if (isRunLogUnavailable(err)) return;
-        // ignore polling errors
-      } finally {
-        pending = false;
-      }
-    }, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [visible, run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
-
-  // Stream live updates from websocket (primary path for running runs).
-  useEffect(() => {
-    if (!visible || !isLive) return;
-
-    let closed = false;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const url = buildSameOriginWebSocketUrl(
-        `/api/companies/${encodeURIComponent(run.companyId)}/events/ws`,
-      );
-      socket = tryCreateWebSocket(url);
-      if (!socket) {
-        scheduleReconnect();
-        return;
-      }
-
-      socket.onopen = () => {
-        setIsStreamingConnected(true);
-      };
-
-      socket.onmessage = (message) => {
-        const rawMessage = typeof message.data === "string" ? message.data : "";
-        if (!rawMessage) return;
-
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(rawMessage) as LiveEvent;
-        } catch {
-          return;
-        }
-
-        if (event.companyId !== run.companyId) return;
-        const payload = asRecord(event.payload);
-        const eventRunId = asNonEmptyString(payload?.runId);
-        if (!payload || eventRunId !== run.id) return;
-
-        if (event.type === "heartbeat.run.log") {
-          const chunk = typeof payload.chunk === "string" ? payload.chunk : "";
-          if (!chunk) return;
-          const streamRaw = asNonEmptyString(payload.stream);
-          const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
-          const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
-          return;
-        }
-
-        if (event.type === "heartbeat.run.progress") {
-          const line = buildHeartbeatProgressLogLine(payload, event.createdAt);
-          if (!line) return;
-          const key = heartbeatProgressLogLineKey(line);
-          if (seenProgressLogLineKeysRef.current.has(key)) return;
-          seenProgressLogLineKeysRef.current.add(key);
-          appendLogLines([line]);
-          return;
-        }
-
-        if (event.type !== "heartbeat.run.event") return;
-
-        const seq = typeof payload.seq === "number" ? payload.seq : null;
-        if (seq === null || !Number.isFinite(seq)) return;
-
-        const streamRaw = asNonEmptyString(payload.stream);
-        const stream =
-          streamRaw === "stdout" || streamRaw === "stderr" || streamRaw === "system"
-            ? streamRaw
-            : null;
-        const levelRaw = asNonEmptyString(payload.level);
-        const level =
-          levelRaw === "info" || levelRaw === "warn" || levelRaw === "error"
-            ? levelRaw
-            : null;
-
-        const liveEvent: HeartbeatRunEvent = {
-          id: seq,
-          companyId: run.companyId,
-          runId: run.id,
-          agentId: run.agentId,
-          seq,
-          eventType: asNonEmptyString(payload.eventType) ?? "event",
-          stream,
-          level,
-          color: asNonEmptyString(payload.color),
-          message: asNonEmptyString(payload.message),
-          payload: asRecord(payload.payload),
-          createdAt: new Date(event.createdAt),
-        };
-
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.seq === seq)) return prev;
-          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
-        });
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
-
-      socket.onclose = () => {
-        setIsStreamingConnected(false);
-        scheduleReconnect();
-      };
-    };
-
-    connect();
-
-    return () => {
-      closed = true;
-      setIsStreamingConnected(false);
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (socket) {
-        socket.onopen = null;
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        socket.close(1000, "run_detail_unmount");
-      }
-    };
-  }, [visible, isLive, run.companyId, run.id, run.agentId]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -4486,7 +4442,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
-  if (events.length === 0 && logLines.length === 0 && !logError) {
+  if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
     return <p className="text-xs text-muted-foreground">No log events.</p>;
   }
 
@@ -4632,9 +4588,15 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         </div>
       )}
 
-      {events.length > 0 && (
+      {(events.length > 0 || eventsError) && (
         <div>
           <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
+          {eventsError && <p className="text-sm text-destructive">{eventsError}</p>}
+          {(hasMoreEvents || eventsError) && (
+            <Button variant="outline" size="sm" disabled={loadingMoreEvents} onClick={() => loadMoreEventsRef.current?.()}>
+              {loadingMoreEvents ? "Loading..." : eventsError ? "Retry events" : "Load more events"}
+            </Button>
+          )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
             {events.map((evt) => {
               const color = evt.color
@@ -4643,7 +4605,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                 ?? "text-foreground";
 
               return (
-                <div key={evt.id} className="flex gap-2">
+                <div key={`${evt.runId}:${evt.seq}`} className="flex gap-2">
                   <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
                     {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
                   </span>

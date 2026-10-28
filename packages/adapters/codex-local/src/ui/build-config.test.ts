@@ -36,6 +36,11 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("preserves explicitly disabled hosted search in native Codex configuration", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({ search: false }))).toHaveProperty("search", false);
+    expect(buildPaperclipRunnerConfig(makeValues({ search: true }))).not.toHaveProperty("search");
+  });
+
   describe("qualified Copilot config", () => {
     it("round-trips Copilot with the exact selected model", () => {
       const first = buildPaperclipRunnerConfig(makeValues({ model: "gpt-5.6-luna", adapterSchemaValues: { provider: "acpx", acpxAgent: "copilot" } }));
@@ -171,7 +176,6 @@ describe("buildPaperclipRunnerConfig", () => {
       "engine",
       "agentCommand",
       "stateDir",
-      "search",
       "fastMode",
       "dangerouslyBypassApprovalsAndSandbox",
       "command",

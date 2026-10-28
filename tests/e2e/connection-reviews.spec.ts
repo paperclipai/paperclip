@@ -69,6 +69,10 @@ const review = interactions.find(i => i.payload?.toolAction);
 if (review?.status === "pending") { console.log("Still waiting for the existing review; no retry."); process.exit(0); }
 if (review && review.status !== "pending") {
   const result = review.result?.toolAction;
+  if (review.status === "accepted" && (!result || ["approved", "executing"].includes(result.status))) {
+    console.log("Review accepted; waiting for the stored execution result. No retry.");
+    process.exit(0);
+  }
   const message = review.status === "rejected" ? "Review declined. No pages were read." : result?.status === "failed" ? "Read failed: " + result.errorMessage : ["expired", "cancelled"].includes(review.status) ? "The review expired or was cancelled. No pages were read." : describePages(result?.resultSummary);
   await api("/issues/" + issueId + "/comments", "POST", { body: message });
   await api("/issues/" + issueId, "PATCH", { status: "done" });
@@ -212,6 +216,11 @@ for (const journey of [
       await expect(
         page.getByRole("button", { name: "Approve & run", exact: true }),
       ).not.toBeVisible();
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Review request", exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: "Approve & run", exact: true }),
+      ).not.toBeVisible();
       await json(
         await request.post(`/api/issues/${issue.id}/comments`, {
           data: { body: "Keeping this review pending while I check." },
@@ -249,6 +258,10 @@ for (const journey of [
           .toBe(true);
         await page.reload();
         await queue.reload();
+        await expect(
+          page.getByRole("button", { name: "Approve & run", exact: true }),
+        ).not.toBeVisible();
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
         await expect(
           page.getByRole("button", { name: "Approve & run", exact: true }),
         ).toBeVisible();

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
@@ -22,14 +22,17 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const designSandbox = useDesignSandbox();
   const streamlinedTaskDetailLayout = streamlinedUiEnabled && taskDetailLayout;
-
-  if (!panelContent) return null;
+  // Keep the zero-width host mounted while route data loads. Inserting an
+  // already-open pane skips its width transition and snaps the thread sideways.
+  const visible = panelVisible && panelContent != null;
 
   if (classicTaskInterfaceEnabled) {
     return (
       <aside
-        className="hidden md:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-(--tp-width-opacity) duration-200 ease-in-out h-full"
-        style={{ width: panelVisible ? 320 : 0, opacity: panelVisible ? 1 : 0 }}
+        inert={!visible}
+        aria-hidden={!visible}
+        className={cn("hidden md:flex border-border bg-card flex-col shrink-0 overflow-hidden h-full", panelContent != null && "properties-panel-docked", visible && "border-l")}
+        style={{ width: visible ? 320 : 0, opacity: visible ? 1 : 0 }}
       >
         <div className="w-80 flex-1 flex flex-col min-w-(--sz-320px) min-h-0">
           <div className="flex items-center justify-between px-4 py-2 border-b border-border">
@@ -51,7 +54,7 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
       key={`${streamlinedTaskDetailLayout ? "task-detail" : "default"}-${designSandbox ? "proposal" : "production"}`}
       panelContent={panelContent}
       panelContentMode={panelContentMode}
-      panelVisible={panelVisible}
+      panelVisible={visible}
       setPanelVisible={setPanelVisible}
       taskDetailLayout={streamlinedTaskDetailLayout}
       designSandbox={designSandbox}
@@ -158,7 +161,7 @@ interface FixedPane {
 }
 
 interface ResizablePropertiesPanelProps {
-  panelContent: ReactNode;
+  panelContent: ReactNode | null;
   panelContentMode: "padded" | "prose" | "full-bleed";
   panelVisible: boolean;
   setPanelVisible: (visible: boolean) => void;
@@ -194,6 +197,12 @@ function ResizablePropertiesPanel({
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
+
+  // The host can outlive a viewport change while its content is loading.
+  // Clamp before revealing it, without overwriting the user's saved width.
+  useLayoutEffect(() => {
+    if (panelVisible) setWidth(clampPaneWidth);
+  }, [panelVisible]);
 
   const asideRef = useRef<HTMLElement | null>(null);
   const widthRef = useRef(width);
@@ -349,7 +358,9 @@ function ResizablePropertiesPanel({
     [maximized, finishRestore],
   );
 
-  const isFixed = fixedPane !== null;
+  // Route cleanup removes content before the maximize reset effect runs.
+  // Release fixed geometry immediately so an empty pane cannot cover the next page.
+  const isFixed = panelContent != null && fixedPane !== null;
 
   return (
     <>
@@ -364,9 +375,10 @@ function ResizablePropertiesPanel({
       ) : null}
       <aside
         ref={asideRef}
+        inert={!panelVisible}
+        aria-hidden={!panelVisible}
         className={cn(
           "hidden md:flex bg-card flex-col",
-          !maximized && "border-l border-border",
           isFixed
             ? "tc-pane-glide fixed z-40 overflow-hidden"
             : cn(
@@ -374,7 +386,7 @@ function ResizablePropertiesPanel({
                 panelVisible ? "overflow-visible" : "overflow-hidden",
                 // The width/opacity transition would fight pointer-driven
                 // resizing, so it is suspended while dragging.
-                !dragging && "transition-(--tp-width-opacity) duration-(--motion-pane-width-reset) ease-(--motion-ease-pane-width-reset)",
+                !dragging && panelContent != null && "properties-panel-docked",
               ),
         )}
         style={
@@ -395,7 +407,7 @@ function ResizablePropertiesPanel({
             aria-orientation="vertical"
             aria-label="Resize panel"
             data-dragging={dragging ? "" : undefined}
-            className="pane-resize-handle group absolute inset-y-0 z-10 cursor-col-resize touch-none"
+            className="pane-resize-handle group absolute inset-y-0 z-10 max-w-full cursor-col-resize touch-none"
             style={{ left: -4, width: 8 }}
             onPointerDown={handleGripPointerDown}
             onPointerMove={handleGripPointerMove}
@@ -412,46 +424,48 @@ function ResizablePropertiesPanel({
             />
           </div>
         ) : null}
-        <div
-          className={cn("flex-1 flex flex-col min-h-0", isFixed && "w-full")}
-          style={isFixed ? undefined : { width, minWidth: width }}
-        >
-          <SidePanelFrame
-            presentation="docked"
-            maximized={maximized}
-            contentMode="full-bleed"
-            headerSize={taskDetailLayout ? "task-detail" : "default"}
-            className="flex-1 border-l-0"
-            header={(
-              <div
-                id={PROPERTIES_PANE_HEADER_SLOT_ID}
-                className="flex min-w-0 flex-1 items-center self-stretch"
-              />
-            )}
-            trailingControls={(
-              <SidePanelWindowControls
-                maximized={maximized}
-                closeControl={taskDetailLayout ? "close" : "toggle"}
-                onMaximizedChange={(next) => {
-                  if (next) handleMaximize();
-                  else handleRestore();
-                }}
-                onToggle={() => setPanelVisible(false)}
-              />
-            )}
-            footer={<div id={PROPERTIES_PANE_FOOTER_SLOT_ID} />}
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div
+            className={cn("flex shrink-0 flex-col min-h-0", !maximized && "border-l border-border", isFixed && "w-full")}
+            style={isFixed ? undefined : { width, minWidth: width }}
           >
-            {panelContentMode === "full-bleed" ? panelContent : (
-              <ScrollArea className="h-full">
+            <SidePanelFrame
+              presentation="docked"
+              maximized={maximized}
+              contentMode="full-bleed"
+              headerSize={taskDetailLayout ? "task-detail" : "default"}
+              className="flex-1 border-l-0"
+              header={(
                 <div
-                  className={cn("p-4", maximized && "mx-auto w-full px-9")}
-                  style={maximized ? { maxWidth: MAXIMIZED_CONTENT_MAX_WIDTH } : undefined}
-                >
-                  {panelContent}
-                </div>
-              </ScrollArea>
-            )}
-          </SidePanelFrame>
+                  id={PROPERTIES_PANE_HEADER_SLOT_ID}
+                  className="flex min-w-0 flex-1 items-center self-stretch"
+                />
+              )}
+              trailingControls={(
+                <SidePanelWindowControls
+                  maximized={maximized}
+                  closeControl={taskDetailLayout ? "close" : "toggle"}
+                  onMaximizedChange={(next) => {
+                    if (next) handleMaximize();
+                    else handleRestore();
+                  }}
+                  onToggle={() => setPanelVisible(false)}
+                />
+              )}
+              footer={<div id={PROPERTIES_PANE_FOOTER_SLOT_ID} />}
+            >
+              {panelContentMode === "full-bleed" ? panelContent : (
+                <ScrollArea className="h-full">
+                  <div
+                    className={cn("p-4", maximized && "mx-auto w-full px-9")}
+                    style={maximized ? { maxWidth: MAXIMIZED_CONTENT_MAX_WIDTH } : undefined}
+                  >
+                    {panelContent}
+                  </div>
+                </ScrollArea>
+              )}
+            </SidePanelFrame>
+          </div>
         </div>
       </aside>
     </>

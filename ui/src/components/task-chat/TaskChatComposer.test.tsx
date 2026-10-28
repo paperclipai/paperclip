@@ -856,7 +856,7 @@ describe("TaskChatComposer", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
 
     expect(editable().dataset.contentClassName).toContain("min-h-(--sz-48px)");
-    expect(editable().dataset.contentClassName).toContain("max-h-(--sz-28dvh)");
+    expect(editable().dataset.contentClassName).toContain("max-h-(--tc-composer-editor-max-height)");
   });
 
   it("submits the trimmed body on Cmd+Enter and clears the draft", async () => {

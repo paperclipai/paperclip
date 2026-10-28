@@ -49,6 +49,105 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+Native session resume selects its newest progress barrier within the existing
+32-run task/session window in one SQL snapshot. Only the chosen checkpoint source
+returns its saved native input, checkpoint, tool fingerprint, wake envelope, and
+canonical task brief. Unused bootstrap candidates do not return full context or
+profiles. Wrong runtime, nonterminal status, process identity, provider events,
+invalid but non-null checkpoints, and future checkpoint barriers retain their
+existing selection rules. Stored run payloads and history reads stay complete.
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
+An optional `PAPERCLIP_SESSION_RESUME_BENCHMARK_DATABASE_URL` must name a dedicated
+test database ending in `_test`; otherwise the harness starts disposable PostgreSQL.
+
+Agent request authentication uses a compact run-identity read. It omits saved
+execution payloads, results, and log excerpts from the query response. The read
+still locks the task before the run and reconciles pending steering from durable
+acknowledgements on every request. Default identity reads retain the full run.
+Stored payloads and separate native tool authorization checks remain unchanged.
+
+Native event acknowledgements read a count and maximum through the existing
+source-sequence index. A stream with gaps uses indexed lookups for its first
+missing successor. The acknowledgement keeps its contiguous-prefix rule without
+returning every historical sequence number. All events stay stored. Counting the
+index entries still grows with the stream length.
+
+Conversation recovery reads only the saved run fields used to settle a turn.
+Settlement locks and reads current conversation state without loading the task
+description or comment bodies. It still checks the durable reply or pending
+interaction, session generation, owning run, and newer user messages. Saved
+execution payloads, task text, and comments remain stored in full.
+
+The attention feed checks for newer runs with company-scoped existence probes.
+The probes match the failed run's agent and issue or task context. They preserve
+the existing millisecond comparison and empty-context rules. Each batch holds
+at most 1,000 failed runs. Retained run history stays in the database; this check
+returns only the identifiers of failures that have a newer matching run.
+For failures without a task key, it reads the latest keyless timestamp once per
+agent. Unique agents are batched separately, so repeated failures do not repeat
+the same history scan. Both paths retain the current millisecond comparison.
+
+The issue-lock adapter's release read omits `result_json.stdout` and
+`result_json.stderr` before transferring a run to the controller. Native context
+also omits saved launch text, execution-continuation bodies, workspace and
+environment payloads, and the launch wake envelope. Task identity, retry and
+continuation controls, interaction and comment references, execution policy, unknown context fields, and every other
+result key stay intact. Legacy reads retain full context. Stop, retry, lease,
+and workspace-recovery checks do not change. Full inputs and output remain stored
+for execution history and detail reads. Terminal telemetry loads only its run
+identity, timestamps, usage, and typed task identifier.
+
+Recovery's latest-run queries return the context fields used by recovery
+decisions. Prompts, execution continuation bodies, and workspace setup payloads
+remain in the stored run and its full detail reads. These queries also return
+the PostgreSQL row version. Native blocked-wait repair compares that version
+against a fresh full source read before applying changes. Any intervening row
+update, including an edit outside the projection, defers repair to a fresh sweep.
+
+The two preliminary reconciliation reads omit named launch renderings and
+preparation payloads. Native profiles omit unused native execution input.
+They retain all other context, full results, legacy profiles, task identity,
+retry accounting, and unknown controls. Native runs still reach their native
+recovery guard. Terminalization locks its current control state and returns
+full rows from its writes. Stored input remains intact.
+
+Execution-blocker reads select process, lifecycle, and task-binding fields rather
+than full execution rows. Context retains typed task and pre-dispatch evidence;
+Runner profiles retain the adapter type, native input schema, binding, provider,
+workspace-access evidence, and complete workspace-sync receipts. Native task and
+runtime prompt payloads are not needed for these checks. Missing fields and
+malformed input values retain their original shape. Full result evidence stays
+available to the existing retry and workspace checks. Stored context, profiles,
+and output are unchanged.
+
+Committed native finalization reads run identity and ownership state before it
+claims the coordinator. It loads complete saved input only when finalization
+still needs to process an accepted result. Review presentation retains the full
+result. Muse settlement reads its exact provider binding. Cleanup reads fresh
+status and ownership metadata; cancelled native workspace retention and legacy
+Stop settlement still load complete run evidence. Workspace settlement reads the
+saved sync descriptor, export retry, and first-heartbeat flag. These projections
+leave stored prompts, logs, results, and recovery state unchanged.
+
+Settled native process release locks run identity, terminal state, process
+identity, and checkpoint presence without loading the checkpoint or execution
+payloads. It retains current coordinator checks, provider evidence, local-host
+identity checks, and every lease's termination receipt. The stop receipt and
+process-field update remain in the same transaction.
+
+Legacy terminalization locks runtime mode, status, full result evidence, and the
+status-delivery token without loading unused input, profile, or log bodies.
+It keeps the existing lock, full returned run, workspace-retention
+receipts, and source-bound recovery holds. Stored payloads remain unchanged.
+
+Conversation ownership checks select process identity and full recovery result
+evidence without execution prompts or profiles. Committed native reply repair
+selects its persisted result and identity bindings plus typed presentation flags.
+It keeps its existing row locks, accepted-result digest checks, publication
+authorization, and selected-answer protections. Full execution history stays in
+storage.
+
 Run-context lookups use expression indexes for both `context_snapshot.issueId`
 and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
 company-scoped expression index that follows the query's native issue ID and
@@ -88,16 +187,97 @@ launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
 
+Restoring a saved monitor's receipt or completion proof creates a new native
+assessment identity even when its scheduled deadline is unchanged. The saved
+proof is part of the assessment input. Prior decisions and accepted results stay
+intact, and an unchanged replay reuses the same assessment and decision.
+
+Native tool authority lookups select current run identity, status, invocation,
+responsible user, context, and receipt data. Saved profiles and output excerpts
+stay in storage and are omitted from that read. Task and agent binding, current
+status, budget, and task privacy checks retain their existing predicates.
+Mutation transactions still lock and read complete run records. The unlocked
+authority read also omits named launch renderings and preparation data that its
+tools do not consume. Ordinary tool checks also omit the wake payload. Mail
+checks load the current full wake to enforce external-chat restrictions. Other
+context and result receipts remain available. The complete saved context stays
+in storage for execution.
+
+WebSocket delivery uses one fresh authorization batch for an event's task and
+run bindings. When both bindings name the same task, the batch reads its current
+authority once. Different task bindings must both pass. The batch is discarded
+after that delivery; later events still recheck grants, membership, task
+existence, and company boundaries.
+
+Browser progress events update cached live run status directly. A successful
+patch does not refetch task details, activity, or run history. Unknown runs
+retain the existing refresh fallback. Run transitions, activity events, and
+reconnect recovery still refresh their affected data.
+
+Task run queries stop interval polling only after a successful empty response
+and an open shared live connection for the current company and session. Initial
+reads, active work, errors, connection setup, and disconnections retain their
+existing polling cadence. Company or session changes require a new connection.
+Views without an assigned agent retain polling. Matching run lifecycle events
+refresh the displayed task's run queries independently of route and window
+focus. Events that omit task identity conservatively refresh these queries,
+including reviewer runs from another agent. One parent view owns both query
+observers and reuses refreshes already covered by the focused-route handler. A
+matching event that overlaps an older request queues a fresh read after that
+request settles. Connection readiness also reconciles the displayed run
+queries after any older request. Follow-up reads belong to the current mounted
+scope and stop when it changes or unmounts. The first open and reconnect still
+reconcile missed events.
+
+Bundled skill release checks read the current stored version ID and a SHA-256
+fingerprint of its file inventory. A per-database memo keeps at most 64 verified
+snapshots. It reuses a verification only when the current database fingerprint
+and current on-disk inventory hash both match. A changed or missing snapshot
+still follows full validation or seeding. Company access and local source
+reconciliation still run for each request; authorization is not cached.
+
+Connection-assignment checks select profile bindings for the current company or
+agent and read rules that can match the selected connection's catalog rows.
+All five selector kinds, null application matching, exclusions, and profile
+precedence retain their existing evaluator. Rule filtering uses the catalog
+values already read by that check, so a later catalog change cannot drop an
+exclusion from the decision being evaluated. There is no cross-call cache.
+
 Filesystem preparation uses current task/run and selected-configuration checks.
 Historical root-reader authorization has been retired; no retained-reader batch is
 loaded at admission or publication. Workspace-record disclosure still uses task
 privacy checks, independently of filesystem access.
 
+Saved-message execution-wait scans read current run state, process ownership,
+startup and cancellation receipts, task binding, and the recorded adapter kind.
+Saved profiles, output excerpts, and unrelated launch context stay in storage.
+Continuation admission and its locked mutation reads retain their existing gates.
+
+Task creation provenance reads current run identity, scope, and task binding.
+Legacy task references retain their typed values and existing precedence. Saved
+profiles, output, and unrelated context stay in storage. Viewer access to the
+source task and run is still checked before provenance is returned.
+
 The initial agent JWT run lookup reads only the cancellation state and
 conversation flag from saved run JSON. It does not transfer the full context or
 result. Run status, responsible-user identity, company and agent boundaries,
 and the cancellation response remain unchanged. Later identity refreshes keep
-their existing transaction and data reads.
+their current authorization and transaction boundaries.
+
+Chat recovery ancestry selects task identifiers and source-run links instead
+of full execution payloads. Instruction authorization selects current identity
+fields and still rechecks accepted identity, key revocation, and membership.
+Identity task locks and activation receipts project typed legacy task keys with
+the native and first-class issue IDs. These projections preserve task binding
+precedence and validation without transferring prompts or output.
+
+Recovery's latest-run and legacy-continuation eligibility reads select structured
+result fields for error families,
+workspace/configuration receipts, cancellation attribution, retry deadlines, and
+conversation finalization. The `adapter_failed`, `provider_quota`, and
+`configuration_incomplete` classifiers retain full results because they inspect
+arbitrary provider error text. Stored results and execution/detail reads remain
+complete; no recovery decision is cached.
 
 To measure authentication query responses on disposable synthetic data:
 
@@ -141,6 +321,32 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-author
 The benchmark loads the baseline authorization module with current dependencies,
 compares complete workspace rows, and prints five warm samples and query plans.
 It measures SQL execution, not the full repository admission or agent startup.
+
+Native finalization retries preserve a run's terminal completion time when its
+status is unchanged. A retry mints another status delivery only when the current
+run's status, finalization metadata, phase, error fields, or missing completion
+time changes. An unchanged projection retains its existing pending delivery ID,
+including after a publish failure. Status delivery stays at least once; retry
+deadlines, recovery, accepted results, and workspace cleanup still run normally.
+Legacy recovery also retains the pending delivery when status is unchanged and
+no patch was supplied. Explicit patches, new terminal statuses, and newly
+retained workspace evidence still create a delivery. File retention, ownership
+checks, failed write conditions, lock cleanup, and recovery holds still apply.
+The retention-evidence write returns another full run only when that evidence
+changes. An unchanged retry keeps the full run returned by the first write and
+still processes retained leases and recovery holds.
+
+Agent lists read the complete company roster once and use that same snapshot for
+termination filtering and organization-chain normalization. Detail and plugin runtime reads
+load only identity, company, name, status, and manager from other company agents
+for chain checks. The selected agent's full configuration, current monthly spend,
+and existing response redaction remain available. Every call reads current data;
+these lookups do not cache authorization or agent configuration.
+
+Queued-comment display filters wake requests by the current company, assigned
+agent, status, and exact JSON string task identity in SQL. Other tasks' comment
+identifiers stay in the database. The display projection, ordering, current run
+ownership checks, and persisted wake payloads retain their existing contract.
 
 ## 1. Embedded PostgreSQL — zero config
 
@@ -264,20 +470,84 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
+If your transaction-mode pooler does not support protocol-level named prepared statements, set `DATABASE_PREPARED_STATEMENTS=false`. If your pooler supports them, you can opt in with `DATABASE_PREPARED_STATEMENTS=true`. Check your provider's pooler configuration before you enable this setting. Keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
 
 ### Client tuning (optional)
 
 All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
 
 ```sh
-DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
+DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
 DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
+
+An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
+for parameterized ORM queries, transactions, reserved connections, and dedicated
+clients. Postgres.js manages the statement cache. This does not cache query
+results. Bound values and returned data stay fresh. Explicit per-query options
+still apply, including `prepare: false` and simple-protocol execution. With the
+setting unset, ORM queries keep their existing unprepared behavior and tagged
+SQL uses the driver default. With `false`, preparation stays disabled.
+
+### Bounded response diagnostics
+
+`PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW=<start>/<end>` enables one explicit UTC
+window. Both timestamps use ISO format ending in `Z`. The window lasts at most
+60 seconds and starts within 30 minutes. Unset, invalid, and expired windows
+leave database construction unchanged. An expired window stays inactive after a
+restart; remove the setting after the investigation.
+
+The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
+column decoding. It retains the Drizzle builder caller for normal, prepared,
+transaction, and dedicated-pool execution. It issues no queries.
+It logs the public server caller locations, static schema table, operation,
+query/row counts, and response value sizes. It emits at most 2,048 aggregate
+groups and a summary. Measurement stops at the deadline. Environment-enabled
+captures emit at most 64 records per second and can take another 33 seconds to
+finish writing the bounded output. Wait for the summary before collecting it.
+It never logs SQL, parameters, result
+values, connection strings, or query errors. In-flight queries continue normally.
+
+For a bundled server, keep the linked source maps and enable Node's
+`--enable-source-maps` option so the diagnostic can resolve public caller
+locations. Restore the prior Node options after capture. Sizes still count when
+caller locations are unavailable.
+
+Look for `paperclip.db_response_capture.entry.v1` and
+`paperclip.db_response_capture.summary.v1` in the process logs. A log provider
+can store `event` as a structured field instead of message text. Filter by that
+field or read the bounded window from the exact deployment. Check the summary
+and group totals, including the unattributed overflow group.
+
+Fetch a complete capture as follows:
+
+1. Read the summary events from the exact deployment and window. Keep each
+   distinct `captureId` separately.
+2. Each entry has a unique `groupIndex` within that capture and a `groupPage`.
+   The summary gives `groupPageSize` (128) and `groupPages`. Fetch every page
+   from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
+   and `groupPage`. Request at least `groupPageSize` matching records per page.
+   A structured query can use
+   `@event:paperclip.db_response_capture.entry.v1 AND @captureId:<id> AND @groupPage:0`.
+3. If the provider's record limit is smaller than a page, fetch each
+   `groupIndex` separately with the same capture ID. Each index matches one
+   entry. Do not split by timestamp: entries can share a timestamp.
+4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
+   through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
+   `calls` must equal `completedQueries`, and summed `responseValueBytes` must
+   equal the summary total. A missing page is an incomplete measurement.
+
+Tagged raw-driver calls, streams, unawaited raw-driver
+dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
+Queries still in flight at the deadline are reported separately. Sizes describe
+driver values before column decoding, not billed network bytes. Complex parsed
+values use JSON size estimates, counted in `estimatedValues`. Reconcile them with
+provider metering and socket measurements. Serialization adds temporary CPU and memory work;
+measure the final transfer rate after the window expires.
 
 ### Push the schema
 
@@ -321,6 +591,16 @@ The patch covers both ESM and CommonJS. The regression suite terminates real
 PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
 Remove the patch when an upstream release passes these tests. Installs of the
 unmodified `postgres` package outside this workspace do not include the patch.
+
+The patch also preserves transaction connection reservation when pipelining is
+disabled with `PGMAX_PIPELINE=0`. Without this fix, the driver's pipeline capacity
+check skips the transaction reservation callback and `BEGIN` fails with
+`UNSAFE_TRANSACTION`. Disabling pipelining makes a queued query wait for the next
+available pool connection instead of sending it behind unrelated work on a busy
+connection. This can help interactive requests that share a prepared-query pool
+with slow background work. It does not make the SQL itself faster. The default
+pipeline limit remains unchanged. Test transaction behavior before using this
+setting with a driver build that does not include the patch.
 
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
@@ -367,6 +647,13 @@ IDs and names, not complete tool definitions. They still resolve current profile
 bindings, selectors, exclusions, and installed connections on every call. The
 public effective-profile response continues to include complete tool schemas
 and annotations.
+
+Connection readiness checks use a scoped assignment reader. It applies the same
+current profile precedence, selectors, and exclusions to the candidate connection
+IDs. The reader selects rule match fields and catalog identities. It does not
+load rule conditions, catalog schemas, profile summaries, or the company-agent
+list. Installed connections and later identity and gateway checks remain fresh.
+Full effective-profile and effective-tool responses keep their complete shape.
 
 ## Execution identity row locks
 
@@ -706,6 +993,19 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+Sandbox runtime configuration resolves a provider's secret-reference fields
+through its schema-only lookup. Each lookup reads the selected plugin ID
+and a SHA-256 hash of its current schema in one database statement. A matching
+retained schema is omitted from the query result. Selection order, schema
+changes, and deletion remain visible on the next lookup, without a time-based
+cache. A database error still fails the lookup.
+
+The retained schemas are private to one `Db` object, with at most 32 entries of
+64 KiB each in serialized form. Larger schemas still work and are read in full.
+Callers receive independent schema objects. This reuse stores neither resolved
+secrets nor authorization decisions. Default driver lookups still read complete
+current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
@@ -1121,3 +1421,32 @@ identity references. Budget reservations have a distinct classifier invocation
 source, and cost events accept `prompt_injection`. Unknown charges retain their
 holds through agent deletion attempts and settle through billing correction.
 See [service behavior](prompt-injection-prevention.md).
+
+### Deferred conversation requests
+
+`issue_thread_interactions.dismissed_at` and `dismissed_by_user_id` record a
+human's decision to leave a pending request in history. They are independent of
+`status`, `result`, and `resolved_at`: dismissal is neither an answer nor approval.
+The board-only dismissal path locks the task then interaction, checks audience,
+and never enqueues a continuation. Ordinary deferred requests are excluded from
+completion arbitration; protected authorization gates remain active.
+
+### GitHub inherited review-wait reads
+
+Passive GitHub review waits select only the assessment's `reviewedCommit` JSON
+value. The read preserves its JSON type for strict comparison with the review
+head. It still checks current requester provenance, company and agent bindings,
+connection state, repository identity, latest review, and processed publication.
+The complete assessment remains stored for review and publication.
+
+The synthetic PostgreSQL benchmark captures the service-generated baseline and
+treatment queries, compares complete outputs, and measures raw DataRow bytes:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-github-review-wait.ts --baseline-ref=663fe667d66d3863d0919a8724f1d99500feef0b
+```
+
+It uses disposable embedded PostgreSQL by default. A disposable local database
+named `review_wait_benchmark...` can be supplied through
+`PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
+DataRow bytes exclude response metadata and transport overhead.

@@ -1,12 +1,14 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { createHeartbeatQueue, type HeartbeatQueueDependencies } from "./queue.js";
+import { createHeartbeatRunControl } from "./run-control.js";
+import { callbacks as runControlCallbacks } from "./__tests__/run-control-fixtures.js";
 
 import { createHeartbeatQueueTestDependencies as callbacks } from "../../__tests__/helpers/heartbeat-queue.js";
 
@@ -113,6 +115,116 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { ...seeded, recipient, pending };
   }
 
+  async function addStrandedMessages(seeded: Awaited<ReturnType<typeof strandedMention>>) {
+    const messages = [seeded.pending];
+    for (let index = 0; index < 2; index++) {
+      const [comment] = await db.insert(issueComments).values({ companyId: seeded.company.id, issueId: seeded.issue.id,
+        body: `Additional saved feedback ${index}`, authorAgentId: seeded.agent.id }).returning();
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId: seeded.company.id, agentId: seeded.recipient.id,
+        source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+        payload: { issueId: seeded.issue.id, _paperclipWakeContext: { issueId: seeded.issue.id,
+          wakeReason: "issue_comment_mentioned", wakeCommentIds: [comment.id] } } }).returning();
+      messages.push(wake);
+    }
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(inArray(agentWakeupRequests.id, messages.map(row => row.id)));
+    return messages;
+  }
+
+  async function expectSavedMessages(messages: Awaited<ReturnType<typeof addStrandedMessages>>) {
+    const rows = await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, messages.map(row => row.id)));
+    expect(rows).toHaveLength(messages.length);
+    for (const before of messages) {
+      const row = rows.find(row => row.id === before.id)!;
+      expect(row).toMatchObject({ payload: before.payload, status: "deferred_issue_execution", runId: null,
+        finishedAt: null, error: null });
+      expect(row.updatedAt.getTime()).toBeGreaterThan(0);
+    }
+  }
+
+  it.each(["legacy", "native"])("keeps saved %s messages while avoiding repeated native source release", async runtimeMode => {
+    const seeded = await strandedMention(runtimeMode);
+    const messages = await addStrandedMessages(seeded);
+    const deps = callbacks(db), queue = createHeartbeatQueue(db, deps);
+    await queue.resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 1 : 3);
+    await expectSavedMessages(messages);
+    await queue.resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 2 : 6);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("retries a rejected native release on the next saved message", async () => {
+    const seeded = await strandedMention("native"), messages = await addStrandedMessages(seeded);
+    const deps = callbacks(db);
+    deps.releaseIssueExecutionAndPromote.mockRejectedValueOnce(new Error("Fixture release remains pending"));
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
+    await expectSavedMessages(messages);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("joins the native release before it suppresses another message's duplicate check", async () => {
+    const seeded = await strandedMention("native"), messages = await addStrandedMessages(seeded);
+    const deps = callbacks(db);
+    let finish!: () => void;
+    deps.releaseIssueExecutionAndPromote.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    let settled = false;
+    const pending = createHeartbeatQueue(db, deps).resumeQueuedRuns().then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(1));
+      expect(settled).toBe(false);
+    } finally { finish?.(); }
+    await pending;
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(1);
+    await expectSavedMessages(messages);
+  });
+
+  it("rechecks a different native source that completes during the pass", async () => {
+    const seeded = await strandedMention("native"), messages = await addStrandedMessages(seeded);
+    await db.update(heartbeatRuns).set({ createdAt: new Date(0) }).where(eq(heartbeatRuns.id, seeded.run.id));
+    const deps = callbacks(db);
+    let nextId: string | undefined;
+    deps.releaseIssueExecutionAndPromote.mockImplementationOnce(async () => {
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: seeded.company.id, agentId: seeded.agent.id,
+        runtimeMode: "native", nativeIssueId: seeded.issue.id, status: "succeeded", finishedAt: new Date(),
+        contextSnapshot: { issueId: seeded.issue.id } }).returning();
+      nextId = next.id;
+    });
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote.mock.calls.map(([run]) => run.id)).toEqual([seeded.run.id, nextId]);
+    await expectSavedMessages(messages);
+  });
+
+  it("rechecks changed native evidence on the same source run", async () => {
+    const seeded = await strandedMention("native"), messages = await addStrandedMessages(seeded);
+    const deps = callbacks(db);
+    deps.releaseIssueExecutionAndPromote.mockImplementationOnce(async () => {
+      await db.update(heartbeatRuns).set({ resultJson: { observedReceipt: "new evidence" } }).where(eq(heartbeatRuns.id, seeded.run.id));
+    });
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
+    expect(deps.releaseIssueExecutionAndPromote.mock.calls.map(([run]) => run.id)).toEqual([seeded.run.id, seeded.run.id]);
+    await expectSavedMessages(messages);
+  });
+
+  it("checks each unrelated native task in the same pass", async () => {
+    const seeded = await strandedMention("native"), firstMessages = await addStrandedMessages(seeded);
+    const [issue] = await db.insert(issues).values({ companyId: seeded.company.id, title: "Another saved task", status: "todo", assigneeAgentId: seeded.agent.id }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: seeded.company.id, agentId: seeded.agent.id,
+      runtimeMode: "native", nativeIssueId: issue.id, status: "succeeded", finishedAt: new Date(), contextSnapshot: { issueId: issue.id } }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: seeded.company.id, issueId: issue.id,
+      body: "Other task feedback", authorAgentId: seeded.agent.id }).returning();
+    const [pending] = await db.insert(agentWakeupRequests).values({ companyId: seeded.company.id, agentId: seeded.recipient.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      payload: { issueId: issue.id, _paperclipWakeContext: { issueId: issue.id, wakeReason: "issue_comment_mentioned", wakeCommentIds: [comment.id] } } }).returning();
+    const secondMessages = await addStrandedMessages({ ...seeded, issue, run, pending });
+    const deps = callbacks(db);
+    await createHeartbeatQueue(db, deps).resumeQueuedRuns();
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
+    expect(new Set(deps.releaseIssueExecutionAndPromote.mock.calls.map(([row]) => row.id))).toEqual(new Set([seeded.run.id, run.id]));
+    await expectSavedMessages([...firstMessages, ...secondMessages]);
+  });
+
   it("rechecks a handoff's assignment version under the issue claim lock", async () => {
     const { company, agent, issue, wake, run } = await fixture("queued");
     const [record] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: "QM-CASE-1",
@@ -137,7 +249,9 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   });
 
   it.each(["legacy", "native"])("periodic recovery preserves a paused recipient through the real %s release adapter", async runtimeMode => {
-    const { company, issue, recipient, pending } = await strandedMention(runtimeMode);
+    const seeded = await strandedMention(runtimeMode);
+    const { company, issue, recipient } = seeded;
+    const messages = await addStrandedMessages(seeded);
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, recipient.id));
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issue.id));
     const deps = callbacks(db);
@@ -146,21 +260,24 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
       resolveSessionBeforeForWakeup: async () => null,
     }), recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined } });
-    deps.releaseIssueExecutionAndPromote.mockImplementation(async (run, options) => {
-      await release({ companyId: run.companyId, runId: run.id, now: new Date(), ...options });
-    });
+    const controlDeps = runControlCallbacks(db);
+    vi.mocked(controlDeps.wakeQueue.releaseIssueExecution).mockImplementation(release);
+    const control = createHeartbeatRunControl(db, controlDeps);
+    deps.releaseIssueExecutionAndPromote.mockImplementation(control.releaseIssueExecutionAndPromote);
     for (let pass = 0; pass < 2; pass++) {
       await createHeartbeatQueue(db, deps).resumeQueuedRuns();
-      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, pending.id)))[0])
-        .toMatchObject({ status: "deferred_issue_execution", runId: null, finishedAt: null, error: null, payload: pending.payload });
+      await expectSavedMessages(messages);
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, company.id))).toHaveLength(1);
     }
-    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(2);
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledTimes(runtimeMode === "native" ? 2 : 6);
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
   it.each(["legacy", "native"])("resumes an accepted non-assignee queue through its %s owner", async runtimeMode => {
     const { run, pending } = await strandedMention(runtimeMode);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot, prompt: "large context".repeat(20_000) },
+      runnerProfileJson: { instructions: "large profile".repeat(20_000) }, stdoutExcerpt: "large output".repeat(20_000),
+    }).where(eq(heartbeatRuns.id, run.id));
     const deps = callbacks(db);
     await createHeartbeatQueue(db, deps).resumeQueuedRuns();
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledExactlyOnceWith(
@@ -170,6 +287,11 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       status: "deferred_issue_execution", runId: null, payload: pending.payload,
     });
     expect(deps.executeRun).not.toHaveBeenCalled();
+    const selected = deps.releaseIssueExecutionAndPromote.mock.calls[0][0];
+    expect(Buffer.byteLength(JSON.stringify(selected))).toBeLessThan(512);
+    expect(selected).not.toHaveProperty("contextSnapshot");
+    expect(selected).not.toHaveProperty("runnerProfileJson");
+    expect(selected).not.toHaveProperty("stdoutExcerpt");
   });
 
   it("preserves a former owner's ordinary messages for the assignment handoff", async () => {

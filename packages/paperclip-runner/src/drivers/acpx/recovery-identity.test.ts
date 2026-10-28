@@ -91,6 +91,33 @@ describe("ACPX recovery identity", () => {
     expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, claudeEffort: undefined })).toThrow("persisted");
     expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
   });
+  it("binds Grok effort to recovery and rejects changed or omitted effort", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: profile.qualificationModel, grokEffort: "high" as const };
+    const high = await createAcpxRecoveryBinding(input);
+    const low = await createAcpxRecoveryBinding({ ...input, grokEffort: "low" });
+    expect(low.profileSessionKey).not.toBe(high.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: high.commandDigest, requestedModel: high.requestedModel, effectiveModel: high.effectiveModel, grokEffort: "high" as const };
+    const saved = createAcpxIdentityRecord(expected, high);
+    expect(acpxProviderSessionIdentity(saved, high).grokEffort).toBe("high");
+    expect(() => verifyExpectedAcpxIdentity({ ...expected, grokEffort: undefined }, high, saved)).toThrow("immutable");
+    expect(() => verifyExpectedAcpxIdentity(expected, high, { ...saved, grokEffort: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, low, saved)).toThrow("immutable");
+  });
+
+  it("fences changed or omitted Grok search policy across recovery", async () => {
+    const fixture = await recoveryFixture();
+    const profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    const input = { ...fixture.input, profile, requestedModel: "grok-4.7", grokDisableWebSearch: true };
+    const disabled = await createAcpxRecoveryBinding(input);
+    const enabled = await createAcpxRecoveryBinding({ ...input, grokDisableWebSearch: false });
+    expect(enabled.profileSessionKey).not.toBe(disabled.profileSessionKey);
+    const expected = { ...fixture.expected, profileDigest: disabled.commandDigest, requestedModel: "grok-4.7", effectiveModel: "grok-4.7", grokDisableWebSearch: true };
+    const saved = createAcpxIdentityRecord(expected, disabled);
+    expect(() => verifyExpectedAcpxIdentity(expected, disabled, { ...saved, grokDisableWebSearch: undefined })).toThrow("persisted");
+    expect(() => verifyExpectedAcpxIdentity(expected, enabled, saved)).toThrow("immutable");
+  });
 
   it("binds Pi thinking mode and rejects old or mismatched warm identities", async () => {
     const fixture = await recoveryFixture();

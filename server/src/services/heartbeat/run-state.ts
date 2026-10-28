@@ -1,3 +1,4 @@
+import { conversationEventCondition } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -341,13 +342,29 @@ const heartbeatRunSqlAsciiSafeColumns = {
   stderrExcerpt: sql<string | null>`NULL`.as("stderrExcerpt"),
 } as const;
 
-const heartbeatRunLogAccessColumns = {
+const heartbeatRunReadAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   scopeKind: heartbeatRuns.scopeKind,
   issueId: heartbeatRuns.issueId,
+} as const;
+
+const heartbeatRunLogAccessColumns = {
+  ...heartbeatRunReadAccessColumns,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
+} as const;
+
+const heartbeatRunIssueControlColumns = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+  runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
+  startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
+  runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+    then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
+    else null end`,
 } as const;
 
 const heartbeatRunIssueSummaryColumns = {
@@ -1115,12 +1132,89 @@ export function createHeartbeatRunState(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunExecutionWait(companyId: string, runId: string) {
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    return db.select({
+      ...heartbeatRunIssueControlColumns,
+      finishedAt: heartbeatRuns.finishedAt,
+      errorCode: heartbeatRuns.errorCode,
+      error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      nativeSessionId: heartbeatRuns.nativeSessionId,
+      processPid: heartbeatRuns.processPid,
+      processGroupId: heartbeatRunProcessGroupIdColumn,
+      processStartedAt: heartbeatRuns.processStartedAt,
+      sessionIdAfter: heartbeatRuns.sessionIdAfter,
+      executionStage: heartbeatRuns.executionStage,
+      controllerBootId: heartbeatRuns.controllerBootId,
+      controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+      resultJson: heartbeatRunExecutionEvidenceColumn,
+      contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+        then (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
+          from jsonb_each(${heartbeatRuns.contextSnapshot})
+          where key = any(array['issueId', 'connectionIntentResolution', 'source', 'interactionKind',
+            'interactionStatus', 'mutation', 'interactionId'])) else null end`,
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
+    )).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunCleanupState(runId: string) {
+    return db.select({
+      id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode, nativePhase: heartbeatRuns.nativePhase,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunWorkspaceSettlement(runId: string) {
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    return db.select({
+      id: heartbeatRuns.id, status: heartbeatRuns.status,
+      error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      runnerProfileJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.runnerProfileJson} is null then null
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync') end`,
+      resultJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.resultJson} is null then null
+        else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
+      contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
+        else jsonb_build_object('timerClaimWasFirstHeartbeat', ${heartbeatRuns.contextSnapshot}->'timerClaimWasFirstHeartbeat') end`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
+  }
+
+  async function getRunStatus(runId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunReadAccess(runId: string) {
+    return db
+      .select(heartbeatRunReadAccessColumns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function getRunLogAccess(runId: string) {
     return db
       .select(heartbeatRunLogAccessColumns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunWorkspaceAccess(runId: string) {
+    return db.select({
+      ...heartbeatRunReadAccessColumns,
+      executionWorkspaceId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionWorkspaceId'`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
   }
 
   async function getRuntimeState(agentId: string) {
@@ -1663,6 +1757,9 @@ export function createHeartbeatRunState(db: Db) {
     getAgent,
     resolveSessionBeforeForWakeup,
     getRun,
+    getRunCleanupState,
+    getRunExecutionWait,
+    getRunWorkspaceSettlement,
     ensureRuntimeState,
     getTaskSession,
     getLatestAgentConfigRevision,
@@ -1672,7 +1769,10 @@ export function createHeartbeatRunState(db: Db) {
     clearTaskSessions,
     resolveExplicitResumeSessionOverride,
     hasResolvablePriorSessionWorkspaceForWake,
+    getRunStatus,
+    getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
 
     listRuns: async (
       companyId: string,
@@ -1863,7 +1963,7 @@ export function createHeartbeatRunState(db: Db) {
       };
     },
 
-    listEvents: (runId: string, afterSeq = 0, limit = 200) =>
+    listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
         .select()
         .from(heartbeatRunEvents)
@@ -1871,6 +1971,7 @@ export function createHeartbeatRunState(db: Db) {
           and(
             eq(heartbeatRunEvents.runId, runId),
             gt(heartbeatRunEvents.seq, afterSeq),
+            conversationOnly ? conversationEventCondition(runId) : undefined,
           ),
         )
         .orderBy(asc(heartbeatRunEvents.seq))
@@ -1901,6 +2002,19 @@ export function createHeartbeatRunState(db: Db) {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .limit(1);
+      return run ?? null;
+    },
+
+    getRunIssueControl: async (runId: string) => {
+      const [run] = await db.select(heartbeatRunIssueControlColumns).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId)).limit(1);
+      return run ?? null;
+    },
+
+    getActiveRunIssueControlForAgent: async (agentId: string) => {
+      const [run] = await db.select(heartbeatRunIssueControlColumns).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")))
+        .orderBy(desc(heartbeatRuns.startedAt)).limit(1);
       return run ?? null;
     },
 

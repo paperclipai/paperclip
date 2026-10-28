@@ -1,3 +1,4 @@
+import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { providerEffectPayload } from "../provider-effects.js";
 import { notifyChatDeliveryWork, notifyChatPublicationWork, notifyChatActionWork } from "../../chat-work-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
@@ -218,6 +219,7 @@ export function createChatPublicationResolution(db: Db, options: ResolutionOptio
           ) { await recordPhotonPublicationRetry(tx, endpointId, publication, userId); }
           const now = new Date();
           await notifyChatPublicationWork(tx);
+          await notifyVoicePublication(tx, initialRecord.endpoint, publication.conversationId);
           await tx
             .update(chatPublications)
             .set(

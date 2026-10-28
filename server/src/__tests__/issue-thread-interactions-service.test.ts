@@ -2729,6 +2729,33 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect((await db.select().from(issueThreadInteractions))[0]?.status).toBe("pending");
   });
 
+  it.each(["verdicts", "suggestions", "dismiss"] as const)(
+    "rolls back %s when external action authorization or receipt ownership changes",
+    async (kind) => {
+      const { companyId, issueId } = await seedConfirmationIssue("External form transaction");
+      const issue = { id: issueId, companyId };
+      const interaction = await interactionsSvc.create(issue, kind === "verdicts"
+        ? { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [{ id: "api", label: "API" }] } }
+        : { kind: "suggest_tasks", payload: { version: 1, tasks: [{ clientKey: "check", title: "Check the result" }] } },
+        { userId: "local-board" });
+      const resolve = (options: import("../services/issue-thread-interactions.js").InteractionResolutionMutationOptions) => kind === "verdicts"
+        ? interactionsSvc.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "api", verdict: "approve" }] }, { userId: "local-board" }, options)
+        : kind === "dismiss"
+          ? interactionsSvc.rejectInteraction(issue, interaction.id, {}, { userId: "local-board" }, options)
+          : interactionsSvc.acceptInteraction(issue, interaction.id, { selectedClientKeys: ["check"] }, { userId: "local-board" }, options);
+      for (const hook of ["beforeResolveInTransaction", "afterResolveInTransaction"] as const) {
+        await expect(resolve({ [hook]: async () => { throw new Error("External action no longer authorized"); } })).rejects.toThrow("External action no longer authorized");
+        expect((await interactionsSvc.listForIssue(issueId)).find(item => item.id === interaction.id)).toMatchObject({ status: "pending", result: null });
+        expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId))).toEqual([]);
+      }
+      await resolve({});
+      const resolved = (await interactionsSvc.listForIssue(issueId)).find(item => item.id === interaction.id);
+      expect(resolved?.status).toBe(kind === "verdicts" ? "answered" : kind === "dismiss" ? "rejected" : "accepted");
+      const children = await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, issueId));
+      expect(children).toHaveLength(kind === "suggestions" ? 1 : 0);
+    },
+  );
+
   it("submits request_item_verdicts partially and completes when all items are resolved", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Item verdict partial submit");
 

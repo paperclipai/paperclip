@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, caseIssueLinks, cases, documents, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, caseIssueLinks, cases, documents, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages, workflows } from "@paperclipai/db";
 import { SYSTEM_ISSUE_DOCUMENT_KEYS } from "@paperclipai/shared";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -83,6 +83,47 @@ describe("native case tools through authenticated production routes", () => {
       page = await f.call("read_case", { ...selector, offsetBytes, snapshot }) as DocumentPage;
     }
   }
+  it.each(["update_case", "create_workflow", "update_workflow"])("recovers a committed %s result without repeating its write", async tool => {
+    const f = await fixture();
+    const key = `lost-${tool}`;
+    let input: Record<string, unknown>;
+    if (tool === "update_case") input = { idempotencyKey: key, title: "Recovered case" };
+    else if (tool === "create_workflow") input = { idempotencyKey: key, name: "Recovered workflow", prompt: "Preserve this procedure." };
+    else {
+      const created = await f.call("create_workflow", { idempotencyKey: "seed", name: "Before", prompt: "Preserve this procedure." }) as { data: { id: string } };
+      input = { idempotencyKey: key, workflowId: created.data.id, name: "Recovered workflow" };
+    }
+    const original = await f.call(tool, input);
+    expect(original).toMatchObject({ ok: true });
+    const snapshot = async () => ({
+      cases: await server.db.select().from(cases).where(eq(cases.id, f.record.id)),
+      events: await server.db.select().from(caseEvents).where(eq(caseEvents.caseId, f.record.id)),
+      workflows: await server.db.select().from(workflows).where(eq(workflows.companyId, f.companyId)),
+    });
+    const before = await snapshot();
+    const replacement = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true, workMode: "standard" });
+    const recover = (arguments_: unknown = input) => replacement.recover({ tool, callId: "lost-provider-response", arguments: arguments_ });
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Recovery must not dispatch HTTP"));
+    try {
+      expect(await recover()).toEqual({ result: original });
+      expect(await recover({ ...input, idempotencyKey: "no-receipt" })).toBeNull();
+      expect(await recover({ ...input, ...(tool === "update_case" ? { title: "Different" } : { name: "Different" }) })).toBeNull();
+      const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const completed = run!.resultJson!;
+      const receipts = completed.apiToolReceipts as Record<string, Record<string, unknown>>;
+      await server.db.update(heartbeatRuns).set({ resultJson: { ...completed, apiToolReceipts:
+        Object.fromEntries(Object.entries(receipts).map(([id, receipt]) => [id, { ...receipt, state: "pending" }])) } }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await recover()).toBeNull();
+      await server.db.update(heartbeatRuns).set({ resultJson: completed }).where(eq(heartbeatRuns.id, f.runId));
+      const disabled = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: false, workMode: "standard" });
+      await expect(disabled.recover({ tool, callId: "lost-provider-response", arguments: input })).rejects.toThrow("Cases are disabled");
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+      await expect(recover()).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+      expect(await snapshot()).toEqual(before);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { fetch.mockRestore(); }
+  });
+
   it("exposes case facts and creation without a second document tool surface", async () => {
     const f = await fixture();
     const names = f.authority.definitions().map(tool => tool.name);

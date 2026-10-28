@@ -68,7 +68,10 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   const hash = receiptFingerprint(envelope);
   return withAccountingTransaction(db, envelope.companyId, async (tx, publications) => {
-    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
+    const [run] = await tx.select({
+      id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status,
+      usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt,
+    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, envelope.runId), eq(heartbeatRuns.companyId, envelope.companyId))).for("update");
     if (!run) throw notFound("Accounting run not found");
     const [existing] = await tx.select().from(runUsageReceipts).where(and(eq(runUsageReceipts.companyId, envelope.companyId), eq(runUsageReceipts.runId, envelope.runId), eq(runUsageReceipts.sourceId, envelope.sourceId), eq(runUsageReceipts.sequence, envelope.sequence)));
     if (existing && existing.receiptHash !== hash) throw conflict("Conflicting usage checkpoint replay");

@@ -511,6 +511,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
       )
         throw conflict(
           "This publication key was already used for different content",
+          { reasonCode: "github_idempotency_conflict" },
         );
       return existing.id;
     }
@@ -842,6 +843,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         )
           throw conflict(
             "This run already submitted its assessment. Start another review to revise it.",
+            { reasonCode: "github_idempotency_conflict" },
           );
         await tx
           .update(chatGitHubReviews)

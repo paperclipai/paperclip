@@ -47,6 +47,8 @@ export interface NativeRunnerFileHandoffBinding {
   readonly executionTargetKind: "local" | "remote";
   /** Server-bound reader. Never supplied by the model or a request body. */
   readonly readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
+  /** Provider-bound reader which authorizes absolute paths within task-granted locations. */
+  readonly readRemoteTaskFile?: RemoteWorkspaceFileReader;
 }
 
 export interface NativeRunnerFileHandoffInput {
@@ -296,7 +298,7 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   );
 }
 
-async function readVerifiedWorkspaceFile(
+export async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
@@ -326,14 +328,15 @@ async function readVerifiedWorkspaceFile(
   }
 
   if (binding.executionTargetKind === "remote") {
-    if (!binding.readRemoteWorkspaceFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+    const readFile = binding.readRemoteTaskFile ?? binding.readRemoteWorkspaceFile;
+    if (!readFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
     const contentRef = requiredText(input.contentRef, "content_ref", 2_000);
-    if (path.posix.isAbsolute(contentRef) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
+    if ((!binding.readRemoteTaskFile && path.posix.isAbsolute(contentRef)) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
       || contentRef.includes("\\") || path.posix.normalize(contentRef) === ".."
       || path.posix.normalize(contentRef).startsWith("../")) {
       throw new Error("paperclip_runner_file_handoff_path_denied");
     }
-    const body = await binding.readRemoteWorkspaceFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
+    const body = await readFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
     if (body.length !== input.byteSize) throw new Error("paperclip_runner_file_handoff_size_denied");
     if (createHash("sha256").update(body).digest("hex") !== expectedSha256) throw new Error("paperclip_runner_file_handoff_hash_mismatch");
     return { body, contentType, filename, sha256: expectedSha256, title };
@@ -1138,14 +1141,11 @@ async function assertCurrentBinding(
 export async function prepareNativeRunnerFileHandoff(input: {
   readonly db: Db;
   readonly binding: NativeRunnerFileHandoffBinding;
-  readonly deliverable: NativeRunnerFileHandoffInput;
+  readonly verifiedFile: VerifiedWorkspaceFile;
   readonly storage?: StorageService;
 }): Promise<PreparedNativeRunnerFileHandoff> {
   const { statusVersion } = await assertCurrentBinding(input.db, input.binding);
-  const verified = await readVerifiedWorkspaceFile(
-    input.binding,
-    input.deliverable,
-  );
+  const verified = input.verifiedFile;
 
   const [existing] = await input.db
     .select({

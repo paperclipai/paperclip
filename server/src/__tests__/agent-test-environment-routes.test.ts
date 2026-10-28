@@ -39,12 +39,18 @@ const mockReleaseRunLease = vi.hoisted(() => vi.fn(async () => undefined));
 const mockEnvironmentRuntime = vi.hoisted(() => ({
   acquireRunLease: vi.fn(),
   realizeWorkspace: vi.fn(),
+  supportsTasks: vi.fn(async () => false),
   getDriver: vi.fn(() => ({
     releaseRunLease: mockReleaseRunLease,
   })),
 }));
 
 const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
+const mockPluginEnvironmentRequiresAgent = vi.hoisted(() => vi.fn(async () => false));
+vi.mock("../services/plugin-environment-driver.js", async importOriginal => ({
+  ...(await importOriginal<typeof import("../services/plugin-environment-driver.js")>()),
+  pluginEnvironmentRequiresAgent: mockPluginEnvironmentRequiresAgent,
+}));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false, executionMode: "local" })),
@@ -123,6 +129,13 @@ vi.mock("../services/ai-connection-runtime.js", async (importOriginal) => ({
     try { return await probe(runtime); } finally { await runtime.cleanup(); }
   },
 }));
+// Runner selection stays real unless a test overrides the resolved adapter.
+const mockResolveNewAgentRunnerForCompany = vi.hoisted(() => vi.fn());
+vi.mock("../services/agent-runner-selection.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-runner-selection.js")>();
+  mockResolveNewAgentRunnerForCompany.mockImplementation(actual.resolveNewAgentRunnerForCompany);
+  return { ...actual, resolveNewAgentRunnerForCompany: mockResolveNewAgentRunnerForCompany };
+});
 const mockValidateAiApiKey = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("../services/ai-api-key-test.js", () => ({ validateAiApiKey: mockValidateAiApiKey }));
 const mockMarkAuthenticationFailed = vi.hoisted(() => vi.fn(async () => undefined));
@@ -796,6 +809,10 @@ describe("agent test-environment route", () => {
     expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
       expect.objectContaining({
         applyCustomImageTemplate: true,
+        configuredEnvironment: expect.objectContaining({
+          id: "11111111-1111-4111-8111-111111111111",
+          config: { provider: "fake-plugin" },
+        }),
         // The Test lease re-checks the company binding, so a binding change
         // between the route guard and the lease cannot open a foreign sandbox.
         assertCompanyBinding: true,
@@ -1022,6 +1039,93 @@ describe("agent test-environment route", () => {
         expect.objectContaining({ code: "environment_target_unsupported", level: "warn" }),
         expect.objectContaining({ code: "environment_env_binding_missing", level: "error" }),
       ]);
+    });
+  });
+
+  describe("driver guard after runner selection", () => {
+    const pluginEnvironment = {
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      name: "Agent computer",
+      driver: "plugin",
+      status: "active",
+      config: { pluginKey: "acme.computers", driverKey: "tasks", driverConfig: {} },
+    };
+    const savedAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    beforeEach(() => {
+      mockEnvironmentService.getById.mockResolvedValue(pluginEnvironment);
+      mockResolveNewAgentRunnerForCompany.mockClear();
+    });
+
+    it("reports the missing agent prerequisite without acquiring a lease or probing the host", async () => {
+      mockPluginEnvironmentRequiresAgent.mockResolvedValueOnce(true);
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({ adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ status: "warn", checks: [{ code: "environment_agent_required", level: "warn" }] });
+      expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    });
+
+    it("checks the plugin driver against the resolved Runner adapter, not the requested harness", async () => {
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/claude_local/test-environment")
+        .send({ adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(mockResolveNewAgentRunnerForCompany).toHaveBeenCalledWith(expect.anything(), "company-1",
+        expect.objectContaining({ adapterType: "claude_local", defaultEnvironmentId: pluginEnvironment.id }));
+      // The driver check passes, and the resolved Runner leases the plugin
+      // environment. The probe stops at the controlled task-capability check.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
+        adapterType: "paperclip_runner",
+        environment: expect.objectContaining({ id: pluginEnvironment.id, driver: "plugin" }),
+      }));
+      expect(mockEnvironmentRuntime.supportsTasks).toHaveBeenCalledWith({ lease: expect.objectContaining({ id: "lease-1" }) });
+      expect(res.body).toMatchObject({
+        adapterType: "paperclip_runner",
+        status: "fail",
+        checks: [expect.objectContaining({ detail: "Plugin environment does not provide native Runner task execution" })],
+      });
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    });
+
+    it("still rejects a plugin environment when selection keeps a legacy adapter, before resolving secrets", async () => {
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "external_test", adapterConfig: {} });
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ adapterConfig: { env: { FOO: "bar" } }, environmentId: pluginEnvironment.id });
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.error).toContain('Environment driver "plugin" is not allowed here');
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    });
+
+    it("re-resolves a saved adapter that cannot run on the requested environment", async () => {
+      mockAgentService.getById.mockResolvedValue({ id: savedAgentId, companyId: "company-1", adapterType: "external_test", adapterConfig: {}, runtimeConfig: {} });
+      mockResolveNewAgentRunnerForCompany.mockResolvedValueOnce({ adapterType: "external_test", adapterConfig: {} });
+      const app = await createApp();
+      await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ agentId: savedAgentId, adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(mockResolveNewAgentRunnerForCompany).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a saved adapter's execution when it can run on the requested environment", async () => {
+      mockEnvironmentService.getById.mockResolvedValue({ ...pluginEnvironment, driver: "local", config: {} });
+      mockAgentService.getById.mockResolvedValue({ id: savedAgentId, companyId: "company-1", adapterType: "external_test", adapterConfig: {}, runtimeConfig: {} });
+      const app = await createApp();
+      await request(app)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({ agentId: savedAgentId, adapterConfig: {}, environmentId: pluginEnvironment.id });
+      expect(mockResolveNewAgentRunnerForCompany).not.toHaveBeenCalled();
     });
   });
 

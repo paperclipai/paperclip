@@ -1,3 +1,4 @@
+import { notifyChatConnectionConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export async function notifyChatDeliveryWork(tx: object): Promise<void> {
@@ -37,4 +38,5 @@ export async function notifyChatEndpointWork(tx: object, connectionId: string): 
   for (const queue of Object.values(CHAT_ACTION_QUEUES)) await notifyDeliveryWork(tx, queue);
   await notifyChatVerificationWork(tx);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatTelegramSubscriptions, connectionId);
+  await notifyChatConnectionConfiguration(tx, connectionId);
 }

@@ -30,6 +30,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
   ) {
+    await actor?.managementContext?.reauthorize();
     return measureRunPhase("connectors.github.refresh", async () => {
       try {
         return await refreshManagedGitHubGrantAccessOnce(
@@ -64,6 +65,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
   ) {
+    await actor?.managementContext?.reauthorize();
     let grant = await measureRunPhase("connectors.github.credentials", () => refreshOAuthGrantCredentials({
       companyId: connection.companyId,
       connectionId: connection.id,

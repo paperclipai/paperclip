@@ -40,6 +40,13 @@ Installation may return before GitHub's separately delivered signed webhook
 ping. Paperclip keeps the same draft and credentials, shows a waiting state,
 and continues automatically after authenticating the ping. Refreshing or
 resuming that draft must not create another App or bypass signature verification.
+While this Cloud setup screen is waiting, its authenticated advance request also
+drains the existing sealed event queue. It can bypass an older idle-connection
+backoff, at most once every five seconds. Setup and background requests share
+one in-flight lease. The normal stack webhook handler still authenticates the
+original GitHub bytes before setup can continue. This adds no background timer;
+closing the screen stops these readiness requests. Existing background recovery
+and its sleep restrictions remain unchanged.
 
 New connections default to authorized mentions, advisory reviews, linked-member
 access, guests off, and enabled bot GitHub tools. Existing instructions, explicit
@@ -127,6 +134,13 @@ choose an active sponsor, and use the restricted guest profile. Guests receive n
 sponsor credentials. Authority is checked again before tool calls and
 publication, so revocation also affects queued or ongoing work.
 
+The username lookup uses the bot's own GitHub App installation with a short-lived,
+metadata-only token. It does not use a personal account or the shared unauthenticated
+IP quota. An active connection with a verified installation is required. GitHub
+supports installation tokens for [Get a user](https://docs.github.com/en/rest/users/users#get-a-user)
+without additional permissions. Lookup errors distinguish unavailable accounts,
+rate limits, and installation authentication or access failures.
+
 Choose automatic events and author filters in **Settings** to control which
 authored PRs and issues start work. Authorized mentions remain available with
 automatic events off and bypass automatic author filters. The shared external-
@@ -161,6 +175,19 @@ filters. It cannot bypass repository restrictions, excluded files, or access
 permissions. Ordinary discussion does not change a review score. Repeat review
 mentions and pushes continue the existing task; inline replies return to the
 task owning that thread.
+
+A successful native execution can still be resolving its visible response.
+Without a confirmed reply for that run, maintenance waits for its committed
+presentation decision before choosing a completion fallback. It then uses the same saved request to settle the wait,
+publish a genuine missing-response notice, or report a failed turn.
+
+A queued or running follow-up acknowledgement preserves an existing App-owned
+final PR summary. A new validated assessment can replace it through the review
+publication path. When an authorized native turn commits a passive response
+wait with no new comment, maintenance settles that request's acknowledgement
+without replacing the assessment with a generic completion notice. This does
+not count the old summary as a reply from the new run. Missing or failed
+responses still receive their normal fallback; uncertain writes remain held.
 
 Event prompts supplement the agent's instructions. Repository content and PR
 prose are untrusted input and cannot change tool authority or publication policy.
@@ -242,9 +269,15 @@ the receipt.
 
 Receipt recovery compares the complete saved publication request, including long
 text and nested coverage entries. Shortened audit previews do not establish
-request identity. Changed content or a missing durable publication returns a
-conflict without dispatching another write. Exact retries read the current
-receipt; the durable worker owns pending publication retries.
+request identity. Changed content or a missing completed durable publication
+returns a conflict without dispatching another write. Exact retries read the
+current receipt; the durable worker owns pending publication retries.
+
+A timeout during metadata or file reads can occur before publication staging.
+The same request can repeat this preflight with its complete request identity.
+The saved assessment, unique publication key, and provider lease still prevent
+repeat external writes. `begin_review` retries return the run's current review
+result. They do not return a shortened audit preview.
 
 For a call that required human approval, the durable publication keeps that
 verified approval for its exact operation. An exact caller retry only reads the

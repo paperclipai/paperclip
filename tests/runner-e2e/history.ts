@@ -1,7 +1,11 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
+import { buildCampaignAccounting } from "./attempt-accounting.js";
+import { validateEvalOperationsReport } from "./operations-report.js";
+import { validateCampaignFeedbackReview } from "./feedback-dispositions.js";
+import { validateBraintrustExperimentReceipt } from "./braintrust-experiment.js";
 import { classifyLatency } from "./latency-timing.js";
 import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
-import { validateRetainedRunnerResult } from "./result-validation.js";
+import { validateCampaignAccounting, validateRetainedRunnerResult } from "./result-validation.js";
 import {
   discoverReportCatalog,
   parseReportExecutionId,
@@ -9,12 +13,13 @@ import {
 } from "./report-catalog.js";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import {
-  aggregateCampaignBilling,
+  aggregateBillingSummaries,
   summarizeExecutionBilling,
 } from "./billing.js";
 import { resolveRunnerE2ESource } from "./source.js";
 import type {
   RunnerE2ECampaign,
+  RunnerE2ECampaignAccounting,
   RunnerE2EHistoryCampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -71,6 +76,12 @@ export function buildRunnerCampaign(input: {
   generatedAt: string;
   expected: readonly string[];
   results: readonly RunnerE2EResult[];
+  attempts?: readonly RunnerE2EResult[];
+  accounting?: RunnerE2ECampaignAccounting;
+  operations?: RunnerE2ECampaign["operations"];
+  feedbackReview?: RunnerE2ECampaign["feedbackReview"];
+  braintrustExperiment?: RunnerE2ECampaign["braintrustExperiment"];
+  excludedArtifacts?: number;
   eventName?: string | null;
   catalog?: readonly ReportExecution[];
 }): RunnerE2ECampaign {
@@ -79,6 +90,28 @@ export function buildRunnerCampaign(input: {
     ...upgradeRunnerResult(result),
     billing: result.billing ?? summarizeExecutionBilling(result),
   }));
+  const accounting = input.accounting ?? buildCampaignAccounting({
+    results,
+    attempts: input.attempts?.map(upgradeRunnerResult),
+    excludedArtifacts: input.excludedArtifacts,
+  });
+  validateCampaignAccounting(accounting);
+  if (input.operations) validateEvalOperationsReport(input.operations);
+  const billingFor = (selectedResults: readonly RunnerE2EResult[]) => {
+    const ids = new Set(selectedResults.map(result => result.executionId));
+    const receipts = accounting.attempts.filter(attempt => ids.has(attempt.executionId));
+    const billing = aggregateBillingSummaries([
+      ...receipts,
+      ...selectedResults.filter(result => !receipts.some(attempt => attempt.executionId === result.executionId))
+        .map(result => ({ executionId: result.executionId, billing: summarizeExecutionBilling(result) })),
+    ]);
+    billing.testsWithCompleteBilling = selectedResults.filter(result => {
+      const retained = receipts.filter(attempt => attempt.executionId === result.executionId);
+      return retained.length > 0 && retained.every(attempt => attempt.billing.complete) &&
+        new Set(retained.map(attempt => attempt.attempt)).size >= Math.max(result.attempt, ...retained.map(attempt => attempt.attempt));
+    }).length;
+    return billing;
+  };
   const knownCatalog = input.catalog ?? runnerMatrix;
   const catalog = discoverReportCatalog({
     catalog: knownCatalog,
@@ -150,7 +183,7 @@ export function buildRunnerCampaign(input: {
           (total, result) => total + result.durationMs,
           0,
         ),
-        billing: aggregateCampaignBilling(suiteResults),
+        billing: billingFor(suiteResults),
       };
     })
     .filter((suite): suite is NonNullable<typeof suite> => Boolean(suite));
@@ -175,7 +208,7 @@ export function buildRunnerCampaign(input: {
       ),
     ).values(),
   ];
-  return {
+  const campaign: RunnerE2ECampaign = {
     schema: "paperclip.runner-e2e.campaign/v2",
     campaignId: input.campaignId,
     generatedAt: input.generatedAt,
@@ -195,10 +228,17 @@ export function buildRunnerCampaign(input: {
     ),
     cleanupPassed: results.every((result) => result.cleanup === "passed"),
     rankingSnapshots,
-    billing: aggregateCampaignBilling(results),
+    billing: billingFor(results),
+    accounting,
+    ...(input.operations ? { operations: input.operations } : {}),
+    ...(input.feedbackReview ? { feedbackReview: input.feedbackReview } : {}),
+    ...(input.braintrustExperiment ? { braintrustExperiment: input.braintrustExperiment } : {}),
     suites,
     results,
   };
+  if (campaign.feedbackReview) validateCampaignFeedbackReview(campaign, campaign.feedbackReview);
+  if (campaign.braintrustExperiment) validateBraintrustExperimentReceipt(campaign, campaign.braintrustExperiment);
+  return campaign;
 }
 
 export function campaignHistoryRecord(
@@ -253,6 +293,7 @@ export function emptyRunnerHistory(): RunnerE2EHistoryIndex {
 export function mergeRunnerHistory(
   current: RunnerE2EHistoryIndex | null | undefined,
   campaign: RunnerE2EHistoryCampaign,
+  retention?: { now: number; maxAgeMs: number; maxCampaigns: number },
 ): RunnerE2EHistoryIndex {
   const base =
     current?.schema === "paperclip.runner-e2e.history/v1"
@@ -263,10 +304,14 @@ export function mergeRunnerHistory(
     ...base.campaigns.filter(
       (candidate) => candidate.campaignId !== campaign.campaignId,
     ),
-  ].sort(
+  ].filter(candidate => !retention || (
+    Number.isFinite(Date.parse(candidate.generatedAt)) &&
+    Date.parse(candidate.generatedAt) > retention.now - retention.maxAgeMs &&
+    Date.parse(candidate.generatedAt) <= retention.now + 60_000
+  )).sort(
     (left, right) =>
       Date.parse(right.generatedAt) - Date.parse(left.generatedAt),
-  );
+  ).slice(0, retention?.maxCampaigns);
   const latestBySuite: Record<string, string> = {};
   const latestGreenBySuite: Record<string, string> = {};
   for (const candidate of campaigns) {
@@ -279,7 +324,7 @@ export function mergeRunnerHistory(
   }
   return {
     schema: "paperclip.runner-e2e.history/v1",
-    updatedAt: new Date().toISOString(),
+    updatedAt: new Date(retention?.now ?? Date.now()).toISOString(),
     latestCampaignId: campaigns[0]?.campaignId ?? null,
     latestGreenCampaignId:
       campaigns.find(

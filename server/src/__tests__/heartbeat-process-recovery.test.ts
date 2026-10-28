@@ -1,5 +1,6 @@
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import * as conversationContinuation from "../services/conversation-continuation.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../services/environment-runtime.js";
 import * as workspaceRuntime from "../services/workspace-runtime.js";
@@ -2641,6 +2642,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id)))[0])
       .toMatchObject({ status: "resolved", resolutionNote: "source_terminal" });
     await heartbeat.drainActiveRunExecutions();
+  });
+
+  it("resolves stale recovery on terminal tasks unless system recovery is still in flight", async () => {
+    const f = await seedRunFixture({ runStatus: "failed" });
+    const seedTerminalAction = async (action: Partial<typeof issueRecoveryActions.$inferInsert>) => {
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Closed recovery source",
+        status: "done", completedAt: new Date(), assigneeAgentId: f.agentId }).returning();
+      const [row] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issue.id,
+        kind: "active_run_watchdog", status: "active", ownerType: "agent", ownerAgentId: f.agentId,
+        cause: "native_finalization_error", fingerprint: randomUUID(), evidence: { runId: f.runId },
+        nextAction: "Resume the native run.", ...action }).returning();
+      return row;
+    };
+    const agentNative = await seedTerminalAction({ wakePolicy: { kind: "resume_native_run", runId: f.runId } });
+    const systemEscalated = await seedTerminalAction({ status: "escalated", ownerType: "system", ownerAgentId: null });
+    const systemInFlight = await seedTerminalAction({ ownerType: "system", ownerAgentId: null,
+      evidence: { runId: f.runId, systemRecovery: createSystemRecovery(f.runId) } });
+
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    for (const action of [agentNative, systemEscalated]) {
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0])
+        .toMatchObject({ status: "resolved", outcome: "restored", resolutionNote: "source_terminal" });
+    }
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, systemInFlight.id)))[0])
+      .toMatchObject({ status: "active", resolvedAt: null });
   });
 
   it.each(["settled", "rejected", "late_callback", "provider_transport_failed"] as const)(
@@ -15649,6 +15676,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     "comment",
     "wake",
     "run",
+    "run_context",
+    "run_metadata",
     "attention",
   ] as const)(
     "does not clobber a newer %s while native blocker repair waits on the issue lock",
@@ -15723,6 +15752,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             continuationPolicy: "wake_assignee",
             payload: { version: 1, questions: [] },
           });
+        if (change === "run_context")
+          await tx.update(heartbeatRuns).set({
+            contextSnapshot: sql`jsonb_set(${heartbeatRuns.contextSnapshot}, '{paperclipTaskMarkdown}', '"Changed execution instructions"'::jsonb)`,
+          }).where(eq(heartbeatRuns.id, runId));
+        if (change === "run_metadata")
+          await tx.update(heartbeatRuns).set({ stdoutExcerpt: "Late execution output" }).where(eq(heartbeatRuns.id, runId));
         [snapshot] = await tx
           .select()
           .from(issues)
@@ -15766,6 +15801,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           ),
       ).toHaveLength(0);
       expect(mockAdapterExecute).not.toHaveBeenCalled();
+      if (change === "run_context" || change === "run_metadata") {
+        expect((await heartbeat.reconcileStrandedAssignedIssues()).escalated).toBe(1);
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+      }
     },
   );
 

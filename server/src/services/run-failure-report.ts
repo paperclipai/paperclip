@@ -236,6 +236,19 @@ function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureRe
     options.phase !== "setup" && run.signal == null;
 }
 
+const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
+
+/**
+ * The ACP agent typed its terminal failure as `access` (provider auth_required),
+ * and the adapter kept it on the sign-in recovery path. The run blocks and the
+ * user gets a reconnect request, so Sentry adds no signal.
+ */
+function isAcpProviderAccessFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode != null && providerAuthErrorCodes.has(run.errorCode) &&
+    asRecord(asRecord(run.resultJson)?.terminalSessionFailure)?.category === "access" &&
+    options.phase !== "setup" && run.signal == null;
+}
+
 /**
  * The Grok endpoint refused every work wake with an HTTP 4xx, so the offer
  * expired unaccepted. Durable delivery receipts prove the external cause. A
@@ -284,6 +297,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isGitConnectionFailure(run, options) ||
     isProviderQuotaFailure(run, options) ||
     isCodexAcpModelCapacityFailure(run, options) ||
+    isAcpProviderAccessFailure(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;

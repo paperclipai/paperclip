@@ -2,7 +2,10 @@ import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
@@ -233,10 +236,6 @@ async function installActor(
   app: express.Express,
   actor?: Record<string, unknown>,
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -261,8 +260,6 @@ async function normalizePolicy(input: {
     >;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } =
-    await import("../services/issue-execution-policy.js");
   return normalizeIssueExecutionPolicy(input);
 }
 
@@ -3666,7 +3663,6 @@ describe("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    const { unprocessable } = await import("../errors.js");
     mockIssueService.update.mockRejectedValue(
       unprocessable("Issue can only have one assignee"),
     );

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import nodeFs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { publishWorkspaceSeedGeneration, readWorkspaceSeedGeneration } from "./workspace-seed-cache.js";
 
 function deferred<T>() {
@@ -162,4 +162,134 @@ it("rejects a company directory replaced during verification", async () => {
   })).toBe(false);
   expect(await fs.readdir(replacement)).toEqual([]);
   expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+});
+
+describe("eviction", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  async function lastUsed(directory: string, ms: number) {
+    await fs.utimes(path.join(directory, "receipt.json"), new Date(ms), new Date(ms));
+  }
+
+  it("expires generations unused for the idle period when publishing, and removes emptied workspaces", async () => {
+    const f = await fixture(); const now = Date.now(); const options = { companyDirectory: f.company, now: () => now };
+    const other = path.join(f.company, "other");
+    expect(await publishWorkspaceSeedGeneration(other, generation(1), f.seed, options)).toBe(true);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+    await lastUsed(path.join(other, generation(1)), now - 8 * DAY);
+    await lastUsed(path.join(f.workspace, generation(2)), now - 6 * DAY);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, options)).toBe(true);
+    expect((await fs.readdir(f.company)).sort()).toEqual(["workspace"]);
+    expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(2), generation(3)]);
+    expect(await fs.readFile(f.archive, "utf8")).toBe("run recovery bytes");
+  });
+
+  it("counts a cache hit as use, so a recently read generation is not expired", async () => {
+    const f = await fixture(); const options = { companyDirectory: f.company };
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+    await lastUsed(path.join(f.workspace, generation(1)), Date.now() - 8 * DAY);
+    expect(await readWorkspaceSeedGeneration(f.workspace, generation(1))).not.toBeNull();
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+    expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2)]);
+  });
+
+  it("evicts the least recently used generation of the workspace when it is full", async () => {
+    const f = await fixture(); const now = Date.now();
+    const options = { companyDirectory: f.company, limits: { workspaceGenerations: 2 }, now: () => now };
+    for (const index of [1, 2]) expect(await publishWorkspaceSeedGeneration(f.workspace, generation(index), f.seed, options)).toBe(true);
+    await lastUsed(path.join(f.workspace, generation(1)), now - 3 * 60 * 60 * 1000);
+    await lastUsed(path.join(f.workspace, generation(2)), now - 2 * 60 * 60 * 1000);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, options)).toBe(true);
+    expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(2), generation(3)]);
+  });
+
+  it("evicts across workspaces under company pressure but never a generation used within the last hour", async () => {
+    const f = await fixture(); const now = Date.now();
+    const options = { companyDirectory: f.company, limits: { companyGenerations: 2 }, now: () => now };
+    const other = path.join(f.company, "other");
+    expect(await publishWorkspaceSeedGeneration(other, generation(1), f.seed, options)).toBe(true);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, options)).toBe(false);
+    await lastUsed(path.join(other, generation(1)), now - 2 * 60 * 60 * 1000);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(3), f.seed, options)).toBe(true);
+    expect((await fs.readdir(f.company)).sort()).toEqual(["workspace"]);
+    expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(2), generation(3)]);
+  });
+
+  it("runs optional verification only when eviction can make room", async () => {
+    const f = await fixture(); const now = Date.now(); const verify = vi.fn(async () => true);
+    const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 }, now: () => now, verify };
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+    verify.mockClear();
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(false);
+    expect(verify).not.toHaveBeenCalled();
+    await lastUsed(path.join(f.workspace, generation(1)), now - 2 * 60 * 60 * 1000);
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(await fs.readdir(f.workspace)).toEqual([generation(2)]);
+  });
+
+  it("never evicts abandoned pending directories and skips verification when only they fill the cache", async () => {
+    const f = await fixture(); const now = Date.now(); const verify = vi.fn(async () => true);
+    await fs.mkdir(path.join(f.workspace, ".pending-old"), { recursive: true });
+    await fs.utimes(path.join(f.workspace, ".pending-old"), new Date(now - 30 * DAY), new Date(now - 30 * DAY));
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+      companyDirectory: f.company, limits: { workspaceGenerations: 1 }, now: () => now, verify,
+    })).toBe(false);
+    expect(verify).not.toHaveBeenCalled();
+    expect(await fs.readdir(f.workspace)).toEqual([".pending-old"]);
+  });
+
+  it("never returns a cache hit that a concurrent eviction removes", async () => {
+    const f = await fixture(); const now = Date.now();
+    const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 }, now: () => now };
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+    await lastUsed(path.join(f.workspace, generation(1)), now - 2 * 60 * 60 * 1000);
+    const paused = deferred<void>(), release = deferred<void>();
+    const rename = fs.rename.bind(fs);
+    vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+      if (String(to).includes(".evicted-")) { paused.resolve(); await release.promise; }
+      return rename(from, to);
+    });
+    const publishing = publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options);
+    await paused.promise;
+    const reading = readWorkspaceSeedGeneration(f.workspace, generation(1), { companyDirectory: f.company });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    release.resolve();
+    const [hit, published] = await Promise.all([reading, publishing]);
+    expect(published).toBe(true);
+    if (hit) expect(await fs.readFile(hit.workspaceArchivePath, "utf8")).toBe("run recovery bytes");
+    else await expect(fs.access(path.join(f.workspace, generation(1)))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not evict from a company directory replaced during verification", async () => {
+    const f = await fixture(); const now = Date.now();
+    const options = { companyDirectory: f.company, limits: { workspaceGenerations: 1 }, now: () => now };
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+    await lastUsed(path.join(f.workspace, generation(1)), now - 8 * DAY);
+    const replacement = path.join(f.root, "other-company");
+    await fs.cp(f.company, replacement, { recursive: true, preserveTimestamps: true });
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, { ...options, verify: async () => {
+      await fs.rename(f.company, `${f.company}-retained`);
+      await fs.symlink(replacement, f.company);
+      return true;
+    } })).toBe(false);
+    expect(await fs.readdir(path.join(replacement, "workspace"))).toEqual([generation(1)]);
+  });
+
+  it("removes empty workspace directories so they do not hold workspace slots", async () => {
+    const f = await fixture(); await fs.mkdir(path.join(f.company, "abandoned"), { recursive: true });
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+      companyDirectory: f.company, limits: { companyWorkspaces: 1 },
+    })).toBe(true);
+    expect(await fs.readdir(f.company)).toEqual(["workspace"]);
+  });
+
+  it("removes leftovers of an interrupted eviction", async () => {
+    const f = await fixture(); const options = { companyDirectory: f.company };
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, options)).toBe(true);
+    await fs.mkdir(path.join(f.workspace, ".evicted-leftover"));
+    await fs.writeFile(path.join(f.workspace, ".evicted-leftover", "workspace.tar"), "stale");
+    expect(await publishWorkspaceSeedGeneration(f.workspace, generation(2), f.seed, options)).toBe(true);
+    expect((await fs.readdir(f.workspace)).sort()).toEqual([generation(1), generation(2)]);
+  });
 });

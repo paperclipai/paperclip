@@ -1,8 +1,9 @@
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { projectService } from "../services/projects.js";
 import { callProjectTool } from "../services/project-tools.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
@@ -357,6 +358,57 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(feed.filter(event => event.action === "project.created")).toHaveLength(1);
     expect(feed.find(event => event.action === "project.created")).toMatchObject({ entityId: project.id, runId: f.runId, details: { sourceIssueId: f.issueId } });
     await expect(call(f, "create_project", { ...input, name: "Changed" })).rejects.toThrow(/different inputs/);
+  });
+
+  it("recovers a committed project after losing its HTTP response without repeating the effect", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const request = { tool: "create_project", arguments: { name: "Surviving project", idempotencyKey: "lost-response" }, callId: randomUUID() };
+    const realFetch = globalThis.fetch;
+    const lostResponse = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
+      const response = await realFetch(url, options);
+      if (response.status === 201 && String(url).endsWith(`/companies/${f.companyId}/projects`)) {
+        await response.arrayBuffer();
+        throw new Error("Controller lost the committed response");
+      }
+      return response;
+    });
+    try {
+      await expect(f.authority.execute(request)).rejects.toThrow(/lost the committed response/);
+    } finally { lostResponse.mockRestore(); }
+    const committed = await f.snapshot();
+    const created = committed.projects.find(project => project.name === request.arguments.name)!;
+    expect(created).toBeDefined();
+    const recovered = await Promise.all(Array.from({ length: 4 }, () => new PaperclipRunnerToolAuthority(server.db, f).recover(request)));
+    expect(recovered).toEqual(Array.from({ length: 4 }, () => ({ result: expect.objectContaining({ id: created.id }) })));
+    await expect(new PaperclipRunnerToolAuthority(server.db, f).recover({ ...request, arguments: { ...request.arguments, name: "Changed" } })).rejects.toThrow(/different inputs/);
+    const after = await f.snapshot();
+    expect(after.projects.map(project => project.id).sort()).toEqual(committed.projects.map(project => project.id).sort());
+    expect(after.activity.filter(event => event.action === "project.created")).toHaveLength(1);
+    const foreign = await server.fixture({ disableWakeOnDemand: true });
+    expect(await foreign.authority.recover(request)).toBeNull();
+    await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(new PaperclipRunnerToolAuthority(server.db, f).recover(request)).rejects.toThrow();
+  });
+
+  it("holds an unknown project mutation without creating a project or audit event", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    const before = await f.snapshot();
+    const request = { tool: "create_project", arguments: { name: "Uncertain project", idempotencyKey: "unknown" }, callId: randomUUID() };
+    expect(await f.authority.recover(request)).toBeNull();
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const response = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/projects`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Receipt-Only": "true" },
+      body: JSON.stringify(request.arguments),
+    });
+    expect(response.status).toBe(204);
+    const missingKey = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/projects`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Receipt-Only": "true" },
+      body: JSON.stringify({ name: "Missing receipt key" }),
+    });
+    expect(missingKey.status).toBe(422);
+    const after = await f.snapshot();
+    expect(after.projects.map(project => project.id).sort()).toEqual(before.projects.map(project => project.id).sort());
+    expect(after.activity.filter(event => event.action === "project.created")).toEqual([]);
   });
 
   it("includes an explicit workspace repository in the committed project card", async () => {

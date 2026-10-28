@@ -506,11 +506,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       executionTarget.transport === "sandbox"
         ? (executionTarget.runnerLifecyclePolicy ?? null)
         : null;
-    // Codex refreshes its durable auth home; Copilot owns a fenced home
-    // and an explicitly bound token. Both retire on credential generation
-    // changes. Other managed harnesses require per-turn cleanup.
+    // Task providers own credential lifetime; process-backed managed homes retain their provider-specific cleanup policy.
     const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
-      supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution);
+      ((executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && !!executionTarget.runnerTask) ||
+        supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution));
     const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
       (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
@@ -718,7 +717,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
       const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
-        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)) === "claude_local")
+        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime"
           && parseObject(agent.adapterConfig).acpxAgent === "copilot")
@@ -971,6 +970,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             nativeToolContractFingerprint:
               nativeToolContractFingerprintForTarget(
                 executionTarget?.kind ?? "local",
+                nativeExecution!.provider.kind,
               ),
             ...(lockedProfile.sessionCheckpoint != null
               ? { sessionCheckpoint: lockedProfile.sessionCheckpoint }

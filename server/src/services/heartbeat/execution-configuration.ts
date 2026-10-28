@@ -26,6 +26,7 @@ import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/a
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
+import { environmentSkillConfig } from "../environment-skills.js";
 import type { selectHeartbeatEnvironment } from "./environment-selection.js";
 import type { createHeartbeatRetries } from "./retries.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
@@ -68,7 +69,7 @@ export interface HeartbeatExecutionConfigurationInput {
     aiBinding: AiConnectionBinding | undefined;
   };
   policy: Pick<HeartbeatWorkspacePreparationInput["policy"],
-    "trustPreset" | "useIsolatedTaskDirectory"> & { explicitTaskDirectory: boolean };
+    "trustPreset" | "useIsolatedTaskDirectory" | "requestedExecutionWorkspaceMode"> & { explicitTaskDirectory: boolean };
   environment: Pick<EnvironmentSelection,
     "selectedEnvironmentId" | "selectedEnvironmentForConfig" | "resolvedInstanceSettings" | "persistedNativeExecutionInput">;
   services: {
@@ -108,14 +109,17 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // preparation step can fail. Subsequent provider/identity values extend it.
   onFailureSecretsResolved(() => []);
   const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
-  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory } = input.policy;
+  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
   let managedAiRuntime: ManagedAiRuntime | undefined;
+  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
+    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
+  ));
   const mergedConfig = {
     ...sourceWorkspaceConfig,
     // The base below is already task-owned. Keep directory transport while
     // preserving isolated mode and the mandatory sandbox preflight.
-    ...((useIsolatedTaskDirectory || explicitTaskDirectory) ? { workspaceStrategy: { type: "project_primary" } } : {}),
+    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
   };
   const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
     mergedConfig,
@@ -228,18 +232,30 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   } else {
     delete context.paperclipSecrets;
   }
-  const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
-    resolvedConfig,
-    runScopedSkillKeys,
-  );
+  const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
+  const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
+  const savedShadowedSkills = Array.isArray(run.contextSnapshot?.shadowedSkills)
+    ? run.contextSnapshot.shadowedSkills.flatMap(value => {
+      const saved = parseObject(value);
+      return typeof saved.key === "string" && typeof saved.shadowedBy === "string" && Object.hasOwn(storedVersions, saved.shadowedBy)
+        ? [{ key: saved.key, shadowedBy: saved.shadowedBy }] : [];
+    }) : [];
+  const selectedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
+  const { config: effectiveResolvedConfig, skillKeys: environmentSkills, shadowedSkills } = hasStoredVersions
+    ? { config: selectedConfig, skillKeys: [], shadowedSkills: savedShadowedSkills }
+    : await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig, selectedConfig);
+  if (shadowedSkills?.length) {
+    context.shadowedSkills = shadowedSkills;
+    if (!hasStoredVersions) await appendRunEvent(run, { eventType: "skills.shadowed", stream: "system", level: "warn",
+      message: shadowedSkills.map(({ key, shadowedBy }) => `Skill "${key}" was skipped because required plugin skill "${shadowedBy}" uses the same name.`).join("\n"),
+      payload: { shadowedSkills } });
+  }
   const runtimeSkillPreference = readPaperclipSkillSyncPreference(
     effectiveResolvedConfig,
   );
   const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
   const skillsPrepareStartedAtMs = Date.now();
   let skillDeliveryConfig = effectiveResolvedConfig;
-  const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
-  const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
   const prepareSkills = async () => {
 
     try {
@@ -267,7 +283,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         // assignments from delivery; explicit task mentions remain errors below.
         skillDeliveryConfig = writePaperclipSkillSyncPreference(effectiveResolvedConfig,
           resolved.map(entry => ({ key: entry.key, versionId: entry.versionId ?? null })));
-        for (const key of runScopedMentionedSkillKeys) {
+        for (const key of [...runScopedMentionedSkillKeys.filter(key => !shadowedSkills?.some(skill => skill.key === key)), ...(hasStoredVersions ? [] : environmentSkills)]) {
           const entry = resolved.find(candidate => candidate.key === key);
           if (!entry || entry.sourceStatus === "missing") {
             throw new ConfigurationIncompleteFailure("A referenced skill is unavailable. Restore its installed version or update the task's skill reference.", {
@@ -279,7 +295,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
           const skillVersions = Object.fromEntries(resolved.map(entry => [entry.key, entry.versionId ?? entry.currentVersionId ?? null]));
           context.skillVersions = skillVersions;
           context.skillSelectionSnapshot = true;
-          await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions, skillSelectionSnapshot: true })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+          await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions, skillSelectionSnapshot: true, ...(shadowedSkills?.length ? { shadowedSkills } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
         }
         return resolved;
       }));

@@ -9,8 +9,12 @@ import { createSanitizedAcpxSpawnInput } from "./acpx/environment.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-const launch: ProviderObservabilityLaunch = { kind: "codex", compatibilityKey: "revision", environment: { OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000" }, otelConfig: {
-  exporter: { "otlp-http": { endpoint: "https://collector.example/v1/logs", protocol: "binary", headers: { authorization: "Bearer secret-canary" } } }, metrics_exporter: "none", log_agent_responses: true,
+const launch: ProviderObservabilityLaunch = { kind: "codex", compatibilityKey: "revision", environment: {
+  OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000",
+  OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20secret-canary",
+  OTEL_EXPORTER_OTLP_TRACES_HEADERS: "authorization=Bearer%20secret-canary",
+}, otelConfig: {
+  exporter: { "otlp-http": { endpoint: "https://collector.example/v1/logs", protocol: "binary", headers: {} } }, metrics_exporter: "none", log_agent_responses: true,
 } };
 it("transports a valid encoded header set in both Codex exporters without rejecting the launch", () => {
   const headers = Object.fromEntries([0, 1, 2, 3].map(index => [`x-custom-${index}`, encodeURIComponent("%".repeat(4000))]));
@@ -28,7 +32,18 @@ it("materializes the real native home with both governed MCP and protected expor
     nativeMcp: { name: "paperclip-assigned", url: "https://paperclip.example/mcp", token: "mcp-secret" } });
   const config = parse(await readFile(join(home, "config.toml"), "utf8"));
   expect(config.otel).toEqual(launch.otelConfig); expect(config.mcp_servers).toHaveProperty("paperclip-assigned");
+  expect(JSON.stringify(config)).not.toContain("secret-canary");
   expect((await stat(join(home, "config.toml"))).mode & 0o777).toBe(0o600);
+});
+it("delivers Codex headers only through its provider environment and redacts diagnostics", () => {
+  const source = applyProviderObservabilityEnvironment({ KEEP: "task" }, launch, true);
+  const sanitized = createSanitizedAcpxSpawnInput(source, "codex").env;
+  expect(sanitized).toMatchObject(launch.environment);
+  expect(sanitized.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG).not.toContain("secret-canary");
+  expect(configuredEnvironmentProjection(source).PAPERCLIP_CONFIGURED_ENV_KEYS).toBe('["KEEP"]');
+  expect(createSanitizedAcpxSpawnInput(source, "pi").env).not.toHaveProperty("OTEL_EXPORTER_OTLP_LOGS_HEADERS");
+  const diagnostic = redactObservabilityDiagnostic("Bearer secret-canary Bearer%20secret-canary secret-canary", sanitized);
+  expect(diagnostic).toBe("[REDACTED] [REDACTED] [REDACTED]");
 });
 it("passes only explicit Claude observability through its sanitizer and excludes task projection", () => {
   const source = { OTEL_LOGS_EXPORTER: "otlp", OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20secret-canary", KEEP: "task" };

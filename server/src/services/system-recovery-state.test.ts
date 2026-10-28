@@ -45,6 +45,19 @@ describe("durable system recovery budget", () => {
     expect(state).toMatchObject({ state: "exhausted", nextAttemptAt: null,
       failure: { code: "source_binding_invalid", retryClass: "service_required" } });
   });
+  it("persists only allowlisted source-verification evidence without changing the failure budget", () => {
+    const state = createSystemRecovery(randomUUID());
+    const failure = new SystemRecoveryFailure("source_binding_invalid", "service_required", undefined,
+      { reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment", token: "secret" } as never);
+    const result = failSystemRecovery(state, failure, { now: 1_000 });
+    expect(readSystemRecovery({ systemRecovery: result })?.failure?.sourceVerification).toEqual({
+      reason: "lease_policy_not_retained", observedLeasePolicy: "reuse_by_environment" });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(result).toMatchObject({ state: "exhausted", attempts: 0, nextAttemptAt: null, intentId: state.intentId });
+    const invalid = failSystemRecovery(state, new SystemRecoveryFailure("source_binding_invalid", "service_required", undefined,
+      { reason: "arbitrary secret", observedLeasePolicy: "private policy" } as never));
+    expect(invalid.failure?.sourceVerification).toBeUndefined();
+  });
   it("reads prior incident metadata without losing the local recovery budget or failure", () => {
     const state = failSystemRecovery(createSystemRecovery(randomUUID()),
       new SystemRecoveryFailure("source_unavailable", "service_required"), { now: 1_000 });

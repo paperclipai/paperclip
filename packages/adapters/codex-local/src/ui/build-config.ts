@@ -249,6 +249,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     provider,
     ...(provider === "codex"
       ? { model: resolvePaperclipRunnerModel("codex", config.model),
+          ...(v.search === false ? { search: false } : {}),
           ...(configuredEffort ? { modelReasoningEffort: configuredEffort } : {}) }
       : {}),
     codexPermissionMode: "never",

@@ -1,7 +1,12 @@
+import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
+import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
-import type { RunnerE2EResult } from "./types.js";
+import type { RunnerE2ECampaignAccounting, RunnerE2EResult } from "./types.js";
 import { DEPENDABLE_CELLS } from "./dependable-qualification.js";
+import { validateOnboardingConnectEvidence } from "./product-journeys/onboarding-connect.js";
+import { validateOnboardingArtifact } from "./product-journeys/artifact-evidence.js";
+import { validateOnboardingPreAcceptanceEvidence } from "./product-journeys/onboarding-pre-acceptance.js";
 
 type Rule = (value: unknown, at: string) => void;
 const invalid = (at: string): never => {
@@ -24,6 +29,10 @@ const integer: Rule = (value, at) => {
 };
 const boolean: Rule = (value, at) => {
   if (typeof value !== "boolean") invalid(at);
+};
+const booleanRecord: Rule = (value, at) => {
+  object(value, at);
+  for (const [key, entry] of Object.entries(value as object)) boolean(entry, `${at}.${key}`);
 };
 const object: Rule = (value, at) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid(at);
@@ -113,7 +122,7 @@ const relativeFile: Rule = (value, at) => {
 };
 const runtime = shape({
   provider: oneOf("local", "daytona"),
-  agentRunDurationMs: number,
+  agentRunDurationMs: nullable(number),
   leaseDurationMs: nullable(number),
   leaseCount: integer,
   cpuCores: optional(number),
@@ -134,12 +143,14 @@ const llm = shape({
   runCount: integer,
   runsWithTokenUsage: integer,
   runsWithReportedCost: integer,
+  runsWithEstimatedCost: optional(integer),
   inputTokens: number,
   outputTokens: number,
   cachedInputTokens: number,
   totalTokens: number,
   reportedCostUsd: number,
-  costStatus: oneOf("reported", "partial", "unpriced", "unavailable"),
+  estimatedCostUsd: optional(number),
+  costStatus: oneOf("reported", "estimated", "partial", "unpriced", "unavailable"),
 });
 const billing = shape({
   judge: optional(shape({ inputTokens: nullable(number), outputTokens: nullable(number), estimatedCostUsd: nullable(number), reservedCostUsd: number })),
@@ -151,6 +162,43 @@ const billing = shape({
   observedAndEstimatedCostUsd: nullable(number),
   complete: boolean,
 });
+const tracing = shape({
+  projectId: string, traceId: string, spanId: string, status: oneOf("pending", "accepted", "failed"),
+  verification: oneOf("unverified"), nativeConfiguration: oneOf("not_started", "configured", "failed"),
+  companyId: optional(string), revision: optional(string), errorCode: optional(string), httpStatus: optional(number),
+  finalization: optional(shape({ spanId: string, status: oneOf("accepted", "failed"), outcome: oneOf("passed", "failed"),
+    verification: oneOf("unverified"), errorCode: optional(string), httpStatus: optional(number) })),
+});
+const feedback = shape({
+  version: (value, at) => { if (value !== 1) invalid(at); },
+  collection: oneOf("complete", "partial", "unavailable", "not_started"),
+  invocationCollection: oneOf("complete", "partial", "unavailable", "not_started"),
+  toolAvailability: oneOf("observed", "unknown"),
+  complaints: integer, suggestions: integer, bodiesCollected: integer, runsInspected: integer,
+  invocations: shape({ completed: integer, failed: integer, unknown: integer }),
+  review: array(shape({ fingerprint: (value, at) => { if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) invalid(at); },
+    kind: oneOf("complaint", "suggestion"), occurrences: integer, disposition: oneOf("needs_investigation") })),
+});
+
+export function validateCampaignAccounting(value: RunnerE2ECampaignAccounting) {
+  shape({
+    version: (version, at) => { if (version !== 1) invalid(at); },
+    scope: oneOf("retained_attempts", "selected_results"),
+    missingAttempts: integer,
+    excludedArtifacts: integer,
+    attempts: array(shape({
+      id: string, executionId: string, attempt: integer,
+      startedAt: date, finishedAt: date, durationMs: number,
+      status: oneOf("passed", "failed"), cleanup: oneOf("not_started", "passed", "failed"), billing, feedback: optional(feedback), tracing: optional(tracing),
+    })),
+  })(value, "accounting");
+  if (new Set(value.attempts.map(attempt => attempt.id)).size !== value.attempts.length) invalid("accounting.attempts duplicate id");
+  for (const attempt of value.attempts) {
+    if (attempt.workerTiming !== undefined) {
+      try { validateWorkerTiming(attempt.workerTiming, attempt); } catch { invalid("accounting.attempts.workerTiming"); }
+    }
+  }
+}
 const matcher: Rule = (value, at) => {
   object(value, at);
   const item = value as Record<string, unknown>;
@@ -178,6 +226,7 @@ const matcher: Rule = (value, at) => {
   rule(value, at);
 };
 const fields = {
+  accountingIdentity: optional(shape({ campaignId: string, attemptId: string })),
   publicMcp: optional(assistant),
   schema: oneOf(
     "paperclip.runner-e2e.result/v1",
@@ -218,9 +267,10 @@ const fields = {
   profileId: string,
   environmentId: oneOf("local", "daytona"),
   caseId: string,
-  provider: string,
-  model: string,
-  runtimeMode: oneOf("legacy", "native"),
+  provider: nullable(string),
+  model: nullable(string),
+  runtimeMode: oneOf("legacy", "native", "none"),
+  targetUrl: optional(url),
   issueId: optional(string),
   issueIdentifier: optional(nullable(string)),
   runIds: optional(array(string)),
@@ -264,11 +314,13 @@ const fields = {
   startedAt: date,
   finishedAt: date,
   durationMs: number,
+  workerTiming: optional(object),
   // Provider usage is intentionally opaque. Billing reads only finite numbers;
   // the dashboard shows opaque diagnostics through escaped JSON.
   usage: optional(nullable(object)),
   runtimeUsage: optional(runtime),
   billing: optional(billing),
+  feedback: optional(feedback), tracing: optional(tracing),
   matcherResults: optional(
     array(shape({ matcher, passed: boolean, detail: string })),
   ),
@@ -291,6 +343,22 @@ const fields = {
     checkpoints: array(shape({ id: string, at: date, phase: oneOf("opening", "response", "clarified", "revised", "accepted", "rejected", "finished"), issueId: string,
       tasks: array(object), agents: array(object), comments: array(object), interactions: array(object), documents: array(object), attachments: optional(array(object)), runs: array(object) })),
     checks: array(shape({ id: string, passed: boolean, notReached: optional(string), evidence: array(string), detail: string })),
+  })),
+  productJourney: optional(shape({
+    targetId: optional(string),
+    campaignId: optional(string), attemptId: optional(string),
+    onboardingConnect: optional((value, at) => { try { validateOnboardingConnectEvidence(value); } catch { invalid(at); } }),
+    onboardingPreAcceptance: optional((value, at) => { try { validateOnboardingPreAcceptanceEvidence(value); } catch { invalid(at); } }),
+    artifact: optional((value, at) => { try { validateOnboardingArtifact(value); } catch { invalid(at); } }),
+    operations: optional(closedShape({ campaignId: string, attemptId: string, modelCostUsd: nullable(number), setupCostUsd: nullable(number), requestCount: integer,
+      feedback: closedShape({ collection: oneOf("complete", "partial", "unavailable"), complaints: integer, suggestions: integer }), traceIds: array(string) })),
+    outcome: oneOf("passed", "failed", "blocked", "unsupported"),
+    deployment: optional(shape({ kind: oneOf("self-hosted", "cloud"), targetId: string, origin: url, commit: string, cloudRelease: nullable(string), runtimeImage: nullable(string), configurationHash: string,
+      effectiveFeatures: optional(booleanRecord), executionEnvironment: optional(closedShape({ id: string, driver: string, status: string })) })),
+    startingState: oneOf("recipe", "onboarding"), privacy: oneOf("private"),
+    phases: array(shape({ phase: oneOf("authentication", "setup", "journey", "collection", "cleanup"), outcome: oneOf("passed", "failed", "blocked", "unsupported"), code: optional(string) })),
+    checks: array(shape({ id: string, passed: boolean })),
+    resourceDisposition: oneOf("released", "retained", "cleanup-failed"),
   })),
   providerConnection: optional(shape({
     version: integer,
@@ -317,6 +385,17 @@ const fields = {
     scores: array(shape({ dimension: oneOf("questionRelevance", "useOfFacts", "proposalUsefulness", "clarity", "lowFriction"), score: integer, rationale: string, evidence: array(string) })),
     inputTokens: nullable(integer), outputTokens: nullable(integer), estimatedCostUsd: nullable(number), reservedCostUsd: number, recordedAt: date, error: optional(string),
   })),
+  githubReviewJourney: optional(closedShape({ version: integer, outcome: oneOf("running", "passed", "failed", "awaiting_user", "missing_credential", "blocked_target"),
+    phase: string, setupId: string, hosting: oneOf("self-hosted", "paperclip-cloud"), targetCommit: nullable(string), assisted: boolean,
+    dependencies: array(closedShape({ alias: string, consumer: oneOf("harness", "browser", "product-agent"), status: oneOf("ready", "unverified", "created-in-journey"), source: oneOf("onepassword", "environment", "browser-session", "product-connection") })),
+    checkpoints: closedShape(Object.fromEntries(githubJourneyCheckpoints.map(id => [id, optional(boolean)]))),
+    cleanup: closedShape({ endpoint: boolean, pullRequest: boolean, branch: boolean, app: boolean }), definitionHash: optional(string), score: optional(integer), conclusion: optional(string),
+    budgetPolicyRead: optional(oneOf("verified", "unavailable")),
+    budgetPolicies: optional(array(closedShape({ scopeType: oneOf("agent", "company"), amount: number, hardStopEnabled: boolean, unpricedUsagePolicy: oneOf("allow", "block") }))),
+    execution: optional(closedShape({ reviewId: string, issueId: string, runId: nullable(string), runStatus: optional(string), issueStatus: optional(string),
+      runtimeMode: optional(string), environmentId: optional(string), provider: optional(string), model: optional(string) })),
+    review: optional(closedShape({ id: string, repository: string, pullNumber: integer, headSha: string, state: string, score: optional(integer), conclusion: nullable(string), summaryUrl: nullable(string), checkUrl: nullable(string) })),
+    inlinePublication: optional(closedShape({ url: string, fileUrl: string, path: string, author: string, text: string })) })),
   cleanup: oneOf("not_started", "passed", "failed"),
 } satisfies Record<keyof RunnerE2EResult, Rule>;
 const result = shape(fields);
@@ -327,5 +406,23 @@ export function validateRetainedRunnerResult(
 ): asserts value is RunnerE2EResult {
   result(value, "result");
   const checked = value as RunnerE2EResult;
+  const artifact = checked.productJourney?.artifact;
+  if (checked.productJourney?.onboardingPreAcceptance && (checked.suiteId !== "product-journeys" || checked.caseId !== "cloud-onboarding" ||
+    checked.status !== "failed" || checked.productJourney.outcome !== "failed" ||
+    checked.error !== "onboarding_work_before_acceptance")) invalid("result.productJourney.onboardingPreAcceptance");
+  if (artifact && (checked.suiteId !== "product-journeys" || checked.caseId !== "cloud-onboarding" ||
+    checked.runIds && !checked.runIds.includes(artifact.originatingRunId))) invalid("result.productJourney.artifact");
+  if (checked.workerTiming !== undefined) {
+    try { validateWorkerTiming(checked.workerTiming, checked); } catch { invalid("result.workerTiming"); }
+  }
+  if (checked.suiteId === "product-journeys" && checked.status === "passed") {
+    const evidence = checked.productJourney;
+    if (!evidence) return invalid("result.productJourney");
+    const required = checked.caseId === "task-properties" ? ["assignment-persisted", "no-agent-work"] : ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"];
+    if (evidence.outcome !== "passed" || !evidence.deployment || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
+    if (checked.caseId === "task-properties" && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
+    if (checked.caseId === "cloud-onboarding" && (!checked.runIds?.length || !evidence.operations || !evidence.operations.requestCount || !evidence.operations.traceIds.length || evidence.operations.campaignId !== evidence.campaignId || evidence.operations.attemptId !== evidence.attemptId)) invalid("result.paidJourneyReceipt");
+  }
   if (checked.suiteId === "provider-connections" && checked.status === "passed" && (!checked.providerConnection || !connectionEvidencePasses(checked.providerConnection))) invalid("result.providerConnection");
+  if (checked.suiteId === "github-review-journey" && checked.status === "passed" && (!checked.githubReviewJourney || checked.githubReviewJourney.outcome !== "passed" || !checked.githubReviewJourney.targetCommit || !gradeGitHubReviewJourney(checked.githubReviewJourney).every(check => check.passed))) invalid("result.githubReviewJourney");
 }

@@ -4,9 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, createDb, environmentLeases, environments, externalAgentHolds, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
-import { markExecutionReconciliation, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
+import { markExecutionReconciliation, settleUnrecoverableExecutions, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
-import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
+import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace } from "./native-failed-workspace-recovery.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
@@ -50,6 +50,78 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
   const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
   const actions = async (issueId: string) => db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+
+  it("keeps another orphan recoverable while a task lock delays preservation", async () => {
+    const busy = await seed(), free = await seed();
+    let unlock!: () => void, ready!: () => void;
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { ready = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, busy.issueId)).for("update");
+      ready(); await released;
+    });
+    await acquired;
+    try {
+      expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(false);
+      expect(await preserveOrphanedNativeWorkspace(db, free.lease)).toBe(true);
+      expect((await readLease(busy.lease.id)).status).toBe("active");
+      expect(await readLease(free.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+      expect(await actions(busy.issueId)).toHaveLength(0);
+    } finally { unlock(); await holding; }
+    expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, busy.companyId))).toHaveLength(1);
+  });
+
+  it("rolls back orphan registration with its enclosing transaction", async () => {
+    const f = await seed();
+    await expect(db.transaction(async tx => {
+      expect(await preserveOrphanedNativeWorkspace(tx as unknown as typeof db, f.lease)).toBe(true);
+      throw new Error("rollback preservation");
+    })).rejects.toThrow("rollback preservation");
+    expect(await readRun(f.runId)).toEqual(f.run);
+    expect(await readLease(f.lease.id)).toEqual(f.lease);
+    expect(await actions(f.issueId)).toHaveLength(0);
+    expect(await preserveOrphanedNativeWorkspace(db, f.lease)).toBe(true);
+    expect(await actions(f.issueId)).toHaveLength(1);
+  });
+
+  it.each(["settled", "historical", "live_owner", "retry", "nonterminal", "wrong_wake", "wrong_hold_run", "no_hold"])("retires only an exact superseded native resume obligation: %s", async scenario => {
+    const f = await seed(), actionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({ id: actionId, companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "agent", ownerAgentId: f.agentId,
+      returnOwnerAgentId: f.agentId, cause: "native_session_interrupted", fingerprint: randomUUID(),
+      evidence: { runId: f.runId }, nextAction: "Resume the exact persisted session.",
+      wakePolicy: { kind: "resume_native_run", runId: f.runId }, attemptCount: 1, maxAttempts: 3 });
+    await preserveNativeFailedWorkspace(db, f.run);
+    const hold = (await actions(f.issueId)).find(action => action.id !== actionId)!;
+    expect(hold.evidence.automaticRecovery).toMatchObject({ replay: "blocked", actionOutcome: "unknown" });
+    if (scenario === "live_owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "live-controller" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "retry") await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "nonterminal") await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "wrong_wake") await db.update(issueRecoveryActions).set({ wakePolicy: { kind: "resume_native_run", runId: randomUUID() } }).where(eq(issueRecoveryActions.id, actionId));
+    if (scenario === "wrong_hold_run") await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence, runId: randomUUID() } }).where(eq(issueRecoveryActions.id, hold.id));
+    if (scenario === "no_hold") await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold.id));
+    const beforeRun = await readRun(f.runId), beforeLease = await readLease(f.lease.id);
+    const beforeBlocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+    const [beforeTask] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    await settleUnrecoverableExecutions(db);
+    if (scenario === "historical") await settleUnrecoverableExecutions(db);
+    const retired = (await actions(f.issueId)).find(action => action.id === actionId)!;
+    const shouldRetire = scenario === "settled" || scenario === "historical";
+    expect(retired.status).toBe(shouldRetire ? "cancelled" : "active");
+    if (shouldRetire) {
+      expect(retired).toMatchObject({ outcome: "cancelled", wakePolicy: null,
+        evidence: { runId: f.runId, supersedingRecoveryActionId: hold.id } });
+      expect((await actions(f.issueId)).find(action => action.id === hold.id)).toEqual(hold);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+        eq(activityLog.action, "issue.execution_recovery_settled")))).toHaveLength(1);
+    }
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toEqual(beforeBlocker);
+    expect(await readRun(f.runId)).toEqual(beforeRun);
+    expect(await readLease(f.lease.id)).toEqual(beforeLease);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(beforeTask);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+  });
 
   it.each(["acknowledged", "warm", "pending", "foreign", "owned"])("pins historical cancelled work only after an exact Stop acknowledgement: %s", async kind => {
     const f = await seed();
@@ -298,7 +370,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (kind === "generation") restartRecovery.controllerGeneration += 1;
     if (kind === "attempt") restartRecovery.providerAttempt += 1;
     if (kind === "run") restartRecovery.runId = randomUUID();
-    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner") restartRecovery.remote.remoteCwd = "/other";
+    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner" && restartRecovery.remote.kind !== "plugin_task") restartRecovery.remote.remoteCwd = "/other";
     if (kind === "expired") await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (kind === "released") await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     await expect(preserveNativeFailedWorkspace(db, await readRun(f.runId), { allowPreterminal: true, restartRecovery }))

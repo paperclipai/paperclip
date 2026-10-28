@@ -96,6 +96,8 @@ Create ordinary assigned tasks, never subtasks of this conversation. Give each t
 
 For review or follow-up tasks, include the existing source materials the assignee needs, not just task identifiers or a rubric. Read the source task's saved documents and comments, then copy the relevant existing content into the handoff or attach resources the recipient can actually read. A new task's tools may only expose its own documents and history. Supplying existing source material is coordination, not creating the assigned deliverable.
 
+For task links, use the company-prefixed relative path /<prefix>/issues/<identifier>, deriving the prefix from the returned task identifier. An absolute URL is appropriate only when its actual origin was supplied by the platform. Never invent a hostname for a Paperclip link.
+
 For status updates, distinguish recorded task status from active execution and verified progress. Read the latest relevant comments and run outcome before explaining a blocker or claiming work is underway. Use the advertised API tools for another task's details when needed. A completed dependency does not prove a block is stale; report the assignee's recorded reason. Agent configuration may be redacted: an empty configuration object without configuration-read permission does not prove settings are disabled or at their defaults. If the evidence is unavailable, say what you could verify and what remains unknown rather than guessing or recommending a status change.
 
 Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Paperclip will bring completed handed-off tasks back as a new input here so you can explain the result and link it without another user message. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
@@ -282,7 +284,7 @@ export async function prepareConversationTurn(
 /** Finalizers only park a turn with a durable response, interaction, or processed /new. */
 export async function settleConversationTurn(
   db: Db,
-  run: typeof heartbeatRuns.$inferSelect,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "contextSnapshot">,
 ) {
   if (run.status !== "succeeded") return false;
   const context = run.contextSnapshot ?? {};
@@ -291,7 +293,12 @@ export async function settleConversationTurn(
   let publication: ActivityPublication | null = null;
   const settled = await db.transaction(async (tx) => {
     const [issue] = await tx
-      .select()
+      .select({
+        id: issues.id, companyId: issues.companyId, status: issues.status,
+        conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId,
+        conversationState: issues.conversationState, conversationSessionGeneration: issues.conversationSessionGeneration,
+        executionRunId: issues.executionRunId,
+      })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .for("update");
@@ -344,7 +351,7 @@ export async function settleConversationTurn(
     const [wake] =
       typeof wakeId === "string"
         ? await tx
-            .select()
+            .select({ id: issueComments.id })
             .from(issueComments)
             .where(eq(issueComments.id, wakeId))
         : [];
@@ -405,6 +412,26 @@ export async function settleConversationTurn(
   });
   if (publication) publishActivity(publication);
   return settled;
+}
+
+export async function settleConversationTurnForRun(
+  db: Db,
+  companyId: string,
+  runId: string,
+) {
+  const [run] = await db.select({
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, status: heartbeatRuns.status,
+    contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+      then jsonb_build_object(
+        'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+        'conversationReset', ${heartbeatRuns.contextSnapshot}->'conversationReset',
+        'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
+        'conversationReplyBoundaryCommentId', ${heartbeatRuns.contextSnapshot}->'conversationReplyBoundaryCommentId',
+        'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
+        'commentId', ${heartbeatRuns.contextSnapshot}->'commentId'
+      ) else null end`,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)));
+  return run ? settleConversationTurn(db, run) : false;
 }
 
 /** Fresh provider context uses only messages in this session, up to this turn. */

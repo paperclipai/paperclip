@@ -1,3 +1,5 @@
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -318,7 +320,10 @@ export async function openQualifiedAcpxRuntime(
   const selectedPiThinkingLevel = resolvePiThinkingLevel(options.profile.agent, options.piThinkingLevel);
   const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : undefined;
   const selectedClaudeEffort = resolveClaudeEffort(options.profile.agent, options.claudeEffort);
-  const claudeEffort = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort) : undefined;
+  const selectedGrokEffort = resolveGrokEffort(options.profile.agent, options.grokEffort);
+  const grokDisableWebSearch = resolveGrokDisableWebSearch(options.profile.agent, options.grokDisableWebSearch);
+  const effortAdmission = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort)
+    : selectedGrokEffort ? createGrokEffortAdmission(selectedGrokEffort, options.profile.reportedModelId) : undefined;
   const cursorInstructions = options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
@@ -330,7 +335,7 @@ export async function openQualifiedAcpxRuntime(
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
-    ...(claudeEffort ? { protocolGuardFactory: () => claudeEffort.createGuard() } : {}),
+    ...(effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -556,14 +561,20 @@ export async function openQualifiedAcpxRuntime(
           await commandLaunches.refreshConsumedCommand?.();
         }
         return ensuredHandle;
-      }) : claudeEffort ? ensuredSession.then(async (ensuredHandle) => {
+      }) : effortAdmission ? ensuredSession.then(async (ensuredHandle) => {
         handle = ensuredHandle;
         options.signal?.throwIfAborted();
-        if (!claudeEffort.isReady()) {
-          if (!runtime.setConfigOption) throw new Error("Claude effort admission requires native configuration");
+        if (!effortAdmission.isReady()) {
           const spawnsBeforeControl = commandLaunches.count;
-          await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
-          claudeEffort.assertReady();
+          if (selectedGrokEffort) {
+            if (!runtime.requestExtension) throw new Error("Grok admission requires native session inspection");
+            await runtime.requestExtension({ handle: ensuredHandle, method: "_x.ai/session/info",
+              params: { sessionId: requireIdentity(ensuredHandle).backendSessionId }, sessionMode: "persistent" });
+          } else {
+            if (!runtime.setConfigOption) throw new Error("Effort admission requires native configuration");
+            await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
+          }
+          effortAdmission.assertReady();
           await children.verifyLifetimeOwnership();
           options.signal?.throwIfAborted();
           // Fresh sessions retain their initialized provider. Only a cold
@@ -589,7 +600,7 @@ export async function openQualifiedAcpxRuntime(
     cursorInstructions?.assertReady();
     modeBinding?.assertReady();
     piThinking?.assertReady();
-    claudeEffort?.assertReady();
+    effortAdmission?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -644,7 +655,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}) },
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}), ...(selectedGrokEffort ? { grokEffort: selectedGrokEffort } : {}), ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

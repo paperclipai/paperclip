@@ -18,6 +18,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  resumeQueuedRunsAfterDrain: vi.fn(),
 }));
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -119,6 +120,8 @@ describe("instance settings routes", () => {
     mockHeartbeatService.applyTaskDrain.mockReset();
     mockHeartbeatService.stopTaskDrain.mockReset();
     mockHeartbeatService.getTaskDrainStatus.mockReset();
+    mockHeartbeatService.resumeQueuedRunsAfterDrain.mockReset();
+    mockHeartbeatService.resumeQueuedRunsAfterDrain.mockResolvedValue(undefined);
     mockEnvironmentService.getById.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockReset();
     mockEnvironmentService.findManagedSandboxEnvironment.mockResolvedValue(null);
@@ -1343,6 +1346,23 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBeGreaterThanOrEqual(500);
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();
+    });
+
+    it("does not dispatch work when the drain-stop audit transaction rejects", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      mockLogActivity.mockRejectedValue(new Error("activity insert failed"));
+      const res = await request(createApp(adminActor)).delete("/api/instance/task-drain");
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      expect(mockHeartbeatService.resumeQueuedRunsAfterDrain).not.toHaveBeenCalled();
+    });
+
+    it("reports the committed drain release even when queued dispatch fails", async () => {
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue({ ...idleStatus, draining: true });
+      mockHeartbeatService.resumeQueuedRunsAfterDrain.mockRejectedValue(new Error("database unavailable"));
+      const res = await request(createApp(adminActor)).delete("/api/instance/task-drain");
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ wasActive: true });
+      expect(mockHeartbeatService.resumeQueuedRunsAfterDrain).toHaveBeenCalledTimes(1);
     });
 
     it("does not stop the drain when the audit transaction rejects", async () => {

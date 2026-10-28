@@ -1,8 +1,8 @@
 import { lazy } from "react";
 import { useDialogActions, useDialogState } from "../context/DialogContext";
 import { DeferredOverlay } from "./DeferredOverlay";
+import { NewIssueDialog } from "./NewIssueDialog";
 
-const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((module) => ({ default: module.NewIssueDialog })));
 const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((module) => ({ default: module.NewProjectDialog })));
 const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((module) => ({ default: module.NewGoalDialog })));
 const NewAgentDialog = lazy(() => import("./NewAgentDialog").then((module) => ({ default: module.NewAgentDialog })));

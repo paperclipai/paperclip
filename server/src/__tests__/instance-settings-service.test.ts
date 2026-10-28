@@ -76,6 +76,7 @@ describe("instance settings service", () => {
       enableMuse: false,
       enableGrokBot: false,
       enableCombinedInboxTasks: false,
+      enableArtifactsV1: false,
       enableChatConnectors: false,
       enableGitHubReviewBots: false,
       enableMemoryConnectors: false,

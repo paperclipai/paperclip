@@ -16,6 +16,7 @@ import {
   projectWorkspaces,
 } from "@paperclipai/db";
 import { parseFrontmatterMarkdown } from "@paperclipai/shared";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -720,6 +721,73 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     // Repeated inventory refreshes do not install duplicate skill rows.
     const refreshed = await svc.list(companyId);
     expect(refreshed.filter((skill) => skill.key === key)).toHaveLength(1);
+  });
+
+  it("validates warm bundled releases without returning their stored file bodies", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Release read checks", issuePrefix: "RRC" });
+    await svc.list(companyId);
+    const expected = await svc.list(companyId);
+    const before = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId))
+      .orderBy(companySkillVersions.id);
+    expect(before.length).toBeGreaterThan(0);
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { companySkillVersions }, capture);
+    try { expect(await companySkillService(db).list(companyId)).toEqual(expected); }
+    finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "company_skill_versions" && event.operation === "select");
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+    expect(await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId))
+      .orderBy(companySkillVersions.id)).toEqual(before);
+  });
+
+  it.each(["agent", "board"] as const)("checks %s company access before using a warm release validation", async type => {
+    const companyId = randomUUID(), otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Release access checks", issuePrefix: "RAC" });
+    await svc.list(companyId);
+    await svc.list(companyId);
+    const actor = type === "agent"
+      ? { type, companyId: otherCompanyId, agentId: randomUUID() }
+      : { type, companyIds: [otherCompanyId] };
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { companySkillVersions }, capture);
+    try { expect(await companySkillService(db, { actor }).list(companyId)).toEqual([]); }
+    finally { capture.flush(); }
+    expect(events.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.completedQueries).toBe(0);
+  });
+
+  it("restores a deleted release after warm validation", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Release deletion checks", issuePrefix: "RDC" });
+    await svc.list(companyId);
+    await svc.list(companyId);
+    const before = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId));
+    const original = before[0]!;
+    await db.delete(companySkillVersions).where(eq(companySkillVersions.id, original.id));
+    await companySkillService(db).list(companyId);
+    const after = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId));
+    expect(after).toHaveLength(before.length);
+    expect(after.find(version => version.releaseId === original.releaseId)).toMatchObject({
+      companyId, companySkillId: original.companySkillId, fileInventory: original.fileInventory,
+    });
+    expect(after.some(version => version.id === original.id)).toBe(false);
+  });
+
+  it("rejects a changed bundled snapshot after warm validation without overwriting it", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Release integrity checks", issuePrefix: "RIC" });
+    await svc.list(companyId);
+    await svc.list(companyId);
+    const [version] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId));
+    const changed = [{ path: "SKILL.md", kind: "skill" as const, content: "Changed stored snapshot" }];
+    await db.update(companySkillVersions).set({ fileInventory: changed }).where(eq(companySkillVersions.id, version!.id));
+    await expect(companySkillService(db).list(companyId)).rejects.toThrow("does not match its seeded snapshot");
+    expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version!.id)))[0]!.fileInventory)
+      .toEqual(changed);
   });
 
   it("seeds bundled skill releases idempotently and materializes the frozen champion snapshot", async () => {

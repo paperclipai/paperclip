@@ -244,7 +244,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
       let pluginWorkspace: Record<string, unknown> | null;
       try {
         pluginWorkspace = workspace
-          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId)
+          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId)
           : null;
       } catch (error) {
         await ownership.assertHeld();

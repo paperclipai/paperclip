@@ -30,6 +30,7 @@ export async function testAgentSetup(input: {
   );
   if (
     input.aiConnection?.mode === "router" ||
+    runtime.checks.some(check => check.code.startsWith("environment_agent_")) ||
     runtime.status === "fail" ||
     runtime.checks.some(
       (check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE,

@@ -420,6 +420,23 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("all 2 terminal (1 done, 1 cancelled)");
   });
 
+  it("shows the current execution instruction and clears stale instructions after a recorded successor", () => {
+    const execution = {
+      phase: "recovery_needed" as const, label: "Stopped", cause: "native_continuation_requires_reconciliation",
+      lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+      recoveryOwner: null, nextAction: "Saved work recovered. Send a message to continue.",
+      permittedActions: ["inspect_run"] as const, predecessorRunId: null, successorRunId: null,
+    };
+    const stopped = createRun({ status: "failed", nextAction: "Repair the retained sandbox.",
+      execution: { ...execution, permittedActions: ["inspect_run"] } });
+    renderLedger({ runs: [stopped] });
+    expect(container.textContent).toContain(execution.nextAction);
+    expect(container.textContent).not.toContain("Repair the retained sandbox.");
+    renderLedger({ runs: [{ ...stopped, execution: { ...stopped.execution!, phase: "completed",
+      label: "Continued in another run", nextAction: null, successorRunId: "successor" } }] });
+    expect(container.textContent).not.toContain("Next action:");
+  });
+
   it("uses wrapping-friendly markup for long next action text", () => {
     renderLedger({
       runs: [

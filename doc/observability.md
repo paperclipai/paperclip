@@ -35,6 +35,13 @@ maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
 
+An initialized SDK does not confirm ingestion. Verify a fresh trace from the
+deployed revision at the configured destination. A rejected export can leave
+the application healthy. For Honeycomb, configure the ingest key in the
+`x-honeycomb-team` entry of `OTEL_EXPORTER_OTLP_HEADERS`; see
+[Honeycomb authentication](https://docs.honeycomb.io/api/query-annotations/authorization).
+Keep credential values out of logs and diagnostic reports.
+
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
@@ -313,6 +320,9 @@ attempt or owning phase:
 | `runtime_selection.*` | Completion contracts, session/recovery reads, profiles, interaction materialization, backend discovery, bootstrap, run/coordinator writes, transaction entry/settlement, and workspace synchronization. |
 | `runtime_context.instructions`, `.skills`, `.mcp` | The three concurrent runtime-context branches. Their durations overlap. |
 | `runtime_context.asset_*` | Source reads, manifest hashing, cache lookup, cold materialization, and exact file verification on cold and warm paths. |
+| `skills.inventory`, `.wait`, `.bundled`, `.releases`, `.folders`, `.local_sources` | Company skill reconciliation, waiting for an existing company refresh, and its bundled imports, release verification, folder, and local-source work beneath runtime skill preparation. Inventory children overlap their parent. |
+| `skills.cache.acquire`, `skills.rows`, `skills.version.read`, `skills.repository.read`, `skills.version.materialize`, `skills.version.verify` | Dedicated connection/transaction startup plus advisory-lock acquisition, authorized skill rows, frozen version and repository reads, and exact runtime materialization/validation. Lock acquisition ends before the protected work; version verification is inside materialization. Only bounded file counts are added. |
+| `skills.consume` | The caller's delivery and durable version-pinning callback while the cache lock remains held. |
 | `workspace_sync.prepare_host_current`, `.prepare_durable_seed`, `.prepare_adopt_remote` | Runtime preparation under the selected inbound mode, including snapshot and staging work. A warm mismatch may produce a second preparation; it is real repeated work. |
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
@@ -333,6 +343,41 @@ attempt or owning phase:
 | `completion.*` | Completion handler, run-log finalization, terminal persistence, accounting, liveness, and continuation summaries. |
 | `response.resolve`, `.authorize`, `.add_comment`, `.transaction*`, `.row_lock`, `.write`, `.publish` | Response selection, existing authorization, comment transaction including commit or rollback, row wait, insert, and external publication enqueue. |
 | `execution.realtime` | Synchronous live-event and plugin publication dispatch. It does not measure browser receipt or paint. |
+
+For bounded native OpenCode diagnosis, set
+`PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` as an agent/environment variable.
+The existing configured-environment projection carries it into the native Runner.
+It defaults off. The Runner creates an authenticated loopback OTLP sink and enables
+the pinned OpenCode runtime's internal tracing. The sink discards logs, resource
+attributes, span attributes, events, and unknown span names. It retains only closed
+phase names, wall timestamps, and success/failure, with a 1 MiB request limit,
+128 retained measurements, and 16 measurements per phase. No operator OTLP endpoint
+or ingestion credential is passed to OpenCode.
+
+For fresh remote diagnostic runs, the selected pack must contain the current
+build's OpenCode proxy. An otherwise compatible image pack can predate the
+collector. Such a pack cannot satisfy the diagnostic request. The existing
+verified pack preparation path selects or stages the current proxy; it can add
+startup time or fail admission when matching runtime assets are unavailable.
+Ordinary runs retain compatible image-pack reuse. Recovery retains the pack
+identity already admitted for that session.
+
+Available phases cover context/instruction loading, skill discovery, tool and model
+resolution, model streaming (`ai.streamText`, including stream consumption), Git
+discovery/default branch, snapshots, dependency installation, and plugin startup.
+These intervals overlap; do not sum them as elapsed time. At each terminal turn,
+already-received measurements travel in one `harness.diagnostic` event through the
+existing durable PRP channel. Late exports may be absent; collection never waits
+for a provider flush or delays terminal publication to complete the diagnostic.
+Late spans from a prior completed turn are discarded at the next boundary.
+
+The server validates the closed fields again and records them under a foldable
+`provider.runtime` group inside `native.session.execute`. The normal operator
+endpoint gate controls Honeycomb export. The single diagnostic batch stays in the instance run log. Its OTel projection
+does not write duplicate phase rows or await additional database work before
+terminal consumption. Without an endpoint, no provider child spans are exported. Raw OpenCode OTLP must
+never be sent directly to the operator endpoint: it can contain prompts and
+authorization attributes before the loopback sink removes them.
 
 Detail phases emit at most 16 spans of each name per attempt. Larger receipt and
 asset inventories continue under the containing group without unbounded per-row
@@ -626,6 +671,41 @@ activity: a nonempty assistant/reasoning delta, a tool announcement with an
 execution identity, or an existing assistant/reasoning/tool item start or
 completion. Usage updates and empty deltas do not count. This is a first
 activity metric, not time to a finished answer.
+
+`task.time_to_first_token` measures the wait until text is deliverable to the
+task transcript for each native dispatch. The first qualifying event is a
+nonempty assistant or reasoning text delta, a completed assistant or reasoning
+item with text, or an accepted run result with a nonempty summary. Text released
+by redaction at item/turn/session completion also qualifies. Item identities and
+text fields follow the task transcript projection; item starts, tools, usage,
+empty text, result proposals, and duplicate PRP replay do not end the wait.
+
+The first-text milestone occurs after `task.prepare` and Runner startup. The
+timing span is a cumulative interval, not a separate preparation step:
+
+```text
+accepted ingress → queue → task.prepare → Runner startup → provider work → first text
+└────────────────────── task.time_to_first_token ──────────────────────────────────┘
+```
+
+The span starts at the native run trace's historical start:
+the accepted comment or attested question response when present, otherwise run
+creation from the queue span. Callers without preparation history start at native
+dispatch. The interval includes queueing, Core preparation, workspace preparation,
+Runner startup, provider latency, transport, and durable event ingestion. It ends
+in Core's commit callback, when the text is readable through the run-events API,
+using the Core clock rather than the provider event timestamp. Browser delivery
+and rendering are excluded. The name is retained for existing trace queries;
+this measures the first deliverable text, not an exact model token boundary.
+Only the first qualifying event in a dispatch emits a span. Its `eventKind` is
+`reasoning` for thinking text and `agentMessage` for assistant text or a result.
+A dispatch without deliverable text emits no sample, including an early failure.
+Same-run recovery retains the original historical start and can emit a new sample
+only for newly committed output; it does not reconstruct prior first-token timing.
+`task.time_to_first_token` is a child of `task.provider_session` that overlaps
+queueing, preparation and execution; do not add its duration to those phases.
+No text or provider event identifiers are exported. The existing duration attribute
+is `paperclip.native.span.duration_ms`.
 
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
@@ -1035,6 +1115,20 @@ headers, cookies, bodies, user/stack IDs, or the original exception. Sentry
 receives a plain error with the existing generic message and default grouping.
 The context does not change the HTTP response, authentication, cookies, cache,
 deadline, or single-fetch behavior, and does not carry into unrelated events.
+
+A file storage provider failure has an event-local `storage_failure` context
+and `storage_operation` and `storage_error_code` tags. The S3 provider records
+the failed call (`put_object`, `get_object`, `head_object`, `delete_object`,
+`create_multipart_upload`, `upload_part`, or `complete_multipart_upload`),
+the provider's error code, the HTTP status, the provider-issued request ID,
+and the SDK attempt count. Values come from the SDK error's own data
+properties. A value that does not match its bounded format becomes `unknown`
+or `null`. The record never includes the bucket, object key, endpoint,
+credentials, error message, or provider response body (such as an S3
+`StringToSign`). Sentry receives the original error with default grouping,
+so existing issues keep collecting events. The record does not change
+storage behavior, not-found handling, or HTTP responses. It is attached only
+to the error that the failed call threw.
 
 An unconfirmed adapter Stop timeout has an event-local `adapter_stop` context:
 the run UUID, built-in adapter type, native/legacy runtime mode, configured
@@ -1904,6 +1998,12 @@ Preparation failures emit a failed span even when no native session starts.
 It carries no skill contents, identifiers, locations, or credentials. It uses the
 existing run performance events and operator-configured OpenTelemetry endpoint;
 no first-party Telemetry event is added.
+
+The `skills.*` detail spans above distinguish inventory reconciliation and lock
+acquisition from repository transfer and file validation. A repository-backed
+skill's authored `SKILL.md` is not its complete runtime payload: the generated
+discovery entrypoint includes the pinned repository under `.paperclip-repository`.
+Measure the delivered bundle's file count and bytes when reproducing its cost.
 
 Runtime preparation refreshes the company inventory once per listing. Local and
 catalog directories remain direct sources, so edits are visible on the next

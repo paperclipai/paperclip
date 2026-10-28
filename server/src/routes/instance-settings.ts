@@ -452,6 +452,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
       return wasActive;
     });
+    if (wasActive) {
+      void heartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+        logger.error({ err }, "failed to resume queued work after task drain; durable work remains queued");
+      });
+    }
     res.json({ wasActive });
   });
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { agentWakeupRequests, chatActions, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
-import { and, eq, or, sql, type SQLWrapper } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
 import { HttpError } from "../errors.js";
 
 export interface CommittedChatResponseAuthorizationInput {
@@ -181,6 +181,19 @@ export function unadmittedChatWakeupCondition(
           and chat_admission.agent_id::text = chat_unadmitted.payload->>'agentId'
           and chat_admission.status <> 'skipped'
       )
+      and not exists (
+        select 1 from chat_actions chat_retry
+        join agent_wakeup_requests chat_retry_admission on chat_retry_admission.id = chat_retry.id
+        where chat_retry.company_id = chat_unadmitted.company_id
+          and chat_retry.endpoint_id = chat_unadmitted.endpoint_id
+          and chat_retry.conversation_id = chat_unadmitted.conversation_id
+          and chat_retry.kind = 'failed_run_retry'
+          and chat_retry.payload->'taskRetryInput'->'skippedActionIds' ? chat_unadmitted.id::text
+          and chat_retry.payload->>'issueId' = chat_unadmitted.payload->>'issueId'
+          and chat_retry_admission.company_id = chat_retry.company_id
+          and chat_retry_admission.agent_id::text = chat_retry.payload->>'agentId'
+          and chat_retry_admission.status <> 'skipped'
+      )
       and (chat_unadmitted.status <> 'failed' or not exists (
         select 1 from chat_actions chat_later
         join agent_wakeup_requests chat_later_admission on chat_later_admission.id = chat_later.id
@@ -198,6 +211,23 @@ export function unadmittedChatWakeupCondition(
   )`;
 }
 
+export interface DeferredChatWakeScope {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  requestId: string;
+}
+const deferredChatWakeOwners = new WeakMap<Db, (input: DeferredChatWakeScope) => Promise<void>>();
+
+/** The live inbound owner reauthorizes the original source. Cleanup owns no chat authority. */
+export function registerDeferredChatWakeOwner(db: Db, owner: (input: DeferredChatWakeScope) => Promise<void>) {
+  deferredChatWakeOwners.set(db, owner);
+  return () => { if (deferredChatWakeOwners.get(db) === owner) deferredChatWakeOwners.delete(db); };
+}
+export async function resumeDeferredChatWake(db: Db, input: DeferredChatWakeScope) {
+  await deferredChatWakeOwners.get(db)?.(input);
+}
+
 /** Internal authority: this object cannot be supplied through a JSON API. */
 export interface DurableChatWakeupRequest {
   readonly id: string;
@@ -210,7 +240,10 @@ export interface DurableChatWakeupRequest {
   readonly requestedAt: Date;
   readonly idempotencyKey: string;
   readonly failedRunRetry?: { readonly failedRunId: string };
+  /** Only the current inbound owner may reconsider its already saved, unconsumed receipt. */
+  readonly resumeDeferred?: true;
   readonly authorize: (tx: Db) => Promise<void>;
+  readonly onAdmitted?: (tx: Db, receipt: { runId: string | null }) => Promise<void>;
 }
 
 const trustedRequests = new WeakSet<object>();
@@ -288,6 +321,26 @@ export function assertDurableChatWakeupReceipt(
   ) {
     throw new Error("chat_inbound_wakeup_receipt_conflict");
   }
+}
+
+export function withDurableChatAdmission<T extends { kind: string; admitted?: boolean }>(request: DurableChatWakeupRequest | undefined,
+  admit: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) {
+  return async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+    const outcome = await admit(tx);
+    // An existing deferred receipt is not proof this transaction passed its
+    // gates. Only dispatch or an explicitly persisted wait admits the input.
+    if (request?.onAdmitted && (outcome.admitted === true || ["queued", "durable", "coalesced"].includes(outcome.kind))) {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, request.companyId), eq(agentWakeupRequests.id, request.id),
+        inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution", "coalesced"]),
+      ));
+      if (receipt) {
+        assertDurableChatWakeupReceipt(request, receipt);
+        await request.onAdmitted(tx as unknown as Db, { runId: receipt.runId });
+      }
+    }
+    return outcome;
+  };
 }
 
 /** Work-start policy only: ongoing tool and publication authorization must not

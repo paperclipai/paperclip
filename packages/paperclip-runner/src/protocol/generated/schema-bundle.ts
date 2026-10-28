@@ -1374,6 +1374,18 @@ export const providerDescriptorSchema = {
         "xhigh",
         "max"
       ]
+    },
+    "grokEffort": {
+      "enum": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "grokDisableWebSearch": {
+      "type": "boolean"
     }
   },
   "allOf": [
@@ -1723,6 +1735,46 @@ export const providerDescriptorSchema = {
             "const": null
           }
         }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokDisableWebSearch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
       }
     }
   ],

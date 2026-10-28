@@ -10,6 +10,7 @@ import { assertSkillSnapshotPath } from "./skill-snapshot.js";
 import { repositorySkillFrontmatter } from "./skill-repository-package.js";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { beginRunPhase } from "./execution-preparation-timing.js";
 
 export const SKILL_VERSION_CACHE_IDLE_MS = 60 * 60 * 1000;
 const locks = new AsyncLocalStorage<Array<{ db: Db; companyId: string }>>();
@@ -26,14 +27,19 @@ export async function withSkillVersionCacheLock<T>(db: Db, companyId: string, ac
   if (held.some(lock => lock.db === db && lock.companyId === companyId)) return action();
   // Preparation uses the ordinary pool for version/pin writes. Borrowing a pool
   // connection for this lock would deadlock installations with a one-slot pool.
+  const acquired = beginRunPhase("skills.cache.acquire");
   return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
     const key = `skill_version_cache:${companyId}`;
     if (tryOnly) {
       const rows = await tx.execute<{ acquired: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended(${key}, 0)) as acquired`);
       if (!rows[0]?.acquired) throw new SkillCacheBusy();
     } else await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    acquired();
     return locks.run([...held, { db, companyId }], action);
-  }));
+  })).catch(error => {
+    acquired(true);
+    throw error;
+  });
 }
 
 export function skillVersionCachePaths(companyId: string, skillId: string, versionId: string) {

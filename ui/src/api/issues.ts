@@ -21,10 +21,12 @@ import type {
   IssueAttachment,
   IssueCostSummary,
   IssueComment,
+  IssueRecentComments,
   IssueQueuedCommentQueue,
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  WorkspaceSourceInspection,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -86,6 +88,10 @@ export type ResolveRecoveryActionResponse = {
 };
 
 export type IssueListFilters = {
+  ids?: readonly string[];
+  parentIds?: readonly string[];
+  oneChildPerParent?: boolean;
+  projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
   projectId?: string;
@@ -125,6 +131,8 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.status) params.set("status", filters.status);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
+  if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
+  if (filters?.oneChildPerParent) params.set("oneChildPerParent", "true");
   if (filters?.assigneeAgentId)
     params.set("assigneeAgentId", filters.assigneeAgentId);
   if (filters?.participantAgentId)
@@ -210,7 +218,8 @@ export const issuesApi = {
     options?: RequestOptions,
   ) => {
     const params = issueListSearchParams(filters);
-    params.set("view", "compact");
+    params.set("view", filters?.projection ?? "compact");
+    if (filters?.ids) params.set("ids", filters.ids.join(","));
     const path = `/companies/${companyId}/issues?${params.toString()}`;
     return options
       ? api.get<CompactIssue[]>(path, options)
@@ -247,6 +256,8 @@ export const issuesApi = {
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
+  getCore: (id: string, options?: RequestOptions) => api.get<Issue>(`/issues/${id}?view=core`, options),
+  recentComments: (id: string, options?: RequestOptions) => api.get<IssueRecentComments>(`/issues/${id}/recent-comments`, options),
   get: (id: string, options?: RequestOptions) =>
     options
       ? api.get<Issue>(`/issues/${id}`, options)
@@ -307,8 +318,12 @@ export const issuesApi = {
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
     missingWork: string; actionOutcome: "completed" | "not_performed" | "mixed"; outcomeEvidence: string; acknowledgeLostWork: true }) =>
     api.post<{ runId: string; actionId: string; status: "queued"; replayed: boolean }>(`/issues/${id}/recovery-actions/reconstruct-workspace`, data),
-  recoveryActions: (id: string) =>
-    api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[] }>(`/issues/${id}/recovery-actions`),
+  recoveryActions: (id: string, source?: { runId: string; actionId?: string }) => {
+    const query = source ? new URLSearchParams({ inspectSourceRunId: source.runId,
+      ...(source.actionId ? { inspectSourceActionId: source.actionId } : {}) }) : null;
+    return api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[];
+      sourceInspection?: WorkspaceSourceInspection }>(`/issues/${id}/recovery-actions${query ? `?${query}` : ""}`);
+  },
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -394,6 +409,7 @@ export const issuesApi = {
       order?: "asc" | "desc";
       limit?: number;
     },
+    options?: RequestOptions,
   ) => {
     const params = new URLSearchParams();
     if (filters?.after) params.set("after", filters.after);
@@ -402,6 +418,7 @@ export const issuesApi = {
     const qs = params.toString();
     return api.get<IssueComment[]>(
       `/issues/${id}/comments${qs ? `?${qs}` : ""}`,
+      options,
     );
   },
   getQueuedComments: (id: string) =>
@@ -490,6 +507,8 @@ export const issuesApi = {
       `/issues/${id}/interactions/${interactionId}/skip`,
       reason ? { reason } : {},
     ),
+  dismissInteraction: (id: string, interactionId: string) =>
+    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/dismiss`, {}),
   respondToInteraction: (
     id: string,
     interactionId: string,

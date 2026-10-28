@@ -18,7 +18,14 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
 - `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
+
+The [Cloud Product onboarding journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
+defines portal workspace creation, API-key connection, native Codex creation,
+and a first downloadable artifact with an independent oracle. Its dependent
+task-properties journey reuses onboarding state. This is a scripted coverage
+recipe, not a claim of a completed Cloud run or strict browser-only discovery.
 
 ## How to get to it (user POV)
 
@@ -70,6 +77,16 @@ Use [runner validation](./runs-adapters.md#adapter-setup) and
 [environment qualification](./execution-environments.md#environment-settings)
 for the prerequisites; a successful login alone is insufficient.
 
+For managed Cloud setup, an outdated default Claude CLI is prepared automatically
+in a private versioned runtime directory before its hello test. Verify that the
+selected model and account stay unchanged and that the compatible executable is
+actually used. A failed installation still blocks hiring. Cloud failures must
+not display Manual debug shell commands or legacy operator hints; self-hosted
+failures retain that help.
+[Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx) and
+[runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+cover these boundaries. They do not establish live Cloud onboarding success.
+
 For a new Claude agent on an explicit immutable sandbox image or a Daytona
 named snapshot, use Connect to
 qualify the selected environment through the existing permission-gated probe.
@@ -114,6 +131,25 @@ failed: the child document existed, but the physical file was attached to the
 parent, and recovery stopped the completion callback before a provider turn.
 The failed report remains evidence; the revised source still needs live proof.
 Local cases and automatic selection remain unchanged.
+
+First-task task creation enforces proposal acceptance at the shared server
+boundary. Verify that native `create_task` and both REST creation endpoints reject
+an authenticated onboarding run before its latest proposal has a saved human
+acceptance, including an explicit standalone parent. Then accept a confirmation
+or the current plan revision and verify creation succeeds. Opening answers,
+agent-only acceptance, stale plans and newer pending/rejected proposals must not
+admit new work. [Admission controls](../../server/src/__tests__/onboarding-first-task-admission.test.ts)
+exercise native and REST calls against disposable PostgreSQL; live model and
+Cloud onboarding remain separate evidence.
+
+Native completion also requires a saved human proposal decision. An opening
+answer alone must leave the first task in review. Verify that premature native
+completion is refused, including a result already saved before finalization.
+Accepted proposals and acknowledged human rejections can close the first task;
+rejection still does not authorize new tasks. The
+[native completion controls](../../server/src/services/native-runtime/paperclip-control-plane-port.test.ts)
+exercise these boundaries against disposable PostgreSQL. These controls do not
+identify a historical Cloud failure or establish live onboarding success.
 
 For accepted file-producing work, verify exactly one self-assigned child with a
 self-contained description. The onboarding run must yield through the existing

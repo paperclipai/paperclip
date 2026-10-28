@@ -1158,7 +1158,26 @@ export function createPluginWorkerHandle(
     if (!isRecord(params)) return null;
 
     const directCompanyId = readNonEmptyString(params.companyId);
-    if (directCompanyId) return { companyId: directCompanyId };
+    if (directCompanyId) {
+      if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
+        return { companyId: directCompanyId, projectGit: { projectId: params.resourceId as string } };
+      }
+      if (method === "workspaceOperation" && isRecord(params.operation)) {
+        const operation = params.operation;
+        const source = operation.kind === "prepare" ? operation.source : operation.binding;
+        const workspaceId = isRecord(source) ? readNonEmptyString(operation.kind === "prepare" ? source.id : source.projectWorkspaceId) : null;
+        const projectId = readNonEmptyString(params.projectId);
+        if (projectId && workspaceId && (operation.kind === "prepare" || operation.kind === "inspect" || operation.kind === "remove")) {
+          // Only foreground preparation may use a run. Maintenance uses project consent.
+          const runId = operation.kind === "prepare" ? readNonEmptyString(params.runId) : null;
+          const agentId = operation.kind === "prepare" ? readNonEmptyString(params.agentId) : null;
+          if (Boolean(runId) !== Boolean(agentId)) return { companyId: directCompanyId };
+          return { companyId: directCompanyId, projectGit: { projectId, workspaceId, operation: operation.kind,
+            ...(runId && agentId ? { runId, agentId } : {}) } };
+        }
+      }
+      return { companyId: directCompanyId };
+    }
 
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);

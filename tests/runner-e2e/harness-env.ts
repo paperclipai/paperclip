@@ -2,6 +2,7 @@ import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { assertInstalledCliSelection, installedCliKeys, usesInstalledCli } from "./installed-cli.js";
 import path from "node:path";
+import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import type { MatrixExecution } from "./types.js";
@@ -11,6 +12,10 @@ const AMBIENT_PAPERCLIP_CREDENTIAL_KEYS = [
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_AGENT_API_KEY",
   "PAPERCLIP_TASK_BRIDGE_TOKEN",
+  "PAPERCLIP_E2E_GATEWAY_TOKEN",
+  "PAPERCLIP_E2E_GATEWAY_PHASE_PATH",
+  "PAPERCLIP_E2E_OTLP_RELAY_URL",
+  "PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN",
   "PAPERCLIP_SETUP_TOKEN",
   "PAPERCLIP_SECRETS_MASTER_KEY",
   "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
@@ -28,7 +33,27 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+
+export function applyEvalGatewayEnvironment(env: NodeJS.ProcessEnv, credential: string, gateway: {
+  token: string; baseUrl: string; phasePath: string; observability?: { token: string; baseUrl: string };
+}) {
+  for (const name of Object.keys(env)) {
+    if (CREDENTIAL_NAMES.includes(name as typeof CREDENTIAL_NAMES[number])
+      || PROVIDER_SECRET_KEY.test(name) && /KEY|TOKEN|SECRET|PASSWORD/.test(name)) delete env[name];
+  }
+  delete env.PAPERCLIP_E2E_OTLP_RELAY_URL;
+  delete env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN;
+  if (isEvalRemoteOrigin(gateway.baseUrl)) env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN = gateway.baseUrl;
+  env[credential] = gateway.token;
+  env.PAPERCLIP_E2E_GATEWAY_BASE_URL = gateway.baseUrl;
+  env.PAPERCLIP_E2E_GATEWAY_TOKEN = gateway.token;
+  env.PAPERCLIP_E2E_GATEWAY_PHASE_PATH = gateway.phasePath;
+  if (gateway.observability) {
+    env.BRAINTRUST_API_KEY = gateway.observability.token;
+    env.PAPERCLIP_E2E_OTLP_RELAY_URL = gateway.observability.baseUrl;
+  }
+}
 
 export function runnerE2EServerControlPaths(temporaryRoot: string) {
   const controlDirectory = path.join(temporaryRoot, "control");
@@ -82,13 +107,13 @@ export function resolvePaperclipRemoteRunnerBinaryForHarness(
   runnerBinary: string | undefined,
   configuredPath = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH,
   platform: NodeJS.Platform = process.platform,
+  architecture: NodeJS.Architecture = process.arch,
 ): string | undefined {
   if (configuredPath?.trim()) return configuredPath;
   if (!runnerBinary) return undefined;
-  // Daytona runs Linux. A default debug binary built by a macOS developer is
-  // Mach-O and cannot be staged into that sandbox. Leave the remote override
-  // unset so the pinned Daytona image's verified runnerd is discovered instead.
-  if (platform !== "linux") return undefined;
+  // The pinned Daytona runtime is Linux/x64. Other controller binaries cannot
+  // run there; discover its verified runnerd unless an explicit cross-build is set.
+  if (platform !== "linux" || architecture !== "x64") return undefined;
   return executions.some(
     (execution) =>
       execution.profile.generation === "native" &&
@@ -110,6 +135,13 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  // The supervisor's read-only recovery observer must use the same disposable
+  // instance key as the serving child, never a launching shell's vault key.
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY;
+  delete result.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+  delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
+  delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
+  delete result.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN;
   // Announcements are unrelated to the scenarios and obscure screenshot evidence.
   result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
   delete result.OPENCODE_ALLOW_ALL_MODELS;
@@ -183,7 +215,7 @@ export function buildPaperclipServerEnvironment(
   ]) {
     delete result[key];
   }
-  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys]) delete result[key];
+  for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys, "PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS"]) delete result[key];
   Object.assign(result, overrides);
   return result;
 }

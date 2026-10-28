@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerTurn } from "./TaskChatRunnerTurn";
+import { TaskChatRequestHistoryContext } from "./TaskChatComposerTakeoverContext";
 import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type {
   TaskChatItem,
@@ -34,7 +35,7 @@ describe("TaskChatRunnerTurn", () => {
   const render = (
     items: TaskChatItem[],
     status = "running",
-    runId = "run-1",
+    runId: string | null = "run-1",
     onRuntimeRequestDecision?: (
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
@@ -42,26 +43,62 @@ describe("TaskChatRunnerTurn", () => {
     suppressFinal = false,
     continuedAfterSteering = false,
     execution?: ExecutionProjection,
+    preparationLabel?: string,
   ) =>
     act(() =>
       root.render(
         <MemoryRouter>
           <ThemeProvider>
+            <TaskChatRequestHistoryContext.Provider value="issue-1">
             <TaskChatRunnerTurn
               runId={runId}
               agentName="Runner"
               items={items}
               status={status}
               execution={execution}
+              preparationLabel={preparationLabel}
               startedAtMs={Date.now() - 2_000}
               suppressFinal={suppressFinal}
               continuedAfterSteering={continuedAfterSteering}
               onRuntimeRequestDecision={onRuntimeRequestDecision}
             />
+            </TaskChatRequestHistoryContext.Provider>
           </ThemeProvider>
         </MemoryRouter>,
       ),
     );
+
+  it("shows admission waiting instead of Thinking for a queued turn", () => {
+    render([], "queued");
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Queued");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Queued");
+    expect(container.textContent).not.toContain("Working");
+    expect(container.textContent).not.toContain("Thinking");
+  });
+
+  it("shows queued startup before a run ID or preparation label exists", () => {
+    render([], "queued", null);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Queued");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Queued");
+    expect(container.textContent).not.toContain("Thinking");
+  });
+
+  it("preserves a specific preparation label before a run ID exists", () => {
+    render([], "queued", null, undefined, false, false, undefined, "Preparing workspace");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Preparing workspace");
+  });
+
+  it("shows the server's maintenance wait while admission is held", () => {
+    render([], "queued", "run-1", undefined, false, false, {
+      phase: "queued", label: "Waiting for maintenance", cause: "task_drain",
+      lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+      recoveryOwner: null, nextAction: "Starts automatically when maintenance finishes.",
+      permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
+    });
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Waiting for maintenance");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Waiting for maintenance");
+    expect(container.textContent).not.toContain("Thinking");
+  });
 
   const resolvedQuestion = (
     id: string,
@@ -92,7 +129,7 @@ describe("TaskChatRunnerTurn", () => {
   });
 
   it("shows a stable Working header with Thinking at the turn tail", () => {
-    render([], "queued");
+    render([], "running");
     expect(container.textContent).toContain("Thinking");
     expect(container.textContent).toContain("Runner");
     expect(
@@ -1253,7 +1290,7 @@ describe("TaskChatRunnerTurn", () => {
     ).toBe(true);
   });
 
-  it("does not leave a pending runtime marker after action moves to the composer", async () => {
+  it("keeps a compact pending runtime entry without duplicating composer controls", async () => {
     const onDecision = vi.fn();
     render(
       [
@@ -1285,6 +1322,7 @@ describe("TaskChatRunnerTurn", () => {
     expect(
       container.querySelector('[data-testid="task-chat-runtime-request"]'),
     ).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-runtime-request"]')?.textContent).toContain("Allow command?");
     expect(onDecision).not.toHaveBeenCalled();
   });
 

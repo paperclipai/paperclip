@@ -1,10 +1,15 @@
+import { notifyApprovalWork } from "./approval-work-notifications.js";
+import { notifyDecisionTargetWork, notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
+import { assertOnboardingFirstTaskCreationAllowed } from "./onboarding-first-task-admission.js";
+
+import { resolveConnectionIntentContinuationSource, resolveItemVerdictContinuationWake } from "./chat-interaction-continuation.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { readNativeMonitorSource } from "./native-runtime/native-monitor-delivery.js";
 import { readNativeContinuationSource } from "./native-runtime/native-continuation-delivery.js";
 import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTerminalCaseHandoffsForIssue } from "./heartbeat/case-handoff-lifecycle.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
-import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, touchedByUserCondition } from "./issue-participation.js";
+import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
@@ -12,6 +17,7 @@ import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@papercli
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
@@ -29,6 +35,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { isExplicitContinuationRetryClaim } from "./explicit-continuation-retry-claim.js";
 import { markdownToPlainText, parseMarkdown } from "chat";
+import { listExternalReviewWaits } from "./native-runtime/external-review-wait.js";
 import {
   and,
   asc,
@@ -50,6 +57,7 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
+import { unionAll } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -1166,7 +1174,13 @@ export async function resolveChatOriginPublicationBindings(
       .select({
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        contextSnapshot: sql<Record<string, unknown> | null>`
+          case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object' then
+            (select coalesce(jsonb_object_agg(entry.key, entry.value), '{}'::jsonb)
+             from jsonb_each(${heartbeatRuns.contextSnapshot}) as entry
+             where entry.key in ('issueId', 'taskId', 'wakeCommentIds', 'wakeCommentId',
+                                 'commentId', 'source', 'sourceRunId', 'interactionId', 'endpointId'))
+          else ${heartbeatRuns.contextSnapshot} end`,
       })
       .from(heartbeatRuns)
       .where(
@@ -1393,6 +1407,22 @@ export async function resolveChatOriginPublicationBindings(
       contextSnapshot = snapshot;
       break;
     }
+    if (contextSource === "connection_intent.resolved") {
+      const interactionId = readStringFromRecord(snapshot, "interactionId");
+      if (!interactionId || !isUuidLike(interactionId)) return [];
+      const sourceRunId = await resolveConnectionIntentContinuationSource(dbOrTx, {
+        companyId, issueId, interactionId, runId: originRunId, agentId: lineageAgentId!,
+      });
+      if (!sourceRunId) return [];
+      // An automation can request access on an already-linked Slack task.
+      // Its validated receipt and published prompt preserve that conversation.
+      const promptBindings = await resolvePublishedInteractionPromptBindings(
+        dbOrTx, companyId, issueId, interactionId, lineageAgentId!,
+      );
+      if (promptBindings.length > 0) return promptBindings;
+      originRunId = sourceRunId;
+      continue;
+    }
     if (contextSource === "issue.monitor") {
       const sourceRunId = await readNativeMonitorSource(dbOrTx, { companyId, issueId, runId: originRunId });
       if (!sourceRunId) return [];
@@ -1409,6 +1439,7 @@ export async function resolveChatOriginPublicationBindings(
       contextSource !== "issue.interaction.respond" &&
       contextSource !== "issue.interaction.accept" &&
       contextSource !== "issue.interaction.reject" &&
+      contextSource !== "issue.interaction.verdicts" &&
       contextSource !== "issue.interaction.cancel" &&
       contextSource !== "issue.interaction.withdraw" &&
       contextSource !== "external_chat.interaction.resolve"
@@ -1428,6 +1459,7 @@ export async function resolveChatOriginPublicationBindings(
       .select({
         kind: issueThreadInteractions.kind,
         status: issueThreadInteractions.status,
+        result: issueThreadInteractions.result,
         sourceRunId: issueThreadInteractions.sourceRunId,
       })
       .from(issueThreadInteractions)
@@ -1444,6 +1476,7 @@ export async function resolveChatOriginPublicationBindings(
           rows: Array<{
             kind: string;
             status: string;
+            result: unknown;
             sourceRunId: string | null;
           }>,
         ) => rows[0] ?? null,
@@ -1453,13 +1486,16 @@ export async function resolveChatOriginPublicationBindings(
       interaction.kind === "ask_user_questions" &&
       interaction.status === "answered";
     const isResolvedConfirmation =
-      interaction.kind === "request_confirmation" &&
+      ["request_confirmation", "request_checkbox_confirmation", "suggest_tasks"].includes(interaction.kind) &&
       (interaction.status === "accepted" || interaction.status === "rejected");
     const isCancelledSupportedInteraction =
       interaction.status === "cancelled" &&
-      (interaction.kind === "ask_user_questions" ||
-        interaction.kind === "request_confirmation");
+      ["ask_user_questions", "request_confirmation", "request_checkbox_confirmation", "request_item_verdicts", "suggest_tasks"].includes(interaction.kind);
+    const isItemVerdictResponse = interaction.kind === "request_item_verdicts" &&
+      (interaction.status === "answered" || interaction.status === "pending") &&
+      contextSource === "issue.interaction.verdicts";
     if (
+      !isItemVerdictResponse &&
       !isAnsweredQuestion &&
       !isResolvedConfirmation &&
       !isCancelledSupportedInteraction
@@ -1496,7 +1532,13 @@ export async function resolveChatOriginPublicationBindings(
     const continuationIdempotencyKey = isAnsweredQuestion
       ? `question-response:${interactionId}`
       : `interaction:${interactionId}:${interaction.status}`;
-    const durableWakeTarget = recordedTarget
+    const itemVerdictWake = isItemVerdictResponse
+      ? await resolveItemVerdictContinuationWake(dbOrTx, {
+          companyId, issueId, interactionId, sourceRunId, runId: originRunId,
+          agentId: lineageAgentId!, result: interaction.result,
+        })
+      : null;
+    const durableWakeTarget = isItemVerdictResponse ? itemVerdictWake : recordedTarget
       ? null
       : await dbOrTx
           .select({ id: agentWakeupRequests.id })
@@ -1845,6 +1887,10 @@ export interface IssueFilters {
    */
   assigneeAgentId?: string | null;
   participantAgentId?: string;
+  issueIds?: string[];
+  listProjection?: "index" | "rows";
+  parentIds?: string[];
+  oneChildPerParent?: boolean;
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
@@ -4482,6 +4528,8 @@ function reviewPathLabel(
       return "Linked approval";
     case "monitor":
       return "Scheduled review monitor";
+    case "external_response":
+      return "Waiting for an external update";
     case "human_reviewer":
       return "Human reviewer";
     case "active_run":
@@ -4746,6 +4794,7 @@ async function listIssueReviewAttentionMap(
     queuedWakeRequests: wakeRows,
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
+    externalResponseWaits: await listExternalReviewWaits(dbOrTx, companyId, reviewIds),
     openRecoveryIssues: recoveryPaths,
     now: new Date(),
   };
@@ -5847,6 +5896,7 @@ async function listIssueBlockedInboxAttentionMap(
     });
 
   const findings = classifyIssueGraphLiveness({
+    externalResponseWaits: await listExternalReviewWaits(dbOrTx, companyId, graphIssues.filter(issue => issue.status === "in_review").map(issue => issue.id)),
     issues: graphIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,
@@ -8003,6 +8053,54 @@ export function issueService(db: Db) {
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
 
+    unreadInboxIssueIds: async (companyId: string, userId: string, readCondition: SQL<boolean>) => {
+      // Rank the visible Mine set before counting unread, just like the inbox.
+      // This projection never reads descriptions, run payloads, or recovery details.
+      const directlyParticipated = or(
+        and(eq(issues.createdByUserId, userId), humanCreatedIssueCondition()),
+        eq(issues.assigneeUserId, userId),
+      );
+      const participationSources = unionAll(
+        db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issues).where(and(
+          eq(issues.companyId, companyId),
+          directlyParticipated,
+        )),
+        db.select({ id: sql<string | null>`case when length(${activityLog.entityId}) = 36 and ${activityLog.entityId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then ${activityLog.entityId}::uuid end`.as("id") }).from(activityLog).where(and(
+          userParticipationActivityCondition(companyId, userId),
+          notInArray(activityLog.entityId, db.select({ id: sql<string>`${issues.id}::text` }).from(issues)
+            .where(and(eq(issues.companyId, companyId), directlyParticipated))),
+        )),
+        db.select({ id: sql<string | null>`${issueComments.issueId}`.as("id") }).from(issueComments).where(and(
+          eq(issueComments.companyId, companyId), eq(issueComments.authorUserId, userId), directHumanCommentCondition(),
+        )),
+        db.select({ id: sql<string | null>`${issues.id}`.as("id") }).from(issueThreadInteractions)
+          .innerJoin(issues, and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, companyId)))
+          .where(pendingUserRequestRowCondition(companyId, userId)),
+      ).as("mine_participation_sources");
+      const participated = db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
+      const eligible = db.select({ id: issues.id, updatedAt: issues.updatedAt })
+        .from(participated).innerJoin(issues, eq(issues.id, sql`"mine_participants"."id"`)).where(and(
+        eq(issues.companyId, companyId),
+        visibleIssueCondition(),
+        isNull(issues.conversationAgentId),
+        nonPluginOperationIssueCondition(),
+        ne(issues.status, "cancelled"),
+        inboxVisibleForUserCondition(companyId, userId),
+        readCondition,
+      )).orderBy(asc(issues.id)).as("issues");
+      const rows = await db.select({ id: eligible.id }).from(eligible)
+        .orderBy(desc(issueCanonicalLastActivityAtExpr(companyId)), desc(eligible.updatedAt), desc(eligible.id)).limit(100);
+      if (rows.length === 0) return [];
+      // Keep correlated predicates in WHERE (as in the list's user stats).
+      // A single-table Drizzle SELECT projection unqualifies nested columns.
+      return db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, rows.map((row) => row.id)),
+        unreadForUserCondition(companyId, userId),
+        readCondition,
+      )).then((unread) => unread.map((row) => row.id));
+    },
+
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.sortField === "id" && filters.attention) {
         throw unprocessable("ID ordering is not supported for blocked attention lists");
@@ -8025,7 +8123,15 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
-      if (!filters?.q?.trim()) {
+      if (filters?.issueIds) {
+        if (filters.issueIds.length === 0) return [];
+        conditions.push(inArray(issues.id, filters.issueIds));
+      }
+      if (filters?.parentIds) {
+        if (filters.parentIds.length === 0) return [];
+        conditions.push(inArray(issues.parentId, filters.parentIds));
+      }
+      if (!filters?.q?.trim() && !filters?.issueIds) {
         conditions.push(isNull(issues.conversationAgentId));
         if (!filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
           conditions.push(nonIdleSlackIssueCondition());
@@ -8183,7 +8289,14 @@ export function issueService(db: Db) {
       }
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`-task_search.score`;
-      const issueSource = db.select(issueListSelect).from(issues);
+      const selectedFields = filters?.listProjection ? {
+        ...issueListSelect,
+        description: sql<string | null>`NULL`,
+        descriptionTruncated: sql<boolean>`false`,
+      } : issueListSelect;
+      const issueSource = (filters?.oneChildPerParent
+        ? db.selectDistinctOn([issues.parentId], selectedFields)
+        : db.select(selectedFields)).from(issues);
       const searchedSource = hasSearch
         ? issueSource.innerJoin(sql`(
             ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), filters?.readCondition)}
@@ -8193,6 +8306,7 @@ export function issueService(db: Db) {
       const baseQuery = searchedSource
         .where(and(...conditions))
         .orderBy(
+          ...(filters?.oneChildPerParent ? [asc(issues.parentId)] : []),
           ...issueListOrderBy(companyId, {
             hasSearch,
             priorityOrder,
@@ -8217,7 +8331,7 @@ export function issueService(db: Db) {
         ),
       }));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
+      const runMap = filters?.listProjection === "index" ? new Map() : await activeRunMapForIssues(db, withLabels);
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
         return withRuns;
@@ -8263,8 +8377,8 @@ export function issueService(db: Db) {
         reviewAttentionByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
-        listIssueBlockerAttentionMap(db, companyId, withRuns),
-        listIssueReviewAttentionMap(db, companyId, withRuns),
+        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
           ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
           : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
@@ -10066,6 +10180,12 @@ export function issueService(db: Db) {
           return withRelations;
         }
 
+        await assertOnboardingFirstTaskCreationAllowed(tx as unknown as Db, {
+          companyId,
+          actorAgentId: issueData.createdByAgentId,
+          actorRunId,
+        });
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -10234,7 +10354,7 @@ export function issueService(db: Db) {
           if (projectWorkspaceId && isolatedWorkspacesEnabled) {
             const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
               assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
-              executionWorkspaceSettings, executionWorkspacePolicy: projectPolicy,
+              executionWorkspaceSettings, executionWorkspacePolicy: projectPolicy, sourceWorkspaceId: projectWorkspaceId,
               typedSelection: false, projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
             if (sourceStrategy === "git_worktree") workspaceIntent = { version: 1, source: "project",
               selection: { kind: "configured_source", projectWorkspaceId, mode: "managed_isolated" } };
@@ -10247,7 +10367,7 @@ export function issueService(db: Db) {
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
           await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
             assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
-            executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy,
+            executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy, sourceWorkspaceId: projectWorkspaceId,
             typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
           await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId);
         }
@@ -11290,6 +11410,12 @@ export function issueService(db: Db) {
           (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined))) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         }
+        if (patch.status === "done" || patch.status === "cancelled") {
+          await notifyDecisionTargetWork(tx, `issue:${id}`);
+        }
+        if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
+          await notifyApprovalWork(tx, receiptExisting.companyId);
+        }
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -11696,6 +11822,10 @@ export function issueService(db: Db) {
         let removedIssue;
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+          await requestRestorePointDeletion(tx, { sourceIssueId: id });
+          const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
+          if (owner) await notifyApprovalWork(tx, owner.companyId);
+          await notifyDecisionTargetIssueRemoval(tx, id);
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))
@@ -12306,6 +12436,7 @@ export function issueService(db: Db) {
         afterCommentId?: string | null;
         order?: "asc" | "desc";
         limit?: number | null;
+        humanOnly?: boolean;
       },
     ) => {
       const order = opts?.order === "asc" ? "asc" : "desc";
@@ -12316,6 +12447,10 @@ export function issueService(db: Db) {
           : null;
 
       const conditions = [eq(issueComments.issueId, issueId)];
+      if (opts?.humanOnly) conditions.push(or(
+        eq(issueComments.authorType, "user"),
+        and(isNull(issueComments.authorType), isNotNull(issueComments.authorUserId)),
+      )!);
       if (afterCommentId) {
         // Guard: reject non-UUID cursors before hitting the DB to avoid Postgres type errors.
         if (!isUuidLike(afterCommentId)) return [];

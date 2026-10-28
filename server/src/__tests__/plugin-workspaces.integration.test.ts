@@ -14,6 +14,7 @@ import {
 import {
   preparePluginWorkspace,
   inspectPluginWorkspace,
+  finalizePluginWorkspace,
   removePluginWorkspace,
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
@@ -42,6 +43,34 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it("uses bounded finalization only for opted-in providers, preserving maintenance inspection", async () => {
+      const f = await fixture();
+      const workspace = (await preparePluginWorkspace(db, f.workers, f.input))!;
+      const context = { runId: f.runId, agentId: f.input.agentId };
+      expect((await finalizePluginWorkspace(db, f.workers, workspace, context)).kind).toBe("inspection");
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, finalizationVersion: 1 } } }).where(eq(plugins.id, f.pluginId));
+      const completionIds: string[] = [];
+      const call = f.workers.call.bind(f.workers);
+      f.workers.call = async (...args) => {
+        const p = args[2] as any;
+        if (p.operation.kind !== "finalize") return call(...args);
+        expect(p.agentId).toBe(context.agentId);
+        completionIds.push(p.operationId);
+        expect(Date.parse(p.deadline) - Date.now()).toBeLessThanOrEqual(30_000);
+        expect(args[3]).toBe(40_000);
+        return { kind: "finalized", branchName: workspace.branchName, headSha: "a".repeat(40) };
+      };
+      expect((await finalizePluginWorkspace(db, f.workers, workspace, context)).kind).toBe("finalized");
+      await finalizePluginWorkspace(db, f.workers, workspace, context);
+      await finalizePluginWorkspace(db, f.workers, workspace, { ...context, runId: randomUUID() });
+      expect(completionIds[1]).toBe(completionIds[0]);
+      expect(completionIds[2]).not.toBe(completionIds[0]);
+      expect((await inspectPluginWorkspace(db, f.workers, workspace)).kind).toBe("inspection");
+      f.workers.call = async () => { throw new Error("sync failed"); };
+      await expect(finalizePluginWorkspace(db, f.workers, workspace, context)).rejects.toThrow("incomplete");
+    });
     it("keeps the single-connection pool responsive while provider preparation holds its lifecycle lock", async () => {
       const f = await fixture();
       let entered!: () => void, release!: () => void;

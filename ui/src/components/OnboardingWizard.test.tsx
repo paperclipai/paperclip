@@ -277,6 +277,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE, getEnvironmentCapabilities } from "@pa
 import { CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 import { CONNECTED_HOLD_MS } from "./onboarding/onboarding-motion";
+import { TooltipProvider } from "./ui/tooltip";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -302,7 +303,7 @@ function renderWizardView(root: ReturnType<typeof createRoot>, queryClient: Quer
   return act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <OnboardingWizard />
+        <TooltipProvider><OnboardingWizard /></TooltipProvider>
       </QueryClientProvider>,
     );
   });
@@ -730,6 +731,33 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(document.body.textContent).toContain("ada is ready to work!");
 
       await act(async () => root.unmount());
+    });
+
+    it.each([false, true])("shows manual CLI debugging only outside managed Cloud (managed: %s)", async managed => {
+      localHealth.get.mockResolvedValue({ deploymentMode: "authenticated", ...(managed ? { cloud: { managed: true, managedBy: "paperclip-cloud" } } : {}) });
+      mockAgentsApi.testEnvironment.mockResolvedValue({ adapterType: "claude_local", status: "fail", testedAt: new Date().toISOString(),
+        checks: [{ code: "claude_hello_probe_failed", level: "error", message: "The runtime test did not finish.",
+          detail: "The provider exited with code 1.",
+          hint: "Exit code 1. Run `claude --print - --output-format stream-json --verbose` manually in this directory and prompt `Respond with hello` to debug." }] });
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      const { root } = await openStepOne();
+      try {
+        await clickByText(t => t.startsWith("Continue"));
+        await act(async () => setControlledValue(document.body.querySelector("#onboarding-agent-name") as HTMLInputElement, "Ada"));
+        await flushReact();
+        await clickByText(isArcPrimary);
+        await pickFirstSource(clickByText);
+        await clickByText(isArcPrimary);
+        expect(document.body.textContent).toContain("The runtime test did not finish.");
+        expect(document.body.textContent).toContain("The provider exited with code 1.");
+        expect(document.body.textContent?.includes("manually in this directory")).toBe(!managed);
+        expect(document.body.textContent?.includes("Manual debug")).toBe(!managed);
+        expect(document.body.textContent?.includes("--output-format stream-json")).toBe(!managed);
+        expect(document.body.textContent?.includes("Fix the reported checks")).toBe(!managed);
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
     });
 
     it("hires from a legacy draft that saved an empty role", async () => {
@@ -2127,6 +2155,90 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // adapter, which is what a run returning to this step actually carries.
       return { root, queryClient };
     }
+
+    it.each([["successful refresh", false], ["failed refresh and retry", true]] as const)("saves a custom gateway without probing, then explicitly tests and hires with its selected model: %s", async (_scenario, failRefresh) => {
+      const gatewayAccounts: import("@paperclipai/shared").AiConnectionList = {
+        currentUserId: "user-1", canManageConnections: true, connections: [],
+      };
+      let lookupFails = false;
+      managedApi.list.mockImplementation(async () => {
+        if (lookupFails) throw new Error("connection lookup failed");
+        return structuredClone(gatewayAccounts) as never;
+      });
+      managedApi.create.mockImplementationOnce(async () => {
+        gatewayAccounts.connections = [{
+          id: "managed-connection", grantId: "managed-grant", companyId: "company-new",
+          name: "My gateway.example.test", provider: "openai", method: "api_key", ownership: "personal",
+          ownerUserId: "user-1", isDefault: false, status: "connected",
+          routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example.test/v1", models: [{ id: "gpt-5.4-mini" }] },
+        }];
+        lookupFails = failRefresh;
+        return { connectionId: "managed-connection", grantId: "managed-grant" };
+      });
+      mockAdapterBuild.buildAdapterConfig.mockImplementation(values => ({ provider: "codex", model: values?.model }));
+      const handles = await openStep4({ adapterType: "codex_local", runner: "paperclip", credentialMode: "api" });
+      const click = async (label: string) => {
+        const button = [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === label)!;
+        expect(button).toBeTruthy();
+        await act(async () => button.click());
+        await flushReact();
+      };
+      try {
+        await pickSource(/OpenAI.*API/);
+        await click("Use a custom gateway");
+        const gatewayDialog = document.querySelector('input[aria-label="Provider URL"]')!.closest('[role="dialog"]')!;
+        await act(async () => {
+          setControlledValue(gatewayDialog.querySelector('input[aria-label="Provider URL"]')!, "https://gateway.example.test/v1");
+          setControlledValue(gatewayDialog.querySelector('input[aria-label="API key"]')!, "example-gateway-key");
+        });
+        await click("Change");
+        await act(async () => setControlledValue(document.querySelector('input[aria-label="Model IDs"]')!, "gpt-5.4-mini"));
+        await act(async () => gatewayDialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        await click("Save connection");
+        expect(managedApi.create).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({
+          provider: "openai", method: "api_key", apiKey: "example-gateway-key", ownership: "personal",
+          agentIds: [expect.any(String)], routing: expect.objectContaining({ kind: "gateway", protocol: "responses", models: [{ id: "gpt-5.4-mini" }] }),
+        }));
+        if (failRefresh) {
+          await vi.waitFor(() => expect(document.body.textContent).toContain("Your saved gateway connection could not be loaded."));
+          expect(document.querySelector('select[aria-label="Model"]')).toBeNull();
+          expect([...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Connect")!.disabled).toBe(true);
+          expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+          expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+          expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+          lookupFails = false;
+          await click("Retry loading connection");
+        }
+        await vi.waitFor(() => expect(document.querySelector('select[aria-label="Model"]'), document.body.textContent ?? "").toBeTruthy());
+        expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(document.body.textContent).toContain("Gateway connection saved.");
+        const connect = [...document.body.querySelectorAll("button")].find(entry => entry.textContent?.trim() === "Connect")!;
+        expect(connect.disabled).toBe(true);
+        const select = document.querySelector('select[aria-label="Model"]') as HTMLSelectElement;
+        expect([...select.options].map(option => option.value)).toEqual(["", "gpt-5.4-mini"]);
+        await act(async () => { select.value = "gpt-5.4-mini"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+        await flushReact();
+        expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
+        expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+        expect(JSON.stringify(window.localStorage)).not.toContain("example-gateway-key");
+        await click("Connect");
+        const binding = { provider: "openai", method: "api_key", mode: "delegated", connectionId: "managed-connection", grantId: "managed-grant" };
+        expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-new", "codex_local", expect.objectContaining({
+          environmentId: "env-sandbox-1", aiConnection: binding, adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
+        }));
+        expect(mockAgentsApi.hire).toHaveBeenCalledExactlyOnceWith("company-new", expect.objectContaining({
+          runtimeConfig: expect.objectContaining({ aiConnection: binding }), adapterConfig: expect.objectContaining({ model: "gpt-5.4-mini" }),
+        }));
+        expect(JSON.stringify(mockAgentsApi.hire.mock.calls)).not.toContain("example-gateway-key");
+      } finally {
+        await act(async () => handles.root.unmount());
+        managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [] });
+      }
+    }, 15_000);
 
     it.each([["paperclip", "image"], ["legacy", "image"], ["paperclip", "snapshot"], ["legacy", "snapshot"]] as const)("qualifies managed Claude during Connect and tests/hire with measured %s configuration from %s", async (measured, source) => {
       mockAdapterBuild.buildAdapterConfig.mockImplementation(values => buildClaudeLocalConfig(values!));

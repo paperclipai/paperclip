@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:4918a4d5472d66b22b1ec642b68b5c60a8092a39c84ec1ab1c9ad0289cb8c68c";
+    "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -1100,6 +1100,67 @@ fn routes_reserved_completion_feedback_with_the_full_controller_catalog() {
         1
     );
     executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
+    let directory = temporary_directory("acpx-transport-failure");
+    let mode = "turns-malformed-activity";
+    let config = acpx_config(&directory, mode);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload_with_mode(&directory, "codex", mode),
+        ))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Read the saved question", "turnId":"provider-turn-transport"}),
+        ))
+        .unwrap();
+    let mut events = Vec::new();
+    for _ in 0..20 {
+        let batch = executor.poll_events().unwrap();
+        executor.acknowledge_events(batch.len()).unwrap();
+        events.extend(batch);
+        if events
+            .iter()
+            .any(|event| event.event_type == "run.terminal")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let failures: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "turn.failed")
+        .collect();
+    assert_eq!(failures.len(), 1);
+    let failure = &failures[0].payload;
+    assert_eq!(failure["providerTurnId"], "provider-turn-transport");
+    assert_eq!(failure["providerTerminalObserved"], false);
+    assert_eq!(failure["error"]["code"], "acpx_provider_transport_failed");
+    assert!(failure["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ACPX sidecar emitted invalid JSON"));
+    assert_eq!(failure["error"]["recoverable"], false);
+    let snapshot = executor
+        .execute(&command(4, "session.snapshot", json!({})))
+        .unwrap()
+        .result;
+    assert_eq!(snapshot["status"], "closed");
+    assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
+    assert!(executor.poll_events().unwrap().is_empty());
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
     fs::remove_dir_all(directory).unwrap();
 }
 

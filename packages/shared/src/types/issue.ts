@@ -493,6 +493,7 @@ export type IssueReviewAttentionPathKind =
   | "interaction"
   | "approval"
   | "monitor"
+  | "external_response"
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
@@ -842,6 +843,8 @@ export type IssueSummary = Pick<
 };
 
 export interface Issue {
+  /** Collection projections omit task bodies and cannot seed the detail cache. */
+  listProjection?: "index" | "rows";
   statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
@@ -957,6 +960,7 @@ export interface Issue {
 
 export type CompactIssue = Pick<
   Issue,
+  | "listProjection"
   | "externalConversationState"
   | "id"
   | "companyId"
@@ -1447,6 +1451,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Existing chat setup; the server derives the destination from these IDs. */
+  savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;
   /** Server-authored consent to a fixed set of tools on an existing connection. */
   accessRequest?: {
@@ -1619,6 +1625,9 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
   /** Read-time acceptance gate; omitted when no workspace preparation is pending. */
   acceptanceBlocker?: "workspace_sync_pending";
+  /** Deferred to conversation history by a human; never an approval or answer. */
+  dismissedAt?: Date | string | null;
+  dismissedByUserId?: string | null;
   /** @deprecated Read requestedResolverPolicy. Kept for API compatibility. */
   resolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
   requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
@@ -1715,4 +1724,11 @@ export interface IssueAttachment {
   contentPath: string;
   openPath?: string;
   downloadPath?: string;
+}
+
+/** Bounded cold-open window; the complete chronological feed stays paginated. */
+export interface IssueRecentComments {
+  latestCommentId: string | null;
+  comments: IssueComment[];
+  hasMore: boolean;
 }

@@ -11,7 +11,8 @@ import { githubAutomaticAdmission } from "./chat-github-events.js";
 import { githubBotRepositoryToken, githubBotRequest } from "./chat-github-client.js";
 import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
-import type { GitHubAutomaticEventContext } from "@paperclipai/shared";
+import type { GitHubAutomaticPolicyContext } from "./chat-github-review-policy.js";
+import { githubResponseAuthorityFields } from "./chat-channels/github/response-authority-read.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
 import { logActivity } from "./activity-log.js";
 import { boundRunIssueId } from "./run-task-binding.js";
@@ -24,6 +25,50 @@ type Api = { request<T>(path: string, options?: { method?: string; body?: unknow
 type Lease = { commit<T>(write: (tx: Transaction) => Promise<T>): Promise<T> };
 type Source = GitHubResponseSource;
 type Comment = { id: number; body?: string; html_url: string; user?: { login?: string } };
+const responseRunColumns = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  agentId: heartbeatRuns.agentId,
+  responsibleUserId: heartbeatRuns.responsibleUserId,
+  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  issueId: heartbeatRuns.issueId,
+  status: heartbeatRuns.status,
+  updatedAt: heartbeatRuns.updatedAt,
+  // Terminal execution can precede native presentation commit. Until its
+  // durable decision exists, missing output is undecided rather than failure.
+  nativePresentationPending: sql<boolean>`coalesce(
+    ${heartbeatRuns.status} = 'succeeded'
+    and ${heartbeatRuns.runtimeMode} = 'native'
+    and (${heartbeatRuns.nativePhase} is distinct from 'committed'
+      or ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' is distinct from 'paperclip.run_presentation_decision.v1'
+      or coalesce(${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction', '') not in ('none', 'create', 'reuse')),
+    false
+  )`,
+  // Project only the server-committed no-publication decision, never the
+  // potentially large native result or model-authored summary.
+  passiveResponseWait: sql<boolean>`coalesce(
+    ${heartbeatRuns.status} = 'succeeded'
+    and ${heartbeatRuns.runtimeMode} = 'native'
+    and ${heartbeatRuns.nativePhase} = 'committed'
+    and ${heartbeatRuns.resultJson}->>'finalizationPhase' = 'committed'
+    and ${heartbeatRuns.resultJson}->>'finalizationReasonCode' = 'external_chat_response_waiting'
+    and ${heartbeatRuns.resultJson}->'nativeResult'->>'schema' = 'paperclip.run_result.v1'
+    and ${heartbeatRuns.resultJson}->'nativeResult'->>'reportedWorkDisposition' = 'yielded'
+    and ${heartbeatRuns.resultJson}->'nativeResult'->'continuation'->>'kind' = 'response_wake'
+    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' = 'paperclip.run_presentation_decision.v1'
+    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'chosenSource' = 'none'
+    and ${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction' = 'none'
+    and ${heartbeatRuns.resultJson}->'presentationDecision'->'reasonCodes' @> '["yielded_control_plane_wait"]'::jsonb,
+    false
+  )`,
+  contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
+    'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+    'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+    'wakeCommentId', ${heartbeatRuns.contextSnapshot}->'wakeCommentId',
+    'wakeCommentIds', ${heartbeatRuns.contextSnapshot}->'wakeCommentIds'
+  )`,
+};
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
@@ -112,7 +157,7 @@ export async function writeGitHubResponseComment(
   const sameRequest = !shared || previous?.body?.includes(requestResponseMarker(source)) === true;
   const alreadyFinal = sameRequest && previous?.body?.includes("<!-- paperclip-response-state:final -->") === true;
   const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
-  const preserved = previous && (previous.body === body || (input.acknowledgement && sameRequest) || (alreadyFinal && !input.final) ||
+  const preserved = previous && (previous.body === body || (input.acknowledgement && (sameRequest || (shared && previous.body?.includes("<!-- paperclip-response-state:final -->")))) || (alreadyFinal && !input.final) ||
     (input.preserveFinal && previous.body?.includes("<!-- paperclip-response-state:final -->"))) ? previous : null;
   const posted = preserved && (!shared || preserved.body?.includes(marker)) ? preserved : await api.request<Comment>(
     previous ? `${item}/${previous.id}` : source.replyId
@@ -127,7 +172,8 @@ export async function writeGitHubResponseComment(
   const receipt = { id: String(posted.id), url: posted.html_url };
   await lease.commit(async tx => {
     if (shared) await tx.update(chatActions).set({ result: {
-      ...receipt, final: input.final || alreadyFinal, versionAt: versionAt.toISOString(), deliveryId: source.delivery.id,
+      ...receipt, final: input.final || alreadyFinal || Boolean(preserved?.body?.includes("<!-- paperclip-response-state:final -->")),
+      versionAt: versionAt.toISOString(), deliveryId: source.delivery.id,
     }, updatedAt: new Date() }).where(eq(chatActions.id, target.id));
     await tx.update(chatActions).set({ status: "processed", result: {
       ...receipt, final: input.final || alreadyFinal, versionAt: versionAt.toISOString(),
@@ -142,8 +188,7 @@ export async function writeGitHubResponseComment(
 
 export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
   async function context(deliveryId: string) {
-    const [row] = await db.select({ endpoint: chatEndpoints, conversation: chatConversations,
-      delivery: chatDeliveries, resource: chatEndpointResources, config: chatGitHubConfigurations,
+    const [row] = await db.select({ ...githubResponseAuthorityFields,
       assignee: issues.assigneeAgentId, issueStatus: issues.status, sourceMessageId: chatMessageLinks.commentId }).from(chatMessageLinks)
       .innerJoin(chatDeliveries, and(eq(chatDeliveries.id, chatMessageLinks.deliveryId), eq(chatDeliveries.companyId, chatMessageLinks.companyId)))
       .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId), eq(chatConversations.companyId, chatMessageLinks.companyId)))
@@ -153,13 +198,13 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       .innerJoin(issues, and(eq(issues.id, chatConversations.issueId), eq(issues.companyId, chatEndpoints.companyId)))
       .where(and(eq(chatMessageLinks.deliveryId, deliveryId), eq(chatMessageLinks.direction, "inbound"), eq(chatEndpoints.provider, "github")));
     if (!row || !row.delivery.principalId || !["processing", "processed"].includes(row.delivery.state) ||
-        !["active", "verifying"].includes(row.endpoint.status) || !row.config.configuration.toolsEnabled ||
+        !["active", "verifying"].includes(row.endpoint.status) || !row.toolsEnabled ||
         !row.resource.enabled || row.resource.availability !== "available" || row.assignee !== row.endpoint.assignedAgentId)
       throw forbidden("GitHub request is no longer authorized");
     const access = await githubChatPrincipalAccess(db, row.endpoint, row.delivery.principalId);
     if (!access?.allowed) throw forbidden("The initiating GitHub person is no longer authorized");
     const automatic = (row.delivery.normalizedEvent.githubAutomatic ?? row.delivery.normalizedEvent.githubIssue) as
-      { context: GitHubAutomaticEventContext } | undefined;
+      { context: GitHubAutomaticPolicyContext } | undefined;
     if (automatic && !(await githubAutomaticAdmission(db, row.endpoint, automatic.context))?.allowed)
       throw forbidden("Automatic GitHub task authority changed");
     const match = /^github:([^:]+):(?:issue:)?([1-9][0-9]*)(?::rc:([1-9][0-9]*))?$/.exec(row.conversation.externalThreadId);
@@ -189,7 +234,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       let preserveFinal = false;
       if (finalBody === undefined) {
         const existing = await stageResponse(db, source);
-        const [requestRun] = await db.select().from(heartbeatRuns).innerJoin(chatMessageLinks, and(
+        const [requestRun] = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).innerJoin(chatMessageLinks, and(
           eq(chatMessageLinks.companyId, source.endpoint.companyId), eq(chatMessageLinks.endpointId, source.endpoint.id),
           eq(chatMessageLinks.deliveryId, deliveryId), eq(chatMessageLinks.direction, "inbound"),
           or(sql`${chatMessageLinks.commentId}::text = ${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`,
@@ -197,13 +242,13 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         )).where(and(eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
           sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`))
           .orderBy(desc(heartbeatRuns.createdAt)).limit(1);
-        const [latestRun] = await db.select().from(heartbeatRuns).where(and(
+        const [latestRun] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, source.endpoint.companyId), eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
           sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${source.conversation.issueId}`,
         )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         const originMessageId = latestRun?.activeIdentityContextId ? await chatRunSourceMessageId(db, latestRun,
           { allowLegacyWakeComment: true, provider: "github" }) : null;
-        const ownsLatestRequest = !!latestRun && (requestRun?.heartbeat_runs.id === latestRun.id ||
+        const ownsLatestRequest = !!latestRun && (requestRun?.runId === latestRun.id ||
           (!!source.sourceMessageId && originMessageId === source.sourceMessageId));
         requestRunning = ownsLatestRequest && latestRun?.status === "running";
         const terminal = latestRun && ["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(latestRun.status);
@@ -213,6 +258,20 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
             companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
             issueId: source.conversation.issueId!, runId: run.id }) : "none";
           if (reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+          // A confirmed reply for this exact run can retire its placeholder.
+          // Otherwise terminal execution is not yet a missing-response decision.
+          if (ownsLatestRequest && run.nativePresentationPending && reply === "none") return;
+          if (isMainPullResponse(source) && ownsLatestRequest && run.passiveResponseWait && reply === "none") {
+            // A committed passive turn intentionally has no new response.
+            // Settle this request's acknowledgement without editing the shared
+            // PR assessment or inventing a current-run publication receipt.
+            await lease.commit(async tx => { await tx.update(chatActions).set({
+              status: "cancelled", result: { ...existing.result, final: true, code: "passive_response_wait" },
+              updatedAt: new Date(),
+            }).where(and(eq(chatActions.id, existing.id), eq(chatActions.companyId, source.endpoint.companyId),
+              sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`)); });
+            return;
+          }
           if (existing.result?.final === true) return existing.result.id ? { id: String(existing.result.id), url: String(existing.result.url) } : undefined;
           preserveFinal = reply === "confirmed";
           onlyExisting = reply === "confirmed" && !existing.result?.id;
@@ -272,7 +331,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
     });
   }
   async function requestsForRun(input: { companyId: string; endpointId: string; issueId: string; runId: string }) {
-    const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
+    const [run] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
     if (!run || boundRunIssueId(run) !== input.issueId) throw forbidden("GitHub run has no request binding");
     const originMessageId = await chatRunSourceMessageId(db, run, { allowLegacyWakeComment: true, provider: "github" });
     const ids = [...new Set([originMessageId, run.contextSnapshot?.wakeCommentId, ...(Array.isArray(run.contextSnapshot?.wakeCommentIds) ? run.contextSnapshot.wakeCommentIds : [])].filter((id): id is string => typeof id === "string"))];
@@ -345,7 +404,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       if ((await responseForRequest())?.result?.final === true) continue;
       const assertRun = async () => {
         const source = await context(link.deliveryId!);
-        const [current] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
+        const [current] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
         if (!current || current.agentId !== source.endpoint.assignedAgentId ||
             !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
             source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
@@ -357,6 +416,8 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         if (latest?.id !== run.id) throw forbidden("A newer GitHub run owns the response");
         if ((await responseForRequest())?.result?.final === true) throw forbidden("GitHub request already has a final response");
+        if (current.nativePresentationPending) throw conflict("GitHub native response presentation is still being resolved");
+        if (isMainPullResponse(source) && current.passiveResponseWait) throw forbidden("GitHub run intentionally yielded without a new response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
       receipt = await acknowledge(link.deliveryId, input.body, assertRun);

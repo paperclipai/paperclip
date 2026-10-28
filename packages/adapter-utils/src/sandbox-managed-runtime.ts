@@ -1419,7 +1419,8 @@ export async function prepareSandboxManagedRuntime(input: {
   const seedGeneration = input.workspaceSeedCacheDirectory && baselineSnapshot && workspaceInboundMode !== "durable_seed"
     ? await runStepSpan("workspace.seed_generation", async () => workspaceSeedGeneration(baselineSnapshot!, gitSnapshot, repositories)) : null;
   const cachedSeed = seedGeneration
-    ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration)) : null;
+    ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
+      { companyDirectory: input.workspaceSeedCacheCompanyDirectory })) : null;
   const replaySeed = workspaceInboundMode === "durable_seed" ? input.workspaceDurableSeed : cachedSeed;
 
   // Every inbound staging step delegates to the provider through `client.syncIn`:

@@ -55,6 +55,7 @@ export interface AdapterConfigFieldsProps {
   openAiDotEnabled?: boolean;
   /** Personal Muse is offered only with its own flag and the native Runner enabled. */
   museEnabled?: boolean;
+  /** The parent Harness control determines the profile; hide runner and ACP agent selectors. */
   hideRunnerHarness?: boolean;
 }
 

@@ -14,7 +14,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRunReadAccess: vi.fn(),
   getRunLogAccess: vi.fn(),
+  getRunWorkspaceAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
@@ -363,6 +365,12 @@ describe("agent live run routes", () => {
       null,
     );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
+    });
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -370,6 +378,10 @@ describe("agent live run routes", () => {
       issueId: null,
       logStore: "local_file",
       logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
+    });
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: null,
     });
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -442,6 +454,7 @@ describe("agent live run routes", () => {
           expect(response.body).toEqual({ error: "Invalid heartbeat run ID" });
         }
         expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunReadAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.getRunLogAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
         expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
@@ -458,9 +471,11 @@ describe("agent live run routes", () => {
       expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
     });
 
-    it.each(["get", "log"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
-      const lookup = kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
-      const suffix = kind === "log" ? "/log" : "";
+    it.each(["get", "log", "events"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
+      const lookup = kind === "events"
+        ? mockHeartbeatService.getRunReadAccess
+        : kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
+      const suffix = kind === "get" ? "" : `/${kind}`;
       const app = await createApp({}, {
         type: "board", userId: "test-user", source: "session", companyIds: ["company-1"],
       });
@@ -599,10 +614,10 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("uses narrow run log metadata lookups for log polling", async () => {
+  it.each([false, true])("uses narrow run log metadata lookups (aligned tail: %s)", async (aligned) => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64",
+        `/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64${aligned ? "&alignStartToRecord=true" : ""}`,
       ),
     );
 
@@ -620,6 +635,8 @@ describe("agent live run routes", () => {
       {
         offset: 12,
         limitBytes: 64,
+        signal: expect.any(AbortSignal),
+        ...(aligned ? { alignStartToRecord: true } : {}),
       },
     );
     expect(res.body).toEqual({
@@ -676,6 +693,21 @@ describe("agent live run routes", () => {
       }));
     },
   );
+
+  it("lists workspace operations using narrow current run access", async () => {
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: " workspace-one ",
+    });
+    mockWorkspaceOperationService.listForRun.mockResolvedValue([]);
+    const response = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+    expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({

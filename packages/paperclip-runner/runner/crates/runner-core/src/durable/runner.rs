@@ -152,7 +152,9 @@ pub(crate) fn next_authority_config(
         .ok_or_else(|| {
             DurableRunnerError::invalid("run.attach authority connection is required")
         })?;
+    let external = connection.get("mode").and_then(Value::as_str) == Some("external");
     let connect_url = match connection.get("mode").and_then(Value::as_str) {
+        Some("external") => current.connect_url.clone(),
         Some("connect") => connection
             .get("connectUrl")
             .and_then(Value::as_str)
@@ -184,11 +186,13 @@ pub(crate) fn next_authority_config(
     };
     let mut next = current.clone();
     next.connect_url = connect_url;
-    next.ca_bundle_path = connection
-        .get("caBundlePath")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(Into::into);
+    if !external {
+        next.ca_bundle_path = connection
+            .get("caBundlePath")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(Into::into);
+    }
     next.runner_instance_id = read_identity("runnerInstanceId")?;
     next.environment_lease_id = read_identity("environmentLeaseId")?;
     next.run_id = read_identity("runId")?;
@@ -225,6 +229,14 @@ fn apply_authority_rotation(
             "warm authority rotation requires native v2 session state acknowledgement",
         ));
     }
+    let preserve_endpoint = state.warm_transition.as_ref().is_some_and(|transition| {
+        transition
+            .receipt
+            .connection
+            .get("mode")
+            .and_then(Value::as_str)
+            == Some("external")
+    });
     let reconnect_count = state.reconnect_count.saturating_add(1);
     let mut diagnostics = state.diagnostics.clone();
     let mut rotated = DurableState::new(&next);
@@ -239,7 +251,12 @@ fn apply_authority_rotation(
     store.save(&rotated)?;
     *state = rotated;
     *config = next;
-    endpoint.rotate(&config.connect_url, &config.run_id)
+    if preserve_endpoint {
+        // The process owner keeps its original ingress while PRP rotates run authority.
+        Ok(())
+    } else {
+        endpoint.rotate(&config.connect_url, &config.run_id)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3504,6 +3521,80 @@ mod tests {
             }
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn warm_external_attachment_preserves_the_original_ingress() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-warm-external-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let listener = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let path = "/api/runner/v1/connect/run_1".to_owned();
+        let mut current = config(directory.clone());
+        current.connect_url = format!("listen://0.0.0.0:{port}{path}");
+        current.ca_bundle_path = Some(PathBuf::from("/fixture/trusted-ca.pem"));
+        current.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let original_url = current.connect_url.clone();
+        let mut endpoint = RunnerTransportEndpoint::Listen {
+            listener,
+            path: path.clone(),
+        };
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&current).unwrap();
+        for run in 2..=3 {
+            let mut attach = command("run.attach");
+            attach.payload = json!({"paperclipNextAuthority":{
+                "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                    "runId":format!("run_{run}"),"normalizedSessionId":current.normalized_session_id,
+                    "turnId":format!("turn_{run}"),"itemId":format!("item_{run}")},
+                "connection":{"mode":"external"}
+            }});
+            let next = next_authority_config(&attach, &current).unwrap().unwrap();
+            assert_eq!(next.connect_url, original_url);
+            assert_eq!(next.ca_bundle_path, current.ca_bundle_path);
+            let result = StoredCommandResult {
+                command_id: attach.command_id.clone(),
+                controller_seq: attach.controller_seq,
+                command_type: "run.attach".to_owned(),
+                status: "completed".to_owned(),
+                result: json!({"status":"resumed"}),
+            };
+            let receipt = WarmRunTransition::new(
+                &current,
+                &next,
+                &attach,
+                &result,
+                0,
+                "lease".to_owned(),
+                u64::MAX,
+                0,
+            )
+            .unwrap();
+            state.schema = TRANSITION_STATE_SCHEMA.to_owned();
+            state.warm_transition = Some(PendingWarmRunTransition {
+                receipt,
+                phase: "prepared".to_owned(),
+                command: attach,
+                result,
+            });
+            apply_authority_rotation(&mut state, &store, &mut current, &mut endpoint, next)
+                .unwrap();
+            assert_eq!(current.run_id, format!("run_{run}"));
+            match &endpoint {
+                RunnerTransportEndpoint::Listen {
+                    listener,
+                    path: retained_path,
+                } => {
+                    assert_eq!(listener.local_addr().unwrap().port(), port);
+                    assert_eq!(retained_path, &path);
+                }
+                _ => panic!("external attachment must preserve the listener"),
+            }
+            state.warm_transition = None;
+            state.schema = "paperclip.runner.durable.state.v1".to_owned();
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

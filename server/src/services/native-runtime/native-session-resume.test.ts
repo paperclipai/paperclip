@@ -32,7 +32,7 @@ import {
 } from "@paperclipai/paperclip-runner";
 import {
   getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
+  startEmbeddedPostgresTestDatabase as startEmbeddedDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import {
   canonicalNativeRuntimeContextDigest,
@@ -72,6 +72,20 @@ import {
   selectNativeSessionResumeRun,
 } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
+
+async function startEmbeddedPostgresTestDatabase(prefix: string) {
+  const externalUrl = externalTestDatabaseUrl;
+  if (!externalUrl) return startEmbeddedDatabase(prefix);
+  const { closeRegisteredClients } = await import("@paperclipai/db");
+  return { connectionString: externalUrl, cleanup: async () => {
+    const db = createDb(externalUrl);
+    try { await db.execute(sql`TRUNCATE TABLE companies CASCADE`); }
+    finally { await closeRegisteredClients(externalUrl); }
+  } };
+}
 
 const companyId = "10000000-0000-4000-8000-000000000001";
 const issueId = "20000000-0000-4000-8000-000000000002";
@@ -283,12 +297,13 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
 });
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
+const databaseSupported = Boolean(externalTestDatabaseUrl) || embeddedSupport.supported;
 const recoveryFakeCodex = resolve(
   import.meta.dirname,
   "../../../../packages/paperclip-runner/test/fixtures/fake-final-burst-codex-app-server.mjs",
 );
 
-(embeddedSupport.supported && existsSync(defaultCapabilityRunnerdBinary())
+(databaseSupported && existsSync(defaultCapabilityRunnerdBinary())
   ? it
   : it.skip)(
   "keeps actual normalized driver events separate from raw maintenance receipts",
@@ -520,7 +535,7 @@ const recoveryFakeCodex = resolve(
   30_000,
 );
 
-(embeddedSupport.supported &&
+(databaseSupported &&
   existsSync(defaultCapabilityRunnerdBinary()) &&
   existsSync(recoveryFakeCodex)
   ? it
@@ -1062,7 +1077,7 @@ const recoveryFakeCodex = resolve(
   60_000,
 );
 
-(embeddedSupport.supported ? describe : describe.skip)(
+(databaseSupported ? describe : describe.skip)(
   "native session recovery database orchestration",
   () => {
     it("uses scoped latest checkpoints, preserves progress barriers, and guards bootstrap persistence after the row lock", async () => {
@@ -1759,6 +1774,13 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
     },
     {
+      contract: "regressed conditional run-scoped readers",
+      // Deployed v17 threads were opened without read_current_wake_comments
+      // and read_chat_attachment on ordinary turns; resume cannot add them.
+      retainedFingerprint:
+        "sha256:dc495475fb6a4bd034c6dbb2bbe0cf52e7ffc1635838889dc5f7d7251273f119",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -1825,6 +1847,23 @@ describe("rebindNativeSessionCheckpoint", () => {
 
 
 
+  it.each(["local", "remote"] as const)("refreshes only OpenCode's former direct MCP catalog on %s", target => {
+    const legacy = nativeToolContractFingerprintForTarget(target);
+    expect(nativeToolContractFingerprintForTarget(target, "codex")).toBe(legacy);
+    expect(nativeToolContractFingerprintForTarget(target, "acpx")).toBe(legacy);
+    const current = nativeToolContractFingerprintForTarget(target, "opencode");
+    expect(current).not.toBe(legacy);
+    const shortenedCatalog = target === "local"
+      ? "sha256:2ae35faccbb63cfe009d94170ef1ef13f0d57e120af6160540598a3ec72001d7"
+      : "sha256:ee5285ca5118b8468c0afd1df4ef9c05d85b0934e882bccd0b193dc8722dbb7a";
+    expect(current).not.toBe(shortenedCatalog);
+    const currentExecution = { ...execution(currentRunId), provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", permissionMode: "allow" }, session: { ...execution(currentRunId).session, driverKind: "opencode_server" } } as NativeExecutionInput;
+    const previousExecution = { ...execution(previousRunId), provider: currentExecution.provider, session: currentExecution.session };
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: shortenedCatalog, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: legacy, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: current, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).not.toBeNull();
+  });
+
   it("binds the provider tool catalog to the local or remote execution target", () => {
     const remoteFingerprint = nativeToolContractFingerprintForTarget("remote");
     expect(remoteFingerprint).not.toBe(NATIVE_TOOL_CONTRACT_FINGERPRINT);
@@ -1844,6 +1883,17 @@ describe("rebindNativeSessionCheckpoint", () => {
         executionTargetKind: "remote",
       }),
     ).not.toBeNull();
+    // Deployed v17 remote threads were opened without the run-scoped readers.
+    expect(
+      rebindNativeSessionCheckpoint({
+        previousRun: previousRun({
+          nativeToolContractFingerprint:
+            "sha256:96dde421aab01f847468d1a8f12863d32dfdb3038a9aca61e1e6bdc81022d5a1",
+        }),
+        currentExecution: execution(currentRunId),
+        executionTargetKind: "remote",
+      }),
+    ).toBeNull();
   });
 
 

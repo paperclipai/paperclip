@@ -875,6 +875,9 @@ export interface PluginEntitiesClient {
  * @see PLUGIN_SPEC.md §7 — Project Workspaces
  */
 export interface PluginProjectsClient {
+  /** Transient GitHub credential for a stored repository in the current host-issued
+   * lifecycle/workspace invocation. Requires projects.git-credentials. Never persist or log. */
+  resolveGitCredential(projectId: string, workspaceId: string, companyId: string): Promise<string | null>;
   /** Trusted worker access to this plugin’s native project credentials.
    * Requires projects.instance-secrets; never expose via UI/data handlers. */
   getInstanceSecrets(projectId: string, companyId: string): Promise<Record<string, string>>;
@@ -1716,6 +1719,8 @@ export interface PluginAgentConnectionAssignments {
 export interface PluginAgentRuntimeState {
   connectionAssignments: PluginAgentConnectionAssignments;
   skills: PluginAgentRuntimeSkill[];
+  /** Selected company skills omitted because the environment requires the same skill name. */
+  shadowedSkills?: Array<{ key: string; shadowedBy: string }>;
   revision: string;
   agent: Agent;
   instructionsRootPath: string | null;
@@ -1725,8 +1730,14 @@ export interface PluginAgentRuntimeState {
   instanceSecrets: Record<string, string>;
 }
 
+export type PluginAgentRuntimeIdentity = Pick<PluginAgentRuntimeState, "revision" | "instanceSecrets"> & {
+  agent: Pick<Agent, "id" | "companyId" | "status" | "lifecycleState" | "lifecycleVersion">;
+};
+
 export interface PluginAgentsClient {
-  getRuntime(agentId: string, companyId: string): Promise<PluginAgentRuntimeState | null>;
+  getRuntimeIdentity(agentId: string, companyId: string): Promise<PluginAgentRuntimeIdentity | null>;
+  /** Lifecycle reconciliation can install missing environment skills; task and recovery reads leave this false. */
+  getRuntime(agentId: string, companyId: string, environmentId?: string, installEnvironmentSkills?: boolean): Promise<PluginAgentRuntimeState | null>;
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */

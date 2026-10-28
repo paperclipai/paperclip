@@ -18,6 +18,7 @@ import type {
   NativeExecutionInputV6,
   NativeExecutionInputV8,
   NativeExecutionInputV9,
+  NativeExecutionInputV10,
   MuseBindingSnapshot,
   DotBindingSnapshot,
   NativeExecutionInputV7,
@@ -102,11 +103,14 @@ export interface BuildNativeExecutionInput {
   homeMode?: "isolated" | "preconfigured";
   codexApprovalPolicy?: NativeCodexApprovalPolicy;
   codexReasoningEffort?: string;
+  codexWebSearch?: "disabled";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxSessionMode?: "agent" | "plan" | "ask";
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   model?: string | null;
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
@@ -137,9 +141,9 @@ export interface BuildNativeExecutionInput {
 }
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "muse"; museBinding: MuseBindingSnapshot }): NativeExecutionInputV8;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "openai_dot" | "grok_bot"; dotBinding: DotBindingSnapshot }): NativeExecutionInputV6;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 {
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
   }
@@ -253,9 +257,10 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const workflowCase = input.caseContext && previousCaseProjection
     ? projectCaseContinuation(input.caseContext, previousCaseProjection) : null;
   const prepared = {
-    schema: input.claudeEffort !== undefined ? "paperclip.native-execution-input.v9"
+    schema: input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined ? "paperclip.native-execution-input.v10"
+      : input.claudeEffort !== undefined ? "paperclip.native-execution-input.v9"
       : input.homeMode === "preconfigured" ? "paperclip.native-execution-input.v7" : "paperclip.native-execution-input.v5",
-    ...(input.claudeEffort !== undefined || input.homeMode === "preconfigured" ? { homeMode: input.homeMode ?? "isolated" } : {}),
+    ...(input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined || input.claudeEffort !== undefined || input.homeMode === "preconfigured" ? { homeMode: input.homeMode ?? "isolated" } : {}),
     ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
       initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
     } : {}),
@@ -340,6 +345,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
           ...(mode === undefined ? {} : { mode }),
           ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           ...(input.claudeEffort === undefined ? {} : { claudeEffort: input.claudeEffort }),
+          ...(input.grokEffort === undefined ? {} : { grokEffort: input.grokEffort }),
+          ...(input.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: input.grokDisableWebSearch }),
           profile: {
             driverKind: acpxProfile!.driverKind,
             protocolVersion: acpxProfile!.protocolVersion,
@@ -364,6 +371,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
             model: input.model ?? null,
             approvalPolicy: input.codexApprovalPolicy ?? "never",
             ...(input.codexReasoningEffort ? { reasoningEffort: input.codexReasoningEffort } : {}),
+            ...(input.codexWebSearch ? { webSearch: input.codexWebSearch } : {}),
           },
     completionContract: {
       id: input.completionContract.id,
@@ -388,7 +396,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     schema: "paperclip.native-execution-input.v6", provider: { kind: input.provider, model: null, binding: input.dotBinding },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
     session: { ...prepared.session, driverKind: input.provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }
-  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9;
+  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
 }
 
 

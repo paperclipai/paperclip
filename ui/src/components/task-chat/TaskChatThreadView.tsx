@@ -435,7 +435,7 @@ export function TaskChatThreadView({
 
 // Cheap content signature so streaming growth (text lengthening without the
 // item count changing) still advances the auto-follow key. Shared by the
-// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+// shared message scroller on desktop and mobile (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
   if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);

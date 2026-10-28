@@ -144,7 +144,7 @@ const BROKER_REJECTION_REASONS = new Set([
   "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
-  "PROVIDER_OPERATION_FAILED",
+  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
 
@@ -520,7 +520,7 @@ export function createPaperclipCloudConnector(input: {
       });
       await call("webhook-bind", { ...values, profile: "github.code" }, { field: "binding", value: binding });
     },
-    async leaseEvents(values: { subject: string; companyId: string }): Promise<{ leaseId: string; events: SealedConnectorEvents["events"] } | null> {
+    async leaseEvents(values: { subject: string; companyId: string }): Promise<{ leaseId: string; events: SealedConnectorEvents["events"]; failedEventIds?: string[] } | null> {
       const response = await call("event-lease", values);
       if (Array.isArray(response.events) && response.events.length === 0) return null;
       if (typeof response.leaseId !== "string") {
@@ -531,16 +531,24 @@ export function createPaperclipCloudConnector(input: {
       if (opened.leaseId !== response.leaseId) {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector event lease did not match", "CONNECTOR_BINDING_MISMATCH");
       }
+      const events: SealedConnectorEvents["events"] = [];
+      const failedEventIds: string[] = [];
       for (const event of opened.events) {
         const packet = event.payload.githubApp;
-        if (!isRecord(packet) || packet.sealed === undefined) continue;
-        const sealed = parseEnvelope(packet.sealed, "events", "github", "github.bot");
-        const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "github", "github.bot", []) as Record<string, unknown>;
-        if (delivery.v !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
-          || delivery.registrationId !== packet.registrationId) throw badEnvelope();
-        event.payload = { githubApp: delivery };
+        try {
+          if (isRecord(packet) && packet.sealed !== undefined) {
+            const sealed = parseEnvelope(packet.sealed, "events", "github", "github.bot");
+            const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "github", "github.bot", []) as Record<string, unknown>;
+            if (!isRecord(delivery) || delivery.v !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
+              || delivery.registrationId !== packet.registrationId) throw badEnvelope();
+            event.payload = { githubApp: delivery };
+          }
+          events.push(event);
+        } catch {
+          failedEventIds.push(event.id);
+        }
       }
-      return { leaseId: opened.leaseId, events: opened.events };
+      return { leaseId: opened.leaseId, events, ...(failedEventIds.length ? { failedEventIds } : {}) };
     },
     async acknowledgeEvents(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<number> {
       const acknowledgement = JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds });

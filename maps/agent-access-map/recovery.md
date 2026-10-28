@@ -4,6 +4,30 @@ Product map: [Recovery](../feature-map/recovery.md).
 
 Feature ID: `recovery`.
 
+Native finalization deadline reconciliation records unfinished workspace
+preservation through the existing server-owned recovery path. It grants no
+additional agent API, provider-stop authority or permission to replay work.
+
+Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
+zombie with the saved generation. Unknown adopted-process ownership rejects the
+probe and grants no permission to replace a runner, signal a different process,
+or replay work. Launch requires a working Node probe before detachment.
+
+Ordinary board Retry can reauthorize saved GitHub input for the same App after
+reconnect. It pins current runtime authority and preserves sender, repository,
+conversation and task checks. Pending input takes precedence over the older
+failed request and transfers once to the retry owner. This grants no new agent
+Retry API or stale webhook authority. Legacy input can use a server-owned,
+processed earlier response ledger to prove the same endpoint's App claim before
+that input. Company, conversation, agent and prior delivery/source linkage remain
+required. Explicit conflicting App IDs cannot use that fallback. Local PostgreSQL and HTTP-route regressions
+cover these transitions; hosted execution and delivery remain separate acceptance.
+Dispatch validates the exact claimed wake and resolved user-continuation receipt
+for the current successor. A later board Retry can follow that successor only
+when exact durable diagnostics and absent execution/resources prove it never
+started. This preserves the original sender/source and grants no agent Retry
+permission or accepted-result replay.
+
 Source revision: `3bbc2104b65caf9f7763938a01260a5673e12f7a`.
 
 Review depth and executed proof are separate. The operation records enumerate the named behavior and access boundaries. Their evidence states describe the reviewed sources; run results and environment limits belong in the PR or verification artifacts. A listed API or source test does not establish a live authorized journey. Follow the [map contract](../README.md).
@@ -69,7 +93,11 @@ board task-mutation authority, not agent retry authority. The only request
 fields are a UUID idempotency key and observed source run (or null). It accepts
 no paths, stop attestations or client-selected strategy. The source-scoped
 exact-run and maintenance APIs retain their existing contracts. Connected-chat
-Retry reuses chat admission and its external identity. See the
+Retry reuses chat admission and its external identity. It can persist a wait
+only for the exact current system recovery generation. The chat owner resumes
+that same deferred receipt through normal admission after containment. The
+board intent and external principal remain separate authorities; current task,
+connection, pause and budget gates still apply. See the
 [durable contract](../../doc/task-recovery.md). Agent Chat also requires its
 current conversation owner and feature enablement at admission and locked
 dispatch; generic board mutation permission does not replace chat ownership.
@@ -79,6 +107,14 @@ browser qualification do not establish hosted agent access or recovery.
 Review: `operation-reviewed`.
 
 Supported restoration and automatic attempts retain source/owner/attempt authority.
+
+Main-server replacement uses a private, encrypted Postgres controller journal
+and the runner's existing authenticated PRP connection. It adds no agent-facing
+mutation API. Controller generations and expiring execution leases fence writes;
+the runner retains its admitted artifact and active turn. Saved tool receipts
+can restore responses, safe reads recheck current authority, and uncertain
+mutations remain pending. The [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+separates real-process/scripted-provider evidence from hosted Daytona qualification.
 
 ### `observe-automatic-attempt`
 
@@ -93,6 +129,15 @@ Evidence: `source-only` — [source actions](../../server/src/services/issue-rec
 Verification: `not-run` — Observe attempts/retry timing and actual useful result; concurrent sweeps don't reset budget or duplicate turn. Operator Stop/chat idle must not trigger unwanted recovery.
 
 Gaps: Native/Legacy and live provider takeover need separate proof; preserve existing failed callback evidence.
+
+A review-path repair uses the existing canonical disposition-repair prompt
+section. The server fixes its instruction and one-attempt bound. This adds no
+API, monitor authority, credential access, or bypass for task and approval gates.
+A pending repair retains that section across connection-pool retries. Ordinary
+wakes without the typed repair marker ignore stale raw instruction text.
+[Prompt controls](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
+cover fresh/resumed delivery and existing disposition repairs; hosted execution
+and durable monitor acceptance remain separate verification.
 
 ### `resolve-permitted-source-action`
 
@@ -212,11 +257,51 @@ Gaps: An acknowledged retry can remain pending or fail; report actual useful res
 
 Capability ID: `recovery/workspace`.
 
+Committed authorized Retry and workspace-recovery requests notify the internal
+preservation worker. Startup reconstructs its source-bound obligations and saved
+retry deadlines. A duplicate request during physical preservation does not
+replace the owner's generation or revision. Resolved files-only recovery retains
+its no-replay restriction. The local PostgreSQL regression checks the producer,
+worker, and physical source receipt; it is not deployed provider acceptance.
+
+Connected board-message preparation failures use the canonical board Retry
+owner only after the exact unchanged comment, original user wake, accepted
+same-user identity and pre-provider settlement are certified. Admission and
+execution recheck the pinned source and claimed successor receipts. Repeated
+pre-provider failures retain the source only through each canonical intent,
+failed dispatch and accepted parent identity; cycles and chains beyond twenty
+links fail closed. This grants
+no external inbound authority or permission to replay a terminal result; an
+uncertifiable source directs the user to send a new task message. The real
+HTTP/queue regression proves this boundary locally, not hosted provider recovery.
+
+For external chat, the same canonical Retry owner may certify the structured
+isolated-directory binding failure that occurs before environment allocation.
+It requires exact task/source authority and trusted settlement with no process,
+lease, native result or unknown execution evidence. Other validation reasons and
+the older direct chat-retry entry point remain denied. Local HTTP/dispatch proof
+does not establish hosted provider completion.
+
+An authorized deliberate Retry also registers missing historical native
+preservation from an exact prepared descriptor and an unowned terminal
+finalization. It adopts only the existing bounded maintenance capability. A live
+owner or mismatched allocation cannot supply this proof. No termination receipt
+or execution authority is created by registration; connected Retry still waits
+behind recovery and rechecks its existing external identity.
+
 The internal preservation resume path grants no board or agent execution API.
 It requires the exact source action, company, run, lease and environment, a
 held physical workspace owner, and its current stop-only cleanup claim. The
 ordinary resume and destruction fences still apply to protected sources. The
 assembled-runtime regression checks this separation before any provider call.
+
+Managed missing-source reconciliation uses the server-only Cloud
+`POST /v1/tenant/sandbox-absence` protocol. A host-bound capability authenticates
+the stack; board and agent credentials cannot call it. Core requires a fresh
+Cloud signature for the exact company, issue, run, lease, allocation and physical
+owner. This can establish execution absence, never recovered files or successful
+task completion. Normal Retry admission and external-effect fences still apply.
+Signature and PostgreSQL regressions are local evidence, not deployed acceptance.
 
 Review: `operation-reviewed`.
 
@@ -413,6 +498,11 @@ API: `present` — GET /api/issues/{id}; GET /api/heartbeat-runs/{runId}. Server
 Agent access: `partial` — eligible admitted agent/native bound wake receives saved input; delivery remains server-owned.
 
 Policy: Exact prior run/lease/workspace stop proof, no competing execution, current owner/responsible user, normal subtree/project pause/budget/review gates. Durable ordered message/wake receipts avoid duplicates; never borrow authority from stale callback/other routine. Unused hold-denied admission needs no-execution/dispatch evidence before automatic reconsideration.
+
+A human-authored comment attached to an assignment wake can authorize the same
+fresh continuation as an ordinary comment. The server validates the persisted
+comment and its task/author/timing; the assignment label alone grants no
+authority. Agents and system wakes cannot inherit this human-input path.
 
 Evidence: `source-only` — [legacy gates](../../server/src/services/recovery/legacy-continuation.ts), [native ownership](../../server/src/services/native-runtime/native-restart-recovery.ts), [queued Stop](../../server/src/modules/wake-queue/adapters/postgres.ts); reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. No live provider proof.
 

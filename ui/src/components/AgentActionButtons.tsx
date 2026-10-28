@@ -167,7 +167,6 @@ export function AgentActionButtons({
   workActionsDisabled = false,
   workActionsDisabledReason,
   navigateToRunOnInvoke = true,
-  canRunWithProviderTrace = false,
   hasPendingNavigationChanges = false,
   onBeforeNavigate,
   onActionError,
@@ -188,8 +187,6 @@ export function AgentActionButtons({
   workActionsDisabled?: boolean;
   workActionsDisabledReason?: string;
   navigateToRunOnInvoke?: boolean;
-  /** Instance administrators may opt one manual run into short-lived raw provider capture. */
-  canRunWithProviderTrace?: boolean;
   /** Whether the caller currently has an unsaved draft that navigation would discard. */
   hasPendingNavigationChanges?: boolean;
   /** Return false to stop an action whose success would navigate away. */
@@ -297,24 +294,6 @@ export function AgentActionButtons({
     },
   });
 
-  const providerTraceAction = useMutation({
-    mutationFn: () =>
-      agentsApi.invoke(agent.id, resolvedCompanyId ?? undefined, {
-        debug: { providerTrace: "raw" },
-      }),
-    onSuccess: (run) => {
-      onActionError?.(null);
-      invalidateAgent();
-      if (navigateToRunOnInvoke) {
-        if (!confirmLateNavigationChanges(agentActionStartedDirtyRef)) return;
-        navigate(`/agents/${canonicalAgentRef}/runs/${run.id}`);
-      }
-    },
-    onError: (err) => {
-      reportError(err instanceof Error ? err.message : "Failed to start traced run");
-    },
-  });
-
   const duplicateAgent = useMutation({
     mutationFn: async () => {
       if (!resolvedCompanyId) {
@@ -370,7 +349,7 @@ export function AgentActionButtons({
   });
 
   const isPendingApproval = agent.status === "pending_approval";
-  const disabled = actionsDisabled || agentAction.isPending || providerTraceAction.isPending;
+  const disabled = actionsDisabled || agentAction.isPending;
   const assignAndRunDisabled = disabled || isPendingApproval || workActionsDisabled || agent.status === "terminated";
   const pauseResumeDisabled = disabled || isPendingApproval || (isPaused && workActionsDisabled)
     || Boolean(agent.lifecycleState && ["pausing", "terminating", "cleaning_up", "terminated", "rejected"].includes(agent.lifecycleState));
@@ -412,21 +391,6 @@ export function AgentActionButtons({
         label={runLabel}
         size={size}
       />}
-      {canRunWithProviderTrace && (
-        <Button
-          variant="outline"
-          size={size}
-          onClick={() => {
-            if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
-            providerTraceAction.mutate();
-          }}
-          disabled={assignAndRunDisabled}
-          title="Capture exact provider traffic for this run (expires after 24 hours)"
-        >
-          <Bug className="h-3.5 w-3.5 sm:mr-1" />
-          <span className="hidden sm:inline">Run with provider trace</span>
-        </Button>
-      )}
       {isError ? (
         <ClearErrorButton
           onClick={() => agentAction.mutate("clear_error")}

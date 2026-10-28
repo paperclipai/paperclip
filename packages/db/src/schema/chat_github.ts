@@ -75,6 +75,8 @@ export const chatGitHubRegistrations = pgTable(
       manifestClaimId?: string;
       identityLeaseId?: string;
       identityLeaseExpiresAt?: string;
+      browserSessionId?: string;
+      identitySessionId?: string;
       identityStateHash?: string;
       identityExpiresAt?: string;
       identityRedemptionId?: string;

@@ -114,14 +114,15 @@ export function ComposerRunSettingsPicker({
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
   const copilotCatalog = copilotTaskModelCatalogOptions(agent);
+  const acpxAgent = agent?.adapterType === "paperclip_runner" && provider === "acpx" && typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : undefined;
   const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
   const requestCopilotModels = Boolean(copilotCatalog && open && view !== "agents" && !modelOptionsOverride);
   const { data: fetchedModels = [], isPending: modelsPending, refetch: refreshModels } = useQuery({
     queryKey: agent && modelSupported
-      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, copilotCatalog ?? null]
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, copilotCatalog ?? null, acpxAgent ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, ...copilotCatalog,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, acpxAgent, ...copilotCatalog,
     }),
     ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(agent && modelSupported && !modelOptionsOverride && (!copilotCatalog || requestCopilotModels)),

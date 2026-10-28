@@ -669,7 +669,7 @@ describe("shared ACPX engine runtime behavior", () => {
       fastMode: true,
     });
 
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toMatchObject({
       model: "gpt-5.6-sol",
       model_reasoning_effort: "high",
       service_tier: "fast",
@@ -683,18 +683,33 @@ describe("shared ACPX engine runtime behavior", () => {
     );
   });
 
-  it("keeps identity and scoped API access without exposing configured service tokens to Codex shells", async () => {
-    const { meta } = await runExecutor({ agent: "codex", env: { MY_SERVICE_TOKEN: "assigned-tool-token" } }, {
-      authToken: "assigned-run-token",
-      agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
-    });
-    const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
-    expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
-      "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
-    ]));
-    expect(config.shell_environment_policy.include_only).not.toContain("MY_SERVICE_TOKEN");
-    expect(JSON.stringify(config)).not.toContain("assigned-run-token");
-    expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
+  it.each([true, false])("delivers configured service tokens to Codex shells while isolating host and provider credentials (identity: %s)", async (withIdentity) => {
+    const root = await makeTempRoot();
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    vi.stubEnv("HOST_SERVICE_TOKEN", "host-token-canary");
+    vi.stubEnv("DATABASE_URL", "postgres://host/private");
+    try {
+      const { meta } = await runExecutor({ agent: "codex", stateDir: path.join(root, "state"), env: {
+        CODEX_HOME: path.join(root, "codex-home"),
+        SLACK_BOT_TOKEN: "assigned-tool-token", OPENAI_API_KEY: "provider-key-canary",
+        OTEL_EXPORTER_OTLP_HEADERS: "authorization=export-secret-canary",
+      } }, {
+        ...(withIdentity ? {
+          authToken: "assigned-run-token",
+          agentIdentity: { keyId: "sha256:test", publicKeyPem: "public", privateKeyPem: "private" },
+        } : {}),
+      });
+      const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG ?? "{}"));
+      expect(config.shell_environment_policy?.include_only).toContain("SLACK_BOT_TOKEN");
+      if (withIdentity) expect(config.shell_environment_policy.include_only).toEqual(expect.arrayContaining([
+        "PAPERCLIP_API_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+      ]));
+      for (const key of ["HOST_SERVICE_TOKEN", "DATABASE_URL", "OPENAI_API_KEY", "OTEL_EXPORTER_OTLP_HEADERS"]) {
+        expect(config.shell_environment_policy.include_only).not.toContain(key);
+      }
+      expect(JSON.stringify(config)).not.toContain("assigned-run-token");
+      expect(JSON.stringify(config)).not.toContain("assigned-tool-token");
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
@@ -728,7 +743,7 @@ describe("shared ACPX engine runtime behavior", () => {
       },
     });
 
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toMatchObject({
       model: "gpt-runtime",
       approval_policy: "never",
       service_tier: "fast",
@@ -743,7 +758,7 @@ describe("shared ACPX engine runtime behavior", () => {
       env: { CODEX_CONFIG: "not-json" },
     });
 
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toMatchObject({
       model: "gpt-runtime",
     });
     expect(logs).toContainEqual({
@@ -771,10 +786,15 @@ describe("shared ACPX engine runtime behavior", () => {
     ]);
   });
 
-  it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
+  it("bounds Codex shell inheritance even without model overrides or an agent identity", async () => {
     const { configOptions, meta } = await runExecutor({ agent: "codex" });
 
-    expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
+    const config = JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG));
+    expect(config.model).toBeUndefined();
+    expect(config.features.shell_snapshot).toBe(false);
+    expect(config.shell_environment_policy).toMatchObject({ inherit: "all", ignore_default_excludes: true });
+    expect(config.shell_environment_policy.include_only).toContain("PATH");
+    expect(config.shell_environment_policy.include_only).not.toContain("HOST_SERVICE_TOKEN");
     expect(configOptions).toEqual([]);
   });
 

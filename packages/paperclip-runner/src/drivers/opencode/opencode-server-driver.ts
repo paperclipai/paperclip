@@ -6,6 +6,7 @@ import { accessSync, constants, readFileSync, realpathSync, statSync } from "nod
 import { createRequire } from "node:module";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -23,6 +24,8 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
+import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
@@ -85,7 +88,10 @@ import {
   type OpenCodeMcpBridge,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
-import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
+import {
+  materializeNativeRuntimeSkills,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
@@ -213,6 +219,7 @@ interface OpenCodeRuntime {
   bridge: OpenCodeMcpBridge;
   trace: ProviderTraceFileSink | null;
   sensitiveValues: readonly string[];
+  performanceDiagnostics: Awaited<ReturnType<typeof startOpenCodePerformanceDiagnostics>> | null;
   close(input?: {
     finalizeTrace?: boolean;
     reason?: string | null;
@@ -369,6 +376,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
     );
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "workspace"), `${cwd}\n`, { mode: 0o600 });
+    await removeLegacyIsolatedHomes(root);
     const trace = await createProviderTraceFileSink({
       path: this.#options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH,
       provider: "opencode",
@@ -515,6 +523,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #activeTraceEmittedEventIds: string[] = [];
   #sourceSequence: number;
   #activeTurnId: string | null;
+  #performanceBoundaryMs = 0;
   #result: PrpStructuredRunResult | null;
   #resultFingerprint: string | null;
   #resultCallId: string | null;
@@ -1021,7 +1030,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
-    const tool = canonicalOpenCodeMcpToolName(call.tool);
+    // The authenticated MCP bridge has resolved this against its closed
+    // declared catalog. A second prefix strip changes legitimate operation IDs.
+    const tool = call.tool;
     const turnId = this.#activeTurnId;
     if (turnId === null)
       throw new Error("OpenCode tool call is not bound to an active turn");
@@ -2126,6 +2137,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       });
       return;
     }
+    if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(eventType)) {
+      const performance = this.#runtime.performanceDiagnostics?.take(this.#performanceBoundaryMs);
+      this.#performanceBoundaryMs = this.#now().getTime();
+      if (performance) this.#emit("harness.diagnostic", performance, refs);
+    }
     const sourceSeq = ++this.#sourceSequence;
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
@@ -2200,7 +2216,8 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(body.toString("utf8")); }
       catch { response.writeHead(400).end(); return; }
-      if (!payload || typeof payload !== "object" || payload.model !== model) {
+      if (!payload || typeof payload !== "object" || payload.model !== model ||
+        ["models", "route", "plugins", "transforms"].some(field => Object.hasOwn(payload, field))) {
         response.writeHead(400).end();
         return;
       }
@@ -2281,7 +2298,9 @@ async function startRuntime(input: {
   // HOME contains a read-only skill snapshot, whose destination must be fresh.
   // Keep OpenCode's XDG data stable for provider-session recovery while giving
   // every launch (including retries and recovery) a new isolated HOME.
-  const isolatedHome = await mkdtemp(join(input.root, "home-"));
+  const homesRoot = join(input.root, OPENCODE_ISOLATED_HOMES_DIRECTORY);
+  await mkdir(homesRoot, { recursive: true, mode: 0o700 });
+  const isolatedHome = await mkdtemp(join(homesRoot, "home-"));
   await chmod(isolatedHome, 0o700);
   try {
     await materializeNativeRuntimeSkills(
@@ -2289,18 +2308,14 @@ async function startRuntime(input: {
       join(isolatedHome, ".claude", "skills"),
     );
   } catch (error) {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
   }).catch(async (error) => {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   });
   const assignedMcp = nativeMcpLaunchBinding(
@@ -2309,14 +2324,15 @@ async function startRuntime(input: {
   const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
   const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
     ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
+  const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
     password,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
-    input.options.environment?.OPENROUTER_API_KEY,
-    input.options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+    providerEnvironment.OPENROUTER_API_KEY,
+    providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
   input.trace?.addSensitiveValues(sensitiveValues);
   const instructionRoot =
@@ -2332,10 +2348,15 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
+  const providerRoute = modelProvider === "openrouter"
+    ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
+    : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+      ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
+      : null;
+  const providerProxy = providerRoute
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
         await bridge.close().catch(() => {});
-        await rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
+        await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
       })
     : null;
@@ -2344,6 +2365,15 @@ async function startRuntime(input: {
     input.trace?.addSensitiveValues([providerProxy.token]);
   }
   let child: ChildProcess | undefined;
+  // Failure to collect diagnostics must not prevent the requested work.
+  const performanceDiagnostics = input.options.environment?.[PROVIDER_PERFORMANCE_ENV] === "1"
+    ? await startOpenCodePerformanceDiagnostics().catch(() => null) : null;
+  if (performanceDiagnostics) {
+    const values = [performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS,
+      performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS.replace("Authorization=Bearer ", "")];
+    sensitiveValues.push(...values);
+    input.trace?.addSensitiveValues(values);
+  }
   let launchPrepared = false;
   const releaseExecutable = () => {
     if (!launchPrepared) return;
@@ -2361,6 +2391,7 @@ async function startRuntime(input: {
       small_model: input.options.model,
       share: "disabled",
       autoupdate: false,
+      ...(performanceDiagnostics ? { experimental: { openTelemetry: true } } : {}),
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
@@ -2373,8 +2404,9 @@ async function startRuntime(input: {
           ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
-            name: "Paperclip connection",
+            name: modelProvider === "openrouter" ? "OpenRouter" : "Paperclip connection",
             options: {
+              ...(modelProvider === "openrouter" ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
               baseURL: providerProxy.baseURL,
               apiKey: providerProxy.token,
             },
@@ -2445,7 +2477,8 @@ async function startRuntime(input: {
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
-        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+        ...performanceDiagnostics?.environment,
+        ...(providerProxy ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
@@ -2542,6 +2575,7 @@ async function startRuntime(input: {
       bridge,
       trace: input.trace,
       sensitiveValues,
+      performanceDiagnostics,
       close: async (closeInput = {}) => {
         await providerProxy?.close();
         await bridge.close().catch(() => {});
@@ -2565,18 +2599,18 @@ async function startRuntime(input: {
           }
           await waitForExit(providerChild, 2_000);
         }
+        await performanceDiagnostics?.close().catch(() => {});
         await rm(join(configHome, "opencode", "opencode.json"), {
           force: true,
         }).catch(() => undefined);
-        await rm(isolatedHome, { recursive: true, force: true }).catch(
-          () => undefined,
-        );
+        await removeIsolatedHome(isolatedHome).catch(() => undefined);
         if (closeInput.finalizeTrace !== false) {
           await input.trace?.finish({ reason: closeInput.reason ?? null });
         }
       },
     };
   } catch (error) {
+    await performanceDiagnostics?.close().catch(() => {});
     await providerProxy?.close();
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
@@ -2585,9 +2619,7 @@ async function startRuntime(input: {
     await rm(join(configHome, "opencode", "opencode.json"), {
       force: true,
     }).catch(() => undefined);
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
 }
@@ -2936,7 +2968,6 @@ function sanitizedEnvironment(
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
   const result: NodeJS.ProcessEnv = {};
   const candidate = source ?? process.env;
@@ -2958,12 +2989,12 @@ function sanitizedEnvironmentKeys(): string[] {
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
 }
 
-function sessionRoot(
-  runtimeDirectory: string,
+export const OPENCODE_ISOLATED_HOMES_DIRECTORY = "homes";
+
+export function opencodeRuntimeSessionDirectoryName(
   normalizedSessionId: string,
 ): string {
   const safe = normalizedSessionId
@@ -2971,7 +3002,35 @@ function sessionRoot(
     .slice(0, 120);
   if (!safe || safe === "." || safe === "..")
     throw new Error("Invalid normalized OpenCode session id");
-  return join(resolve(runtimeDirectory), safe);
+  return safe;
+}
+
+function sessionRoot(
+  runtimeDirectory: string,
+  normalizedSessionId: string,
+): string {
+  return join(
+    resolve(runtimeDirectory),
+    opencodeRuntimeSessionDirectoryName(normalizedSessionId),
+  );
+}
+
+async function removeIsolatedHome(home: string): Promise<void> {
+  const skillsParent = await lstat(join(home, ".claude")).catch(() => null);
+  if (skillsParent?.isDirectory()) {
+    await releaseMaterializedNativeRuntimeSkills(
+      join(home, ".claude", "skills"),
+    ).catch(() => undefined);
+  }
+  await rm(home, { recursive: true, force: true });
+}
+
+async function removeLegacyIsolatedHomes(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("home-")) continue;
+    await removeIsolatedHome(join(root, entry.name)).catch(() => undefined);
+  }
 }
 
 function validateWorkspace(value: string): string {

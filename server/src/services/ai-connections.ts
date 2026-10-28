@@ -1,4 +1,5 @@
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -572,7 +573,9 @@ export function aiConnectionService(db: Db) {
     verifiedCredential: string,
     loginSession?: { id: string; complete?: (tx: Db) => Promise<void> },
     attemptStartedAt = new Date(),
+    managementContext?: ConnectionManagementContext,
   ) {
+    await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
@@ -610,6 +613,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
         const [session] = await tx
@@ -902,8 +906,7 @@ export function aiConnectionService(db: Db) {
       await loginSession?.complete?.(tx as unknown as Db);
       await logActivity(tx as unknown as Db, {
         companyId,
-        actorType: "user",
-        actorId: userId,
+        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
         action: reconnect
           ? "ai_connection.reconnected"
           : "ai_connection.connected",

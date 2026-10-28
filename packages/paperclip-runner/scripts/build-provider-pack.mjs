@@ -1,4 +1,5 @@
 import profiles from "../acpx-profiles.json" with { type: "json" };
+import compatibility from "../src/live/provider-pack-contract.json" with { type: "json" };
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -22,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import { parseProviderPackArguments, materializeCandidateProviderPack, providerPackProviders, providerPackManifestFields } from "./candidate-provider-pack.mjs";
 import { buildNodeStartupTimeout } from "./build-node-startup-timeout.mjs";
 import { writePortableExecutableShim, writePortableCopilotShims } from "./provider-pack-executable-shims.mjs";
-import { removeControllerArtifactsFromProviderPack } from "./provider-pack-runtime-tree.mjs";
+import { providerPackLibc, removeControllerArtifactsFromProviderPack, removeForeignLibcPackagesFromProviderPack } from "./provider-pack-runtime-tree.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -119,6 +120,10 @@ try {
     throw new Error(`pnpm deploy failed with exit code ${deployed.status}`);
   }
   removeControllerArtifactsFromProviderPack(temporaryRoot);
+  const foreignLibcPackages = removeForeignLibcPackagesFromProviderPack(temporaryRoot, providerPackLibc());
+  if (foreignLibcPackages.length) {
+    process.stderr.write(`Removed ${foreignLibcPackages.length} provider-pack packages built for another libc: ${foreignLibcPackages.join(", ")}\n`);
+  }
 
   // Fail the image build if a bridge silently brings back an older/private
   // provider CLI. A direct dependency alone does not deduplicate pnpm's graph.
@@ -308,6 +313,7 @@ try {
         cwd: workspaceRoot,
       }).status !== 0;
   const payload = {
+    compatibility,
     pins: {
       nodeMinimum: minimumNodeVersion.join("."),
       codex: profiles.profiles.codex.agentRuntimeVersion,

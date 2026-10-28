@@ -1,5 +1,6 @@
 import { logger } from "../middleware/logger.js";
-import type { Db } from "@paperclipai/db";
+import { companies, type Db } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import * as lifecycle from "../modules/agent-lifecycle/index.js";
 import { withAccountingTransaction } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, policyBlocks, type BudgetServiceHooks } from "./budgets.js";
@@ -12,12 +13,25 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { fenceActiveCompanyAgentStopsInTransaction as fenceActiveCompanyStops } from "../modules/agent-lifecycle/index.js";
 import { applyAgentPolicyHoldsInTransaction } from "../modules/agent-lifecycle/index.js";
 import { trackIdleWork } from "./task-admission.js";
+import { environmentService } from "./environments.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
 
 export { scheduleAgentLifecycle, processAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
 export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
+    async setupRequiresPreparation(db, companyId, environmentId) {
+      const id = environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
+      const environment = id ? await environmentService(db).getById(id) : null;
+      if (!environment || !await pluginEnvironmentRequiresAgent(db, environment)) return false;
+      const [company] = await db.select({ requiresApproval: companies.requireBoardApprovalForNewAgents }).from(companies).where(eq(companies.id, companyId));
+      if (!company || company.requiresApproval) return false;
+      const bound = await environmentService(db).listBoundCompanyIds(environment.id);
+      if (bound.length && !bound.includes(companyId)) throw new lifecycle.AgentLifecycleConflict("The environment belongs to another company");
+      return true;
+    },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
     reportFailure(context, error) {
       const code = lifecycle.lifecycleFailureCode(error);

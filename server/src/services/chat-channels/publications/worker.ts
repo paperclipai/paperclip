@@ -1,3 +1,4 @@
+import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
 
 import { createTeamsFileDelivery } from "../microsoft-teams/file-delivery.js";
@@ -858,6 +859,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                 await credentialLease.assertOwned(tx);
                 const committedAt = new Date();
                 await notifyChatPublicationWork(tx);
+                await notifyVoicePublication(tx, authorizationClaim.endpoint, publication.conversationId);
                 const [completedPublication] = await tx
                   .update(chatPublications)
                   .set({

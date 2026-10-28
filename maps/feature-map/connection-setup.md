@@ -18,6 +18,10 @@ Settings → Connections. It adds no Apps provider or transport. Credential owne
 and audience rules are the existing connection rules; saving a connection alone
 does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
+1Password is available from Apps with a service-account token and an official
+service-account creation link. Its vault access is chosen in 1Password; action
+policies use the ordinary Permissions screen. See [connector notes](../../doc/connections/1PASSWORD.md).
+
 ## Sub-features
 
 - `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
@@ -69,6 +73,17 @@ With chat connectors enabled, select a supported chat/email provider in Apps
 or open `/apps/chat/connect`. Complete that provider's endpoint setup, then
 open its settings (`/apps/chat/:endpointId/settings`). Follow identity linking
 as the intended sender before messaging the agent externally.
+
+### `delegated-configuration`
+
+Ask a standard agent to configure a disposable app or account from its assigned
+task. The agent uses REST or admitted native `search_api` / `call_api`, reuses
+saved accounts and drafts, and returns the exact saved setup link when human
+authentication, consent, credential entry or identity confirmation is required.
+Open that link as the addressed person. Personal ownership stays with that
+person; audit attribution stays with the acting agent. Existing agents retain
+their explicit grants and restrictions. See the [access companion](../agent-access-map/connection-setup.md)
+and [native admission contract](../agent-access-map/README.md#native-rest-transport).
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -137,6 +152,13 @@ account-bound proof. Live token expiry/refresh, remote OAuth revocation, and
 native CLI automatic capability delivery remain unqualified; public metadata
 and fixtures do not establish those results.
 
+Unikraft follows the same key/access wizard. Setup asks only for the API token;
+the default metro is an optional select under Advanced, and each action can name
+another published metro. [Unikraft browser setup](../../tests/e2e/unikraft-connector.spec.ts)
+checks the catalog, password field, access controls and the advanced metro. It
+does not submit a token or qualify a real provider account. See
+[Unikraft](../../doc/connections/UNIKRAFT.md) for token authority and metros.
+
 ### `mcp-link`
 
 Automated: AppsConnect's generic MCP cases cover probe-driven auth, private or
@@ -194,11 +216,49 @@ configuration changes, saved retry deadlines, rollback, and parking pending
 repair while an endpoint or connection is inactive. The provider responses are
 fixtures. Settled maintenance leaves no discovery timer or database scans.
 
+GitHub Cloud setup also covers an older empty-queue backoff, concurrent setup and
+background leases, and retry after a Cloud error in the
+[event poller regression](../../server/src/services/github-connection-events.test.ts).
+Channel integration checks that active setup drains its signed ping through the
+normal webhook handler; a forged ping still cannot verify the endpoint. These
+fixtures do not establish live Cloud delivery. For live proof, start a disposable
+App after an idle personal GitHub connection, complete installation, and confirm
+that the same draft advances after authenticating the queued ping.
+
 Manual: complete setup for one named provider, reload endpoint settings, link
 the intended sender, and send a disposable message. Verify one task and a useful
 reply in the originating conversation. Inspect an unlinked sender's denial and
 the endpoint's pause behavior. Repeat independently for each provider at issue;
 Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
+
+### `delegated-configuration`
+
+Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
+uses production agent creation, persistent keys, run JWTs, native tool bindings,
+human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
+setup, ownership, attribution, scope, trust, work modes and revocation. The
+[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
+cover pending choices, consent precedence and failed grant loading with API mocks.
+These are separate from live provider setup and model success.
+
+Manual: Have the agent perform authorized setup, then open its saved handoff as
+the addressed person. Reload before completing the required human step; verify
+the same resource, saved access choices, human ownership and acting-agent audit
+remain. Complete the step, verify the exact task continues, and confirm that
+revoked authority or cancelled work prevents continuation. An ordinary bot-token
+repair or an unchanged credential must not complete a signing-key request.
+
+For Google, request a specific service set, leave and reopen setup, and inspect
+the addressed user's pending choices. Another user's or organization grant must
+not supply those choices. A newer actual consent supersedes the saved request;
+a token refresh does not. A failed grant read must not broaden the selection.
+For Vercel personal setup, verify the selected credential belongs to the
+responsible person and new bindings record the configuring human as creator.
+Agent-initiated API changes retain the acting agent in audit; the human callback
+retains its actual human actor.
+Use the [chat endpoint recipe](chat-channels.md#endpoint-management) for GitHub
+field-specific credential entry and saved rotation recovery, and the
+[model-account recipe](runs-adapters.md#managed-account-setup) for AI sign-in.
 
 ## Gotchas
 
@@ -221,3 +281,22 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 ### Documentation scope: App catalog and connection setup
 
 Provider-specific authentication/revocation, credential-only accounts, and aggregator administrative variants still need their own detailed matrices.
+
+Supabase and Vercel deployment connections (2026-10-22): Apps offers Supabase
+browser sign-in, hosted MCP personal access token, and project-scoped Management
+API methods, plus Vercel's team-scoped access token method. Supabase's optional
+MCP project pin leaves project creation available when unset; the native method
+requires a project and offers Edge Function deployment and selected configuration.
+Vercel supports preview/production deployment, build settings, environment
+variables and existing domain attachment. Personal/shared credential ownership,
+action permissions, reconnect and removal use the regular setup flow. See
+[Supabase](../../doc/connections/SUPABASE.md) and
+[Vercel](../../doc/connections/vercel.md) for method boundaries and qualification.
+
+For these native methods, continue past a successful connection test into an
+actual native agent task: readiness, assigned-tool delivery, and task-card reuse
+must all work. The 2026-10-23 walkthrough exposed and repaired omitted REST
+admission at those boundaries. Verify a served deployment and provider settings,
+not only the catalog action count. Vercel preview requires an existing deployment;
+its provider makes the first deployment production, so an empty-project preview
+must fail before submission and explain the explicit production prerequisite.

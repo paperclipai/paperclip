@@ -262,7 +262,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "id": id,
                         "ok": false,
                         "error": {
-                            "code": "Q7Z9",
+                            "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
                             "message": "violet-circuit-4821",
                             "retryable": false,
                         },
@@ -327,6 +327,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-unauthorized-tool"
             | "turns-permission"
             | "turns-provider-death"
+            | "turns-malformed-activity"
             | "permissions-forged-origin"
             | "turns-retired"
             | "turns-retired-terminal-first"
@@ -377,6 +378,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 write_json(&mut stdout, &response)?;
+                if command == "turn.start" && mode == "turns-malformed-activity" {
+                    stdout.write_all(b"{invalid sidecar activity\n")?;
+                    stdout.flush()?;
+                }
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")

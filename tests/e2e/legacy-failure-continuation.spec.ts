@@ -92,8 +92,18 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
         await expect(page.getByRole("button", { name: "Steer", exact: true })).toHaveCount(0);
         const retry = page.getByRole("button", { name: "Retry", exact: true });
         await expect(retry).toBeEnabled();
-        await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, sourceRunId));
-        await retry.click();
+        await page.route((url) => url.pathname === `/api/issues/${issue.id}/retry`, async route => {
+          if (route.request().method() !== "POST") return route.continue();
+          await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, sourceRunId));
+          await route.continue();
+        }, { times: 1 });
+        const [response] = await Promise.all([
+          page.waitForResponse(response => response.request().method() === "POST" &&
+            new URL(response.url()).pathname === `/api/issues/${issue.id}/retry` &&
+            response.request().postDataJSON()?.observedRunId === sourceRunId),
+          retry.click(),
+        ]);
+        expect(response.ok(), `${response.status()} ${await response.text()}`).toBe(true);
       } else if (action === "automatic_message") {
         // No Retry, duplicate message, or status change: the saved input runs.
       } else if (action === "message") {
@@ -131,9 +141,15 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
       await page.reload();
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible();
     } finally {
-      await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
-      await closeRegisteredClients(url);
-      await rm(root, { recursive: true, force: true });
+      try {
+        await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
+      } finally {
+        try {
+          await closeRegisteredClients(url);
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      }
     }
   });
 }

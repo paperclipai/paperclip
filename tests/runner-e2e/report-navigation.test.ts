@@ -42,6 +42,9 @@ describe("evaluation report navigation", () => {
     const history = emptyRunnerHistory();
     history.campaigns = [{campaignId:"campaign-a",publicUrl:"/custom/reports/campaigns/campaign-a/"} as typeof history.campaigns[number]];
     expect(reportHistoryHref(history,"campaign-a")).toBe("/custom/reports/");
-    expect(reportHistoryHref(undefined,"campaign-a")).toBe("../../");
+    expect(reportHistoryHref(undefined,"campaign-a")).toBe("https://pages.paperclip.ing/evals/");
+    history.campaigns[0]!.publicUrl = "https://pages.paperclip.ing/standalone-report/";
+    expect(reportHistoryHref(history,"campaign-a")).toBe("https://pages.paperclip.ing/evals/");
+    expect(page).toContain('class="brand-lockup report-brand" href="https://pages.paperclip.ing/evals/"');
   });
 });

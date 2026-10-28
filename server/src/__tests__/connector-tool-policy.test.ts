@@ -41,7 +41,7 @@ describe("reviewed connector risk dispatch", () => {
 });
 
 describe("reviewed connector catalog policies", () => {
-  it.each(["railway", "enterpret", "daytona", "braintrust"])("declares the initial drift policy for %s", source => {
+  it.each(["railway", "enterpret", "daytona", "unikraft", "braintrust"])("declares the initial drift policy for %s", source => {
     expect(connectorToolPolicy(source).quarantineNewEntries).toBe(true);
   });
 

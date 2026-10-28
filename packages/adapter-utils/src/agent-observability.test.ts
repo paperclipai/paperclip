@@ -23,13 +23,23 @@ it("encodes headers losslessly and clears ambient exporter conflicts without cha
   expect(observabilitySecretValues(launch)).toContain(input.headers.authorization);
   expect(JSON.stringify(buildInvocationEnvForLogs({ ...launch.environment }))).not.toContain("a%2Cb");
 });
-it("preserves literal percent sequences through the qualified Codex exporter's header decoder", () => {
+it("keeps Codex headers in the launch environment and preserves literal percent sequences", () => {
   const original = "Bearer a,b=%26 c%";
   const launch = buildProviderObservabilityLaunch({ ...input, kind: "codex", headers: { authorization: original } });
   const exporter = launch.otelConfig!.exporter as { "otlp-http": { headers: Record<string, string> } };
-  expect(decodeURIComponent(exporter["otlp-http"].headers.authorization)).toBe(original);
+  expect(exporter["otlp-http"].headers).toEqual({});
+  for (const key of ["OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"]) {
+    expect(launch.environment[key]).toBe(`authorization=${encodeURIComponent(original)}`);
+  }
+  expect(JSON.stringify(launch.otelConfig)).not.toContain(original);
+  expect(JSON.stringify(launch.otelConfig)).not.toContain(encodeURIComponent(original));
   expect(observabilitySecretValues(launch)).toContain(original);
+  expect(observabilitySecretValues(launch)).toContain(encodeURIComponent(original));
   expect(observabilitySecretValues(launch)).toContain(original.slice(7));
+  expect(JSON.stringify(buildInvocationEnvForLogs({ ...launch.environment }))).not.toContain("a%2Cb");
+  const disabled = buildProviderObservabilityLaunch({ ...input, kind: "codex", enabled: false });
+  expect(disabled.environment).not.toHaveProperty("OTEL_EXPORTER_OTLP_LOGS_HEADERS");
+  expect(disabled.environment).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
 });
 it("replaces a compact explicit profile without leaving competing profile flags", () => {
   const args = ["exec", "-preview", "-"];
@@ -52,6 +62,8 @@ it("creates invocation-owned profiles, preserves selected profile settings, and 
   const a = await prepareCodexObservabilityProfile({ home: root, runId: "run-a", sourceProfile: "review", launch });
   const b = await prepareCodexObservabilityProfile({ home: root, runId: "run-b", launch });
   const parsed = parse(await readFile(join(root, a.filename), "utf8"));
+  expect(JSON.stringify(parsed)).not.toContain(input.headers.authorization);
+  expect(JSON.stringify(parsed)).not.toContain(encodeURIComponent(input.headers.authorization));
   expect(parsed.model).toBe("chosen-model");
   expect(parsed.otel).toMatchObject({ log_agent_responses: true, tool_result: { max_bytes: 65536 } });
   expect((await stat(join(root, a.filename))).mode & 0o777).toBe(0o600);

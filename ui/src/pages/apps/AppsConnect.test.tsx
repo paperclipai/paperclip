@@ -428,6 +428,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     return root;
   }
 
+  it("connects 1Password using only its service-account token and links official creation instructions", async () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(entry => entry.slug === "1password")!;
+    listGalleryMock.mockResolvedValue({ apps: [app] });
+    await render(undefined, false, <ConnectionSetupFlow serviceSlug="1password" />);
+    const fields = container.querySelectorAll<HTMLInputElement>('input[type="password"]');
+    expect(fields).toHaveLength(1);
+    expect(fields[0]!.getAttribute("aria-label")).toBe("Paste your 1Password Service Account token");
+    expect(container.querySelector('a[href="https://www.1password.dev/service-accounts/get-started#create-a-service-account"]')).not.toBeNull();
+    expect(buttonByText("Connect")?.disabled).toBe(true);
+    await act(async () => setInputValue(fields[0]!, "ops_disposable-fixture"));
+    await act(async () => buttonByText("Connect")?.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: "1password",
+      connectionMethodKey: "service-account", credentialValues: { "credentials.authorization": "ops_disposable-fixture" } }));
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the saved AI sign-in and reuses a completed account", async () => {
+    mockSearch.value = "aiLogin=saved-login";
+    const setup = vi.spyOn(aiConnectionsApi, "loginSetup").mockResolvedValue({
+      sessionId: "saved-login", environmentId: "local-env", status: "completed", connectionId: "saved-account", grantId: "saved-grant",
+      intent: { provider: "openai", method: "subscription", name: "Saved account", ownership: "personal", agentIds: ["agent-1"], allAgents: false },
+    });
+    await render();
+    expect(setup).toHaveBeenCalledWith("company-1", "saved-login");
+    expect(container.textContent).toContain("This account is connected.");
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => buttonByText("View connection")?.click());
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/saved-account/permissions");
+  });
+
+  it("shows an unavailable saved sign-in without creating a replacement", async () => {
+    mockSearch.value = "aiLogin=another-users-login";
+    vi.spyOn(aiConnectionsApi, "loginSetup").mockRejectedValue(new Error("Sign-in attempt not found"));
+    await render();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Sign-in attempt not found");
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
   it("keeps Honcho setup blocked until the provider workspace is supplied", async () => {
     const honcho = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "honcho")!;
     experimentalMock.mockResolvedValue({ enableMemoryConnectors: true });

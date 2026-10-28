@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -7,6 +8,7 @@ import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
 import { publishLiveEvent } from "../live-events.js";
 import { getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { createHeartbeatRunState } from "./run-state.js";
+import { heartbeatService } from "../heartbeat.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatLifecycle, persistHeartbeatRunProcessMetadata, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
@@ -19,7 +21,7 @@ function callbacks(db: Db) {
   return {
     ...state,
     ...createHeartbeatRunPreparation(db),
-    getRun: vi.fn(state.getRun),
+    getRunStatus: vi.fn(state.getRunStatus),
     issuesSvc: {
       addComment: vi.fn<HeartbeatLifecycleDependencies["issuesSvc"]["addComment"]>(),
       listReviewAttention: vi.fn<HeartbeatLifecycleDependencies["issuesSvc"]["listReviewAttention"]>(),
@@ -84,10 +86,23 @@ describe("heartbeat lifecycle module boundary", () => {
     const database = guardedDatabase();
     const deps = callbacks(database.db);
     const run = { id: "late-progress", companyId: "company", agentId: "agent", status: "running", contextSnapshot: {} } as Run;
-    deps.getRun.mockResolvedValue({ ...run, status: "succeeded" });
+    deps.getRunStatus.mockResolvedValue({ ...run, status: "succeeded" });
     expect(await createHeartbeatLifecycle(database.db, deps).recordCurrentHeartbeatRunRuntimeProgress(run, { phase: "finalize", message: "late update" }, null)).toBeNull();
-    expect(deps.getRun).toHaveBeenCalledWith(run.id);
+    expect(deps.getRunStatus).toHaveBeenCalledWith(run.id);
     expect(getHeartbeatRunRuntimeStatus(run.id)).toBeNull();
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
+  it("does not publish progress when the current status read fails", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks(database.db);
+    deps.getRunStatus.mockRejectedValue(new Error("status read failed"));
+    const run = { id: "unavailable-progress", companyId: "company", agentId: "agent", status: "running" };
+    vi.mocked(publishLiveEvent).mockClear();
+    await expect(createHeartbeatLifecycle(database.db, deps)
+      .recordCurrentHeartbeatRunRuntimeProgress(run, { phase: "restore", message: "restoring" }, null))
+      .rejects.toThrow("status read failed");
+    expect(publishLiveEvent).not.toHaveBeenCalled();
     expect(database.access).not.toHaveBeenCalled();
   });
 });
@@ -117,6 +132,53 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, wakeupRequestId: wake.id, status: "running", runtimeMode: "native", ...patch }).returning();
     return { company, agent, wake, run };
   }
+
+  it.each(["succeeded", "failed", "cancelled", "timed_out", "interrupted", "deleted"])(
+    "rechecks progress after a run becomes %s without reading its large payloads",
+    async (status) => {
+      const { run } = await fixture({
+        contextSnapshot: { prompt: randomBytes(128 * 1024).toString("hex") },
+        runnerProfileJson: { configuration: randomBytes(128 * 1024).toString("hex") },
+        resultJson: { providerData: randomBytes(128 * 1024).toString("hex") },
+      });
+      const deps = callbacks(db);
+      const lifecycle = createHeartbeatLifecycle(db, deps);
+      const update = { phase: "restore" as const, message: "Restoring workspace", currentToolName: "sync" };
+      const progress = await lifecycle.recordCurrentHeartbeatRunRuntimeProgress(run, update, null);
+      expect(progress).toMatchObject({
+        companyId: run.companyId, agentId: run.agentId, runId: run.id,
+        phase: update.phase, message: update.message, currentToolName: "sync",
+      });
+      expect(await deps.getRunStatus.mock.results[0].value).toEqual({
+        id: run.id, companyId: run.companyId, agentId: run.agentId, status: "running",
+      });
+      expect(publishLiveEvent).toHaveBeenCalledTimes(1);
+      expect(publishLiveEvent).toHaveBeenCalledWith(expect.objectContaining({
+        companyId: run.companyId,
+        type: "heartbeat.run.progress",
+        payload: expect.objectContaining({ runId: run.id, agentId: run.agentId, phase: update.phase, message: update.message }),
+      }));
+
+      if (status === "deleted") await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      else await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, run.id));
+
+      expect(await lifecycle.recordCurrentHeartbeatRunRuntimeProgress(run, update, null)).toBeNull();
+      expect(deps.getRunStatus).toHaveBeenCalledTimes(2);
+      expect(getHeartbeatRunRuntimeStatus(run.id)).toBeNull();
+      expect(publishLiveEvent).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("wires fresh progress status reads through the public heartbeat service", async () => {
+    const { run } = await fixture();
+    const service = heartbeatService(db);
+    const update = { phase: "config_sync" as const, message: "Syncing workspace" };
+    expect(await service.recordRuntimeProgress(run, update, null)).toMatchObject({ runId: run.id, message: update.message });
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+    expect(await service.recordRuntimeProgress(run, update, null)).toBeNull();
+    expect(getHeartbeatRunRuntimeStatus(run.id)).toBeNull();
+    expect(publishLiveEvent).toHaveBeenCalledTimes(1);
+  });
 
   it("preserves sandbox process birth instead of inspecting a colliding controller PID", async () => {
     const { run } = await fixture();

@@ -1,4 +1,6 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
+import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
+import { ArtifactRow, ArtifactRowGroup, inlineRowStyle, subjectFromAttachmentRef } from "@/components/artifacts/v1";
 import { isTextAttachment } from "@/lib/issue-attachments";
 import { ArtifactPreview } from "@/components/artifacts/ArtifactCard";
 import { isVideoLikeOutput } from "@/lib/issue-output";
@@ -144,6 +146,7 @@ function TaskChatBubbleContent({
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
@@ -271,7 +274,7 @@ function TaskChatBubbleContent({
           </MarkdownBody>
         </div>
       ) : null}
-      {imageRefs.length > 0 ? (
+      {!artifactsV1 && imageRefs.length > 0 ? (
         <div
           className="flex max-w-(--pct-85) flex-col gap-2"
           data-testid="task-chat-bubble-media"
@@ -314,7 +317,7 @@ function TaskChatBubbleContent({
           </span>
         </div>
       ) : null}
-      {attachmentRefs.length > 0 ? (
+      {!artifactsV1 && attachmentRefs.length > 0 ? (
         <div className="flex max-w-(--pct-85) flex-col gap-2">
           <span className="text-xs text-muted-foreground">
             Files · {attachmentRefs.length}
@@ -429,6 +432,24 @@ function TaskChatBubbleContent({
           {sentFromIMessage && item.timestamp ? " · " : null}
           {item.timestamp}
         </span>
+      ) : null}
+      {artifactsV1 && imageRefs.length + attachmentRefs.length > 0 ? (
+        // Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): the files a message produced hang under its
+        // footer, 12px below, as rows inline at equal widths, wrapping past three. Pictures and video open the
+        // gallery, text opens a text tab when the panel offers one, anything else opens in a new tab.
+        <div className="w-full pt-2" data-testid="task-chat-bubble-artifacts-v1">
+          <ArtifactRowGroup>
+            {[...imageRefs, ...attachmentRefs].map((ref) => {
+              const subject = subjectFromAttachmentRef(ref);
+              const picture = isImageAttachment(ref) || isVideoLikeOutput(ref.contentType, ref.name);
+              const textTab = Boolean(openText && ref.id && isTextAttachment({ contentType: ref.contentType ?? "", originalFilename: ref.name }));
+              if (picture) return <ArtifactRow key={ref.url} subject={subject} onClick={() => openImage(ref.url)} style={inlineRowStyle} />;
+              // A text file keeps its link (modifier clicks, copying the address) while a plain click opens the text tab.
+              if (textTab) return <ArtifactRow key={ref.url} subject={subject} href={ref.openPath ?? ref.url} external onClick={() => openText?.(ref.id!, ref.name)} style={inlineRowStyle} />;
+              return <ArtifactRow key={ref.url} subject={subject} href={ref.openPath ?? ref.url} external style={inlineRowStyle} />;
+            })}
+          </ArtifactRowGroup>
+        </div>
       ) : null}
       {lightboxSrc !== null && lightboxIndex >= 0 ? (
         <ImageGalleryModal

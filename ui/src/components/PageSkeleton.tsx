@@ -1,6 +1,7 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface PageSkeletonProps {
+  collectionHeading?: "date" | "group" | null;
   variant?:
     | "list"
     | "issues-list"
@@ -12,7 +13,7 @@ interface PageSkeletonProps {
     | "org-chart";
 }
 
-export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
+export function PageSkeleton({ variant = "list", collectionHeading }: PageSkeletonProps) {
   if (variant === "dashboard") {
     return (
       <div className="space-y-6">
@@ -72,30 +73,6 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
     );
   }
 
-  if (variant === "inbox") {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <Skeleton className="h-9 w-56" />
-          <Skeleton className="h-8 w-40" />
-        </div>
-
-        <div className="space-y-5">
-          {Array.from({ length: 3 }).map((_, section) => (
-            <div key={section} className="space-y-2">
-              <Skeleton className="h-4 w-40" />
-              <div className="space-y-1 border border-border">
-                {Array.from({ length: 3 }).map((_, row) => (
-                  <Skeleton key={row} className="h-14 w-full rounded-none" />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
   if (variant === "org-chart") {
     return (
       <div className="space-y-4">
@@ -135,27 +112,25 @@ export function PageSkeleton({ variant = "list" }: PageSkeletonProps) {
     );
   }
 
-  if (variant === "issues-list") {
+  if (variant === "issues-list" || variant === "inbox") {
     return (
-      <div className="space-y-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <Skeleton className="h-9 w-64" />
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-8 w-16" />
-            <Skeleton className="h-8 w-16" />
-            <Skeleton className="h-8 w-16" />
-            <Skeleton className="h-8 w-24" />
+      <div role="status" aria-label="Loading tasks" className="-mx-2 sm:mx-0">
+        {collectionHeading ? (
+          <div aria-hidden="true" className={collectionHeading === "date"
+            ? "flex items-center justify-center py-1.5 text-(length:--text-nano)"
+            : "flex items-center py-1.5 text-sm"}>
+            <span className="invisible">Loading</span>
           </div>
-        </div>
-
-        <div className="space-y-2">
-          <Skeleton className="h-4 w-40" />
-          <div className="space-y-1">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-11 w-full rounded-none" />
-            ))}
+        ) : null}
+        {Array.from({ length: 8 }, (_, index) => (
+          <div key={index} className="task-row-skeleton" aria-hidden="true">
+            <Skeleton className="h-4 w-4 shrink-0" />
+            <Skeleton className="h-4 w-4 shrink-0" />
+            <Skeleton className="h-4 w-2/5" />
+            <Skeleton className="ml-auto hidden h-4 w-20 sm:block" />
+            <Skeleton className="hidden h-4 w-24 sm:block" />
           </div>
-        </div>
+        ))}
       </div>
     );
   }

@@ -18,6 +18,7 @@ import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
 import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
+import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -46,6 +47,10 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
   unarchiveFromInbox: vi.fn(),
+}));
+
+const mockRoutinesApi = vi.hoisted(() => ({
+  get: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -88,6 +93,10 @@ vi.mock("../api/execution-workspaces", () => ({
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
+}));
+
+vi.mock("../api/routines", () => ({
+  routinesApi: mockRoutinesApi,
 }));
 
 vi.mock("../api/auth", () => ({
@@ -628,6 +637,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockRoutinesApi.get.mockReset();
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
@@ -1137,6 +1147,77 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).not.toContain("via ");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("links a routine-created task back to its source routine under Relationships", async () => {
+    mockRoutinesApi.get.mockResolvedValue({ id: "routine-1", title: "Nightly triage" });
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      const row = container
+        .querySelector('[data-property-label="Routine"]')
+        ?.closest('[data-property-row="true"]');
+      const link = row?.querySelector("a");
+      expect(link?.getAttribute("href")).toBe("/routines/routine-1");
+      expect(link?.textContent).toContain("Nightly triage");
+    });
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row while the source routine is still loading", async () => {
+    mockRoutinesApi.get.mockReturnValue(new Promise(() => {}));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row when the source routine no longer exists", async () => {
+    mockRoutinesApi.get.mockRejectedValue(new ApiError("Not found", 404, null));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-gone" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-gone");
+    });
+    await flush();
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row for tasks not created by a routine", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+    expect(mockRoutinesApi.get).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });
