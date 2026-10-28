@@ -5857,6 +5857,16 @@ export function recoveryService(
       resolvedDependencyWakeBackstopCandidateCursor = null;
       candidateRows = await queryCandidates(null);
     }
+    let candidatePage = candidateRows;
+    while (
+      !useCursor &&
+      candidatePage.length === RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT
+    ) {
+      candidatePage = await queryCandidates(
+        candidatePage[candidatePage.length - 1]!.id,
+      );
+      candidateRows = [...candidateRows, ...candidatePage];
+    }
     const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
     const candidates = candidateRows.map(
       ({ totalCount: _totalCount, ...candidate }) => candidate,
