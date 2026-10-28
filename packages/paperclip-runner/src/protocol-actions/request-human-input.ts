@@ -86,7 +86,9 @@ export const requestHumanInputAction = {
         "skill_test"
       ],
       "inputSchema": {
-        "allOf": [questionsPayloadRequirement],
+        // A root allOf can hide this tool in Claude and its arguments in Codex.
+        // The direct conditional preserves the same validation on an object root.
+        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "idempotencyKey": {
@@ -216,7 +218,7 @@ export const requestHumanInputAction = {
       "title": "Request human input",
       "description": "Create a typed confirmation, checkbox, question, task suggestion, or item-verdict request.",
       "inputSchema": {
-        "allOf": [questionsPayloadRequirement],
+        ...questionsPayloadRequirement,
         "type": "object",
         "properties": {
           "interactionKind": {
