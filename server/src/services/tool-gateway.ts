@@ -1645,7 +1645,7 @@ export function createToolGatewayService(
     companyId: string,
     connectionId: string,
   ): Promise<ToolGatewayDescriptor[]> {
-    return (await connectedMcpToolsForCompany(companyId)).filter(
+    return (await connectedMcpToolsForCompany(companyId, [connectionId])).filter(
       (tool) => tool.connectionId === connectionId,
     );
   }

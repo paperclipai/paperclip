@@ -342,12 +342,6 @@ test("store setup and task connection intent share one fake provider through con
       (profile) => profile.profileKey === `app:${connectionId}`,
     );
     expect(appProfile).toBeTruthy();
-    await json(
-      await request.post(
-        `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/bind`,
-        { data: { targetType: "agent", targetId: holder.id, priority: 100 } },
-      ),
-    );
     expect(
       await json<{ unbound: number }>(
         await request.post(

@@ -642,6 +642,41 @@ describePostgres("already available connection requests", () => {
     await expect(materializeNativeInteractionResponses(input)).rejects.toMatchObject({ code: "native_interaction_unresolved" });
   });
 
+  it("keeps a Google access request pending until the selected grant covers the tool's scopes", async () => {
+    const f = await seed();
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" } });
+    await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" });
+    const oauth = (scopes: string[]) => ({ oauth: { scopes, scopeSource: "provider" as const } });
+    await db.update(connectionGrants).set({ providerTenant: oauth([]) });
+    const google = { ...f, tool: { ...f.tool, toolName: "gmail__get_message" } };
+    await grantRequested(google, await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" }));
+    const worker = connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    await db.update(connectionGrants).set({ providerTenant: oauth(["https://www.googleapis.com/auth/gmail.readonly"]) });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
+  });
+
+  it("moves a retired request to an installed replacement when its recorded connection fails the gateway", async () => {
+    const f = await seed();
+    await satisfiedConnectionIntentService(db).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
+    await db.update(connectionGrants).set({ kind: "agent", subjectAgentId: f.agentId, subjectUserId: null });
+    await db.delete(toolConnectionInstalls);
+    await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block old", policyType: "block", selectors: { catalogEntryId: f.tool.id } });
+    const [replacement] = await db.insert(toolConnections).values({ ...f.connection, id: randomUUID(), uid: "sentry-replacement", name: "Replacement Sentry" }).returning();
+    await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: replacement!.id, kind: "organization", status: "active" });
+    await db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: replacement!.id, targetType: "agent", targetId: f.agentId });
+    await db.insert(toolCatalogEntries).values({ ...f.tool, id: randomUUID(), connectionId: replacement!.id });
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: replacement!.id }) });
+    expect(wakeup).toHaveBeenCalledOnce();
+    const [task] = await db.select().from(issues);
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBeNull();
+  });
+
   it.each(["missing", "revoked", "blocked", "weaker", "changed_version", "inactive_tool", "other_connection", "wrong_requester", "wrong_user", "wrong_project", "other_company", "ambiguous"] as const)("keeps an access request pending for %s", async (reason) => {
     const f = await seed();
     let intent = await requestAccess(f, "allowed", reason === "wrong_requester" ? { requestingAgentId: randomUUID() } : {});

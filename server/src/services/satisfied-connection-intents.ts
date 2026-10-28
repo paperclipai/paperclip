@@ -5,10 +5,9 @@ import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, toolCatalogEntries, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { chatCredentialRotationId, connectionIntentService, gatewaySatisfiesTools } from "./connection-intents.js";
+import { chatCredentialRotationId, connectionIntentService, gatewayAllowsAny, gatewaySatisfiesTools } from "./connection-intents.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logger } from "../middleware/logger.js";
-import { createToolGatewayService } from "./tool-gateway.js";
 
 type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | "status" | "assigneeAgentId" | "assigneeUserId">;
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
@@ -78,19 +77,17 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   const service = connectionIntentService(db);
   const lookup = { companyId: task.companyId, agentId: payload.requestingAgentId,
     responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug };
-  const exact = (connectionId: string) => service.usableConnectionForAgent({ ...lookup, connectionId });
-  const connection = retiredConnectionId
-    ? await exact(retiredConnectionId) ?? await service.usableConnectionForAgent(lookup)
-    : accessRequest ? await exact(accessRequest.connectionId) : await service.usableConnectionForAgent(lookup);
-  if (!connection) return null;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
-  const access = await createToolGatewayService(db).summarizeConnectionAccessForAgent({
-    companyId: task.companyId, connectionId: connection.id, agentId: payload.requestingAgentId,
+  const gateway = (connectionId?: string) => service.gatewayAccessForAgent({ ...lookup, connectionId,
     heartbeatRunId: policyRunId === undefined ? intent.sourceRunId ?? null : policyRunId,
-    issueId: task.id, projectId: task.projectId,
-  });
-  if (!accessRequest || retiredConnectionId) return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+    issueId: task.id, projectId: task.projectId });
+  const available = (found: Awaited<ReturnType<typeof gateway>>) => found && gatewayAllowsAny(found.tools) ? found.connection : null;
+  if (retiredConnectionId) return available(await gateway(retiredConnectionId)) ?? available(await gateway());
+  if (!accessRequest) return available(await gateway());
+  const found = await gateway(accessRequest.connectionId);
+  if (!found) return null;
+  const connection = found.connection;
   const catalog = await db.select().from(toolCatalogEntries).where(and(
     eq(toolCatalogEntries.companyId, task.companyId), eq(toolCatalogEntries.connectionId, connection.id),
     inArray(toolCatalogEntries.id, accessRequest.tools.map(tool => tool.catalogEntryId)),
@@ -99,7 +96,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     const entry = catalog.find(candidate => candidate.id === requested.catalogEntryId);
     return entry && entry.status === "active" && entry.entryKind === "tool"
       && entry.toolName === requested.toolName && entry.versionHash === requested.versionHash;
-  }) && gatewaySatisfiesTools(access.tools, accessRequest.tools);
+  }) && gatewaySatisfiesTools(found.tools, accessRequest.tools);
   return satisfied ? connection : null;
 }
 
