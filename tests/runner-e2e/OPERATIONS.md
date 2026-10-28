@@ -399,12 +399,16 @@ This path currently supports the admitted local cells; remote transport remains
 unqualified.
 
 Scheduled experiment creation, grade insertion and summary retrieval share a
-60-second window, three-request cap, 4 MiB total payload allowance and eight-score
+60-second window, three-request cap, 4 MiB total payload allowance and fourteen-score
 cap. They run serially without automatic retry. Admission is persisted before
 dispatch in `<ledgerPath>.experiment-ingestion.jsonl`; uncertain responses retain
 their allowance and unresolved status. Reusing that file fails instead of
 resetting the budget. These limits cover the selected daily/weekly campaigns;
 the standalone experiment-import command does not use this transport budget.
+Each retained attempt contributes two deterministic grades, including failed
+grades. The cap supports seven attempts without dropping rows. Larger campaigns
+still fail closed. Historical receipts with the eight-score policy remain
+readable and keep their original limits and traffic counts.
 
 Private `ingestion-usage.json` binds all three receipt paths to the campaign's
 admitted attempts and ledger hash. Missing, malformed, unclosed or unresolved
