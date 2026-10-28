@@ -63,6 +63,10 @@ export const reportShellScript = `
 
 export const reportNavigationStyles = `
   :root { --report-sidebar-width: 250px; --navigation-sticky-offset: 64px; }
+  :root { --report-filter-active:#2563eb; --report-filter-tint:#eff6ff; }
+  @media(prefers-color-scheme:dark) { :root { --report-filter-active:#60a5fa; --report-filter-tint:#172235; } }
+  .report-shell [data-filter-active=true] { border-color:var(--report-filter-active); background-color:var(--report-filter-tint); box-shadow:0 0 0 1px var(--report-filter-active); }
+  .report-shell label:has([data-filter-active=true]) > span { color:var(--report-filter-active); }
   html { scroll-behavior: auto; }
   [hidden] { display: none !important; }
   .report-shell { min-height: 100dvh; }

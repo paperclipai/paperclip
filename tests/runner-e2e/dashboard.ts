@@ -909,7 +909,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     <div data-feature-coverage>${renderJourneyFeatureCoverage(catalog, entryById)}</div>
     <section class="report-filters" aria-label="Filter test results">
       <label class="report-search"><span>Search tests</span><input type="search" placeholder="Test, model, provider, execution ID…" autocomplete="off" data-report-query></label>
-      <button class="filter-reset" type="button" data-report-reset>Reset</button>
+      <button class="filter-reset" type="button" data-report-reset>Reset all filters</button>
       <label class="report-feature"><span>Feature</span><select data-report-feature><option value="">All features</option>${renderJourneyFeatureOptions(catalog)}</select></label>
       <label><span>Agent profile</span><select data-report-profile><option value="">All profiles</option>${filterProfiles.map((profile) => `<option value="${html(profile.id)}">${html(profile.label)}</option>`).join("")}</select></label>
       <label><span>Environment</span><select data-report-environment><option value="">All environments</option>${filterEnvironments.map((environment) => `<option value="${html(environment.id)}">${html(environment.label)}</option>`).join("")}</select></label>

@@ -115,7 +115,17 @@ export const historyBrowserScript = String.raw`
   };
   const apply = () => {
     shell.dataset.view = view;
-    const active = names.some(name => state[name]);
+    const activeCount = names.filter(name => state[name]).length;
+    const active = activeCount > 0;
+    for (const name of names) controls[name].dataset.filterActive = String(Boolean(state[name]));
+    const activeLabel = document.querySelector('[data-index-active-count]');
+    activeLabel.textContent = active ? activeCount + ' active' : 'None active';
+    activeLabel.dataset.active = String(active);
+    document.querySelector('[data-index-reset]').dataset.active = String(active);
+    const moreCount = names.filter(name => !['suite','coverage','target','q'].includes(name) && state[name]).length;
+    const moreLabel = document.querySelector('[data-index-more-count]');
+    moreLabel.hidden = moreCount === 0;
+    moreLabel.textContent = moreCount + ' active';
     const selectedLabel = state.suite ? suiteLabels.get(state.suite) || state.suite : '';
     document.querySelector('[data-index-title]').textContent = selectedLabel || (view === 'attention' ? 'Needs attention' : 'E2E tests');
     document.querySelector('[data-index-description]').textContent = state.suite ? 'Campaigns that included this suite. Full runs selected and executed the entire recorded suite definition; failed tests remain visible.' : 'Browse suites and retained campaigns across deployment targets, agent execution environments, and models.';
@@ -190,9 +200,18 @@ export const historyBrowserScript = String.raw`
     write(true); window.scrollTo({top:0,behavior:'instant'});
   });
   for (const name of names) controls[name].addEventListener(name === 'q' ? 'input' : 'change', () => { state[name] = controls[name].value; write(name !== 'q'); });
-  document.querySelector('[data-index-reset]').addEventListener('click', () => { state = {}; write(true); });
+  document.querySelector('[data-index-reset]').addEventListener('click', () => {
+    state = {}; view = 'history';
+    const suiteSearch = document.querySelector('[data-index-suite-query]');
+    suiteSearch.value = ''; suiteSearch.dataset.filterActive = 'false';
+    document.querySelectorAll('.report-suite-catalog a').forEach(link => { link.hidden = false; });
+    write(true);
+  });
   const suiteSearch = document.querySelector('[data-index-suite-query]');
-  suiteSearch.addEventListener('input', () => { for (const link of document.querySelectorAll('.report-suite-catalog a')) link.hidden = !link.textContent.toLowerCase().includes(suiteSearch.value.trim().toLowerCase()); });
+  suiteSearch.addEventListener('input', () => {
+    suiteSearch.dataset.filterActive = String(Boolean(suiteSearch.value));
+    for (const link of document.querySelectorAll('.report-suite-catalog a')) link.hidden = !link.textContent.toLowerCase().includes(suiteSearch.value.trim().toLowerCase());
+  });
   window.addEventListener('popstate',read); read();
 })();
 `;

@@ -159,13 +159,22 @@ export function renderRunnerHistoryIndex(
     .pointers a { padding:8px 11px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:12px; text-decoration:none; }
     .pointers a:hover,.campaign-link:hover,.open-cell a:hover { text-decoration:underline; }
     .latest-campaign { margin-bottom:32px; }
-    .index-filters { display: grid; grid-template-columns: minmax(160px,1fr) minmax(140px,.7fr) minmax(180px,1fr) minmax(180px,1fr); gap: 12px; margin: 24px 0 12px; }
+    .index-filter-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 14px; }
+    .index-filter-toolbar > div { display:flex; align-items:baseline; gap:10px; }
+    .index-filter-toolbar h2 { margin:0; font-size:15px; }
+    .index-active-count { color:var(--muted); font-size:12px; }
+    .index-active-count[data-active=true],.index-more-count { color:var(--report-filter-active); }
+    .index-filters { display: grid; grid-template-columns: minmax(160px,1fr) minmax(140px,.7fr) minmax(180px,1fr) minmax(180px,1fr); gap: 12px; margin: 0 0 12px; }
     .index-filters label,.index-more label { display: grid; gap: 6px; min-width: 0; font-size: 11px; color: var(--muted); }
     .index-filters select,.index-filters input,.index-more select,.index-more input { width: 100%; min-width: 0; min-height: 38px; padding: 8px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 5px; font: 12px var(--font); }
     .index-more { margin-bottom: 20px; }
     .index-more summary { color: var(--muted); cursor: pointer; font-size: 12px; }
     .index-more-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
-    .index-reset { border: 0; padding: 0; background: transparent; color: var(--muted); font: 12px var(--font); text-decoration: underline; cursor: pointer; }
+    .index-more-count { margin-left:8px; font-size:11px; }
+    .index-reset { min-height:36px; padding:8px 12px; border:1px solid var(--border); border-radius:5px; background:var(--raised); color:var(--foreground); font:600 12px var(--font); cursor:pointer; white-space:nowrap; }
+    .index-reset[data-active=true] { border-color:var(--report-filter-active); color:var(--report-filter-active); }
+    .index-reset:hover { background:var(--report-filter-tint); }
+    .index-reset:focus-visible { outline:2px solid var(--report-filter-active); outline-offset:3px; }
     .suite-run-pointers { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 20px 0; }
     .suite-run-pointers > div { min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 14px; }
     .suite-run-pointers strong,.suite-run-pointers a,.suite-run-pointers small { display: block; }
@@ -269,20 +278,20 @@ export function renderRunnerHistoryIndex(
       <div data-index-latest="any"><strong>Latest matching run</strong><a hidden></a><small></small></div>
       <div data-index-latest="full"><strong>Latest full run</strong><a hidden></a><small></small></div>
     </div></section>
+    <div class="index-filter-toolbar"><div><h2>Filters</h2><span class="index-active-count" data-index-active-count aria-live="polite">None active</span></div><button class="index-reset" type="button" data-index-reset>Reset all filters</button></div>
     <div class="index-filters" aria-label="Filter campaigns">
       ${filter("suite", "Suite", suites.map(suite => [suite.id, suite.label]))}
       ${filter("coverage", "Campaign coverage", [["full", "Full runs"], ["subset", "Subset selections"], ["unfinished", "Unfinished full selections"], ["unknown", "Coverage not established"]])}
       ${filter("target", "Target")}
       <label><span>Search campaigns</span><input type="search" data-index-filter="q" aria-label="Search campaigns" placeholder="Campaign, revision, branch, or case…"></label>
     </div>
-    <details class="index-more" data-index-more><summary>More filters</summary><div class="index-more-grid">
+    <details class="index-more" data-index-more><summary><span>More filters</span><span class="index-more-count" data-index-more-count hidden></span></summary><div class="index-more-grid">
       ${filter("environment", "Agent execution")}${filter("provider", "Provider")}${filter("model", "Model")}
       ${filter("profile", "Agent profile")}${filter("runtime", "Runtime")}${filter("preset", "Run preset")}
       ${filter("status", "Result", [["passed", "Passed"], ["failed", "Failed"], ["incomplete", "Incomplete"]])}
       <label><span>From</span><input type="date" data-index-filter="from" aria-label="From"></label>
       <label><span>Through</span><input type="date" data-index-filter="through" aria-label="Through"></label>
     </div></details>
-    <button class="index-reset" type="button" data-index-reset>Reset filters</button>
     <h2 data-index-list-title>Campaigns</h2>
     <p class="index-result" data-index-result aria-live="polite"></p>
     <div class="table-wrap">

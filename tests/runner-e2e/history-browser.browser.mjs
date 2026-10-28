@@ -65,7 +65,7 @@ try{
  await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveAttribute('data-index-id','newer-subset');
  await page.reload();await expect(page.getByLabel('Suite coverage',{exact:true})).toHaveValue('subset');
  await page.goBack();await expect(page.getByLabel('Suite coverage',{exact:true})).toHaveValue('full');
- await page.getByRole('button',{name:'Reset filters',exact:true}).click();
+ await page.getByRole('button',{name:'Reset all filters',exact:true}).click();
  await page.getByLabel('Suite',{exact:true}).selectOption('fixture-tasks');
  await page.getByText('More filters',{exact:true}).click();
  await page.getByLabel('Target',{exact:true}).selectOption('https://qa.test.paperclip.app');
@@ -73,7 +73,7 @@ try{
  await page.getByLabel('Agent execution',{exact:true}).selectOption('daytona');
  await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(0);
  await expect(page.locator('[data-index-empty]')).toBeVisible();
- await page.getByRole('button',{name:'Reset filters',exact:true}).click();
+ await page.getByRole('button',{name:'Reset all filters',exact:true}).click();
  await page.locator('[data-index-preset-link="qa-smoke"]').click();
  await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(1);
  await page.getByLabel('Model',{exact:true}).selectOption('__none__');
@@ -102,7 +102,35 @@ try{
  await expect(page.locator('[data-index-overview]')).toBeVisible();
  await page.getByLabel('Target',{exact:true}).selectOption('https://qa.test.paperclip.app');
  await expect(page.locator('[data-index-overview]')).not.toBeVisible();
- await page.getByRole('button',{name:'Reset filters',exact:true}).click();
+ await page.getByRole('button',{name:'Reset all filters',exact:true}).click();
+ const neutralBorder=await page.getByLabel('Suite',{exact:true}).evaluate(control=>getComputedStyle(control).borderColor);
+ const allFilters=new URLSearchParams({view:'attention',suite:'fixture-tasks',coverage:'full',target:'https://qa.test.paperclip.app',
+  environment:'daytona',provider:'claude',model:'model-b',profile:'claude',runtime:'native',preset:'qa-smoke',
+  status:'failed',from:'2026-10-24',through:'2026-10-29',q:'full'});
+ await page.goto(base+'?'+allFilters);
+ await expect(page.locator('[data-index-active-count]')).toHaveText('13 active');
+ await expect(page.locator('[data-index-filter][data-filter-active=true]')).toHaveCount(13);
+ await expect(page.getByLabel('Suite',{exact:true})).not.toHaveCSS('border-color',neutralBorder);
+ await page.getByText('More filters',{exact:true}).click();
+ await expect(page.locator('[data-index-more-count]')).toBeVisible();
+ await expect(page.locator('[data-index-more-count]')).toHaveText('9 active');
+ await page.reload();
+ await expect(page.locator('[data-index-active-count]')).toHaveText('13 active');
+ await page.getByLabel('Find suites',{exact:true}).fill('fixture tasks');
+ await expect(page.locator('[data-index-suite-link]:visible')).toHaveCount(1);
+ await page.getByRole('button',{name:'Reset all filters',exact:true}).click();
+ await expect(page).toHaveURL(base+'?view=history');
+ await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(4);
+ await expect(page.locator('[data-index-filter][data-filter-active=true]')).toHaveCount(0);
+ await expect(page.locator('[data-index-active-count]')).toHaveText('None active');
+ await expect(page.locator('[data-index-more-count]')).not.toBeVisible();
+ await expect(page.getByLabel('Find suites',{exact:true})).toHaveValue('');
+ await expect(page.getByLabel('Suite',{exact:true})).toHaveCSS('border-color',neutralBorder);
+ await expect(page.locator('[data-index-suite-link]:visible')).toHaveCount(await page.locator('[data-index-suite-link]').count());
+ for(const control of await page.locator('[data-index-filter]').all())await expect(control).toHaveValue('');
+ await page.goBack();
+ await expect(page.locator('[data-index-active-count]')).toHaveText('13 active');
+ await page.getByRole('button',{name:'Reset all filters',exact:true}).click();
  for(const width of [1440,1000,780,390]){
   await page.setViewportSize({width,height:1000});
   if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error(`horizontal overflow at ${width}`);

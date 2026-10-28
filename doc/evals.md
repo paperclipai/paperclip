@@ -22,6 +22,9 @@ Sidebar suite links open that suite's campaign history with other filters cleare
 The Suite dropdown combines with the current filters instead. Explicit URLs retain
 their selected filters; when a suite is absent from a preset, the empty state
 explains the combination and links to the suite's runs.
+Active filters have blue borders and tinted fields. The filter toolbar counts
+active values, including a count beside More filters for collapsed controls.
+Reset all filters clears every campaign filter and the sidebar suite search.
 
 `node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs`
 exercises the history UI using synthetic metadata and Chromium, with no model calls. It checks suite coverage, correlated
