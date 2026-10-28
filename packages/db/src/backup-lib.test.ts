@@ -696,26 +696,18 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           const [version] = await probe`SHOW server_version_num`;
           const serverMajor = Math.floor(Number(version.server_version_num) / 10_000);
           const [pgDumpMajor] = nativeClientMajors;
-          // Older pg_dump refuses newer servers; auto would silently fall back
-          // to JS. Newer clients can work (18 -> 17 was round-trip tested), but
-          // pg_dump 17+ emits SET transaction_timeout, which PG <=16 rejects
-          // during restore even when the dump came from that same server.
           if (pgDumpMajor < serverMajor) {
             context.skip(`pg_dump ${pgDumpMajor} cannot dump PostgreSQL ${serverMajor}`);
           }
           if (serverMajor < 17 && pgDumpMajor >= 17) {
             context.skip(`PostgreSQL ${serverMajor} cannot restore pg_dump ${pgDumpMajor}'s SET transaction_timeout`);
           }
-          // Do not gate psql on major equality: its SQL/meta-command support is
-          // checked by the real restore below. Unknown incompatibilities fail
-          // the test rather than becoming a blanket skip for newer clients.
         }
       } finally {
         await probe.end();
       }
       expect(path.isAbsolute(socketDir)).toBe(true);
       const url = new URL(tcpUrl);
-      // A TCP fallback must fail rather than silently making this test pass.
       url.hostname = "127.0.0.2";
       url.searchParams.set("host", socketDir);
       const sourceUrl = url.toString();
@@ -726,8 +718,6 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       const originalPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
       try {
         if (!native) {
-          // Exercise both the direct JavaScript engine and automatic fallback,
-          // independently of which native utilities happen to be installed.
           const missingTools = createTempDir("paperclip-no-native-tools-");
           process.env.PAPERCLIP_PG_DUMP_PATH = path.join(missingTools, "pg_dump");
           process.env.PAPERCLIP_PSQL_PATH = path.join(missingTools, "psql");
@@ -744,8 +734,6 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           backupEngine,
         });
         const dump = gunzipSync(fs.readFileSync(backup.backupFile)).toString("utf8");
-        // Prove auto selected the intended engine, rather than merely producing
-        // some backup that the available restore tools can read.
         expect(dump).toContain(native ? "-- PostgreSQL database dump" : "-- Paperclip database backup");
         await runDatabaseRestore({ connectionString: targetUrl, backupFile: backup.backupFile });
         const [restored] = await target`SELECT value FROM socket_probe`;
