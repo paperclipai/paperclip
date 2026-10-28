@@ -750,6 +750,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const service = connectionIntentService(db);
     await expect(service.request(claims, id)).rejects.toThrow("not found");
     await db.insert(connectionGrants).values({ companyId: claims.company_id, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, status: "active" });
+    await db.insert(toolPolicies).values({ companyId: claims.company_id, name: "Archive off", policyType: "block", selectors: { connectionId: connection!.id } });
     await db.insert(toolCatalogEntries).values({ companyId: claims.company_id, connectionId: connection!.id, toolName: "archive_read", name: "Archive read", description: "Read the unique heliotrope launch decision", versionHash: "fixture-v1", status: "active", entryKind: "tool" });
     expect((await service.search(claims, "heliotrope")).results).toEqual([expect.objectContaining({ service: id, source: "configured", state: "needs_user_action" })]);
     const requested = await service.request(claims, id);

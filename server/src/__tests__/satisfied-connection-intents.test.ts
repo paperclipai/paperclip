@@ -701,4 +701,77 @@ describePostgres("already available connection requests", () => {
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, question!.id)))[0].status).toBe("pending");
     await clearApproval();
   });
+
+  async function liveClaims(f: Awaited<ReturnType<typeof seed>>) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "running", runtimeMode: "legacy",
+      responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId } }).returning();
+    return { sub: f.agentId, company_id: f.companyId, run_id: run!.id, responsible_user_id: "connection-owner", scope: "connection_intents" as const, iat: 1, exp: 2, instance_id: "test" };
+  }
+  async function useWithoutInstall(f: Awaited<ReturnType<typeof seed>>) {
+    await db.delete(issueThreadInteractions);
+    await db.delete(toolConnectionInstalls);
+    await db.update(issues).set({ status: "in_progress" });
+  }
+
+  it("reports ready without an access card when the gateway already allows an uninstalled seat", async () => {
+    const f = await seed(); await useWithoutInstall(f);
+    const claims = await liveClaims(f); const service = connectionIntentService(db);
+    expect((await service.search(claims, "sentry")).results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: "sentry", state: "ready", connectionId: f.connection.id })]));
+    expect(await service.request(claims, "sentry")).toMatchObject({ state: "ready", interactionId: null, connectionId: f.connection.id });
+    expect(await service.request(claims, "sentry", { toolNames: ["sentry-read"] })).toMatchObject({ state: "ready", interactionId: null });
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+  });
+
+  it.each(["partial", "weaker", "off", "revoked", "ambiguous", "other_company"] as const)("still requires action for an uninstalled seat when access is %s", async (reason) => {
+    const f = await seed(); await useWithoutInstall(f);
+    const [second] = await db.insert(toolCatalogEntries).values({ companyId: f.companyId, connectionId: f.connection.id, toolName: "sentry-write", name: "sentry-write",
+      versionHash: "v1", status: "active", entryKind: "tool", riskLevel: "write" }).returning();
+    await db.update(toolCatalogEntries).set({ riskLevel: "read" }).where(eq(toolCatalogEntries.id, f.tool.id));
+    if (reason === "partial") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block write", policyType: "block", selectors: { catalogEntryId: second!.id } });
+    if (reason === "weaker") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Ask", policyType: "require_approval", selectors: { catalogEntryId: f.tool.id } });
+    if (reason === "off") await db.update(toolProfiles).set({ defaultAction: "deny" });
+    if (reason === "revoked") await db.update(connectionGrants).set({ status: "revoked" });
+    if (reason === "ambiguous") {
+      const [other] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.connection.applicationId, name: "Team Sentry", uid: "sentry-team",
+        transport: "mcp_remote", authKind: "api_key", credentialPolicy: "per_user", status: "active", enabled: true, healthStatus: "ok", config: { sourceTemplateKey: "sentry" } }).returning();
+      await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: other!.id, kind: "user", subjectUserId: "connection-owner", status: "active" });
+    }
+    const claims = await liveClaims(f); const service = connectionIntentService(db);
+    if (reason === "other_company") {
+      const [other] = await db.insert(companies).values({ name: "Other", issuePrefix: "OTH" }).returning();
+      await expect(service.request({ ...claims, company_id: other!.id }, "sentry")).rejects.toThrow();
+      return;
+    }
+    const found = (await service.search(claims, "sentry")).results.find(item => item.service === "sentry");
+    expect(found?.state === "ready").toBe(reason === "partial" || reason === "weaker");
+    const outcome = await service.request(claims, "sentry", { toolNames: ["sentry-read", "sentry-write"] }).catch((error: Error) => error);
+    expect(outcome).not.toMatchObject({ state: "ready" });
+  });
+
+  it("converges after an uninstalled seat's request is satisfied by gateway access", async () => {
+    const f = await seed(); await useWithoutInstall(f);
+    await db.update(toolProfiles).set({ defaultAction: "deny" });
+    const service = connectionIntentService(db);
+    const requested = await service.request(await liveClaims(f), "sentry");
+    expect(requested).toMatchObject({ state: "needs_user_action" });
+    expect((await db.select().from(issueThreadInteractions))[0].payload.accessRequest).toMatchObject({ connectionId: f.connection.id });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() });
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
+      permissionKey: "tools:use", scope: { allow: [`connection:${f.connection.id}`] } });
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending(); await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
+    expect(wakeup).toHaveBeenCalledOnce();
+    const [task] = await db.select().from(issues);
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBeNull();
+    const continuation = await liveClaims(f);
+    expect((await service.search(continuation, "sentry")).results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ service: "sentry", state: "ready", connectionId: f.connection.id })]));
+    expect(await service.request(continuation, "sentry")).toMatchObject({ state: "ready", interactionId: null, connectionId: f.connection.id });
+    await worker.sweepPending(); await worker.sweepPending();
+    expect(await db.select().from(issueThreadInteractions)).toHaveLength(1);
+    expect(wakeup).toHaveBeenCalledOnce();
+  });
 });
