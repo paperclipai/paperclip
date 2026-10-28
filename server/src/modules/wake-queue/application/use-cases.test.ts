@@ -121,6 +121,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     finalizePromotedWake: vi.fn(async (input) => runSummary(input.wakeId)),
     hasExistingExecutionPath: vi.fn(async () => false),
     hasExplicitBlockerPath: vi.fn(async () => false),
+    hasPendingFinalizeBlocker: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
     isImmediateRecoverySourceBlocked: vi.fn(async () => false),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
@@ -799,8 +800,11 @@ describe("releaseIssueExecution review-participant recovery", () => {
     contextSnapshot: { issueId: ISSUE.id, wakeReason: "execution_review_requested" },
   };
 
-  async function release(hasExplicitBlockerPath: boolean, run: RunSnapshot = reviewRun, issue: IssueSnapshot = reviewIssue) {
-    const transaction = createFakeTransaction({ hasExplicitBlockerPath: vi.fn(async () => hasExplicitBlockerPath) });
+  async function release(hasExplicitBlockerPath: boolean, run: RunSnapshot = reviewRun, issue: IssueSnapshot = reviewIssue, hasPendingFinalizeBlocker = false) {
+    const transaction = createFakeTransaction({
+      hasExplicitBlockerPath: vi.fn(async () => hasExplicitBlockerPath),
+      hasPendingFinalizeBlocker: vi.fn(async () => hasPendingFinalizeBlocker),
+    });
     const recovery = createFakeRecovery();
     const issueLock = createFakeIssueLock(createFakeHost(), transaction, issue, run);
     await createReleaseIssueExecution({ issueLock, recovery })({ companyId: "company-1", runId: "run-1", now: new Date() });
@@ -810,6 +814,13 @@ describe("releaseIssueExecution review-participant recovery", () => {
   it("leaves a review that waits on an unresolved explicit blocker to that blocker", async () => {
     const { transaction, recovery } = await release(true);
     expect(transaction.hasExplicitBlockerPath).toHaveBeenCalledWith({ companyId: "company-1", issueId: ISSUE.id });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
+  it("leaves a review whose done blocker is still finalizing its workspace to the finalize wake", async () => {
+    const { transaction, recovery } = await release(false, reviewRun, reviewIssue, true);
+    expect(transaction.hasPendingFinalizeBlocker).toHaveBeenCalledWith({ companyId: "company-1", issueId: ISSUE.id });
     expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
     expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
@@ -834,9 +845,34 @@ describe("releaseIssueExecution review-participant recovery", () => {
     expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
 
+  it("does not escalate a review recovery retry whose done blocker is still finalizing", async () => {
+    const transaction = createFakeTransaction({ hasPendingFinalizeBlocker: vi.fn(async () => true) });
+    const recovery = createFakeRecovery();
+    const retryRun: RunSnapshot = {
+      ...reviewRun,
+      contextSnapshot: {
+        issueId: ISSUE.id,
+        wakeReason: "execution_review_participant_recovery",
+        retryReason: "execution_review_participant_recovery",
+      },
+    };
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction, reviewIssue, retryRun);
+    await createReleaseIssueExecution({ issueLock, recovery })({ companyId: "company-1", runId: "run-1", now: new Date() });
+    expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
   it("still retries the review participant when nothing else is pending", async () => {
     const { transaction } = await release(false);
     expect(transaction.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not look for finalize waits outside the review-participant branch", async () => {
+    const transaction = createFakeTransaction();
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction);
+    await createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() })(
+      { companyId: "company-1", runId: "run-1", now: new Date() });
+    expect(transaction.hasPendingFinalizeBlocker).not.toHaveBeenCalled();
   });
 });
 
