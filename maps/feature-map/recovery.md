@@ -46,6 +46,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   New messages and orphan cleanup can register missing preservation automatically
   and wake the existing worker. Saved input still waits for verified stop and file
   persistence, then enters ordinary admission once.
+  A completed explicit Retry also retires its failed, unowned sandbox predecessor's
+  stale retry and registers preservation atomically. Current task state and live or
+  mismatched owners remain protected; workspace switching still waits for cleanup.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once

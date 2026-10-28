@@ -1369,6 +1369,15 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+A failed, unowned native sandbox retry can outlive an explicit Retry that already
+completed successfully. Startup recovery and ordinary retry admission retire that
+old retry only with the same company, task and agent, a linked completed successor,
+and the exact prepared source lease. They atomically register file preservation
+without replaying provider work or changing the current task. A live owner,
+recorded process or mismatched source remains held. Retirement does not prove
+termination or saved files; the existing stop-and-save worker must establish both
+before workspace selection can proceed.
+
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
 lifecycle evidence. This includes retries after a provider turn omitted its
