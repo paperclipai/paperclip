@@ -2,7 +2,7 @@ import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interact
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
-import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, toolCatalogEntries, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { chatCredentialRotationId, connectionIntentService } from "./connection-intents.js";
@@ -14,7 +14,7 @@ type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | 
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
 
 /** Verify existing access only. This never installs tools, grants access, or adopts an identity. */
-async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null, retired = false) {
   if (intent.kind !== "connection_intent" || intent.status !== "pending"
     || intent.companyId !== task.companyId || intent.issueId !== task.id
     || task.assigneeUserId) return null;
@@ -63,9 +63,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     });
     return capability.allowed ? connection : null;
   }
-  // Additional permissions, provider authentication and inbox setup still need
-  // their governed completion paths. Aggregator cards also name an upstream app.
-  if (payload.purpose || payload.accessRequest || payload.upstreamService
+  // Provider authentication and inbox setup still need their governed
+  // completion paths. Aggregator cards also name an upstream app.
+  if (payload.purpose || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
     const [membership] = await db.select().from(companyMemberships).where(and(
@@ -74,8 +74,13 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     ));
     if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
   }
-  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
-    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug });
+  const accessRequest = payload.accessRequest;
+  const service = connectionIntentService(db);
+  const lookup = { companyId: task.companyId, agentId: payload.requestingAgentId,
+    responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug };
+  const exact = () => service.usableConnectionForAgent({ ...lookup, connectionId: accessRequest!.connectionId });
+  const connection = accessRequest && !retired ? await exact()
+    : await service.usableConnectionForAgent(lookup) ?? (accessRequest ? await exact() : null);
   if (!connection) return null;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
@@ -84,7 +89,19 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     heartbeatRunId: policyRunId === undefined ? intent.sourceRunId ?? null : policyRunId,
     issueId: task.id, projectId: task.projectId,
   });
-  return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+  if (!accessRequest || retired) return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+  const catalog = await db.select().from(toolCatalogEntries).where(and(
+    eq(toolCatalogEntries.companyId, task.companyId), eq(toolCatalogEntries.connectionId, connection.id),
+    inArray(toolCatalogEntries.id, accessRequest.tools.map(tool => tool.catalogEntryId)),
+  ));
+  const satisfied = accessRequest.tools.every((requested) => {
+    const entry = catalog.find(candidate => candidate.id === requested.catalogEntryId);
+    if (!entry || entry.status !== "active" || entry.entryKind !== "tool"
+      || entry.toolName !== requested.toolName || entry.versionHash !== requested.versionHash) return false;
+    const decisions = access.tools.filter(tool => tool.toolName === entry.toolName).map(tool => tool.decision);
+    return decisions.length === 1 && (decisions[0] === "allowed" || (requested.permission === "ask_first" && decisions[0] === "ask_first"));
+  });
+  return satisfied ? connection : null;
 }
 
 export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
@@ -105,7 +122,7 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
-    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
+    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId, retired);
     // Historical system retirements describe a service need, not a permanent
     // binding to an account the user may later replace. Delivery and native
     // response projection still validate their own exact recorded connection.

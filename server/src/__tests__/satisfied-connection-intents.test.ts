@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, companyMemberships, connectionGrants, connectionGrantDelegations,
-  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
+  chatConversations, chatEndpoints, chatPublications, connectionIntentDeliveries, createDb, principalPermissionGrants, environmentLeases, heartbeatRunEvents, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, projects, toolApplications,
   toolCatalogEntries, toolConnectionInstalls, toolConnections, toolProfileBindings, toolProfiles, toolPolicies,
 } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -19,6 +20,7 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 import { reserveRunBudget } from "../services/budget-reservations.js";
+import { grantConnectionAgentTools } from "../services/connection-agent-access.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -428,7 +430,7 @@ describePostgres("already available connection requests", () => {
     await expect(materializeNativeInteractionResponses(input)).rejects.toMatchObject({ code: "native_interaction_unresolved" });
   });
 
-  it.each(["missing_install", "denied_tools", "disabled", "unhealthy", "revoked", "wrong_user", "viewer", "removed_member", "additional_access", "ai", "channel", "upstream", "reassigned", "human_owner", "closed", "other_company"] as const)("preserves a request for %s", async (reason) => {
+  it.each(["missing_install", "denied_tools", "disabled", "unhealthy", "revoked", "wrong_user", "viewer", "removed_member", "ai", "channel", "upstream", "reassigned", "human_owner", "closed", "other_company"] as const)("preserves a request for %s", async (reason) => {
     const f = await seed();
     if (reason === "missing_install") await db.delete(toolConnectionInstalls);
     if (reason === "denied_tools") await db.update(toolProfiles).set({ defaultAction: "deny" });
@@ -487,5 +489,188 @@ describePostgres("already available connection requests", () => {
     const outcome = await dispatch.cancelStaleQueuedRun({ companyId: f.companyId, runId: run.id, expectedStatus: "queued", now: new Date() });
     expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
+  });
+  async function requestAccess(f: Awaited<ReturnType<typeof seed>>, permission: "allowed" | "ask_first" = "allowed", overrides: Record<string, unknown> = {}) {
+    const accessRequest = { connectionId: f.connection.id, connectionName: "Existing Sentry",
+      tools: [{ catalogEntryId: f.tool.id, toolName: f.tool.toolName, versionHash: "v1", permission }] };
+    await db.update(issueThreadInteractions).set({ payload: { ...f.intent.payload, accessRequest, ...overrides } as typeof f.intent.payload })
+      .where(eq(issueThreadInteractions.id, f.intent.id));
+    await db.update(toolProfiles).set({ defaultAction: "deny" });
+    return (await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.intent.id)))[0]!;
+  }
+
+  async function grantRequested(f: Awaited<ReturnType<typeof seed>>, intent: Awaited<ReturnType<typeof requestAccess>>) {
+    await db.transaction(async (tx) => grantConnectionAgentTools(tx as unknown as typeof db, { connection: f.connection, agentId: f.agentId,
+      userId: "connection-owner", tools: intent.payload.accessRequest!.tools, context: { issueId: f.issueId, projectId: null } }));
+  }
+
+  it.each(["allowed", "ask_first"] as const)("retires an exact %s access request once its grant commits", async (permission) => {
+    const f = await seed(); const intent = await requestAccess(f, permission);
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    await grantRequested(f, intent);
+    await worker.sweepPending();
+    await worker.sweepPending();
+    const [retired] = await db.select().from(issueThreadInteractions);
+    expect(retired).toMatchObject({ status: "expired", resolvedByUserId: null, result: expect.objectContaining({ outcome: "expired", connectionId: f.connection.id }) });
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(1);
+    expect(await db.select().from(approvals)).toHaveLength(0);
+    expect(wakeup).toHaveBeenCalledOnce();
+  });
+
+  it("retires an access request when an uninstalled seat already holds an explicit tools:use grant", async () => {
+    const f = await seed(); await requestAccess(f);
+    await db.delete(toolConnectionInstalls);
+    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
+      permissionKey: "tools:use", scope: { allow: [`connection:${f.connection.id}`] } });
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
+    const [retired] = await db.select().from(issueThreadInteractions);
+    expect(retired).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
+    expect(wakeup).toHaveBeenCalledOnce();
+    const [task] = await db.select().from(issues);
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBeNull();
+  });
+
+  it("keeps an access request pending when its grant transaction rolls back", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await expect(db.transaction(async (tx) => {
+      await grantConnectionAgentTools(tx as unknown as typeof db, { connection: f.connection, agentId: f.agentId,
+        userId: "connection-owner", tools: intent.payload.accessRequest!.tools, context: { issueId: f.issueId, projectId: null } });
+      throw new Error("rollback");
+    })).rejects.toThrow("rollback");
+    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+  });
+
+  it("replays a retired access request after restart without a second wake", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await grantRequested(f, intent);
+    const first = vi.fn(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "queued", idempotencyKey: `connection-intent:${intent.id}:expired` });
+      return null;
+    });
+    await connectionIntentDeliveryService(db, { wakeup: first }).sweepPending();
+    const restarted = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup: restarted }).sweepPending();
+    expect(first).toHaveBeenCalledOnce();
+    expect(restarted).not.toHaveBeenCalled();
+    const receipts = await db.select().from(connectionIntentDeliveries);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].deliveredAt).not.toBeNull();
+  });
+
+  it("keeps a waiting access request on the delivery worker until its grant commits", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    const worker = connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) });
+    expect(await worker.hasPending()).toBe(true);
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    await grantRequested(f, intent);
+    await worker.sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+  });
+
+  it("rejects a delayed human reply to a retired access request without recording consent", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await grantRequested(f, intent);
+    await satisfiedConnectionIntentService(db).sweepPending();
+    await expect(connectionIntentService(db).complete(intent.id, f.connection.id, "connection-owner", { canManageOrganizationGrant: true }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", resolvedByUserId: null });
+    expect(await db.select().from(approvals)).toHaveLength(0);
+  });
+
+  it("settles a concurrent human accept and retirement exactly once", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await grantRequested(f, intent);
+    const [sweep, accept] = await Promise.allSettled([
+      satisfiedConnectionIntentService(db).sweepPending(),
+      connectionIntentService(db).complete(intent.id, f.connection.id, "connection-owner", { canManageOrganizationGrant: true }),
+    ]);
+    expect(sweep.status).toBe("fulfilled");
+    const [card] = await db.select().from(issueThreadInteractions);
+    if (accept.status === "fulfilled") {
+      expect(card.status).toBe("accepted");
+      expect(sweep.status === "fulfilled" && sweep.value.satisfied).toBe(0);
+    } else {
+      expect(accept.reason).toMatchObject({ status: 409 });
+      expect(card).toMatchObject({ status: "expired", resolvedByUserId: null });
+    }
+    expect((await db.select().from(connectionIntentDeliveries)).length).toBeLessThanOrEqual(1);
+  });
+
+  it("does not strand the task when a retired access request's exact tool version later changes", async () => {
+    const f = await seed(); const intent = await requestAccess(f);
+    await grantRequested(f, intent);
+    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("expired");
+    await db.update(toolCatalogEntries).set({ versionHash: "v2" });
+    const [task] = await db.select().from(issues);
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBeNull();
+  });
+
+  it.each(["missing", "revoked", "blocked", "weaker", "changed_version", "inactive_tool", "other_connection", "wrong_requester", "wrong_user", "wrong_project", "other_company", "ambiguous"] as const)("keeps an access request pending for %s", async (reason) => {
+    const f = await seed();
+    let intent = await requestAccess(f, "allowed", reason === "wrong_requester" ? { requestingAgentId: randomUUID() } : {});
+    if (reason !== "missing" && reason !== "wrong_project") await db.update(toolProfiles).set({ defaultAction: "allow" });
+    if (reason === "wrong_project") {
+      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Elsewhere" }).returning();
+      await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
+        permissionKey: "tools:use", scope: { allow: [`connection:${f.connection.id}`], projectId: project!.id } });
+    }
+    if (reason === "revoked") await db.update(connectionGrants).set({ status: "revoked" });
+    if (reason === "blocked") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Block", policyType: "block", selectors: { issueId: f.issueId } });
+    if (reason === "weaker") await db.insert(toolPolicies).values({ companyId: f.companyId, name: "Ask", policyType: "require_approval", selectors: { issueId: f.issueId } });
+    if (reason === "changed_version") await db.update(toolCatalogEntries).set({ versionHash: "v2" });
+    if (reason === "inactive_tool") await db.update(toolCatalogEntries).set({ status: "inactive" });
+    if (reason === "wrong_user") await db.update(connectionGrants).set({ subjectUserId: "someone-else" });
+    if (reason === "other_connection") {
+      const [other] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.connection.applicationId, name: "Other Sentry", uid: "sentry-other",
+        transport: "mcp_remote", authKind: "api_key", credentialPolicy: "per_user", status: "active", enabled: true, healthStatus: "ok", config: { sourceTemplateKey: "sentry" } }).returning();
+      await db.update(issueThreadInteractions).set({ payload: { ...intent.payload, accessRequest: { ...intent.payload.accessRequest!, connectionId: other!.id } } as typeof intent.payload });
+      await db.update(toolProfiles).set({ defaultAction: "allow" });
+    }
+    if (reason === "ambiguous") {
+      const [other] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: f.connection.applicationId, name: "Team Sentry", uid: "sentry-team",
+        transport: "mcp_remote", authKind: "api_key", credentialPolicy: "per_user", status: "active", enabled: true, healthStatus: "ok", config: { sourceTemplateKey: "sentry" } }).returning();
+      await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: other!.id, kind: "user", subjectUserId: "connection-owner", status: "active" });
+      await db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: other!.id, targetType: "agent", targetId: f.agentId });
+      await db.insert(toolCatalogEntries).values({ companyId: f.companyId, connectionId: other!.id, toolName: "sentry-read", name: "sentry-read", versionHash: "v1", status: "active", entryKind: "tool" });
+    }
+    if (reason === "other_company") {
+      const [other] = await db.insert(companies).values({ name: "Other", issuePrefix: "OTH" }).returning();
+      await db.update(issueThreadInteractions).set({ companyId: other!.id });
+    }
+    const task = (await db.select().from(issues))[0]; intent = (await db.select().from(issueThreadInteractions))[0];
+    expect(await findSatisfiedToolConnection(db, task, intent)).toBeNull();
+    expect(await satisfiedConnectionIntentService(db).sweepPending()).toMatchObject({ satisfied: 0 });
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
+    expect(await db.select().from(connectionIntentDeliveries)).toHaveLength(0);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)("keeps human requests actionable after the source run %s", async (status) => {
+    const f = await seed();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status, runtimeMode: "legacy",
+      responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId }, finishedAt: new Date() }).returning();
+    await requestAccess(f);
+    await db.update(issueThreadInteractions).set({ sourceRunId: run!.id });
+    const [question] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending",
+      addresseeUserId: "connection-owner", sourceRunId: run!.id, payload: { version: 1, questions: [] } }).returning();
+    const clearApproval = await addWait(f, "approval");
+    const wakeup = vi.fn().mockResolvedValue(null);
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
+    const statuses = Object.fromEntries((await db.select().from(issueThreadInteractions)).map(row => [row.kind, row.status]));
+    expect(statuses).toEqual({ connection_intent: "pending", ask_user_questions: "pending" });
+    expect((await db.select().from(approvals))[0].status).toBe("pending");
+    const [task] = await db.select().from(issues);
+    expect(await connectionContinuationPendingResponse(db, task, "connection-owner")).toBe("interaction");
+    expect(wakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, question!.id)))[0].status).toBe("pending");
+    await clearApproval();
   });
 });
