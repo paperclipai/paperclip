@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { agents, agentTaskSessions, agentWakeupRequests, companies, createDb, instanceSettings, executionWorkspaces, heartbeatRuns, issueRelations, issues, workspaceOperations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
@@ -128,7 +129,7 @@ describe.skipIf(!support.supported)("wake admission pool progress", () => {
 
   it("preserves session scope and sees transaction-local sessions without another connection", async () => {
     const db = createDb(database.connectionString, { maxConnections: 1 });
-    const cwd = await fs.mkdtemp(path.join(process.env.TMPDIR!, "session-workspace-"));
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "session-workspace-"));
     try {
       const state = createHeartbeatRunState(db);
       const [company] = await observer.insert(companies).values({ name: "Session scope", issuePrefix: `S${randomUUID().slice(0, 7)}` }).returning();
