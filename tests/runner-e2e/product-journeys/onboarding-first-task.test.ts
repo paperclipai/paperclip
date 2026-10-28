@@ -300,6 +300,23 @@ describe("Cloud canonical onboarding first task", () => {
     expect(result.artifact.originatingRunId).toBe("child-run");
     expect(connectionDelay).toHaveBeenCalledOnce();
   });
+  it.each(["transient_failure", "ai_connection_busy", "ai_connection_pool_wait", "max_turns_continuation", "issue_disposition_repair"])("starts the workspace wait counter independently of %s", async reason => {
+    const f = fixture({ mutate(phase, state) {
+      if (phase !== "accepted") return;
+      state.runs.push({ ...workspaceDeferral(), scheduledRetryReason: reason, scheduledRetryAttempt: 3 });
+      linkWorkspaceRetry(state.runs.find(run => run.id === "child-run")!);
+    } });
+    await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
+    expect(f.events.filter(event => event === "click:Approve")).toHaveLength(1);
+  });
+  it("does not reset an existing workspace wait counter", async () => {
+    const f = fixture({ mutate(phase, state) {
+      if (phase !== "accepted") return;
+      state.runs.push({ ...workspaceDeferral(), scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 3 });
+      linkWorkspaceRetry(state.runs.find(run => run.id === "child-run")!);
+    } });
+    await expect(onboardingFirstTask(f.input)).rejects.toMatchObject({ code: "onboarding_workspace_retry_lineage_mismatch" });
+  });
   it.each([
     ["missing proof", (run: Row) => { run.resultJson = {}; }],
     ["provider started", (run: Row) => { run.resultJson.executionRecovery.providerWorkStarted = true; }],

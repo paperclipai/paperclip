@@ -51,7 +51,8 @@ function sameWorkspaceRetry(source: Row, successor: Row): boolean {
     successor.retryOfRunId === source.id && successor.contextSnapshot?.retryOfRunId === source.id &&
     successor.scheduledRetryReason === "workspace_busy" && successor.contextSnapshot?.retryReason === "workspace_busy" &&
     successor.contextSnapshot?.wakeReason === "workspace_busy_retry" &&
-    Number.isSafeInteger(successor.scheduledRetryAttempt) && successor.scheduledRetryAttempt === (source.scheduledRetryAttempt ?? 0) + 1;
+    Number.isSafeInteger(successor.scheduledRetryAttempt) &&
+    successor.scheduledRetryAttempt === (source.scheduledRetryReason === "workspace_busy" ? source.scheduledRetryAttempt ?? 0 : 0) + 1;
 }
 
 function unstartedScheduledWorkspaceRetry(run: Row): boolean {
