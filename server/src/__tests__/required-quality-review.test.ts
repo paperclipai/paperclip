@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import Ajv2020 from "ajv/dist/2020.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, assets, companies, createDb, documents, heartbeatRuns, issueAttachments, issues } from "@paperclipai/db";
+import { agents, assets, companies, createDb, documents, heartbeatRuns, issueAttachments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -148,6 +148,47 @@ const support = await getEmbeddedPostgresTestSupport();
     const first = await f.service.create(f.task, request, { userId: f.userId });
     expect((await f.service.create(f.task, request, { userId: f.userId })).id).toBe(first.id);
     await expect(f.service.create(f.task, { ...request, idempotencyKey: "cross", payload: { ...request.payload, target: { ...other.copy, issueId: other.issueId } } }, { userId: f.userId })).rejects.toThrow("on this task");
+  });
+  it("reuses repeated agent quality requests with fresh idempotency keys and keeps distinct outputs actionable", async () => {
+    const f = await fixture();
+    const actor = { agentId: f.agentId };
+    const request = { kind: "request_confirmation" as const, addresseeUserId: f.userId,
+      payload: { version: 1 as const, prompt: "Approve copy?", target: f.copy, qualityReview: { key: "copy" } } };
+    await expect(f.service.create(f.task, { kind: "request_item_verdicts", payload: { version: 1, prompt: "Duplicate slots", items: [
+      { id: "first", label: "Copy one", qualityReview: { key: "copy" }, target: f.copy },
+      { id: "second", label: "Copy two", qualityReview: { key: "copy" }, target: f.copy },
+    ] } }, actor)).rejects.toThrow("Quality review keys must be unique");
+    const first = await f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor);
+    const repeats = await Promise.all(Array.from({ length: 12 }, () => f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor)));
+    expect(new Set(repeats.map(card => card.id))).toEqual(new Set([first.id]));
+    const visual = await f.service.create(f.task, { kind: "request_confirmation", payload: { version: 1, prompt: "Approve visual?", target: f.visual, qualityReview: { key: "visual" } } }, actor);
+    await expect(f.service.create(f.task, { ...request, payload: { ...request.payload, prompt: "Another copy request" } }, actor)).rejects.toMatchObject({ details: { code: "quality_review_already_pending", interactionId: first.id } });
+    await expect(f.service.create(f.task, { kind: "request_item_verdicts", payload: { version: 1, prompt: "Duplicate copy", items: [{ id: "copy", label: "Copy", qualityReview: { key: "copy" }, target: f.copy }] } }, actor)).rejects.toMatchObject({ details: { code: "quality_review_already_pending" } });
+    const rows = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
+    expect(rows.filter(row => row.status === "pending").map(row => row.id).sort()).toEqual([first.id, visual.id].sort());
+    await f.service.acceptInteraction(f.task, first.id, {}, { userId: f.userId });
+    expect((await f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor)).id).not.toBe(first.id);
+  });
+  it("allows a fresh review for an answered item while another output in its batch remains pending", async () => {
+    const f = await fixture();
+    const batch = await f.service.create(f.task, { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review outputs", items: [
+      { id: "copy", label: "Copy", qualityReview: { key: "copy" }, target: f.copy },
+      { id: "visual", label: "Visual", qualityReview: { key: "visual" }, target: f.visual },
+    ] } }, { agentId: f.agentId });
+    await f.service.submitItemVerdicts(f.task, batch.id, { verdicts: [{ id: "copy", verdict: "reject", reason: "Revise opening" }] }, { userId: f.userId });
+    const next = await f.service.create(f.task, { kind: "request_confirmation", payload: { version: 1, prompt: "Review copy again", qualityReview: { key: "copy" }, target: f.copy } }, { agentId: f.agentId });
+    expect(next.id).not.toBe(batch.id);
+    await expect(f.service.create(f.task, { kind: "request_confirmation", payload: { version: 1, prompt: "Duplicate visual", qualityReview: { key: "visual" }, target: f.visual } }, { agentId: f.agentId })).rejects.toMatchObject({ details: { code: "quality_review_already_pending", interactionId: batch.id } });
+  });
+  it("caps pending quality cards task-wide even when previous requirement keys or reviewers differ", async () => {
+    const f = await fixture();
+    await db.insert(issueThreadInteractions).values(Array.from({ length: 10 }, (_, i) => ({
+      companyId: f.companyId, issueId: f.issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Prior required output", target: f.copy, qualityReview: { key: `prior-${i}`, requirementHash: "a".repeat(64) } },
+    })));
+    await expect(f.service.create(f.task, { kind: "request_confirmation", addresseeUserId: f.userId, payload: { version: 1, prompt: "Approve copy?", target: f.copy, qualityReview: { key: "copy" } } }, { agentId: f.agentId })).rejects.toMatchObject({ details: { code: "quality_review_pending_limit" } });
+    const rows = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
+    expect(rows).toHaveLength(10);
   });
   it("locks the task before a verdict output and rechecks closure after a concurrent task transition", async () => {
     const f = await fixture();

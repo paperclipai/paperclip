@@ -3791,6 +3791,37 @@ export function issueThreadInteractionService(
             if (binding.requirementHash !== item.qualityReview!.requirementHash) throw conflict("Quality review requirements changed; read the task again");
             await assertRequestConfirmationTargetIsCurrent(tx, { companyId: issue.companyId, issueId: issue.id, target: item.target, lockForUpdate: true });
           }
+          if (qualityItems.length) {
+            const keys = qualityItems.map(item => item.qualityReview!.key);
+            // The issue lock serializes creates across agents and reviewers.
+            // Ten is also the schema limit on required deliverables: bounding
+            // task-wide cards bounds every reviewer's queue, even after a human
+            // changes the requirement while older cards are still pending.
+            const pendingQuality = await tx.select().from(issueThreadInteractions).where(and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.status, "pending"),
+              inArray(issueThreadInteractions.kind, ["request_confirmation", "request_item_verdicts"]),
+              sql`(jsonb_path_exists(${issueThreadInteractions.payload}, '$.qualityReview ? (@ != null)') OR
+                jsonb_path_exists(${issueThreadInteractions.payload}, '$.items[*].qualityReview ? (@ != null)'))`,
+            )).limit(11);
+            for (const pending of pendingQuality) {
+              const interaction = hydrateInteraction(pending);
+              const existingKeys = interaction.kind === "request_confirmation" ? [interaction.payload.qualityReview?.key]
+                : interaction.kind === "request_item_verdicts" ? interaction.payload.items.filter(item => !interaction.result?.items.some(result => result.id === item.id)).map(item => item.qualityReview?.key) : [];
+              if (!existingKeys.some(key => key && keys.includes(key))) continue;
+              if (isEquivalentCreateRequest(pending, { ...normalizedData, idempotencyKey: pending.idempotencyKey ?? undefined }, actor, defaultAddresseeUserId)) {
+                await enqueueIssueInteractionChatPublications(tx as unknown as Db, interaction);
+                return { row: pending, supersededRows: [], reused: true };
+              }
+              throw conflict("A quality review for this output is already pending; resolve or cancel it before requesting another", {
+                code: "quality_review_already_pending", interactionId: pending.id,
+              });
+            }
+            if (pendingQuality.length >= 10) throw conflict("This task already has ten pending quality reviews; resolve or cancel an existing review first", {
+              code: "quality_review_pending_limit",
+            });
+          }
           // An unverified phone caller has no authenticated human identity.
           // Their clarifications use the ordinary task-comment/follow-up queue;
           // a protected native question would otherwise wait indefinitely.
@@ -3917,6 +3948,7 @@ export function issueThreadInteractionService(
           );
           return { row, supersededRows };
         });
+        if ("reused" in result && result.reused) return hydrateInteraction(result.row);
         created = result.row;
         superseded = result.supersededRows;
       } catch (error) {
