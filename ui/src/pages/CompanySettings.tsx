@@ -89,8 +89,14 @@ export function CompanySettings() {
       description: string | null;
       budgetMonthlyCents?: number;
     }) => companiesApi.update(selectedCompanyId!, data),
-    onSuccess: () => {
+    onSuccess: (_company, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (variables.budgetMonthlyCents !== undefined && selectedCompanyId) {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.budgets.overview(selectedCompanyId)
+        });
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId) });
+      }
     }
   });
 

@@ -86,6 +86,7 @@ async function waitForAssertion(assertion: () => void) {
 
 describe("CompanySettings monthly budget", () => {
   let container: HTMLDivElement;
+  let queryClient: QueryClient;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -100,7 +101,7 @@ describe("CompanySettings monthly budget", () => {
   });
 
   function render() {
-    const queryClient = new QueryClient({
+    queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
@@ -234,6 +235,47 @@ describe("CompanySettings monthly budget", () => {
         name: "Acme Robotics Ltd",
         description: null,
       });
+    });
+    flushSync(() => root.unmount());
+  });
+
+  it("refreshes the budget views after saving the budget", async () => {
+    const root = render();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    typeBudget("2500");
+    clickSave();
+
+    await waitForAssertion(() => {
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: queryKeys.budgets.overview(SELECTED_COMPANY.id),
+      });
+      expect(invalidateQueries).toHaveBeenCalledWith({
+        queryKey: queryKeys.dashboard(SELECTED_COMPANY.id),
+      });
+    });
+    flushSync(() => root.unmount());
+  });
+
+  it("leaves the budget views alone when only the name changes", async () => {
+    const root = render();
+    const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
+    const nameInput = container.querySelector<HTMLInputElement>("input[type=text]");
+    expect(nameInput).toBeTruthy();
+    flushSync(() => {
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(nameInput, "Acme Robotics Ltd");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    clickSave();
+
+    await waitForAssertion(() => {
+      expect(mockCompaniesApi.update).toHaveBeenCalled();
+    });
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: queryKeys.budgets.overview(SELECTED_COMPANY.id),
     });
     flushSync(() => root.unmount());
   });
