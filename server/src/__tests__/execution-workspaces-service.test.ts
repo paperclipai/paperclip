@@ -936,8 +936,6 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }, 20_000);
 
   async function seedTerminalSharedWorkspace(status: "active" | "cleanup_failed" = "active") {
-    // A shared session points at the project's own checkout. The runtime did not
-    // create that directory, so cleanup must keep it.
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
     const companyId = randomUUID();

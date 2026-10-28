@@ -3897,8 +3897,6 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
       expect(kept).toMatchObject({ cleaned: true, warnings: [] });
       await expect(fs.access(checkout)).resolves.toBeUndefined();
 
-      // A runtime-owned path that contains the project workspace is still refused
-      // and still reported as not cleaned.
       const refused = await cleanupExecutionWorkspaceArtifacts({
         workspace: { ...sharedWorkspace, metadata: { createdByRuntime: true } },
         projectWorkspace: { cwd: checkout, cleanupCommand: null },
