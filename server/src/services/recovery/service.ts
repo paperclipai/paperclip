@@ -5787,7 +5787,9 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        opts?.blockerIssueId
+          ? notInArray(issues.status, ["backlog", "done", "cancelled"])
+          : eq(issues.status, "blocked"),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
@@ -5808,6 +5810,7 @@ export function recoveryService(
             companyId: issues.companyId,
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
+            status: issues.status,
             blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
           })
@@ -5824,6 +5827,7 @@ export function recoveryService(
           companyId: issues.companyId,
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
           blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
         })
@@ -5934,7 +5938,7 @@ export function recoveryService(
         // blockers were resolved: it is waiting on something outside the blocker
         // graph. Re-waking it here made it re-block on every sweep (each re-block
         // stamps a new cycle, so the ready-state key never repeats).
-        if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
+        if (candidate.status === "blocked" && await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
           result.selfBlockedSkipped += 1;
           continue;
         }
