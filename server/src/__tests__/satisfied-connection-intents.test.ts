@@ -9,6 +9,7 @@ import { activityLog, agentWakeupRequests, agents, approvals, authUsers, compani
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { connectionIntentService } from "../services/connection-intents.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -673,6 +674,24 @@ describePostgres("already available connection requests", () => {
     await grantRequested(google, await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" }));
     await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
     expect((await db.select().from(issueThreadInteractions))[0].status).toBe(retires ? "expired" : "pending");
+  });
+
+  it.each([
+    ["company_default", "pending"],
+    ["instruction", "expired"],
+  ] as const)("reads Google scopes under the source run's %s identity before retiring a card", async (cause, status) => {
+    const f = await seed();
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" } });
+    await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" });
+    await db.update(connectionGrants).set({ providerTenant: { oauth: { scopes: ["https://www.googleapis.com/auth/gmail.readonly"], scopeSource: "provider" } } });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "running",
+      responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId } }).returning();
+    await initializeRunIdentity(db, { companyId: f.companyId, runId: run!.id, issueId: f.issueId, messageIds: [], responsibleUserId: "connection-owner", cause });
+    await db.update(issueThreadInteractions).set({ sourceRunId: run!.id }).where(eq(issueThreadInteractions.id, f.intent.id));
+    const google = { ...f, tool: { ...f.tool, toolName: "gmail__get_message" } };
+    await grantRequested(google, await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" }));
+    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe(status);
   });
 
   it("moves a retired request to an installed replacement when its recorded connection fails the gateway", async () => {

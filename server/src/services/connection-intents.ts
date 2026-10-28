@@ -402,8 +402,6 @@ export function connectionIntentService(db: Db) {
     return { connection, tools };
   }
 
-  // Runtime discovery hides Google Workspace tools whose scopes the runtime
-  // identity has not granted, so an installed connection is not ready either.
   async function runtimeScopesAllow(input: { companyId: string; agentId: string; responsibleUserId: string;
     connection: ToolConnection; heartbeatRunId: string; issueId: string; projectId: string | null; toolNames?: string[] }) {
     const scopes = await createToolGatewayService(db).googleWorkspaceScopesForAgent({ companyId: input.companyId,

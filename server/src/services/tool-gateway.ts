@@ -9600,7 +9600,7 @@ export function createToolGatewayService(
         eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
       ));
       if (connection?.config.sourceTemplateKey !== "google-workspace") return null;
-      const session: ToolGatewaySession = {
+      const session = await captureSessionIdentity({
         id: "connection-readiness",
         token: "connection-readiness",
         companyId: input.companyId,
@@ -9613,7 +9613,7 @@ export function createToolGatewayService(
         responsibleUserId: input.responsibleUserId,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
-      };
+      });
       try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(session, connection, false)); }
       catch { return []; }
     },
