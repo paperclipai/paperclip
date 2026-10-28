@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,13 +8,13 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: fixture.mobile }) }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: "reviewer" }) }));
-vi.mock("@/lib/router", () => ({ useNavigate: () => fixture.navigate }));
+vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
 vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
@@ -23,7 +24,7 @@ vi.mock("@/api/attention", () => ({ attentionApi: {
 vi.mock("motion/react", () => ({
   LayoutGroup: ({ children }: { children: ReactNode }) => children,
   useReducedMotion: () => true,
-  motion: { article: ({ children, className }: { children: ReactNode; className: string }) => <article className={className}>{children}</article>, div: ({ children }: { children: ReactNode }) => <div>{children}</div> },
+  motion: { article: ({ children, className }: { children: ReactNode; className: string }) => <article className={className}>{children}</article>, div: ({ children, id, tabIndex }: { children: ReactNode; id?: string; tabIndex?: number }) => <div id={id} tabIndex={tabIndex}>{children}</div> },
 }));
 vi.mock("@/components/PropertiesPanel", () => ({ PROPERTIES_PANE_HEADER_SLOT_ID: "test-sidebar" }));
 vi.mock("@/components/DecisionResolver", () => ({ DecisionResolver: () => null }));
@@ -39,11 +40,13 @@ vi.mock("@/components/AttentionInteractionResolver", () => ({ AttentionInteracti
   onResolved({ status: "answered" });
 }}>Resolve {interactionId}</button></> }));
 
+function Location() { return <output data-location>{useLocation().search}</output>; }
+
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
-  fixture.history = []; vi.clearAllMocks();
+  fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
@@ -55,12 +58,34 @@ async function click(text: string) {
   await act(async () => button!.click()); await flush();
 }
 describe("Coordinator Needs You", () => {
+  it("reveals and focuses a linked decision beyond the first rendering window, then consumes only its URL parameter", async () => {
+    fixture.url = "/decisions?decisionId=target&q=kept";
+    fixture.pending = Array.from({ length: 61 }, (_, index) => ({ ...fixture.pending[0], id: `decision-${index}`, sourceKind: "decision",
+      subject: { id: index === 60 ? "target" : `decision-${index}`, kind: "decision", title: `Decision ${index}` },
+      activityAt: new Date(Date.now() - index * 1000).toISOString(),
+    })) as AttentionItem[];
+    const scroll = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, writable: true, value: scroll });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
+    await flush(); await flush();
+    const card = container.querySelector("#coordinator-decision-target");
+    expect(card).not.toBeNull();
+    expect(document.activeElement).toBe(card);
+    expect(scroll).toHaveBeenCalledWith({ block: "center", behavior: "auto" });
+    expect(container.querySelector("[data-location]")?.textContent).toBe("?q=kept");
+    // Consumed links must not refocus on an ordinary feed refresh.
+    scroll.mockClear();
+    await act(async () => { await client.invalidateQueries({ queryKey: ["attention"] }); }); await flush();
+    expect(scroll).not.toHaveBeenCalled();
+    client.clear();
+  });
   it("opens searchable history from both phone buttons without the hidden desktop panel", async () => {
     fixture.mobile = true;
     fixture.pending = [];
     fixture.history = [{ id: "old-decision", sourceKind: "issue_thread_interaction", sourceId: "old", issueId: "task-1", issueIdentifier: "PAP-1", issueTitle: "Earlier launch", title: "Review", label: "Approved", outcome: "accepted", resolvedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), resolvedByUserId: "reviewer", resolvedByAgentId: null, agentId: null, agentName: null, projectId: null, projectName: null, href: "/PAP/issues/PAP-1#interaction-old", target: null }];
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     for (const label of ["Decision history", "Open decision history"]) {
       const trigger = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === label);
@@ -79,7 +104,7 @@ describe("Coordinator Needs You", () => {
   });
   it("keeps a partial review actionable even when history is unavailable", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     fixture.partial = true; fixture.historyFail = true;
     await click("Resolve 1"); await flush();
@@ -92,7 +117,7 @@ describe("Coordinator Needs You", () => {
   });
   it.each([false, true])("does not restore a saved decision when history refresh fails (stale feed: %s)", async staleFeed => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     fixture.historyFail = true; fixture.feedFail = staleFeed;
     await click("Resolve 1"); await flush();
@@ -112,7 +137,7 @@ describe("Coordinator Needs You", () => {
       title: "Review", outcome: "accepted", label: "Approved", resolvedByUserId: "reviewer", resolvedByAgentId: null,
       href: `/PAP/issues/${item.issueIdentifier}`, target: null, ...item })) as DecisionHistoryItem[];
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     const visibleIds = () => [...container.querySelectorAll('[aria-label="Recent Decisions"] .coordinator-decision-receipt')]
       .map((item) => item.textContent?.match(/PAP-\d+/)?.[0]);
@@ -140,7 +165,7 @@ describe("Coordinator Needs You", () => {
     });
     vi.spyOn(window, "getComputedStyle").mockReturnValue({ getPropertyValue: (name: string) => name.endsWith("ease") ? "ease-out" : name.includes("light") ? "1400ms" : name.includes("morph") ? "480ms" : "0ms" } as CSSStyleDeclaration);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     expect(container.querySelector("[data-motion]")).toBeNull();
     vi.useFakeTimers();
@@ -165,7 +190,7 @@ describe("Coordinator Needs You", () => {
       detail: { kind: "questions", questionCount: 1, firstQuestionText: "Which screen should we redesign?", images: [] },
       activityAt: new Date().toISOString() } as unknown as AttentionItem];
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     expect(container.querySelectorAll("article")).toHaveLength(1);
     expect(container.querySelector('[data-issue-id="chat-issue"]')?.textContent).toBe("Resolve chat-question");
@@ -180,7 +205,7 @@ describe("Coordinator Needs You", () => {
       activityAt: new Date().toISOString() } as unknown as AttentionItem];
     fixture.history = [{ id: "issue_thread_interaction:approved-copy", sourceKind: "issue_thread_interaction", sourceId: "approved-copy", issueId: "task-1", issueIdentifier: "PAP-1", issueTitle: "Launch copy", title: "Copy review", label: "Approved", outcome: "accepted", resolvedAt: new Date().toISOString(), resolvedByUserId: "reviewer", resolvedByAgentId: null, agentId: null, agentName: null, projectId: null, projectName: null, href: "/PAP/issues/PAP-1#interaction-approved-copy", target: null }];
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     expect(container.textContent).toContain("Choose how this task continues");
     expect(container.textContent).not.toContain("Open to review");
@@ -194,7 +219,7 @@ describe("Coordinator Needs You", () => {
   });
   it("retains all three decisions as receipts, including an answered question, and opens history only on demand", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => root.render(<QueryClientProvider client={client}><CoordinatorNeedsYou /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
     expect(fixture.openPanel).not.toHaveBeenCalled();
     expect(container.querySelectorAll("article")).toHaveLength(3);
