@@ -27,11 +27,11 @@ describe.skipIf(!support.supported)("wake admission pool progress", () => {
     await database?.cleanup();
   });
 
-  it.each([{ size: 1, assembled: false }, { size: 2, assembled: false }, { size: 1, assembled: true }, { size: 1, assembled: false, fail: true }])("commits workspace preflight with $size connections (assembled=$assembled)", async ({ size, assembled, fail }) => {
+  it.each([{ size: 1, assembled: false }, { size: 2, assembled: false }, { size: 1, assembled: true }, { size: 1, assembled: false, fail: true }])("commits workspace preflight with $size connections (assembled=$assembled, fail=$fail)", async ({ size, assembled, fail }) => {
     const name = `admission-${randomUUID()}`;
     const db = createDb(database.connectionString, { maxConnections: size, applicationName: name });
     const [company] = await observer.insert(companies).values({ name, issuePrefix: `P${randomUUID().slice(0, 7)}` }).returning();
-    const work = [];
+    const work: Array<{ agent: typeof agents.$inferSelect; issue: typeof issues.$inferSelect }> = [];
     for (let index = 0; index < size; index++) {
       const [agent] = await observer.insert(agents).values({ companyId: company.id, name: `Agent ${index}`, status: "idle", adapterType: "codex_local" }).returning();
       const [blocker] = await observer.insert(issues).values({ companyId: company.id, title: "Done blocker", status: "done" }).returning();
@@ -125,12 +125,12 @@ describe.skipIf(!support.supported)("wake admission pool progress", () => {
   it("preserves session scope and sees transaction-local sessions without another connection", async () => {
     const db = createDb(database.connectionString, { maxConnections: 1 });
     const cwd = await fs.mkdtemp(path.join(process.env.TMPDIR!, "session-workspace-"));
-    const state = createHeartbeatRunState(db);
-    const [company] = await observer.insert(companies).values({ name: "Session scope", issuePrefix: `S${randomUUID().slice(0, 7)}` }).returning();
-    const [agent] = await observer.insert(agents).values({ companyId: company.id, name: "Session agent", adapterType: "codex_local" }).returning();
-    const input = { agent, contextSnapshot: {}, taskKey: "session-task", explicitResumeSession: null };
-    const session = { companyId: company.id, agentId: agent.id, adapterType: agent.adapterType, taskKey: input.taskKey, sessionParamsJson: { sessionId: randomUUID(), cwd } };
     try {
+      const state = createHeartbeatRunState(db);
+      const [company] = await observer.insert(companies).values({ name: "Session scope", issuePrefix: `S${randomUUID().slice(0, 7)}` }).returning();
+      const [agent] = await observer.insert(agents).values({ companyId: company.id, name: "Session agent", adapterType: "codex_local" }).returning();
+      const input = { agent, contextSnapshot: {}, taskKey: "session-task", explicitResumeSession: null };
+      const session = { companyId: company.id, agentId: agent.id, adapterType: agent.adapterType, taskKey: input.taskKey, sessionParamsJson: { sessionId: randomUUID(), cwd } };
       expect(await state.hasResolvablePriorSessionWorkspaceForWake(input)).toBe(false);
       expect(await state.hasResolvablePriorSessionWorkspaceForWake({ ...input, taskKey: null,
         contextSnapshot: { forceFreshSession: true }, explicitResumeSession: {
