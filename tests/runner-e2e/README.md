@@ -2840,6 +2840,12 @@ have complete native invocation coverage. An empty saved-feedback list does not
 prove that a tool was available, and a completed tool receipt does not by itself
 prove a saved submission.
 
+Invocation receipts distinguish inspected native runs (`native_events`) from
+terminal workspace deferrals that provably started no provider work
+(`provider_not_started`). The latter requires the server's explicit receipt and
+an exhaustive scan without provider events. Pending retries, actual legacy
+execution, contradictory receipts, and incomplete event reads remain partial.
+
 Results and retained-attempt receipts contain only counts, closed statuses, and
 body fingerprints. Campaign reports group identical fingerprints across attempts
 into distinct items awaiting review. Feedback presence does not change product
