@@ -1793,6 +1793,15 @@ preserving history, unknown action outcomes, and attempt counts. Pauses, approva
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
 
+A restart can also stop a legacy run during preparation. A pause that cancels
+that run can then finish. The run stage must still be `preparing`, because
+lease renewal records `dispatching` before the adapter starts. The old
+controller must belong to another server boot, and its lease must have expired.
+No process identity, native identity, coordinator, adapter invocation, session,
+provider, or process-launch event may exist. Environment cleanup still requires
+the same receipts. This proof lets the pause finish. It does not permit Retry
+or replay.
+
 ### Delivering queued messages after a legacy run stops
 
 The legacy queued-message Interrupt action accepts a null `targetRunId` when

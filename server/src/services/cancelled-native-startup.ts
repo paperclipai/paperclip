@@ -66,6 +66,19 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
       : !hasRemoteTerminationReceipt(lease))) return false;
   // Reject contradictory retained evidence, including a crash after a launch
   // request but before the PID callback. Provider events never certify a stop.
+  return !await hasRunExecutionEvidence(db, run);
+}
+
+export async function isRestartStoppedLegacyPreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
+  if (run.runtimeMode !== "legacy" || run.status !== "cancelled" || !run.finishedAt ||
+      run.executionStage !== "preparing" || run.processPid || run.processGroupId || run.processStartedAt ||
+      run.sessionIdAfter || run.nativeIssueId || run.nativeSessionId || coordinator) return false;
+  if (!run.controllerBootId || run.controllerBootId === legacyControllerBootId ||
+      !run.controllerLeaseExpiresAt || run.controllerLeaseExpiresAt > new Date()) return false;
+  return !await hasRunExecutionEvidence(db, run);
+}
+
+async function hasRunExecutionEvidence(db: Db, run: Pick<Run, "id" | "companyId">) {
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     or(isNotNull(heartbeatRunEvents.sourceEventId),
@@ -73,5 +86,5 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
         "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
         "provider.event", "provider.rpc_result", "tool.execution.started"])),
   )).limit(1);
-  return !execution;
+  return Boolean(execution);
 }
