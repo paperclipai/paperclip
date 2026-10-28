@@ -644,6 +644,18 @@ function clearExecutionStatePatch(input: {
   }
 }
 
+function boardPendingStatusOverride(patch: Record<string, unknown>, requestedStatus: string): TransitionResult {
+  if (requestedStatus === "blocked") return { patch };
+  if (requestedStatus === "done" || requestedStatus === "cancelled") {
+    patch.executionState = null;
+    return { patch };
+  }
+  throw unprocessable(
+    `A pending review cannot move to ${requestedStatus}. Block, restore (in_review), or cancel it, or let the reviewer decide.`,
+    { code: "pending_review_status_override" },
+  );
+}
+
 function canAutoSkipPendingStage(input: {
   stage: IssueExecutionStage;
   returnAssignee: IssueExecutionStagePrincipal | null;
@@ -798,6 +810,14 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       };
     }
 
+    const holdUntouched =
+      input.issue.status === "blocked" &&
+      (requestedStatus === undefined || requestedStatus === "blocked") &&
+      (!requestedAssigneePatchProvided || principalsEqual(explicitAssignee, currentAssignee));
+    if (holdUntouched) {
+      return { patch };
+    }
+
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
@@ -859,8 +879,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         requestedStatus !== "in_review" &&
         requestedStatus !== "in_progress"
       ) {
-        patch.executionState = null;
-        return { patch };
+        return boardPendingStatusOverride(patch, requestedStatus);
       }
 
       if (requestedStatus && requestedStatus !== "in_review") {
@@ -926,8 +945,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
     if (input.allowBoardOverride && attemptedStageAdvance) {
       if (requestedStatus !== undefined && requestedStatus !== "in_review") {
-        patch.executionState = null;
-        return { patch };
+        return boardPendingStatusOverride(patch, requestedStatus);
       }
       // Assignee-only override: the issue stays in_review, so clearing the
       // execution state would strand it with no participant or return
