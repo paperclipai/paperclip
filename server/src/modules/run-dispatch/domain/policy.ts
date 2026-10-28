@@ -138,7 +138,6 @@ export type QueuedRunFacts = {
   accessBlock?: string | null;
   reconciliationBlock?: { reason: string; recoveryActionId: string | null } | null;
   pendingResponse?: "interaction" | "approval" | null;
-  /** Current dependency facts supplied by protected dispatch paths. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
   runAgentId: string;
