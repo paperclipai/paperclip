@@ -215,6 +215,10 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       expect((await listSignals()).body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
       expect((await listSignals("ПРОВЕРИТЬ")).body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
       expect((await listSignals("нет такого сигнала")).body).toEqual([]);
+      // A signal a user hid stops reappearing in the watchdog poll, like in the normal issue list.
+      await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, incident.body.id));
+      expect((await listSignals()).body).toEqual([]);
+      await db.update(issues).set({ hiddenAt: null }).where(eq(issues.id, incident.body.id));
       const repeat = (id: string) => request(server).post(`/api/issues/${id}/comments`)
         .set("Authorization", `Bearer ${jwt}`).send({ body: "[watchdog-blind] Повторный сигнал" });
       expect((await repeat(fakeId)).status).toBe(403);
