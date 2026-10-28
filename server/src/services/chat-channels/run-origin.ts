@@ -8,7 +8,7 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "responsibleUserId" | "activeIdentityContextId" | "nativeIssueId" | "issueId" | "contextSnapshot">;
 type Context = typeof runIdentityContexts.$inferSelect;
 
-export async function chatRunSourceMessageId(db: Db, run: Run, options: { context?: Context | null; allowLegacyWakeComment?: boolean; provider?: ChatProvider } = {}): Promise<string | null> {
+export async function chatRunSourceMessageId(db: Db, run: Run, options: { context?: Context | null; allowLegacyWakeComment?: boolean; provider?: ChatProvider; stopAtOtherTask?: boolean } = {}): Promise<string | null> {
   let legacyMessageId = options.allowLegacyWakeComment && typeof run.contextSnapshot?.wakeCommentId === "string"
     ? run.contextSnapshot.wakeCommentId : null;
   if (!run.activeIdentityContextId) {
@@ -74,10 +74,39 @@ export async function chatRunSourceMessageId(db: Db, run: Run, options: { contex
       eq(heartbeatRuns.agentId, run.agentId),
     )).limit(1);
     if (!sourceRun || !boundRunIssueId(run) || sourceRun.issueId !== boundRunIssueId(run)) {
-      throw forbidden("Chat tools cannot be inherited by another task");
+      if (!options.stopAtOtherTask || !boundRunIssueId(run)) throw forbidden("Chat tools cannot be inherited by another task");
+      const reentry = await reentryContext(db, run, parent, seen);
+      if (reentry === null) return legacyMessageId;
+      if (!reentry || reentry.status !== "accepted" || reentry.responsibleUserId !== run.responsibleUserId) {
+        throw forbidden("Chat tools cannot be inherited by another task");
+      }
+      origin = reentry;
+      continue;
     }
     if (options.allowLegacyWakeComment && sourceRun.responsibleUserId === run.responsibleUserId &&
         typeof sourceRun.wakeCommentId === "string") legacyMessageId ??= sourceRun.wakeCommentId;
     origin = parent;
   }
+}
+
+const MAX_FOREIGN_ANCESTORS = 256;
+
+async function reentryContext(db: Db, run: Run, from: Context, visited: ReadonlySet<string>): Promise<Context | null | undefined> {
+  const issueId = boundRunIssueId(run);
+  const seen = new Set(visited);
+  let current: Context | undefined = from;
+  for (let depth = 0; current; depth += 1) {
+    if (depth >= MAX_FOREIGN_ANCESTORS || seen.has(current.id)) return undefined;
+    seen.add(current.id);
+    const [owner] = await db.select({ issueId: boundRunIssueIdSql() }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, current.runId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
+    if (!owner) return undefined;
+    if (owner.issueId === issueId) return current;
+    if (!current.parentContextId) return null;
+    [current] = await db.select().from(runIdentityContexts).where(and(
+      eq(runIdentityContexts.id, current.parentContextId),
+      eq(runIdentityContexts.companyId, run.companyId),
+    )).limit(1);
+  }
+  return undefined;
 }
