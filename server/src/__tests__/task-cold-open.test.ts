@@ -91,7 +91,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await activity.inputFactsForIssue(companyId, randomUUID(), [commentId])).toEqual([]);
   });
 
-  it("pages conversation events without tools, including identity-less deltas and requests", async () => {
+  it("pages conversation events without ordinary tools, including identity-less deltas and requests", async () => {
     const event = (seq: number, eventType: string, payload: Record<string, unknown>, itemId?: string) => ({
       companyId, runId, agentId, seq, eventType, payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType, itemId, payload } },
     });
@@ -122,4 +122,41 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await activity.runsForIssue(companyId, issueId, null, 1)).toHaveLength(1);
     expect(await activity.runsForIssue(companyId, issueId)).toHaveLength(2);
   });
+  it("retains bounded successful Plan write boundaries in paged conversation reads", async () => {
+    const planRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: planRunId, companyId, agentId, issueId, runtimeMode: "native", status: "succeeded" });
+    const event = (seq: number, eventType: string, payload: Record<string, unknown>, sourceKind = "runner") => ({
+      companyId, runId: planRunId, agentId, seq, eventType, message: "private tool message",
+      payload: { extra: "private outer payload", prpEvent: { schema: "paperclip.prp.event.v1", runId: planRunId,
+        sourceKind, eventType, sourceSeq: seq, payload } },
+    });
+    const write = { schema: "paperclip.tool.execution.v1", executionId: "write-plan", name: "write_document", status: "completed",
+      input: "private plan input", output: "private plan output".repeat(10_000), arbitrary: "private extension" };
+    await db.insert(heartbeatRunEvents).values([
+      event(1, "tool.execution.started", { ...write, status: "running" }),
+      event(2, "tool.execution.completed", { ...write, status: "failed" }),
+      event(3, "tool.execution.completed", { ...write, name: "read_document" }),
+      event(4, "tool.execution.completed", write),
+      event(5, "item.completed", { kind: "assistant_message", text: "Plan saved." }),
+      event(6, "tool.execution.completed", { ...write, executionId: "write-plan-revised" }),
+      event(7, "tool.execution.completed", write, "control_plane"),
+      event(8, "tool.execution.completed", { ...write, schema: "unknown" }),
+      event(9, "tool.execution.completed", { ...write, executionId: "" }),
+      event(10, "tool.execution.completed", { ...write, executionId: "x".repeat(513) }),
+    ]);
+    const service = createHeartbeatRunState(db);
+    const first = await service.listEvents(planRunId, 0, 1, true);
+    expect(first.map(event => event.seq)).toEqual([4]);
+    expect(first[0]).toMatchObject({ message: null, payload: { prpEvent: { sourceKind: "runner", sourceSeq: 4,
+      payload: { schema: "paperclip.tool.execution.v1", executionId: "write-plan", name: "write_document", status: "completed" } } } });
+    const rest = await service.listEvents(planRunId, 4, 1000, true);
+    expect(rest.map(event => event.seq)).toEqual([5, 6]);
+    const writes = [first[0], rest[1]];
+    expect(JSON.stringify(writes)).not.toContain("private");
+    expect(Buffer.byteLength(JSON.stringify(writes))).toBeLessThan(4_000);
+    const full = await service.listEvents(planRunId);
+    expect(full).toHaveLength(10);
+    expect(full[3].payload).toMatchObject({ extra: "private outer payload", prpEvent: { payload: { input: "private plan input", output: write.output } } });
+  });
+
 });

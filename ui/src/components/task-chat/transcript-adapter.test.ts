@@ -1270,6 +1270,29 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ).toMatchObject({ placement: "write_boundary" });
   });
 
+  it("embeds a saved Plan from a body-free conversation write receipt", () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    const boundary: HeartbeatRunEvent = {
+      id: 1, companyId: "company", runId, agentId: "agent", seq: 1,
+      eventType: "tool.execution.completed", stream: "system", level: "info", color: null, message: null,
+      createdAt: TS,
+      payload: { prpEvent: {
+        schema: "paperclip.prp.event.v1", sourceEventId: "write-boundary", sourceInstanceId: "runner-1",
+        sourceKind: "runner", sourceSeq: 1, runId, normalizedSessionId: "session-1", eventType: "tool.execution.completed",
+        schemaVersion: 1, priority: 1, emittedAt: TS,
+        payload: { schema: "paperclip.tool.execution.v1", executionId: "write-plan", name: "write_document", status: "completed",
+          conversationProjection: "document_write_boundary" },
+      } },
+    };
+    const parsed = transcriptToTaskChatItems(nativeRunEventsToTranscript([boundary]), { runId, running: false });
+    const embedded = embedPlanDocumentAtWriteBoundary(parsed, {
+      id: "saved-plan", kind: "plan_document", document: {} as TaskChatPlanDocumentItem["document"],
+    });
+    expect(embedded.find(item => item.kind === "plan_document")).toMatchObject({ placement: "write_boundary" });
+    expect(embedded.at(-1)?.id).toBe("saved-plan");
+    expect(parsed.some(item => item.kind === "tool" && item.rawName === "write_document")).toBe(true);
+  });
+
   it("retains a saved plan as an explicit fallback when its write boundary is unavailable", () => {
     const plan: TaskChatPlanDocumentItem = {
       id: "plan-doc:revision-fallback",

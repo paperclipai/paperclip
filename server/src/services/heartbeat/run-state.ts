@@ -1,4 +1,4 @@
-import { conversationEventCondition } from "./conversation-events.js";
+import { conversationEventCondition, projectConversationEvent } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -1975,7 +1975,8 @@ export function createHeartbeatRunState(db: Db) {
           ),
         )
         .orderBy(asc(heartbeatRunEvents.seq))
-        .limit(Math.max(1, Math.min(limit, 1000))),
+        .limit(Math.max(1, Math.min(limit, 1000)))
+        .then(events => conversationOnly ? events.map(projectConversationEvent) : events),
 
     getRetryExhaustedReason: async (runId: string) => {
       const row = await db

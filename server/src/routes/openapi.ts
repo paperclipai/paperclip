@@ -7792,7 +7792,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
   request: { params: z.object({ runId: heartbeatRunIdParamSchema }), query: z.object({
-      view: z.literal("conversation").optional().describe("Assistant text and request lifecycle events, excluding historical tool activity."),
+      view: z.literal("conversation").optional().describe("Assistant text, request lifecycle events and body-free successful document-write boundaries. Excludes ordinary historical tool activity."),
       afterSeq: z.coerce.number().int().min(0).optional(),
       limit: z.coerce.number().int().min(1).max(1000).optional(),
     }) },
