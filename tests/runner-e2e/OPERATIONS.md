@@ -515,7 +515,9 @@ incremental allocation; the existing fee must remain visible separately.
 Unscheduled local controllers use `runner: "local"` to retain their actual
 execution origin. The same component, cap, expiry and receipt rules apply. This
 label supplies no default zero charge and releases no reservation. Scheduled
-allowances still require `github-hosted`; a local allowance fails that gate.
+allowances still require `github-hosted`; a local allowance fails that gate. The
+separate hosted Runner controller enforces the same origin when admitting work.
+Historical manifest reads preserve their original label; they grant no new admission.
 
 The catalog checks that this allowance matches the selected runner, covers at
 least the next four hours, and leaves room for a full conservative model-request
