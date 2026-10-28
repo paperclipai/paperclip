@@ -1,3 +1,4 @@
+import { authorizationService, type AuthorizationResource } from "../../../services/authorization.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
@@ -609,21 +610,44 @@ export function createPostgresRunDispatchAdapter(
         : false;
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const reviewerAssignment = typeof context.reviewerAssignmentGeneration === "string";
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const readiness = issue && (reviewerAssignment || retryReasonKind === "native_safe_replacement")
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const activePauseHold = issue && reviewerAssignment
+      ? await issueTreeControlService(dbOrTx).getActivePauseHoldGate(input.companyId, issueId) : null;
+    const reviewerAgent = reviewerAssignment ? await dbOrTx.select().from(agents)
+      .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId))).then(rows => rows[0]) : null;
+    const invokability = reviewerAssignment ? await evaluateAgentInvokabilityFromDb(dbOrTx, reviewerAgent) : null;
+    const reconciliation = issue && reviewerAssignment ? await getExecutionBlocker(dbOrTx, input.companyId, issueId) : null;
+    let accessBlock: string | null = null;
+    if (issue && reviewerAssignment) {
+      const access = authorizationService(dbOrTx);
+      const resources: AuthorizationResource[] = [{ type: "issue", companyId: input.companyId, issueId }];
+      if (issue.projectId) resources.push({ type: "project", companyId: input.companyId, projectId: issue.projectId });
+      for (const resource of resources) {
+        const decision = await access.decide({ actor: { type: "agent", agentId: input.agentId, companyId: input.companyId,
+          onBehalfOfUserId: input.responsibleUserId, source: "agent_key" },
+          action: resource.type === "project" ? "project:read" : "issue:read", resource });
+        if (!decision.allowed) { accessBlock = decision.reason; break; }
+      }
+    }
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
+      activePauseHold,
+      invokabilityBlock: invokability && !invokability.invokable ? invokability.message : null,
+      accessBlock,
+      reconciliationBlock: reconciliation ? { reason: reconciliation.nextAction, recoveryActionId: reconciliation.recoveryActionId } : null,
       dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
-      pendingResponse: issue && (input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
+      pendingResponse: issue && (reviewerAssignment || input.conversationContinuation || context.connectionIntentResolution === "existing_connection")
         ? await connectionContinuationPendingResponse(dbOrTx as unknown as Db, issue, input.responsibleUserId, input.runId)
         : null,
       issueFound: issue !== null,
@@ -1179,7 +1203,7 @@ export function createPostgresRunDispatchAdapter(
       const reviewStaleness = reviewIssueId && await reviewerGenerationStaleness(tx, run, reviewIssueId);
       if (reviewStaleness) return { dispatched: false as const,
         cancellation: await cancelStaleRunInTx(tx, run, reviewIssueId!, reviewStaleness, input.expectedStatus, input.now, true) };
-      if (input.enforceContinuationOwnership !== false) {
+      if (input.enforceContinuationOwnership !== false || typeof run.contextSnapshot?.reviewerAssignmentGeneration === "string") {
         const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
           tx,
           run,
@@ -1289,7 +1313,7 @@ export function createPostgresRunDispatchAdapter(
       const reviewStaleness = reviewIssueId && await reviewerGenerationStaleness(tx, run, reviewIssueId);
       if (reviewStaleness) return { dispatched: false as const,
         cancellation: await cancelStaleRunInTx(tx, run, reviewIssueId!, reviewStaleness, input.expectedStatus, input.now, true) };
-      if (input.enforceContinuationOwnership !== false) {
+      if (input.enforceContinuationOwnership !== false || typeof run.contextSnapshot?.reviewerAssignmentGeneration === "string") {
         const contextSnapshot = parseObject(run.contextSnapshot);
         const issueId = readNonEmptyString(contextSnapshot.issueId);
         if (issueId) {

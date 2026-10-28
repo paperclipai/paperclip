@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { issueTreeControlService } from "../services/issue-tree-control.js";
+import { issueService } from "../services/issues.js";
+import { projectService } from "../services/projects.js";
 import { reserveRunBudget } from "../services/budget-reservations.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -16,6 +20,7 @@ const support = await getEmbeddedPostgresTestSupport();
     db = createDb(fixture.connectionString);
     await db.insert(authUsers).values({ id: "board", name: "Review sponsor", email: "sponsor@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 90_000);
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(async () => { await db.execute(sql`TRUNCATE TABLE companies CASCADE`); });
   afterAll(async () => { await db?.$client.end(); await fixture?.cleanup(); });
   async function seed() {
@@ -67,4 +72,63 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(invoke).not.toHaveBeenCalled();
     } finally { await service.drainActiveRunExecutions(); }
   });
+  it.each(["none", "question", "tree", "dependency", "authority", "project", "recovery", "agent chain"] as const)("rechecks a new %s hold between accounting and provider handoff", async kind => {
+    const f = await seed();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const run = await heartbeatService(db).wakeup(f.agentId, { source: "assignment", reason: "execution_review_requested",
+      payload: { issueId: f.issueId }, requestedByActorType: "agent", requestedByActorId: f.source.agentId });
+    expect(run).toBeTruthy();
+    await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, f.issueId));
+    const reservation = await reserveRunBudget(db, f.companyId, run!.id, null);
+    let mutated = false;
+    const observed = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof db.transaction>) => {
+        const result = await Reflect.apply(target.transaction, target, args);
+        if (!mutated && result?.kind === "value" && result.value?.claim) {
+          mutated = true;
+          if (kind === "tree") await issueTreeControlService(db).createHold(f.companyId, f.issueId,
+            { mode: "pause", actor: { actorType: "system", actorId: "fixture" } });
+          else if (kind === "dependency") {
+            const [blocker] = await db.insert(issues).values({ companyId: f.companyId, title: "New dependency", status: "todo" }).returning();
+            await issueService(db).update(f.issueId, { blockedByIssueIds: [blocker.id] });
+          } else if (kind === "authority") await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.companyId, f.companyId));
+          else if (kind === "question") await issueThreadInteractionService(db).create({ id: f.issueId, companyId: f.companyId }, {
+            kind: "ask_user_questions", addresseeUserId: "board", sourceRunId: f.source.id, continuationPolicy: "wake_assignee",
+            payload: { version: 1, questions: [{ id: "permission", prompt: "Continue?", selectionMode: "single", required: true,
+              options: [{ id: "yes", label: "Continue" }] }] },
+          }, { userId: "board" });
+          else if (kind === "project") {
+            vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+            const project = await projectService(db).create(f.companyId, { name: "Restricted", visibility: "private" });
+            await issueService(db).update(f.issueId, { projectId: project.id });
+          } else if (kind === "agent chain") {
+            await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.source.agentId));
+            await db.update(agents).set({ reportsTo: f.source.agentId }).where(eq(agents.id, f.agentId));
+          } else if (kind === "recovery") await db.insert(issueRecoveryActions).values({ companyId: f.companyId,
+            sourceIssueId: f.issueId, kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board",
+            returnOwnerAgentId: f.agentId, cause: "legacy_execution_requires_reconciliation", fingerprint: f.source.id,
+            nextAction: "Inspect before continuing", evidence: { runId: f.source.id,
+              automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } });
+        }
+        return result;
+      };
+    } });
+    const invoke = vi.fn(async () => null);
+    const result = await createRunDispatch(observed).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: run!.id,
+      expectedStatus: "running", reservationId: reservation.id, enforceContinuationOwnership: false, dispatch: invoke });
+    expect(mutated).toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task.executionState).toEqual(f.issue.executionState);
+    if (kind === "none") {
+      expect(result).toMatchObject({ dispatched: true });
+      expect(invoke).toHaveBeenCalledOnce();
+      return;
+    }
+    expect(result).toMatchObject({ dispatched: false });
+    expect(invoke).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0].status).toBe("cancelled");
+  });
+
 });
