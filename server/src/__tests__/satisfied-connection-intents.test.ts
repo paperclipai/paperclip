@@ -677,9 +677,13 @@ describePostgres("already available connection requests", () => {
   });
 
   it.each([
-    ["company_default", "pending"],
-    ["instruction", "expired"],
-  ] as const)("reads Google scopes under the source run's %s identity before retiring a card", async (cause, status) => {
+    ["company_default", "running", "pending"],
+    ["instruction", "running", "expired"],
+    ["company_default", "succeeded", "pending"],
+    ["instruction", "succeeded", "expired"],
+    ["instruction", "failed", "expired"],
+    ["instruction", "cancelled", "expired"],
+  ] as const)("reads Google scopes under the %s identity of a %s source run before retiring and delivering a card", async (cause, runStatus, status) => {
     const f = await seed();
     await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" } });
     await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" });
@@ -688,10 +692,20 @@ describePostgres("already available connection requests", () => {
       responsibleUserId: "connection-owner", contextSnapshot: { issueId: f.issueId } }).returning();
     await initializeRunIdentity(db, { companyId: f.companyId, runId: run!.id, issueId: f.issueId, messageIds: [], responsibleUserId: "connection-owner", cause });
     await db.update(issueThreadInteractions).set({ sourceRunId: run!.id }).where(eq(issueThreadInteractions.id, f.intent.id));
+    if (runStatus !== "running") await db.update(heartbeatRuns).set({ status: runStatus, finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
     const google = { ...f, tool: { ...f.tool, toolName: "gmail__get_message" } };
-    await grantRequested(google, await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" }));
-    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    const intent = await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" });
+    await grantRequested(google, intent);
+    const wakeup = vi.fn(async () => {
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        status: "queued", idempotencyKey: `connection-intent:${intent.id}:expired` });
+      return null;
+    });
+    await connectionIntentDeliveryService(db, { wakeup }).sweepPending();
     expect((await db.select().from(issueThreadInteractions))[0].status).toBe(status);
+    expect(wakeup).toHaveBeenCalledTimes(status === "expired" ? 1 : 0);
+    expect((await db.select().from(connectionIntentDeliveries)).map((delivery) => delivery.deliveredAt !== null))
+      .toEqual(status === "expired" ? [true] : []);
   });
 
   it("moves a retired request to an installed replacement when its recorded connection fails the gateway", async () => {

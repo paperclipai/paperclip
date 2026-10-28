@@ -35,7 +35,7 @@ import { githubGuestBotConnectionForSession, githubBotToolsForSession } from "./
 import { githubChatReviewService } from "./chat-github-reviews.js";
 import { runIdentityContexts } from "@paperclipai/db";
 import { executeSpekoVoiceTool, spekoToolsForSession } from "./voice/speko-agent-tools.js";
-import { captureRunIdentity } from "./run-identity.js";
+import { captureRunIdentity, readRunIdentityContext, type RunIdentityContext } from "./run-identity.js";
 import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
@@ -2203,13 +2203,20 @@ export function createToolGatewayService(
       agentId: session.agentId,
       runId: session.runId,
     }, { readScope: "identity" });
+    return sessionWithIdentityContext(session, captured.context);
+  }
+
+  function sessionWithIdentityContext(
+    session: ToolGatewaySession,
+    context: RunIdentityContext | null,
+  ): ToolGatewaySession {
     return {
       ...session,
-      identityContextId: captured.context?.id,
+      identityContextId: context?.id,
       responsibleUserId:
-        captured.context?.cause === "company_default"
+        context?.cause === "company_default"
           ? null
-          : captured.context?.responsibleUserId,
+          : context?.responsibleUserId,
     };
   }
 
@@ -9600,7 +9607,7 @@ export function createToolGatewayService(
         eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
       ));
       if (connection?.config.sourceTemplateKey !== "google-workspace") return null;
-      const session = await captureSessionIdentity({
+      const session: ToolGatewaySession = {
         id: "connection-readiness",
         token: "connection-readiness",
         companyId: input.companyId,
@@ -9613,8 +9620,12 @@ export function createToolGatewayService(
         responsibleUserId: input.responsibleUserId,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
-      });
-      try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(session, connection, false)); }
+      };
+      const context = input.heartbeatRunId
+        ? await readRunIdentityContext(db, { companyId: input.companyId, runId: input.heartbeatRunId, agentId: input.agentId })
+        : null;
+      const identified = context ? sessionWithIdentityContext(session, context) : session;
+      try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(identified, connection, false)); }
       catch { return []; }
     },
 

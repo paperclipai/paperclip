@@ -587,6 +587,39 @@ export async function captureRunIdentity<Scope extends RunIdentityReadScope | un
   });
 }
 
+export async function readRunIdentityContext(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+) {
+  const [run] = await db
+    .select({ id: heartbeatRuns.id, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ),
+    );
+  if (!run?.activeIdentityContextId) return null;
+  const [pending] = await db
+    .select()
+    .from(runIdentityContexts)
+    .where(and(eq(runIdentityContexts.runId, run.id), eq(runIdentityContexts.status, "pending")))
+    .limit(1);
+  if (pending && await storedSteeringAcknowledgement(db, pending)) return pending;
+  const [context] = await db
+    .select()
+    .from(runIdentityContexts)
+    .where(
+      and(
+        eq(runIdentityContexts.id, run.activeIdentityContextId),
+        eq(runIdentityContexts.runId, run.id),
+      ),
+    );
+  return context ?? null;
+}
+
 export async function listRunIdentityContexts(
   db: Db,
   companyId: string,
