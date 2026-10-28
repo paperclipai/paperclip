@@ -1,3 +1,4 @@
+import { settleNewReviewRunIdentity } from "../run-identity.js";
 import type { IssueMonitorAdmission } from "./scheduling.js";
 import { issueExecutionGeneration, parseIssueExecutionState } from "../issue-execution-policy.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -2857,7 +2858,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
       const outcome = await db
         .transaction(withDurableChatAdmission(durableRequest, async (tx) => {
-          if (monitorAdmission) await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, agent.companyId)).for("share");
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, agent.companyId)).for("share");
           const result = await (async () => {
           await tx.execute(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
@@ -4344,11 +4345,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await notifyChatRunMilestones(tx, { companyId: agent.companyId, issueId: issueId ?? undefined });
           const admittedIssue = monitorAdmission ? await monitorAdmission.consume(tx as unknown as Db, issue, agentId) : issue;
           const reviewState = parseIssueExecutionState(admittedIssue.executionState);
-          const reviewerGeneration = admittedIssue.status === "in_review" && reviewState?.status === "pending" &&
+          const pendingReview = admittedIssue.status === "in_review" && reviewState?.status === "pending" &&
             reviewState.currentStageType === "review" && reviewState.currentParticipant?.type === "agent" &&
-            reviewState.currentParticipant.agentId === agentId ? issueExecutionGeneration(admittedIssue) : null;
+            reviewState.currentParticipant.agentId === agentId;
 
-          const newRun = await tx
+          let newRun = await tx
             .insert(heartbeatRuns)
             .values({
               ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
@@ -4367,7 +4368,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               contextSnapshot: {
                 ...(adoptedComments.length ? withQueuedCommentIdsInRunContext(
                   enrichedContextSnapshot, adoptedCommentIds, adoptedComments.map(wake => wake.id),
-                ) : enrichedContextSnapshot), ...(reviewerGeneration ? { reviewerAssignmentGeneration: reviewerGeneration } : {}),
+                ) : enrichedContextSnapshot),
               },
               sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
@@ -4427,6 +4428,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 payload: withQueuedCommentIdsInWakePayload(payload, adoptedCommentIds),
               })
               .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+          }
+
+          if (pendingReview) {
+            const settledIssue = await settleNewReviewRunIdentity(tx as unknown as Db, newRun, Boolean(failedChatRetry));
+            [newRun] = await tx.update(heartbeatRuns).set({ contextSnapshot: {
+              ...newRun.contextSnapshot, reviewerAssignmentGeneration: issueExecutionGeneration(settledIssue),
+            } }).where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.id, newRun.id))).returning();
           }
 
           // executionRunId is NOT stamped here (enqueueWakeup queues the run but

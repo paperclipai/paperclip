@@ -1,3 +1,4 @@
+import { assertReviewQuotaMonitorInstallation, ReviewQuotaMonitorHeld } from "./reviewer-quota-monitor.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
   issues,
@@ -71,6 +72,7 @@ export interface HeartbeatSchedulingDependencies
     Pick<RunPreparation, "toAgentOrgRow" | "groupAgentOrgRowsByCompany"> {
   issuesSvc: Pick<ReturnType<typeof issueService>, "listReviewAttention" | "create">;
   scheduleBoundedRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetryForRun"];
+  scheduleMonitorRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleMonitorRetryForRun"];
   getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
 }
 
@@ -160,9 +162,15 @@ function issueMonitorClaimCondition(claimed: IssueMonitorDispatchRow) {
 }
 
 export class IssueMonitorAdmission {
-  constructor(private readonly claimed: IssueMonitorDispatchRow, private readonly now: Date) {}
+  constructor(private readonly claimed: IssueMonitorDispatchRow, private readonly now: Date, private readonly quotaSourceRunId?: string) {}
 
-  async consume(tx: Db, current: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "responsibleUserId" | "executionPolicy" | "executionState">, agentId: string) {
+  async consume(tx: Db, current: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "responsibleUserId" | "executionPolicy" | "executionState">, agentId: string, source?: typeof heartbeatRuns.$inferSelect) {
+    if (this.quotaSourceRunId) {
+      if (!source || source.id !== this.quotaSourceRunId) throw new ReviewQuotaMonitorHeld("The quota source changed before admission");
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, current.id), eq(issues.companyId, current.companyId)));
+      if (!task) throw new ReviewQuotaMonitorHeld("The monitored task is unavailable");
+      await assertReviewQuotaMonitorInstallation(tx, task, source);
+    }
     if (current.id !== this.claimed.id || current.companyId !== this.claimed.companyId || agentId !== this.claimed.assigneeAgentId
       || issueExecutionGeneration(current) !== issueExecutionGeneration(this.claimed))
       throw new Error("Monitor admission generation changed");
@@ -188,6 +196,7 @@ export function createHeartbeatScheduling(
     getRun,
     getAgent,
     scheduleBoundedRetryForRun,
+    scheduleMonitorRetryForRun,
     getSchedulingSuppression,
     getWorktreeExecutionCutoff,
     toAgentOrgRow,
@@ -697,7 +706,7 @@ export function createHeartbeatScheduling(
       });
     }
 
-    const atomicAdmission = monitor?.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+    let atomicAdmission = monitor?.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME
       && executionState?.status === "pending" && executionState.currentStageType === "review"
       && reviewParticipantAgentId === targetAgentId ? new IssueMonitorAdmission(claimed, input.now) : null;
     try {
@@ -724,6 +733,12 @@ export function createHeartbeatScheduling(
             "The quota recovery source changed; inspect the current task execution.",
           );
         }
+        if (isProviderQuotaReviewMonitor) {
+          const [task] = await db.select().from(issues).where(and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId)));
+          if (!task || issueExecutionGeneration(task) !== issueExecutionGeneration(claimed))
+            throw new ReviewQuotaMonitorHeld("The quota monitor generation changed before recovery");
+          await assertReviewQuotaMonitorInstallation(db, task, sourceRun);
+        }
         if (sourceRun.runtimeMode === "native") {
           throw conflict(
             "Native execution recovery owns this provider failure; a quota monitor cannot start a replacement.",
@@ -739,7 +754,13 @@ export function createHeartbeatScheduling(
           const targetAgent = await getAgent(targetAgentId);
           if (!targetAgent)
             throw conflict("The quota recovery agent is unavailable.");
-          const scheduled = await scheduleBoundedRetryForRun(
+          if (isProviderQuotaReviewMonitor)
+            atomicAdmission = new IssueMonitorAdmission(claimed, input.now, sourceRun.id);
+          const schedule = atomicAdmission
+            ? (run: typeof sourceRun, agent: typeof targetAgent, opts: Parameters<typeof scheduleBoundedRetryForRun>[2]) =>
+              scheduleMonitorRetryForRun(run, agent, opts, atomicAdmission!)
+            : scheduleBoundedRetryForRun;
+          const scheduled = await schedule(
             sourceRun,
             targetAgent,
             {
@@ -760,7 +781,7 @@ export function createHeartbeatScheduling(
       } else {
         let executionDeferredCause: string | null = null;
         const enqueue = atomicAdmission ? (id: string, opts: Parameters<typeof enqueueWakeup>[1]) =>
-          enqueueMonitorWakeup(id, opts ?? {}, atomicAdmission) : enqueueWakeup;
+          enqueueMonitorWakeup(id, opts ?? {}, atomicAdmission!) : enqueueWakeup;
         const wake = await enqueue(targetAgentId, {
           issueStateGuard: { statuses: [claimed.status], assigneeAgentId: claimed.assigneeAgentId,
             monitorNextCheckAt: scheduledAtIso, monitorWakeRequestedAt: claimed.monitorWakeRequestedAt!.toISOString(),
@@ -842,7 +863,7 @@ export function createHeartbeatScheduling(
 
       return { outcome: "triggered" as const };
     } catch (err) {
-      if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+      if (!(err instanceof ReviewQuotaMonitorHeld) && err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
           await db
             .update(issues)

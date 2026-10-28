@@ -43,6 +43,7 @@ function callbacks(db: Db) {
     enqueueMonitorWakeup: vi.fn<HeartbeatSchedulingDependencies["enqueueMonitorWakeup"]>(async () => admitted),
     enqueueWakeup: vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => admitted),
     scheduleBoundedRetryForRun: vi.fn<HeartbeatSchedulingDependencies["scheduleBoundedRetryForRun"]>(),
+    scheduleMonitorRetryForRun: vi.fn<HeartbeatSchedulingDependencies["scheduleMonitorRetryForRun"]>(),
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),
     getWorktreeExecutionCutoff: vi.fn<HeartbeatSchedulingDependencies["getWorktreeExecutionCutoff"]>(async () => null),
     parseHeartbeatPolicy: vi.fn<HeartbeatSchedulingDependencies["parseHeartbeatPolicy"]>(() => timerPolicy),

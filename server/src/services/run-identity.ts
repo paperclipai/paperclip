@@ -1,5 +1,5 @@
 import { readTaskRetryIntent, readTaskRetryBoardMessageOrigin } from "./task-retry.js";
-import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   heartbeatRuns,
@@ -172,6 +172,49 @@ async function activate(executor: Executor, context: RunIdentityContext) {
       .where(
         and(eq(issues.id, issueId), eq(issues.companyId, context.companyId)),
       );
+}
+
+function identityString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function runIdentityInitializationInput(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "retryOfRunId" | "triggerDetail">,
+  context: Record<string, unknown>,
+  task: Pick<typeof issues.$inferSelect, "id" | "continuationIdentityContextId" | "originIdentityContextId"> | null,
+  responsibleUserId: string | null,
+  retryMessages = false,
+) {
+  const retry = run.retryOfRunId || context.retryOfRunId;
+  const ids = queuedCommentIdsFromRunContext(context);
+  return {
+    companyId: run.companyId, runId: run.id, responsibleUserId,
+    issueId: task?.id ?? identityString(context.issueId),
+    interactionId: identityString(context.interactionId),
+    messageIds: retry && !retryMessages ? [] : ids.length ? ids
+      : Array.isArray(context.wakeCommentIds) ? context.wakeCommentIds.filter((id): id is string => typeof id === "string")
+      : identityString(context.wakeCommentId) ? [String(context.wakeCommentId)] : [],
+    parentContextId: retry ? null : (identityString(context.originIdentityContextId)
+      ?? (run.triggerDetail === "manual" || context.parentRunId ? null
+        : task?.continuationIdentityContextId ?? task?.originIdentityContextId)),
+    parentRunId: run.retryOfRunId ?? identityString(context.retryOfRunId) ?? identityString(context.parentRunId),
+    cause: identityString(context.executionIdentityCause) ?? identityString(context.wakeReason) ?? "dispatch",
+  };
+}
+
+export async function settleNewReviewRunIdentity(tx: Db, run: typeof heartbeatRuns.$inferSelect, retryMessages = false) {
+  const issueId = boundRunIssueId(run);
+  const [task] = issueId ? await tx.select().from(issues).where(and(
+    eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("no key update") : [];
+  if (!task || run.status !== "queued" || run.activeIdentityContextId || run.contextSnapshot?.reviewerAssignmentGeneration)
+    throw forbidden("New review identity admission is unavailable");
+  if (task.responsibleUserId !== null) return task;
+  const identity = await initializeRunIdentity(tx, runIdentityInitializationInput(
+    run, run.contextSnapshot ?? {}, task, run.responsibleUserId, retryMessages));
+  if (identity.responsibleUserId) await tx.update(issues).set({ responsibleUserId: identity.responsibleUserId, updatedAt: new Date() })
+    .where(and(eq(issues.id, task.id), eq(issues.companyId, run.companyId), isNull(issues.responsibleUserId)));
+  const [settled] = await tx.select().from(issues).where(and(eq(issues.id, task.id), eq(issues.companyId, run.companyId)));
+  return settled!;
 }
 
 /** Called only for newly dispatched runs. Historical rows are never backfilled. */

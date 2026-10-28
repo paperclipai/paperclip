@@ -1,3 +1,6 @@
+import { ReviewQuotaMonitorHeld } from "./reviewer-quota-monitor.js";
+import type { IssueMonitorAdmission } from "./scheduling.js";
+import { issueExecutionGeneration } from "../issue-execution-policy.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -33,6 +36,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
@@ -405,6 +409,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       maxAttempts?: number;
       delayMs?: number;
     },
+    monitorAdmission?: IssueMonitorAdmission,
   ) {
     if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
       reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
@@ -707,6 +712,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
     const scheduleResult = await db.transaction(
       async (tx): Promise<ScheduledRetryTransactionResult> => {
+        if (monitorAdmission) await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, run.companyId)).for("share");
         // All automatic failure paths share the same predecessor claim. A
         // duplicate monitor, restart sweep or wake must reuse its successor.
         if (
@@ -730,6 +736,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               ),
             )
             .limit(1);
+          if (existing && monitorAdmission) throw new ReviewQuotaMonitorHeld("An existing retry cannot consume a new review monitor");
           if (existing)
             return {
               outcome: "scheduled",
@@ -1040,6 +1047,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           .returning()
           .then((rows) => rows[0]);
 
+        let admittedContext = retryContextSnapshot;
+        if (monitorAdmission) {
+          const [task] = issueId ? await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))) : [];
+          const [source] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+          if (!task || !source) throw new ReviewQuotaMonitorHeld("The quota retry source is unavailable");
+          const consumed = await monitorAdmission.consume(tx as unknown as Db, task, agent.id, source);
+          admittedContext = { ...retryContextSnapshot, reviewerAssignmentGeneration: issueExecutionGeneration(consumed) };
+        }
+
         const scheduledRun = await tx
           .insert(heartbeatRuns)
           .values({
@@ -1052,7 +1068,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             triggerDetail: "system",
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
-            contextSnapshot: retryContextSnapshot,
+            contextSnapshot: admittedContext,
             ...(hasConversationContinuationPolicy(run.resultJson)
               ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
@@ -1890,6 +1906,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
   return {
     scheduleBoundedRetryForRun,
+    scheduleMonitorRetryForRun: (run: HeartbeatRun, agent: typeof agents.$inferSelect,
+      opts: Parameters<typeof scheduleBoundedRetryForRun>[2], admission: IssueMonitorAdmission) =>
+      scheduleBoundedRetryForRun(run, agent, opts, admission),
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
