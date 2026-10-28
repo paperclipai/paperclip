@@ -161,4 +161,66 @@ describePostgres("accepted comment finalization", () => {
     }
   }, 30_000);
 
+  it("serializes receipt completion with actual task deletion", async () => {
+    const companyId = randomUUID(), issueId = randomUUID(), commentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Task deletion race", issuePrefix: `RCP${companyId.slice(0, 6).toUpperCase()}` });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Completed task", status: "done" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: "local-board", body: "Saved comment" });
+    let release!: () => void, held!: () => void, receiptStarted!: (pid: number) => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const ready = new Promise<void>(resolve => { held = resolve; });
+    const receiptPid = new Promise<number>(resolve => { receiptStarted = resolve; });
+    const wrap = (deleting: boolean) => new Proxy(db, {
+      get(target, property) {
+        if (property === "transaction") return (callback: (tx: any) => Promise<unknown>) => target.transaction(async tx => {
+          if (!deleting) {
+            const [row] = await tx.execute(sql`select pg_backend_pid() as pid`);
+            receiptStarted(Number(row.pid));
+          }
+          return callback(new Proxy(tx, {
+            get(transaction, method) {
+              // Delay the real DELETE after its normal task lock is held.
+              if (deleting && method === "delete") return (table: unknown) => {
+                const builder = transaction.delete(table as typeof issues);
+                if (table !== issues) return builder;
+                return { where: (...args: Parameters<typeof builder.where>) => ({ returning: async () => {
+                  held();
+                  await gate;
+                  return builder.where(...args).returning();
+                } }) };
+              };
+              const value = Reflect.get(transaction, method, transaction);
+              return typeof value === "function" ? value.bind(transaction) : value;
+            },
+          }));
+        });
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const deleting = issueService(wrap(true)).remove(issueId).catch(error => error);
+    let completing: Promise<unknown> | undefined;
+    try {
+      await ready;
+      completing = completeIssueCommentReceipt(wrap(false), issueReferenceService(db), {
+        companyId, issueId, commentId,
+        activity: () => ({ companyId, actorType: "user", actorId: "local-board", action: "issue.comment_added",
+          entityType: "issue", entityId: issueId, details: { commentId } }),
+      }).catch(error => error);
+      const pid = await receiptPid;
+      await vi.waitFor(async () => {
+        const [state] = await db.execute(sql`select wait_event_type from pg_stat_activity where pid=${pid}`);
+        expect(state?.wait_event_type).toBe("Lock");
+      }, { timeout: 5_000, interval: 10 });
+      release();
+      expect(await deleting).toMatchObject({ id: issueId });
+      expect(await completing).toMatchObject({ status: 404 });
+      expect(await db.select().from(issues).where(eq(issues.id, issueId))).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.id, commentId))).toHaveLength(0);
+      expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(0);
+    } finally {
+      release();
+      await Promise.allSettled([deleting, completing]);
+    }
+  }, 30_000);
 });

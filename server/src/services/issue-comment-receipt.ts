@@ -19,15 +19,17 @@ export async function completeIssueCommentReceipt(db: Db, references: CommentRef
   const publications: ActivityPublication[] = [];
   await db.transaction(async tx => {
     const connection = tx as unknown as Db;
+    // Match task deletion and comment mutation: lock the task before its
+    // comment. NO KEY UPDATE still permits references from other tasks.
+    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )).for("no key update");
+    if (!issue) throw notFound("Issue not found");
     const [comment] = await tx.select({ id: issueComments.id, deletedAt: issueComments.deletedAt }).from(issueComments).where(and(
       eq(issueComments.id, input.commentId), eq(issueComments.companyId, input.companyId),
       eq(issueComments.issueId, input.issueId),
     )).for("update");
     if (!comment || comment.deletedAt) throw notFound("Issue comment not found");
-    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
-      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
-    )).for("no key update");
-    if (!issue) throw notFound("Issue not found");
     const before = input.referenceSummaryBefore ?? await references.listIssueReferenceSummary(input.issueId, connection);
     await references.syncComment(input.commentId, connection);
     const after = await references.listIssueReferenceSummary(input.issueId, connection);
