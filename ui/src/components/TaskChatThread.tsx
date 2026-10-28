@@ -135,6 +135,7 @@ import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
@@ -497,6 +498,7 @@ function durableInputLabel(
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const getAdapterCapabilities = useAdapterCapabilities();
   const {
     initialHistoryPending = false,
     initialHistoryError = false,
@@ -585,16 +587,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       // The server accepts explicit new attempts for these stopped legacy
       // conversations. It still proves process/lease termination and ownership;
       // offering Retry does not certify prior action outcomes or resume them.
-      // Keep this set aligned with conversation-continuation.ts on the server.
+      // Keep this set aligned with conversation-continuation.ts on the server;
+      // external adapters report supportsConversationContinuation instead.
       if (
         run.runtimeMode === "legacy" &&
         (run.status === "failed" || run.status === "timed_out") &&
         run.execution?.phase === "recovery_needed" &&
         run.execution.cause === "legacy_execution_requires_reconciliation" &&
-        [
+        ([
           "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
           "pi_local", "grok_local", "kimi_local", "hermes_local",
-        ].includes(run.adapterType ?? "")
+        ].includes(run.adapterType ?? "") ||
+          getAdapterCapabilities(run.adapterType ?? "").supportsConversationContinuation === true)
       ) return false;
       return [
         "working",

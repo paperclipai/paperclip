@@ -515,6 +515,14 @@ export interface ServerAdapterModule {
   /** Selected harness can resume its conversation with this run's tool bindings. */
   supportsToolRefreshOnResume?: boolean | ((config: Record<string, unknown>) => boolean);
   supportsLocalAgentJwt?: boolean;
+  /**
+   * The adapter resumes its provider conversation on the next wake, like the
+   * built-in local CLI adapters. A failed or interrupted run then continues as
+   * a conversation turn instead of taking a no-replay recovery hold. Built-in
+   * adapters are listed in the server's CONVERSATION_ADAPTER_TYPES; external
+   * adapters opt in with this flag.
+   */
+  supportsConversationContinuation?: boolean;
   /** How this adapter receives Paperclip's run-scoped control tools. */
   runtimeToolDelivery?: AdapterRuntimeToolDelivery;
   models?: AdapterModel[];

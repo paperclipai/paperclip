@@ -19,6 +19,11 @@ import {
   setOverridePaused,
   hasActiveAdapterOverride,
 } from "../adapters/registry.js";
+import {
+  CONVERSATION_ADAPTER_TYPES,
+  conversationAdapterTypes,
+  isConversationAdapter,
+} from "../services/conversation-continuation.js";
 
 const nativeSetup = vi.hoisted(() => ({ authenticate: vi.fn() }));
 vi.mock("../services/native-runtime/setup-readiness.js", () => ({
@@ -245,6 +250,68 @@ describe("server adapter registry", () => {
     expect(resolved!.supportsInstructionsBundle).toBeUndefined();
     expect(resolved!.instructionsPathKey).toBeUndefined();
     expect(resolved!.requiresMaterializedRuntimeSkills).toBeUndefined();
+  });
+
+  it("treats an external adapter as a conversation adapter only when it opts in", () => {
+    expect(isConversationAdapter("external_test")).toBe(false);
+
+    registerServerAdapter(externalAdapter);
+    expect(isConversationAdapter("external_test")).toBe(false);
+    expect(conversationAdapterTypes()).not.toContain("external_test");
+
+    registerServerAdapter({ ...externalAdapter, supportsConversationContinuation: true });
+    expect(isConversationAdapter("external_test")).toBe(true);
+    expect(conversationAdapterTypes()).toContain("external_test");
+
+    unregisterServerAdapter("external_test");
+    expect(isConversationAdapter("external_test")).toBe(false);
+    expect(conversationAdapterTypes()).not.toContain("external_test");
+  });
+
+  it("keeps the built-in conversation adapters unchanged", () => {
+    registerServerAdapter({ ...externalAdapter, supportsConversationContinuation: true });
+    for (const type of CONVERSATION_ADAPTER_TYPES) {
+      expect(isConversationAdapter(type)).toBe(true);
+    }
+    expect(isConversationAdapter("process")).toBe(false);
+    expect(isConversationAdapter("http")).toBe(false);
+    expect(conversationAdapterTypes().filter((type) => type === "opencode_local")).toHaveLength(1);
+  });
+
+  it.each([
+    ["http", true],
+    ["http", false],
+    ["process", true],
+    ["process", false],
+  ] as const)("keeps a paused %s override inactive when reloaded with continuation support %s", (type, supported) => {
+    const builtIn = requireServerAdapter(type);
+    const override = { ...externalAdapter, type, supportsConversationContinuation: true };
+    const reloaded = { ...override, supportsConversationContinuation: supported };
+
+    try {
+      registerServerAdapter(override);
+      expect(findActiveServerAdapter(type)).toBe(override);
+      expect(isConversationAdapter(type)).toBe(true);
+
+      expect(setOverridePaused(type, true)).toBe(true);
+      expect(findActiveServerAdapter(type)).toBe(builtIn);
+      expect(isConversationAdapter(type)).toBe(false);
+
+      unregisterServerAdapter(type);
+      registerServerAdapter(reloaded);
+
+      expect(findServerAdapter(type)).toBe(reloaded);
+      expect(findActiveServerAdapter(type)).toBe(builtIn);
+      expect(isConversationAdapter(type)).toBe(false);
+      expect(conversationAdapterTypes()).not.toContain(type);
+
+      expect(setOverridePaused(type, false)).toBe(true);
+      expect(findActiveServerAdapter(type)).toBe(reloaded);
+      expect(isConversationAdapter(type)).toBe(supported);
+    } finally {
+      registerServerAdapter(builtIn);
+      setOverridePaused(type, false);
+    }
   });
 
   it("built-in claude_local adapter declares capability flags", () => {

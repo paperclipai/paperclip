@@ -144,6 +144,7 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.supportsLocalAgentJwt).toBe("boolean");
       expect(typeof adapter.capabilities.requiresMaterializedRuntimeSkills).toBe("boolean");
       expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
+      expect(typeof adapter.capabilities.supportsConversationContinuation).toBe("boolean");
     }
   });
 
@@ -264,6 +265,10 @@ describe("adapter routes", () => {
     expect(cursorAdapter.capabilities.requiresMaterializedRuntimeSkills).toBe(true);
     expect(cursorAdapter.capabilities.supportsInstructionsBundle).toBe(true);
     expect(cursorAdapter.capabilities.supportsAcp).toBe(false);
+
+    // Conversation continuation follows the server's built-in list.
+    expect(codexLocal.capabilities.supportsConversationContinuation).toBe(true);
+    expect(processAdapter.capabilities.supportsConversationContinuation).toBe(false);
 
     const geminiAdapter = res.body.find((a: any) => a.type === "gemini_local");
     expect(geminiAdapter).toBeDefined();

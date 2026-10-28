@@ -20,6 +20,8 @@ export interface AdapterCapabilities {
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
   supportsAcp: boolean;
+  /** Failed runs continue as a conversation turn. Absent from older servers. */
+  supportsConversationContinuation?: boolean;
   /** Present only when the adapter declares an interactive login capability. */
   login?: AdapterLoginProjection;
 }

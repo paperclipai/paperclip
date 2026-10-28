@@ -18,6 +18,7 @@ import type {
   TaskBrowser,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { adaptersApi } from "@/api/adapters";
 import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
 import { pendingConnectionIntentInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { TaskChatScrollNavigation } from "./task-chat/scroll-navigation";
@@ -1904,6 +1905,53 @@ describe("TaskChatThread runtime transcript selection", () => {
     flushSync(() => retryButtons.at(-1)!.click());
     await Promise.resolve();
     expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("failed-bootstrap");
+  });
+
+  describe("stopped legacy conversation awaiting reconciliation", () => {
+    const stoppedRun = (adapterType: string) => ({
+      runId: "stopped-legacy", runtimeMode: "legacy" as const, status: "failed", errorCode: "provider_quota",
+      agentId: "agent-1", agentName: "Worker", adapterType,
+      createdAt: "2026-08-25T18:00:00.000Z", startedAt: "2026-08-25T18:00:00.000Z", finishedAt: "2026-08-25T18:00:02.000Z",
+      execution: {
+        phase: "recovery_needed" as const, label: "Stopped", cause: "legacy_execution_requires_reconciliation",
+        lastConfirmedActivityAt: null, retryAt: null, attempt: 2, maxAttempts: 3, recoveryOwner: null, nextAction: null,
+        permittedActions: ["inspect_run" as const], predecessorRunId: null, successorRunId: null,
+      },
+    });
+    const adapterListing = (supportsConversationContinuation: boolean) => [{
+      type: "external_conversation_test",
+      capabilities: {
+        supportsInstructionsBundle: false, supportsSkills: false, supportsLocalAgentJwt: false,
+        requiresMaterializedRuntimeSkills: false, supportsAcp: false, supportsConversationContinuation,
+      },
+    }] as unknown as Awaited<ReturnType<typeof adaptersApi.list>>;
+    const retryButton = () => container.querySelector('[data-testid="task-chat-run-failed-try-again"]');
+    const renderStopped = (adapterType: string) => render(<TaskChatThread comments={[]} onAdd={async () => {}}
+      issueStatus="blocked" onRetryFailedRun={vi.fn()} linkedRuns={[stoppedRun(adapterType)]} />);
+
+    it("offers Try again for a built-in conversation adapter", () => {
+      vi.spyOn(adaptersApi, "list").mockResolvedValue(adapterListing(false));
+      renderStopped("opencode_local");
+      expect(retryButton()).not.toBeNull();
+    });
+
+    it.each([true, false])("follows the external adapter's conversation capability: %s", async (supported) => {
+      vi.spyOn(adaptersApi, "list").mockResolvedValue(adapterListing(supported));
+      renderStopped("external_conversation_test");
+      await vi.waitFor(() => expect(adaptersApi.list).toHaveBeenCalled());
+      await act(async () => { await Promise.resolve(); });
+      if (supported) await vi.waitFor(() => expect(retryButton()).not.toBeNull());
+      else expect(retryButton()).toBeNull();
+    });
+
+    it("offers Try again once the external adapter's capabilities arrive", async () => {
+      let resolveList!: (value: Awaited<ReturnType<typeof adaptersApi.list>>) => void;
+      vi.spyOn(adaptersApi, "list").mockReturnValue(new Promise(resolve => { resolveList = resolve; }));
+      renderStopped("external_conversation_test");
+      expect(retryButton()).toBeNull();
+      await act(async () => { resolveList(adapterListing(true)); });
+      await vi.waitFor(() => expect(retryButton()).not.toBeNull());
+    });
   });
 
   it.each([false, true])("never offers the old quarantined run as Try again after continuation: %s", continued => {
