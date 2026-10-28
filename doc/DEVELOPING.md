@@ -3334,6 +3334,15 @@ separate from Git materialization, environment acquisition, and provider startup
 
 ### Budget accounting performance
 
+Dollar admission distinguishes unsettled usage from unsettled charges. A terminal
+run whose current subscription-included checkpoint matches its durable receipt
+identity is excluded from pending dollar exposure only when its run receipt
+history contains no conflicting billing classification or nonzero monetary
+projection. The missing final receipt, usage, and accounting-pending marker stay
+unchanged; Costs still reports the run as incomplete data quality. Metered,
+unknown, and unverified usage remain fail closed, and charged spend still counts
+toward the same hard limits.
+
 Budget admission and settlement share the company accounting lock. They evaluate
 only the company, responsible agent, and applicable project. Running usage is an
 internal exposure projection, not a provisional ledger charge. Cancellation and

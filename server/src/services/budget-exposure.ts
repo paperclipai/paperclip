@@ -2,6 +2,7 @@ import { addCents, normalizeCents, usdToUnits, unitsToCents } from "@paperclipai
 import { and, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
 import { budgetPolicies, budgetReservations, browserUseRuns, browserUseSessions, costEvents, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { withBudgetSpan } from "./budget-tracing.js";
+import { verifiedSubscriptionIncludedRun } from "./subscription-dollar-exposure.js";
 
 export interface BudgetExposure {
   ledgerCents: string;
@@ -68,8 +69,8 @@ const liveCost = sql`case when ${heartbeatRuns.costAccountedAt} is null and ${he
   then case when ${hasProjection} then coalesce(${projected}, 0)
     else coalesce(${projected}, ${legacy}, 0) end else 0 end`;
 
-/** Batched ledger, held-operation and unfinished-run aggregates. Never scans
- * agents or receipt history; each policy retains its own scope and window. */
+/** Batched ledger, held-operation and unfinished-run aggregates. Receipt
+ * verification stays indexed by company/run; policies retain their scope and window. */
 async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): Promise<ObservedSpend[]> {
   const windows = policies.map(policy => budgetWindow(policy.windowKind, now));
   const billable = policies.map((policy, index) => ({ policy, index })).filter(({ policy }) => policy.metric === "billed_cents");
@@ -116,7 +117,8 @@ async function readObservedSpends(db: Db, policies: SpendPolicy[], now: Date): P
     const run = and(eq(heartbeatRuns.companyId, policy.companyId), eq(heartbeatRuns.costAccountingPending, true),
       policy.scopeType === "agent" ? eq(heartbeatRuns.agentId, policy.scopeId) : undefined,
       policy.scopeType === "project" ? sql`${usage}->'ledgerScope'->>'projectId' = ${policy.scopeId}` : undefined)!;
-    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), inWindow)!;
+    const terminal = and(run, inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out", "cancelled", "interrupted"]), inWindow,
+      sql`not ${verifiedSubscriptionIncludedRun()}`)!;
     // Keep correlated subqueries in nested SQL chunks. Drizzle strips column
     // qualifiers from a single-table selection's direct column chunks.
     const hasReservation = sql`exists (select 1 from ${budgetReservations}
