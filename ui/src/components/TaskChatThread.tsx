@@ -3126,6 +3126,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       <TaskChatThreadView
                         items={items}
                         attachments={attachments}
+                        linkCaseReferences={props.linkCaseReferences}
                         header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}</>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
@@ -3159,6 +3160,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                   {tailRunSource?.adapterType === "paperclip_runner" ||
                                   optimisticRunnerStartup ? (
                                     <TaskChatRunnerTurn
+                                      linkCaseReferences={props.linkCaseReferences}
                                       runId={tailRunId}
                                       execution={
                                         liveRun?.id === tailRunId
@@ -3206,6 +3208,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                         toolSummary={tailToolSummary}
                                       />
                                       <TaskChatLiveTail
+                                        linkCaseReferences={props.linkCaseReferences}
                                         items={tailItems}
                                         emptyMessage={
                                           tailStatus === "queued"

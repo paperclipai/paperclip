@@ -68,6 +68,7 @@ interface TaskChatBubbleProps {
    */
   actions?: ReactNode;
   attachments?: IssueAttachment[];
+  linkCaseReferences?: boolean;
 }
 
 function initialsForName(name: string) {
@@ -142,6 +143,7 @@ function TaskChatBubbleContent({
   hideAgentIdentity = false,
   actions,
   attachments = [],
+  linkCaseReferences = false,
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
@@ -268,6 +270,7 @@ function TaskChatBubbleContent({
             className={isOwnMessage ? "paperclip-markdown-on-accent" : undefined}
             softBreaks
             linkIssueReferences
+            linkCaseReferences={linkCaseReferences}
             onImageClick={openImage}
           >
             {bodyText}

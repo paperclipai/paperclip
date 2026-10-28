@@ -115,6 +115,7 @@ function RunnerCurrentActivityTail({ status, waitingLabel }: { status: string; w
 }
 
 export function TaskChatRunnerTurn({
+  linkCaseReferences = false,
   runId,
   agentName,
   agentIcon,
@@ -137,6 +138,7 @@ export function TaskChatRunnerTurn({
   agentIcon?: string | null;
   agent?: import("../AgentAvatar").AvatarAgent;
   items: readonly TaskChatItem[];
+  linkCaseReferences?: boolean;
   status: string;
   execution?: ExecutionProjection | null;
   /** Presentation only while Send/Retry admission has no run yet. */
@@ -254,7 +256,7 @@ export function TaskChatRunnerTurn({
               data-thread-anchor={row.id}
             >
               {row.kind === "activity_phase" ? (
-                <TaskChatRunnerActivityGroup item={row} />
+                <TaskChatRunnerActivityGroup item={row} linkCaseReferences={linkCaseReferences} />
               ) : row.kind === "plan_document" ? (
                 <TaskChatPlanPreviewCard
                   source={{ kind: "saved", document: row.document }}
@@ -280,6 +282,7 @@ export function TaskChatRunnerTurn({
           data-testid="task-chat-final-response"
         >
           <TaskChatBubble
+            linkCaseReferences={linkCaseReferences}
             item={{ ...final, authorName: agentName ?? undefined, agentIcon, agent, timestamp: final.timestamp ?? formatTaskChatTimestamp(final.atMs) }}
             animateEntry={false}
             hideAgentIdentity={!continuedAfterSteering}

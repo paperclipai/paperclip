@@ -20,12 +20,14 @@ import { visibleTranscriptPlaceholder } from "./TaskChatShimmer";
  * it introduced, and resolved request receipts keep their original slot.
  */
 export function TaskChatLiveTail({
+  linkCaseReferences = false,
   items,
   emptyMessage,
   excludeFinal = false,
   onRuntimeRequestDecision,
 }: {
   items: readonly TaskChatItem[];
+  linkCaseReferences?: boolean;
   /** Shown when nothing renderable has streamed yet (queued / pre-first-token). */
   emptyMessage?: string;
   /** New-runner turn renders final-answer messages in its dedicated response slot. */
@@ -39,7 +41,7 @@ export function TaskChatLiveTail({
     ? items.filter((item) => item.kind !== "message" || item.interstitial)
     : items;
   const rows = buildTurnTimelineRows(visibleItems, true)
-    .map((item) => renderTailRow(item, onRuntimeRequestDecision))
+    .map((item) => renderTailRow(item, onRuntimeRequestDecision, linkCaseReferences))
     .filter((row): row is ReactElement => row != null);
 
   if (rows.length === 0) {
@@ -58,6 +60,7 @@ function renderTailRow(
     item: TaskChatRuntimeRequestItem,
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>,
+  linkCaseReferences = false,
 ): ReactElement | null {
   switch (item.kind) {
     case "message": {
@@ -73,7 +76,7 @@ function renderTailRow(
           data-testid="task-chat-live-text"
           data-conversation-text={item.channel === "final" ? "final" : "progress"}
         >
-          <MarkdownBody softBreaks linkIssueReferences>
+          <MarkdownBody softBreaks linkIssueReferences linkCaseReferences={linkCaseReferences}>
             {item.text}
           </MarkdownBody>
         </div>
@@ -96,6 +99,7 @@ function renderTailRow(
     case "activity_phase":
       return (
         <TaskChatRunnerActivityGroup
+          linkCaseReferences={linkCaseReferences}
           key={item.id}
           item={item}
         />

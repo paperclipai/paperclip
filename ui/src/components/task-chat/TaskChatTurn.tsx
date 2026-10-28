@@ -12,6 +12,7 @@ import { TaskChatAgentIdentity } from "./TaskChatBubble";
 
 interface TaskChatTurnProps {
   item: TaskChatTurnItem;
+  linkCaseReferences?: boolean;
   renderChild: (child: TaskChatTurnChildItem) => ReactNode;
   /**
    * When the settled turn is attached to its reply bubble (round 9), the
@@ -71,6 +72,7 @@ export function turnSummaryText(summary: TaskChatTurnItem["summary"]): string {
  */
 export function TaskChatTurn({
   item,
+  linkCaseReferences = false,
   renderChild,
   timestampPrefix,
   leading,
@@ -132,7 +134,7 @@ export function TaskChatTurn({
               className="break-words px-1 py-2 text-sm text-foreground"
               data-testid="task-chat-agent-bubble"
             >
-              <MarkdownBody softBreaks linkIssueReferences>
+              <MarkdownBody softBreaks linkIssueReferences linkCaseReferences={linkCaseReferences}>
                 {item.finalResponse.text}
               </MarkdownBody>
             </div>

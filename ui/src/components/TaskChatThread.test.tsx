@@ -90,6 +90,7 @@ vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({
   }),
 }));
 vi.mock("@/lib/router", () => ({
+  useCaseHref: () => (identifier: string) => `/PAP/cases/${identifier}`,
   useLocation: () => ({ pathname: "/issues/issue", hash: "", search: "", key: "test", state: null }),
   Link: ({
     to,
@@ -5045,4 +5046,19 @@ it("explains a missing provider runtime with an installation repair", () => {
   flushSync(() => toggle.click());
   expect(container.textContent).toContain("Reinstall or rebuild Paperclip");
   expect(container.textContent).toContain("test the agent's runtime");
+});
+
+
+it("forwards case-link opt-in from the live thread and updates settled markdown when it changes", () => {
+  const comments = [{
+    id: "case-table", companyId: "company", issueId: "issue", authorType: "agent" as const,
+    authorAgentId: "agent", authorUserId: null, presentation: null, metadata: null,
+    body: "| Case | Status |\n|---|---|\n| PAP-C1 | in_progress |",
+    createdAt: new Date("2025-01-01T10:00:20Z"), updatedAt: new Date("2025-01-01T10:00:20Z"),
+  }];
+  render(<TaskChatThread comments={comments} onAdd={async () => {}} linkCaseReferences />);
+  expect(container.querySelector('a[href="/PAP/cases/PAP-C1"]')).not.toBeNull();
+  render(<TaskChatThread comments={comments} onAdd={async () => {}} linkCaseReferences={false} />);
+  expect(container.querySelector('a[href="/PAP/cases/PAP-C1"]')).toBeNull();
+  expect(container.textContent).toContain("PAP-C1");
 });

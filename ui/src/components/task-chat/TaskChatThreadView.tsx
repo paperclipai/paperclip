@@ -75,6 +75,7 @@ interface TaskChatThreadViewProps {
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
   attachments?: IssueAttachment[];
+  linkCaseReferences?: boolean;
   onOpenSkill?: (skillId: string, name: string) => void;
   onOpenBrowser?: (browserId: string) => void;
 }
@@ -99,6 +100,7 @@ function renderItem(
   attachments: IssueAttachment[] = [],
   onOpenSkill?: (skillId: string, name: string) => void,
   onOpenBrowser?: (browserId: string) => void,
+  linkCaseReferences = false,
 ) {
   switch (item.kind) {
     case "browser": return <TaskBrowserActivity browser={item.browser} label={item.label} onOpen={onOpenBrowser} />;
@@ -121,6 +123,7 @@ function renderItem(
         : item.attachedTurn;
       const turn = attachedTurnItem ? (
         <TaskChatTurn
+          linkCaseReferences={linkCaseReferences}
           item={attachedTurnItem}
           timestampPrefix={
             attachedTurnItem.standaloneHeader ? undefined : item.timestamp
@@ -144,6 +147,7 @@ function renderItem(
               attachments,
               onOpenSkill,
               onOpenBrowser,
+              linkCaseReferences,
             )
           }
         />
@@ -151,6 +155,7 @@ function renderItem(
       return (
         <TaskChatBubble
           item={item}
+          linkCaseReferences={linkCaseReferences}
           // Hydration and live-to-durable reconciliation may move a logical
           // message between parents. Mounting must never replay a fade.
           animateEntry={false}
@@ -211,7 +216,7 @@ function renderItem(
       // same compact activity treatment. Keeping this decision at the common
       // renderer boundary also gives old persisted runs the current taxonomy,
       // alignment, one-line targets, and collapsed-by-default behavior.
-      return <TaskChatRunnerActivityGroup item={item} />;
+      return <TaskChatRunnerActivityGroup item={item} linkCaseReferences={linkCaseReferences} />;
     case "interaction":
       return renderInteraction ? renderInteraction(item) : null;
     case "plan_document":
@@ -230,6 +235,7 @@ function renderItem(
     case "turn":
       return (
         <TaskChatTurn
+          linkCaseReferences={linkCaseReferences}
           item={item}
           renderChild={(child) =>
             renderItem(
@@ -249,6 +255,7 @@ function renderItem(
               attachments,
               onOpenSkill,
               onOpenBrowser,
+              linkCaseReferences,
             )
           }
         />
@@ -314,6 +321,7 @@ export function TaskChatThreadView({
   className,
   scroll = true,
   attachments = EMPTY_ATTACHMENTS,
+  linkCaseReferences = false,
   onOpenSkill,
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
@@ -344,7 +352,7 @@ export function TaskChatThreadView({
         renderQueuedAction, onRuntimeRequestDecision, "classic",
         runRetry ?? onTryAgainNoLiveExecutionPath,
         runRetry ? retryFailedRunId === runId : tryAgainNoLiveExecutionPathPending,
-        retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+        retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser, linkCaseReferences,
       );
     };
     const renderedItems = streamlined
@@ -401,7 +409,7 @@ export function TaskChatThreadView({
     visibleItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
-    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser, linkCaseReferences,
   ]);
   const body = (
     <div

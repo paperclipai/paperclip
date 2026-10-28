@@ -310,9 +310,11 @@ function ExpandedActivity({
 /** One rolling activity between commentary messages, with persistent optional history. */
 export function TaskChatRunnerActivityGroup({
   item,
+  linkCaseReferences = false,
   defaultExpanded = false,
 }: {
   item: TaskChatActivityPhaseItem;
+  linkCaseReferences?: boolean;
   defaultExpanded?: boolean;
 }) {
   const [expanded, setExpanded] = useTaskChatExpansion(
@@ -340,7 +342,7 @@ export function TaskChatRunnerActivityGroup({
           data-testid="task-chat-phase-interstitial"
           data-conversation-text={item.interstitial.channel === "final" ? "final" : "progress"}
         >
-          <MarkdownBody softBreaks linkIssueReferences>
+          <MarkdownBody softBreaks linkIssueReferences linkCaseReferences={linkCaseReferences}>
             {item.interstitial.text}
           </MarkdownBody>
         </div>
