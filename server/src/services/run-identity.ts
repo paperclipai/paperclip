@@ -223,14 +223,8 @@ async function appendIdentityMessages(
   input: Parameters<typeof initializeRunIdentity>[1],
   current: RunIdentityContext,
   operatorIdentity: Awaited<ReturnType<typeof explicitOperatorRunIdentity>>,
-  unseenOnly = false,
 ) {
-  const requestedIds = [...new Set(input.messageIds ?? [])];
-  const previous = unseenOnly && requestedIds.length ? await tx.select({ messageId: runIdentityContexts.messageId }).from(runIdentityContexts)
-    .where(and(eq(runIdentityContexts.companyId, input.companyId), eq(runIdentityContexts.runId, input.runId),
-      inArray(runIdentityContexts.messageId, requestedIds))) : [];
-  const seen = new Set(previous.map(row => row.messageId));
-  const ids = requestedIds.filter(id => !seen.has(id));
+  const ids = [...new Set(input.messageIds ?? [])];
   const comments = ids.length && input.issueId ? await tx.select().from(issueComments).where(and(
     eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId), inArray(issueComments.id, ids))) : [];
   for (const id of ids) {
@@ -253,10 +247,17 @@ export async function settleReviewRunClaimIdentity(tx: Db, run: typeof heartbeat
     eq(runIdentityContexts.id, run.activeIdentityContextId), eq(runIdentityContexts.companyId, run.companyId),
     eq(runIdentityContexts.runId, run.id), eq(runIdentityContexts.status, "accepted")));
   if (!identity) throw forbidden("The queued review identity is unavailable");
-  const current = previousStartedAt === null ? await appendIdentityMessages(tx,
-    runIdentityInitializationInput(run, run.contextSnapshot ?? {}, task, run.responsibleUserId), identity,
-    await explicitOperatorRunIdentity(tx, run), true) : identity;
-  if (current.id === run.activeIdentityContextId && current.responsibleUserId !== run.responsibleUserId)
+  let current = identity;
+  if (previousStartedAt === null) {
+    const [origin] = await tx.select().from(runIdentityContexts).where(and(
+      eq(runIdentityContexts.companyId, run.companyId), eq(runIdentityContexts.runId, run.id),
+      eq(runIdentityContexts.correlationId, "dispatch"), eq(runIdentityContexts.status, "accepted")));
+    if (!origin) throw forbidden("The queued review origin identity is unavailable");
+    current = await appendIdentityMessages(tx,
+      runIdentityInitializationInput(run, run.contextSnapshot ?? {}, task, run.responsibleUserId), origin,
+      await explicitOperatorRunIdentity(tx, run));
+  }
+  if (previousStartedAt === null || current.id !== run.activeIdentityContextId || current.responsibleUserId !== run.responsibleUserId)
     await activate(tx, current);
   return (await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))))[0]!;
 }

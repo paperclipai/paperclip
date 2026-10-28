@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -53,7 +54,7 @@ const support = await getEmbeddedPostgresTestSupport();
       nextCheckAt: new Date(Date.now() + 60_000).toISOString(), notes: "Inspect checks", scheduledBy: "board",
       kind: "external_service", serviceName: "github_checks", maxAttempts: 3, timeoutAt: new Date(Date.now() + 300_000).toISOString(),
     } } });
-    const marker = join(process.env.TMPDIR!, `monitor-provider-${randomUUID()}`);
+    const marker = join(tmpdir(), `monitor-provider-${randomUUID()}`);
     markers.push(marker);
     await db.update(agents).set({ adapterConfig: { command: process.execPath,
       args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`] } }).where(eq(agents.id, f.agentId));
@@ -375,6 +376,61 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await heartbeatService(db).triggerIssueMonitor(f.issueId)).toMatchObject({ outcome: "triggered" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
+  });
+
+  it("keeps quota consumption and provider work behind the outer retry commit", async () => {
+    const { f, busy, marker, source, install } = await quotaReady(); await install();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+    let entered!: () => void, release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const transaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementation((...args: Parameters<typeof db.transaction>) => transaction(async tx => {
+      const value = await args[0](tx);
+      if (value && typeof value === "object" && "outcome" in value && value.outcome === "scheduled") { entered(); await gate; }
+      return value;
+    }, args[1]));
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    const triggering = service.triggerIssueMonitor(f.issueId);
+    try {
+      await Promise.race([ready, triggering.then(() => { throw new Error("Quota consumption bypassed outer commit"); })]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(0);
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].monitorNextCheckAt).not.toBeNull();
+      await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+      release(); expect(await triggering).toMatchObject({ outcome: "triggered" });
+      vi.restoreAllMocks();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(1);
+      await service.retryScheduledRetryNow({ issueId: f.issueId }); await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      expect(await readFile(marker, "utf8")).toBe("started");
+    } finally { release(); await triggering; await service.drainActiveRunExecutions(); }
+  });
+
+  it("retains a replacement monitor that wins before quota retry admission", async () => {
+    const { f, source, marker, install } = await quotaReady(); await install();
+    let claimed = false, replaced = false;
+    const next = new Date(Date.now() + 120_000);
+    const racing = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof db.transaction>) => {
+        if (claimed && !replaced) {
+          replaced = true;
+          const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+          await issueService(db).update(f.issueId, { monitorNextCheckAt: next, executionPolicy: { ...task.executionPolicy!,
+            monitor: { nextCheckAt: next.toISOString(), notes: "Replacement checks", scheduledBy: "board", serviceName: "github_checks", kind: "external_service" } } });
+        }
+        const value = await Reflect.apply(target.transaction, target, args);
+        if (value?.id === f.issueId && value.monitorWakeRequestedAt) claimed = true;
+        return value;
+      };
+    } });
+    await expect(heartbeatService(racing).triggerIssueMonitor(f.issueId)).rejects.toThrow();
+    expect(replaced).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({
+      monitorNextCheckAt: next, executionPolicy: { monitor: { serviceName: "github_checks" } },
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.id))).toHaveLength(0);
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("recovers one committed quota retry after a lost response and duplicate service trigger", async () => {

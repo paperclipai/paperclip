@@ -171,7 +171,9 @@ export class IssueMonitorAdmission {
       if (!task) throw new ReviewQuotaMonitorHeld("The monitored task is unavailable");
       await assertReviewQuotaMonitorInstallation(tx, task, source);
     }
-    if (current.id !== this.claimed.id || current.companyId !== this.claimed.companyId || agentId !== this.claimed.assigneeAgentId
+    const participant = this.quotaSourceRunId ? parseIssueExecutionState(this.claimed.executionState)?.currentParticipant : null;
+    const targetAgentId = participant?.type === "agent" ? participant.agentId : this.claimed.assigneeAgentId;
+    if (current.id !== this.claimed.id || current.companyId !== this.claimed.companyId || agentId !== targetAgentId
       || issueExecutionGeneration(current) !== issueExecutionGeneration(this.claimed))
       throw new Error("Monitor admission generation changed");
     const [consumed] = await tx.update(issues).set({
