@@ -185,6 +185,7 @@ export function documentService(db: Db) {
           changeSummary: documentRevisions.changeSummary,
           createdByAgentId: documentRevisions.createdByAgentId,
           createdByUserId: documentRevisions.createdByUserId,
+          createdByRunId: documentRevisions.createdByRunId,
           createdAt: documentRevisions.createdAt,
         })
         .from(issueDocuments)

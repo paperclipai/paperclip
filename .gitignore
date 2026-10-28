@@ -6,6 +6,7 @@ dist/
 dist-preview/
 dist-flow-preview/
 server/ui-dist/
+server/dist-runtime/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
 ui/storybook/generated/
@@ -59,6 +60,9 @@ diagnostics/
 /.idea/
 /.agents/
 
+# Personal agent instructions
+/AGENTS.local.md
+
 # Doc maintenance cursor
 .doc-review-cursor
 
@@ -86,6 +90,9 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+# Copilot assets are generated from pinned platform packages during installation.
+/packages/paperclip-runner/provider-assets/
+/server/provider-assets/
 
 # Local native Runner test/session state
 .paperclip-runner-prp/

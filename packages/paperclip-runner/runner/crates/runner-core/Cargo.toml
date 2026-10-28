@@ -53,3 +53,7 @@ path = "src/bin/fake-codex-app-server.rs"
 [[bin]]
 name = "fake-acpx-sidecar"
 path = "src/bin/fake-acpx-sidecar.rs"
+
+[[bin]]
+name = "fake-stdio-mcp"
+path = "src/bin/fake-stdio-mcp.rs"

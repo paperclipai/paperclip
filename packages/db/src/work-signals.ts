@@ -5,7 +5,7 @@ import { sql } from "drizzle-orm";
 // an XID, so unrelated transactions keep their existing SQL behavior.
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
-type Scope = { listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection };
+type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection };
 type Context = { scope: Scope; transaction?: Transaction };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
@@ -19,7 +19,7 @@ function publish(scope: Scope, topic: string, event: "intent" | "settled" = "set
 
 /** Installed once by createDb; dedicated child pools share their owner's scope. */
 export function installDatabaseWorkSignals<T extends Connection>(db: T, owner?: object): T {
-  const scope = (owner && contexts.get(owner)?.scope) || { listeners: new Map(), transactions: new Set(), root: db };
+  const scope = (owner && contexts.get(owner)?.scope) || { key: {}, listeners: new Map(), transactions: new Set(), root: db };
   install(db, { scope });
   return db;
 }
@@ -111,4 +111,8 @@ export function subscribeDatabaseWork(owner: object, topic: string, listener: Li
     try { listener("intent"); } catch (error) { process.emitWarning(`Database work listener failed: ${String(error)}`); }
   }
   return () => { listeners.delete(listener); };
+}
+
+export function databaseWorkScopeKey(connection: object): object {
+  return contexts.get(connection)?.scope.key ?? connection;
 }

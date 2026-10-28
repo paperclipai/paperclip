@@ -192,6 +192,7 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
   }
   const knownKeys = managedFeatureKeySet();
   for (const [key, value] of Object.entries(doc.features)) {
+    if (key === "enablePipelines" && typeof value === "boolean") continue;
     if (!knownKeys.has(key)) {
       fail(
         `"features" has unknown feature key "${key}"; known keys are the boolean flags of instanceExperimentalSettingsSchema`,

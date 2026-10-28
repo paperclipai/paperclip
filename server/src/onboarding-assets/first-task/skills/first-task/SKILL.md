@@ -35,7 +35,44 @@ Work in this order.
    - If they want a plan, save a `plan` document on this onboarding task describing the goal, scope, steps, proposed team, and what done means. Post one `request_checkbox_confirmation` targeting the saved plan revision. A card or thread message alone is not a saved plan. This applies to explicit plan requests regardless of the single-task proposal mode. Proposing a team does not authorize hiring it.
    - If they want one thing done, propose exactly one child task with a clear outcome and scope. Ask them to accept it before creating the child. Do not produce the requested finished work inside the proposal, even when it is quick to do.
    - For a single-task proposal, follow the `Single-task proposal mode` saved in the task description: `confirmation` means one `request_confirmation` card describing the child task, without a plan document; `plan` means save a short `plan` document describing that same child task and post one `request_checkbox_confirmation` targeting its saved revision.
+   - With native tools, create those proposal cards using `request_human_input`: `interactionKind: "confirmation"` creates `request_confirmation`; `interactionKind: "checkbox"` creates `request_checkbox_confirmation`. Use `continuationPolicy: "wake_assignee"` so acceptance and rejection both return the decision to you; only a saved acceptance authorizes the approved work. Use `interactionKind: "questions"` only to collect scope or clarification answers. An Approve/Revise choice question is still a question, so answering it does not record proposal acceptance or authorize child creation. Present the proposal through the matching confirmation kind instead.
    - Keep this task `in_review` while waiting. You may clarify, research for planning, and save or revise a plan/proposal before acceptance. Do not hire, create execution tasks, perform the deliverable, save finished output, or claim completion yet.
+
+   For a native single-task confirmation, call `request_human_input` with arguments like these. Replace `<child-title>` with the proposed title and describe its actual scope in the prompt. Use a new idempotency key for each changed or revised proposal. Reuse a key only for the exact same proposal when reconciling an interrupted call; the example key below is for the first proposal.
+
+   ```json
+   {
+     "idempotencyKey": "first-task-proposal-confirmation",
+     "interactionKind": "confirmation",
+     "title": "Approve child task",
+     "prompt": "Approve creating exactly one child task named \"<child-title>\" for the scope described above?",
+     "continuationPolicy": "wake_assignee",
+     "payload": {
+       "acceptLabel": "Approve",
+       "rejectLabel": "Revise",
+       "rejectRequiresReason": true
+     }
+   }
+   ```
+
+   For a native single-task proposal in plan mode, save the plan first, then call `request_human_input` with a checkbox card bound to its actual revision. Replace `<child-title>` and `<plan-revision-id>`; make the options describe the scope the user is approving. For a plan-only request, the option approves the plan alone and does not authorize implementation or hiring.
+
+   ```json
+   {
+     "idempotencyKey": "first-task-proposal-plan:<plan-revision-id>",
+     "interactionKind": "checkbox",
+     "title": "Approve child task plan",
+     "prompt": "Approve the proposed scope in this saved plan?",
+     "continuationPolicy": "wake_assignee",
+     "payload": {
+       "options": [{ "id": "scope", "label": "Approve the proposed scope for <child-title>" }],
+       "defaultSelectedOptionIds": ["scope"],
+       "minSelected": 1,
+       "maxSelected": 1,
+       "target": { "type": "issue_document", "key": "plan", "revisionId": "<plan-revision-id>" }
+     }
+   }
+   ```
 
 3. Interpret the next reply against the latest proposal.
 

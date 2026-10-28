@@ -26,7 +26,7 @@ export function createSlackWebhookCallbacks(db: Db, options: SlackWebhookOptions
     if (!endpoint.providerAccountId) return null;
     const inspection = request.clone();
     const body = await inspection.text();
-    const credentials = await resolveCredentials(endpoint);
+    const credentials = await resolveCredentials(endpoint, db, ["signingSecret"]);
     if (
       slackRequestSignatureIsValid(
         inspection,
@@ -85,7 +85,7 @@ export function createSlackWebhookCallbacks(db: Db, options: SlackWebhookOptions
             && payload.type === "event_callback" && typeof payload.event_id === "string" && payload.event_id.length > 0
             && payload.api_app_id === registration.appId && payload.team_id === current.providerAccountId
             && ["message", "app_mention"].includes(payload.event?.type ?? "")) {
-            const credentials = await resolveCredentials(current, tx);
+            const credentials = await resolveCredentials(current, tx, ["signingSecret"]);
             if (slackRequestSignatureIsValid(request, eventBody, credentials.signingSecret))
               signingFingerprint = createHash("sha256").update(credentials.signingSecret).digest("hex");
           }

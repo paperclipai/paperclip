@@ -916,7 +916,7 @@ async function* walkDirectory(root: string, relative = "", childrenFirst = false
   }
 }
 
-async function confineFullWorkspaceExport(root: string): Promise<void> {
+async function confineFullWorkspaceExport(root: string, rejectExternalSymlinks = false): Promise<void> {
   const unsafe = () => Object.assign(new Error("Unsafe workspace export directory"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" });
   if (!(await fs.lstat(root)).isDirectory()) throw unsafe();
   const canonicalRoot = await fs.realpath(root);
@@ -930,12 +930,59 @@ async function confineFullWorkspaceExport(root: string): Promise<void> {
         const target = await fs.readlink(entryPath);
         const resolved = path.resolve(directory, target);
         if (path.isAbsolute(target) || (resolved !== canonicalRoot && !resolved.startsWith(`${canonicalRoot}${path.sep}`))) {
+          if (rejectExternalSymlinks) throw unsafe();
           await fs.unlink(entryPath);
+        }
+        if (rejectExternalSymlinks) {
+          const canonicalTarget = await fs.realpath(entryPath).catch(() => { throw unsafe(); });
+          if (canonicalTarget !== canonicalRoot && !canonicalTarget.startsWith(`${canonicalRoot}${path.sep}`)) throw unsafe();
         }
       } else if (!stats.isFile()) throw unsafe();
     }
   };
   await walk(canonicalRoot);
+}
+
+/** Export into a caller-owned empty staging directory, without a merge baseline
+ * or any writes to the original host workspace. The normal transfer client owns
+ * archive validation; snapshots additionally reject links that cannot be kept. */
+export async function exportSandboxWorkspaceSnapshot(input: {
+  client: SandboxManagedRuntimeClient;
+  remoteDir: string;
+  stagingDir: string;
+  operationId: string;
+}): Promise<void> {
+  await fs.mkdir(input.stagingDir, { recursive: true });
+  if ((await fs.readdir(input.stagingDir)).length) throw new Error("Workspace snapshot destination is not empty");
+  const operations: SandboxSyncOperation[] = [{
+    operationId: input.operationId,
+    files: [{ sourcePath: input.remoteDir, targetPath: input.stagingDir, kind: "directory", exclude: [".paperclip-runtime"] }],
+  }];
+  assertSyncOperationsConfined(operations, { sourceRoots: [input.remoteDir], targetRoots: [input.stagingDir] });
+  if (!input.client.syncOut) throw Object.assign(new Error("Validated workspace export is unavailable for this provider"),
+    { code: "WORKSPACE_SNAPSHOT_EXPORT_UNSUPPORTED" });
+  await input.client.syncOut(operations);
+  await confineFullWorkspaceExport(input.stagingDir, true);
+}
+
+/** Only host-created snapshot archives qualify: the expected digest comes from
+ * a verified preservation receipt, never an agent or upload request. */
+export async function restoreVerifiedSnapshotArchive(input: {
+  archivePath: string; localDir: string; sha256: string; byteSize: number;
+}): Promise<void> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const bytes of createReadStream(input.archivePath)) {
+    size += bytes.length;
+    if (size > input.byteSize) throw new Error("Workspace snapshot size changed");
+    hash.update(bytes);
+  }
+  if (size !== input.byteSize || hash.digest("hex") !== input.sha256)
+    throw new Error("Workspace snapshot digest changed");
+  await fs.mkdir(input.localDir, { recursive: true });
+  if ((await fs.readdir(input.localDir)).length) throw new Error("Workspace snapshot destination is not empty");
+  await extractTarballToDirectory(input);
+  await confineFullWorkspaceExport(input.localDir, true);
 }
 
 async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {
@@ -1372,7 +1419,8 @@ export async function prepareSandboxManagedRuntime(input: {
   const seedGeneration = input.workspaceSeedCacheDirectory && baselineSnapshot && workspaceInboundMode !== "durable_seed"
     ? await runStepSpan("workspace.seed_generation", async () => workspaceSeedGeneration(baselineSnapshot!, gitSnapshot, repositories)) : null;
   const cachedSeed = seedGeneration
-    ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration)) : null;
+    ? await runStepSpan("workspace.seed_lookup", () => readWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
+      { companyDirectory: input.workspaceSeedCacheCompanyDirectory })) : null;
   const replaySeed = workspaceInboundMode === "durable_seed" ? input.workspaceDurableSeed : cachedSeed;
 
   // Every inbound staging step delegates to the provider through `client.syncIn`:
@@ -1640,38 +1688,43 @@ export async function prepareSandboxManagedRuntime(input: {
             workspaceUploadBytes += (await fs.stat(workspaceTarPath)).size;
           });
 
-          if (seedGeneration && !cachedSeed && input.workspaceDurableSeed) {
-            const seed = input.workspaceDurableSeed;
-            await runStepSpan("workspace.seed_publish", () => publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
-              { ...seed, gitArchivePath: gitSnapshot || repositories.length ? seed.gitArchivePath : null }, {
-                companyDirectory: input.workspaceSeedCacheCompanyDirectory,
-                verify: () => runStepSpan("seed.verify", async () => {
-                  const verifiedRoot = path.join(tempDir, "verify-seed");
-                  try {
-                    if (gitSnapshot || repositories.length) await runStepSpan("workspace.seed_extract", () => extractTarballToDirectory({ archivePath: path.join(tempDir, "git-workspace.tar"), localDir: verifiedRoot }));
-                    await runStepSpan("workspace.seed_extract", () => extractTarballToDirectory({ archivePath: path.join(tempDir, "workspace.tar"), localDir: verifiedRoot, exclude: repositoryMetadataExcludes }));
-                    for (const relative of workspacePaths(deletedPaths)) {
-                      let parent = verifiedRoot;
-                      for (const segment of relative.split("/").slice(0, -1)) {
-                        parent = path.join(parent, segment);
-                        const stat = await fs.lstat(parent).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
-                        if (stat && !stat.isDirectory()) return false;
+          const publishSeed = async () => {
+            if (seedGeneration && !cachedSeed && input.workspaceDurableSeed) {
+              const seed = input.workspaceDurableSeed;
+              await runStepSpan("workspace.seed_publish", () => publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
+                { ...seed, gitArchivePath: gitSnapshot || repositories.length ? seed.gitArchivePath : null }, {
+                  companyDirectory: input.workspaceSeedCacheCompanyDirectory,
+                  verify: () => runStepSpan("seed.verify", async () => {
+                    const verifiedRoot = path.join(tempDir, "verify-seed");
+                    try {
+                      if (gitSnapshot || repositories.length) await runStepSpan("workspace.seed_extract", () => extractTarballToDirectory({ archivePath: path.join(tempDir, "git-workspace.tar"), localDir: verifiedRoot }));
+                      await runStepSpan("workspace.seed_extract", () => extractTarballToDirectory({ archivePath: path.join(tempDir, "workspace.tar"), localDir: verifiedRoot, exclude: repositoryMetadataExcludes }));
+                      for (const relative of workspacePaths(deletedPaths)) {
+                        let parent = verifiedRoot;
+                        for (const segment of relative.split("/").slice(0, -1)) {
+                          parent = path.join(parent, segment);
+                          const stat = await fs.lstat(parent).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+                          if (stat && !stat.isDirectory()) return false;
+                        }
+                        await fs.rm(path.join(verifiedRoot, relative), { recursive: true, force: true });
                       }
-                      await fs.rm(path.join(verifiedRoot, relative), { recursive: true, force: true });
-                    }
-                    const verified = await runStepSpan("workspace.seed_snapshot", () => captureWorkspaceSnapshot(verifiedRoot, { exclude: baselineSnapshot!.exclude, ignoredPaths: baselineSnapshot!.ignoredPaths, diskBacked: true }));
-                    try { return directorySnapshotSha256(verified) === directorySnapshotSha256(baselineSnapshot!); }
-                    finally { await disposeDirectorySnapshot(verified); }
-                  } finally { await runStepSpan("workspace.seed_cleanup", () => fs.rm(verifiedRoot, { recursive: true, force: true })); }
-                }),
-              }));
+                      const verified = await runStepSpan("workspace.seed_snapshot", () => captureWorkspaceSnapshot(verifiedRoot, { exclude: baselineSnapshot!.exclude, ignoredPaths: baselineSnapshot!.ignoredPaths, diskBacked: true }));
+                      try { return directorySnapshotSha256(verified) === directorySnapshotSha256(baselineSnapshot!); }
+                      finally { await disposeDirectorySnapshot(verified); }
+                    } finally { await runStepSpan("workspace.seed_cleanup", () => fs.rm(verifiedRoot, { recursive: true, force: true })); }
+                  }),
+                }));
+            }
+          };
+          if (!stageWorkspace) {
+            await publishSeed();
+            return;
           }
-          if (!stageWorkspace) return;
 
           // One confined `syncIn` for the whole merged workspace file set. The confine
           // guard covers every mapping BEFORE any bytes upload (fail-closed): a source
           // or target escape in EITHER tar mapping stops the upload of both.
-          await stageConfinedSyncIn({
+          const staging = stageConfinedSyncIn({
             files: workspaceFiles,
             postUploadCommands: workspacePostUploadCommands,
             sourceRoots: [tempDir],
@@ -1680,6 +1733,8 @@ export async function prepareSandboxManagedRuntime(input: {
             statusPhase: "config_sync",
             progressBytes: workspaceUploadBytes,
           });
+          const [staged] = await Promise.allSettled([staging, publishSeed()]);
+          if (staged.status === "rejected") throw staged.reason;
         }),
       );
     }

@@ -1,17 +1,30 @@
 import { and, eq, or, sql } from "drizzle-orm";
 import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
   budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
-  principalPermissionGrants, type Db } from "@paperclipai/db";
+  caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
 export async function deleteAgentDependencies(tx: Db, companyId: string, id: string) {
+  const [retainedHandoff] = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
+    eq(caseHandoffs.companyId, companyId), or(eq(caseHandoffs.fromAgentId, id), eq(caseHandoffs.toAgentId, id)),
+  )).limit(1);
+  if (retainedHandoff) throw conflict("Saved case handoff history requires this agent record. Keep the agent terminated instead of permanently deleting it", {
+    code: "agent_case_history_retained",
+  });
   const [decisionHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
     eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
     eq(budgetReservations.state, "held"), sql`${budgetReservations.decisionInvocationId} is not null`,
   )).limit(1);
   if (decisionHold) throw conflict("Wait for active decisions or resolve their unknown charges in Costs before deleting this agent", {
     code: "agent_decision_accounting_pending",
+  });
+  const [classifierHold] = await tx.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, companyId), eq(budgetReservations.agentId, id),
+    eq(budgetReservations.state, "held"), sql`${budgetReservations.promptInjectionInvocationId} is not null`,
+  )).limit(1);
+  if (classifierHold) throw conflict("Wait for active prompt injection checks or resolve their unknown charges in Costs before deleting this agent", {
+    code: "agent_prompt_injection_accounting_pending",
   });
   await issueThreadInteractionService(tx).cancelPendingForDeletedAddressee(companyId, id);
   await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));

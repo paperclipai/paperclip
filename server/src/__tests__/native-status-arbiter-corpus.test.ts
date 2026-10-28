@@ -849,11 +849,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         && (fixture.covers.migrationRows ?? []).includes("MIG-08")
       ) {
         const experimentalAdapterConfig = {
-          provider: "opencode",
-          model: "openrouter/deepseek/deepseek-v4-flash-0731",
+          provider: "acpx",
+          acpxAgent: "grok",
+          model: "anthropic/claude-sonnet-4-6",
         };
         const runtimeConfig = {
-          nativeRunner: { mode: "native", backend: "opencode_server", protocolVersion: 1 },
+          nativeRunner: { mode: "native", backend: "acpx_runtime", protocolVersion: 1 },
         };
         const enabled = options.disableLiveEntrypoint === "rollout";
         const activeResolution = resolveHeartbeatNativeRuntimeMode({

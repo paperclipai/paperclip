@@ -23,6 +23,7 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import {
   CODEX_RESULT_OUTPUT_SCHEMA,
   type CodexModelContextSnapshot,
@@ -101,7 +102,7 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -116,6 +117,7 @@ export class CodexHarnessSession
       runId: input.runId,
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+      ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
     });
     this.assertProtocolIntegrity();
     if (transportOwnsQuiescence) {
@@ -485,12 +487,12 @@ export class CodexHarnessSession
         `request ${input.requestId} is already settling`,
       );
     }
-    pending.settlingResolution = structuredClone(resolution);
     const response = runtimeRequestResponse(
       pending.request,
       resolution,
       pending.responseContext,
     );
+    pending.settlingResolution = structuredClone(resolution);
     try {
       await this.transport.resolveRuntimeRequest?.({
         requestId: input.requestId,

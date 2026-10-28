@@ -4,10 +4,13 @@ use serde_json::Value;
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
 use crate::credential_observer::CredentialObserver;
-use crate::dot_provider_backend::{DotCommandExecutor, DOT_PROVIDER_STATE_FILE};
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
     PolledEvent, TerminalDeliveryReconciliation,
+};
+use crate::external_provider_backend::{
+    ExternalCommandExecutor, ExternalProviderCodec, DOT_PROVIDER_STATE_FILE,
+    MUSE_PROVIDER_STATE_FILE,
 };
 use crate::managed_provider_backend::{
     ManagedProviderCommandExecutor, MANAGED_PROVIDER_STATE_FILE,
@@ -18,7 +21,7 @@ enum SelectedExecutor {
     LocalFacade(CodexCommandExecutor),
     Acpx(AcpxCommandExecutor),
     Managed(ManagedProviderCommandExecutor),
-    Dot(DotCommandExecutor),
+    Dot(ExternalCommandExecutor),
 }
 
 impl CommandExecutor for SelectedExecutor {
@@ -139,7 +142,8 @@ impl NativeProviderCommandExecutor {
         let acpx = self.state_dir.join(ACPX_PROVIDER_STATE_FILE).exists();
         let managed = self.state_dir.join(MANAGED_PROVIDER_STATE_FILE).exists();
         let dot = self.state_dir.join(DOT_PROVIDER_STATE_FILE).exists();
-        if [codex, acpx, managed, dot]
+        let muse = self.state_dir.join(MUSE_PROVIDER_STATE_FILE).exists();
+        if [codex, acpx, managed, dot, muse]
             .into_iter()
             .filter(|present| *present)
             .count()
@@ -149,9 +153,15 @@ impl NativeProviderCommandExecutor {
                 "runner state contains conflicting provider authorities",
             ));
         }
-        self.selected = if dot {
+        self.selected = if muse {
+            Some(SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
+                &self.state_dir,
+                &self.config,
+                ExternalProviderCodec::Muse,
+            )))
+        } else if dot {
             Some(SelectedExecutor::Dot(
-                DotCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+                ExternalCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ))
         } else if managed {
             Some(SelectedExecutor::Managed(
@@ -181,9 +191,20 @@ impl NativeProviderCommandExecutor {
                 )
             })?;
         self.selected = Some(match kind {
-            "openai_dot" | "grok_bot" => SelectedExecutor::Dot(
-                DotCommandExecutor::with_runner_config(&self.state_dir, &self.config),
-            ),
+            "muse" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
+                &self.state_dir,
+                &self.config,
+                ExternalProviderCodec::Muse,
+            )),
+            "openai_dot" => SelectedExecutor::Dot(ExternalCommandExecutor::with_runner_config(
+                &self.state_dir,
+                &self.config,
+            )),
+            "grok_bot" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
+                &self.state_dir,
+                &self.config,
+                ExternalProviderCodec::Grok,
+            )),
             "codex" | "opencode" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),

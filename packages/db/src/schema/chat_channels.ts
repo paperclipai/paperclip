@@ -673,6 +673,12 @@ export const chatActions = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index("chat_actions_continuation_work_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'interaction_wakeup' AND ${table.status} IN ('issued', 'processing')`),
+    index("chat_actions_confirmation_recovery_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'confirmation_response' AND ${table.status} = 'processing'`),
     uniqueIndex("chat_actions_provider_action_uq").on(
       table.endpointId,
       table.providerActionId,

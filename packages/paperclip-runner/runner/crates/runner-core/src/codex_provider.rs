@@ -43,6 +43,7 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -542,6 +543,10 @@ pub enum CodexProviderEvent {
         request_id: String,
         question_set: Value,
     },
+    McpPermissionRequest {
+        request_id: String,
+        params: Value,
+    },
     Exited {
         exit_code: Option<i32>,
         success: bool,
@@ -665,6 +670,7 @@ enum AmbiguousTurnMessage {
 
 pub struct CodexProvider {
     process: SupervisedProcess,
+    _stdio_mcp: Option<crate::stdio_mcp::StdioMcpSession>,
     stderr_tail: BoundedLogBuffer,
     config: CodexProviderConfig,
     authorized_tools: Vec<AuthorizedTool>,
@@ -816,10 +822,18 @@ const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AGENT_KEY_ID",
     "PAPERCLIP_AGENT_PUBLIC_KEY",
     "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PAPERCLIP_RUNNER_HOME_MODE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
     "CODEX_HOME",
     "OPENAI_API_KEY",
     "CODEX_API_KEY",
@@ -897,7 +911,9 @@ impl CodexProvider {
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
-        if config.provider == "codex" {
+        if config.provider == "codex"
+            && std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() != Ok("preconfigured")
+        {
             if let Some(home) = std::env::var_os("CODEX_HOME") {
                 crate::codex_startup_trust::trust_startup_root(
                     Path::new(&home),
@@ -949,6 +965,25 @@ impl CodexProvider {
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;
+        let stdio_mcp = if config.provider == "codex" && !config.read_only {
+            crate::stdio_mcp::StdioMcpSession::create()
+                .map_err(|e| LocalRunnerError::invalid(e.to_string()))?
+        } else {
+            None
+        };
+        let mut launch_args = config.args.clone();
+        if let Some(session) = &stdio_mcp {
+            let position = launch_args
+                .iter()
+                .position(|arg| arg == "app-server")
+                .unwrap_or(launch_args.len());
+            launch_args.splice(
+                position..position,
+                session
+                    .codex_args()
+                    .map_err(|e| LocalRunnerError::invalid(e.to_string()))?,
+            );
+        }
         let spawn = (|| {
             if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
@@ -974,7 +1009,7 @@ impl CodexProvider {
             } else {
                 SupervisedProcess::spawn_in_directory_with_environment_keys(
                     &config.command,
-                    &config.args,
+                    &launch_args,
                     Duration::from_secs(2),
                     CODEX_APP_SERVER_MAX_FRAME_BYTES,
                     &environment_keys,
@@ -1005,6 +1040,7 @@ impl CodexProvider {
         }
         let mut provider = Self {
             process,
+            _stdio_mcp: stdio_mcp,
             stderr_tail: BoundedLogBuffer::new(
                 MAX_PROVIDER_STDERR_LINES,
                 MAX_PROVIDER_STDERR_BYTES,
@@ -1073,7 +1109,7 @@ impl CodexProvider {
             let mut params = json!({
                 "cwd": config.cwd,
                 "model": config.model,
-                "approvalPolicy": config.approval_policy,
+                "approvalPolicy": if provider._stdio_mcp.is_some() { crate::stdio_mcp::codex_approval_policy() } else { json!(config.approval_policy) },
                 "runtimeWorkspaceRoots": [config.cwd],
                 "dynamicTools": dynamic_tools,
             });
@@ -1366,7 +1402,8 @@ impl CodexProvider {
                     ));
                 }
                 Some(CodexProviderEvent::ToolCall { .. })
-                | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
+                | Some(CodexProviderEvent::RuntimeRequest { .. })
+                | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
                     return Err(LocalRunnerError::invalid(
                         "Codex warm run attachment observed a post-terminal provider request",
                     ));
@@ -2076,7 +2113,11 @@ impl CodexProvider {
                 "runtime response belongs to another Codex turn",
             ));
         }
-        let result = codex_question_response(&pending, response)?;
+        let result = if pending.method == "mcpServer/elicitation/request" {
+            crate::stdio_mcp::tool_approval_response(response)?
+        } else {
+            codex_question_response(&pending, response)?
+        };
         self.process
             .send(&json!({"id": pending.rpc_id, "result": result}))?;
         if let Some(completed) = self.pending_runtime_requests.remove(request_id) {
@@ -2534,11 +2575,18 @@ impl CodexProvider {
             if matches!(
                 method,
                 "item/tool/requestUserInput" | OPENCODE_RUNTIME_REQUEST_METHOD
-            ) {
+            ) || (method == "mcpServer/elicitation/request"
+                && message
+                    .pointer("/params/_meta/codex_approval_kind")
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call"))
+            {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
-                if method == "item/tool/requestUserInput"
-                    && params.get("threadId").and_then(Value::as_str)
-                        != Some(self.thread_id.as_str())
+                if matches!(
+                    method,
+                    "item/tool/requestUserInput" | "mcpServer/elicitation/request"
+                ) && params.get("threadId").and_then(Value::as_str)
+                    != Some(self.thread_id.as_str())
                 {
                     if params
                         .get("threadId")
@@ -2573,6 +2621,20 @@ impl CodexProvider {
                 let (provider_request_id, question_set, option_labels) =
                     if method == OPENCODE_RUNTIME_REQUEST_METHOD {
                         opencode_question_set(&params)?
+                    } else if method == "mcpServer/elicitation/request" {
+                        let servers = self
+                            ._stdio_mcp
+                            .as_ref()
+                            .map(|session| {
+                                session
+                                    .entries
+                                    .iter()
+                                    .map(|(name, _)| name.as_str())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        crate::stdio_mcp::validate_tool_approval(&params, &servers)?;
+                        (rpc_id.to_string(), Value::Null, BTreeMap::new())
                     } else {
                         codex_question_set(&rpc_id, &params)?
                     };
@@ -2584,6 +2646,8 @@ impl CodexProvider {
                     &question_set,
                     &option_labels,
                 )?;
+                let mcp_params =
+                    (method == "mcpServer/elicitation/request").then(|| params.clone());
                 let pending = PendingRuntimeRequest {
                     rpc_id: rpc_id.clone(),
                     turn_id: active_turn_id.clone(),
@@ -2644,6 +2708,12 @@ impl CodexProvider {
                     .insert(request_id.clone(), pending);
                 self.pending_runtime_request_bytes =
                     retained_request_bytes.expect("bounded runtime request bytes checked above");
+                if let Some(params) = mcp_params {
+                    return Ok(Some(CodexProviderEvent::McpPermissionRequest {
+                        request_id,
+                        params,
+                    }));
+                }
                 return Ok(Some(CodexProviderEvent::RuntimeRequest {
                     request_id,
                     question_set,

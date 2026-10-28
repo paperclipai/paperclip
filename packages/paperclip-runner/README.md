@@ -1,5 +1,12 @@
 # Paperclip Native Runner
 
+To add a harness/provider to native Runner, start with
+[create-runner-adapter](../../.agents/skills/create-runner-adapter/SKILL.md), the
+[Runner integration playbook](../../doc/RUNNER-INTEGRATION-PLAYBOOK.md), and
+[acceptance/evidence templates](../../doc/runner-integration-templates.md).
+They cover the new Runner integration path; legacy adapters are preserved as a
+compatibility boundary.
+
 This package is the standalone development boundary for Paperclip's native
 runner protocol, process supervision, durable transport, provider drivers, and
 normalized session backends. Rust owns the production runner under `runner/`;
@@ -38,6 +45,12 @@ The driver is an in-process interface. Its filesystem paths and process launch
 specifications are internal to built-in execution; they are not a plugin wire
 contract. Existing flat transport options remain compatible through this shared
 interface. This refactor does not add Launcher APIs or change harness capabilities.
+
+An execution owner can supply `prepareLaunch`, a Runner artifact identity, and
+process and connection hooks. Core supplies the launch requirements. The owner
+returns a provider descriptor bound to those requirements. Core checks the policy
+and assigned resources. See [Runner launch preparation](../../doc/runner-launch-preparation.md)
+for the contract and recovery record.
 
 Connection continuations inspect the harness descriptor's optional
 `toolRefreshOnResume` capability. Native Codex, Claude Managed Agents, AgentCore,
@@ -179,6 +192,14 @@ and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
+its authenticated tool bridge.
+Isolated provider admission accepts this route without a separate native MCP endpoint.
+Direct runtime-host callers must supply the native gateway binding unless they select
+PRP tool delivery and supply the semantic tool bridge.
+PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
+The selected permission and read-only policies still apply.
+
 Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation
 does not download it. Run setup as the OS user that runs Paperclip (the service
 account for a managed service). Setup writes to that account's
@@ -195,7 +216,7 @@ the task waits for the next instruction. See the
 
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
-binds each daemon path and SHA-256, plus `remoteProviderPack: {path, sha256}` for
+binds each daemon path and SHA-256, plus `remoteProviderPacks: {"linux-x64": {path, sha256}, "linux-arm64": {path, sha256}}` for
 the actual image's `provider-pack.json`. Assemble these assets after the normal
 build and include them in the server's vendored Runner output before npm packing.
 Assembly requires the provider pack's source revision to match `sourceRevision`
@@ -234,9 +255,25 @@ for an image pinned with `@sha256`, after confirmed lease cleanup. The record is
 server-owned and bound to the company, effective provider/image configuration
 and active custom-image identity. Creation and discovery read this record without
 allocating a sandbox. Configuration or image changes invalidate it. Mutable tags,
-provider defaults and name-only snapshots do not establish compatibility; they
-keep automatic Legacy selection until there is verifiable immutable image evidence.
+provider defaults and unverified snapshot names do not establish compatibility;
+they keep automatic Legacy selection until there is verifiable immutable image
+or Daytona snapshot-ID evidence. See managed snapshot qualification below.
 A connection-only success does not establish native readiness.
+
+### Managed Daytona snapshot qualification
+
+Claude's automatic Connect flow can qualify a named Daytona snapshot through the
+existing administrator-only saved environment probe. The bundled Daytona plugin
+resolves the name to its provider snapshot ID, creates the probe sandbox by ID,
+and returns its account and creation identity. OS, architecture and libc facts
+are recorded only after confirmed cleanup. Native execution uses that same
+snapshot ID; discovery does not allocate or perform provider lookups. A deleted
+snapshot fails at the provider rather than silently selecting a replacement with
+the same name. Configuration, resolved credentials and active captured-template
+changes require another probe. Other named provider templates and mutable OCI
+tags remain unqualified. A provider plugin without snapshot identity support
+returns an actionable setup failure; it cannot certify a native default.
+
 
 On Linux, Codex's sandboxed filesystem modes also require the host to permit its
 unprivileged namespaces. A no-privilege Docker container can prohibit nested
@@ -296,6 +333,10 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
+Use the returned `nextOffset` as `offset` to read the next page. The tool and
+parameter descriptions include these bounds for providers that render numeric
+schema constraints as plain number types.
 Search returns bounded pages of names, descriptions, and input schemas. Each
 page intersects the session's pinned assignments with current gateway grants.
 An individual schema that exceeds a page returns an `inputSchemaRef`. The same
@@ -350,6 +391,13 @@ agent-wide setting. No automatic decision policy selects it. The model must
 support disabling reasoning; other runner providers reject an explicit selection
 before starting work. Native sessions expose support through the
 `perTurnReasoning` capability.
+
+For the native `openrouter/` route, the parent-held provider proxy retains the
+upstream OpenRouter key. The child config keeps the selected `openrouter` provider
+and exact model, using a random loopback token restricted to that model's chat
+completions endpoint. The proxy and token expire when the session closes. The
+local token remains a credential and is redacted from diagnostics; this does not
+claim isolation for every child credential or persisted value.
 
 OpenCode's proxy sends agent instructions once per turn through the system prompt. The
 task envelope retains task-specific constraints and the completion contract,
@@ -733,6 +781,21 @@ identifies the current console iteration.
 
 `create_task` accepts an optional initial `status` of `backlog` or `todo`. Use `backlog` when the user wants a saved task or plan without execution: assignment and the initial plan are committed without scheduling a wake, even when dependencies are already complete. Omitting status preserves immediate delegation (`todo`, or `blocked` for unresolved dependencies).
 
+
+Linux provider-pack producers run on the corresponding native Linux target and
+retain `provider-pack.json` with a relocatable `provider-pack.tar.gz`. Release
+assembly binds both identities to the same source as its four daemons. The
+historical `remoteProviderPack` field remains the Linux x64 identity. Linux
+ARM64 packs do not qualify Pi, Cursor or Copilot on that target.
+
+For an installed SSH host, install the same release producer's pack at
+`$HOME/.local/share/paperclip-runner/provider-pack` or
+`/opt/paperclip-runner/provider-pack`. A Mac controller selects its packaged
+Linux target identity after probing the selected host. The runtime verifies the
+installed pack before prompting. No development pack override is needed. A
+missing or mismatched pack fails clearly. Existing explicit overrides remain
+authoritative. ARM64 cloud-image production remains deferred.
+
 ### Oversized OpenCode events
 
 The OpenCode driver keeps SSE frames up to 1,048,576 characters exact. It compacts longer
@@ -745,3 +808,115 @@ fit the compacted bound produces a diagnostic; the event stream continues.
 Tool output and error fields have reserved retention space and size records,
 so large input values cannot consume their output tails or make excerpts look
 complete. A separator split between reads does not count against the frame limit.
+### OpenCode MCP tool results
+
+The Runner-owned MCP bridge sends complete JSON tool results up to 1 MiB of
+UTF-8 output. It does not slice JSON text. This includes the native server's
+bounded 500 KB app-tool results and saved-result pages. OpenCode can put a long
+result in its own output file; that file must still contain the complete JSON.
+The existing `read_tool_result` artifact protocol handles larger app results.
+
+Serialization has a bounded traversal budget and checks escaped UTF-8 output.
+If delivery exceeds the limit, the bridge reports an error without a partial
+success value. The action may already have completed. Reconcile its saved
+result or receipt instead of repeating it. Replaying the same MCP call identity
+reuses the original handler execution, including when delivery failed.
+
+## Preconfigured home
+
+Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config
+(or the runnerd transport options) to use the execution account's existing home.
+The default is `"isolated"`. The initial supported providers are native Codex
+and ACPX Claude. Preconfigured ACPX Codex fails before launch until its session
+permissions can enforce denial of Runner state; use native Codex or isolated mode.
+An operator must select this mode on the agent/Runner
+configuration. Task-level overrides are rejected, and agent credentials cannot
+set or inherit this option. Other providers reject this option. The internal ACPX task bridge uses a stable
+session name so an existing user MCP server named `paperclip` remains available.
+
+Prepare authentication, skills, and external MCP servers on the execution machine
+before launching. Runner does not install skills, copy or remove credentials, or
+rewrite user configuration in this mode. Providers can still refresh credentials
+and update their own metadata. Runner still supplies the requested
+model, task instructions, and its internal task/completion tools. Local permission
+rules and hooks apply. Native Codex tools can read and modify the execution home
+(read-only for planning); credentials in that home are not isolated from tools.
+Native Codex separately denies Runner-owned protocol state; ACPX Claude retains
+its existing provider trust boundary. Execution is unattended: native Codex uses `never`, and
+ACPX rejects requests for approval. When Claude starts in its home directory,
+its native user settings retain user trust even if the SDK also reports that
+same file as project settings. Other project settings keep the native trust filter.
+The initial ACPX mode requires the Runner
+setting `acpxPermissionMode: "approve-all"` (its default); other Runner modes are
+unqualified here and fail before launch. Local permission rules still apply.
+Preconfigured ACPX read-only/planning tasks also fail before provider launch
+until a read-only launch is qualified; use isolated mode or native Codex for planning.
+If local settings block a task, change them
+and retry. Existing blocked results and failure diagnostics report the outcome;
+a hook that also blocks the reporting tool can leave only a generic diagnostic.
+
+Runner retains private protocol/session state and a fence for each session.
+Different sessions may share the same home. Mode and home bindings fence recovery;
+switching either requires a new session. Backups never include the external home.
+Recovering a run uses its saved mode even if the agent configuration has changed.
+Remote execution discovers the execution account's home on the remote machine
+using `getent`; it does not copy the controller's HOME, XDG paths, or login state.
+The external provider history must still exist to resume a session after a remote
+machine is replaced. Missing history fails recovery rather than importing an
+isolated home. OpenCode and the remaining ACPX profiles require separate
+qualification before this mode can be enabled for them.
+
+## Assigned local MCP servers
+
+An execution host can assign local stdio MCP servers alongside the existing
+`PAPERCLIP_NATIVE_MCP_NAME` / `URL` / `TOKEN` HTTP gateway. This is general transport
+support for local MCP implementations that satisfy the executable-verification
+and private Unix socket requirements below. Runner uses each server's own tool
+schemas and responses. Set
+`PAPERCLIP_NATIVE_MCP_STDIO` to a JSON array of bindings with these fields:
+
+```json
+[{"name":"local_tools","command":"/opt/local-tools/bin/mcp-server","args":[],"env":{"HOME":"/home/agent"},"sha256":"sha256:<64 lowercase hex digits>","serialResource":"/home/agent/.local/state/local-tools/runtime/service.sock"}]
+```
+
+`serialResource` identifies the shared resource for cross-process call locking;
+the MCP transport itself uses stdio. It must name an existing private Unix socket
+with the ownership and path requirements below.
+
+Set `PAPERCLIP_NATIVE_MCP_PROXY` to the assigned Runner executable. These are
+execution-host inputs, excluded from configurable task environment and provider
+shell inheritance. Names use letters, digits, underscores or hyphens and cannot
+replace the internal task server or gateway. Commands are verified against their
+assigned digest before execution. The backend receives only its assigned environment.
+
+Runner supplies these session-local bindings to native Codex and through the
+shared ACPX runtime. ACPX clients must support stdio MCP assignments.
+User or project MCP files are never rewritten. Read-only sessions omit these
+bindings. Host assignment authorizes native Codex to use these local tools without
+a new per-call prompt, matching execution-host utilities available through shell.
+ACPX adapters use the existing ACPX permission policy. Explicit native Codex tool
+deny/prompt rules remain effective; requested approvals use the existing PRP
+permission request, bound to the active thread and turn. Only one-time accept, decline or cancel
+decisions are accepted. Shell escalation stays disabled.
+Preconfigured Claude remains unattended and rejects approval requests.
+
+The relay forwards tool schemas and native MCP content. For native Codex
+0.160/0.162, image-bearing results put structured metadata in a text block instead of
+`structuredContent`, because those clients otherwise discard the image blocks.
+ACPX adapters receive the original response unchanged. Tool schemas and actions
+are forwarded without provider-specific translation.
+
+Provider-client smoke tests exercised native Codex 0.160.0 and Claude SDK
+0.3.286 with local MCP servers and loopback model APIs. This records the clients
+used to verify image delivery and approvals; it is not an exhaustive adapter
+compatibility test.
+
+All `tools/call` requests for the same private Unix socket are serialized across
+sessions and processes, including reads. Metadata requests stay responsive.
+Cancelling a queued request prevents dispatch. An active request retains its fence
+until the backend acknowledges it; client cancellation cannot prove daemon work
+stopped. If a relay exits with an unacknowledged call, later calls fail closed until
+the host restarts that resource with a new socket. Do not remove its lock marker
+while daemon work might still be running. The socket and its parent must be private,
+canonical paths owned by the same account. Local stdio assignment requires Unix;
+other platforms retain the HTTP path.

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -8,9 +8,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { githubBrokerEnvironment } from "./github-launcher.js";
+import { syncRemoteTextFilesWithHashSkip } from "./sandbox-callback-bridge.js";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   prepareGitHubOperationLaunchers,
+  cleanupGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
 } from "./execution-target.js";
@@ -68,7 +70,20 @@ async function sandbox(layout: string, concurrent?: boolean) {
 }
 
 describe("managed GitHub launcher environment", () => {
-  it("bounds independent remote launcher uploads and preserves the staged environment", async () => {
+  it("stages the complete remote launcher set in one control command", async () => {
+    const fixture = await sandbox("tools with 'quotes'/bin", true);
+    const env = await prepareGitHubOperationLaunchers({
+      runId: "single-control-stage", target: fixture.target, cwd: fixture.root,
+      env: githubBrokerEnvironment({ PATH: fixture.remotePath }, { url: "", token: "" }),
+    });
+    expect(fixture.runner.execute).toHaveBeenCalledTimes(1);
+    expect(fixture.runner.execute.mock.calls[0]![0].bypassSession).toBe(true);
+    const result = await fixture.runner.execute({ command: "sh", args: ["-c", "git; gh"], env });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("git started\ngh started\n");
+  });
+
+  it("uses one bounded control command and preserves the staged environment", async () => {
     const fixture = await sandbox("tools with 'quotes'/bin", true);
     const execute = fixture.runner.execute.getMockImplementation()!;
     let release!: () => void;
@@ -91,13 +106,13 @@ describe("managed GitHub launcher environment", () => {
       env: githubBrokerEnvironment({ PATH: fixture.remotePath }, { url: "", token: "" }),
     });
     try {
-      await vi.waitFor(() => expect(started).toBe(3));
-      expect(active).toBe(3);
+      await vi.waitFor(() => expect(started).toBe(1));
+      expect(active).toBe(1);
     } finally { release(); await preparation; }
     const env = await preparation;
-    expect(maximum).toBe(3);
+    expect(maximum).toBe(1);
     expect(active).toBe(0);
-    expect(started).toBe(9);
+    expect(started).toBe(1);
     expect(env.PATH).toBe(`${env.PAPERCLIP_GITHUB_LAUNCHER_DIR}:${fixture.remotePath}`);
     const command = await fixture.runner.execute({ command: "bash", args: ["--noprofile", "--norc", "-c", "git; gh"], env });
     expect(command.exitCode, command.stderr).toBe(0);
@@ -112,21 +127,18 @@ describe("managed GitHub launcher environment", () => {
 
   it("settles failed upload batches before rejecting and starting no later files", async () => {
     const fixture = await sandbox("usr/bin", true);
-    const execute = fixture.runner.execute.getMockImplementation()!;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let started = 0;
     let active = 0;
     let settled = false;
     fixture.runner.execute.mockImplementation(async (input) => {
-      if (!input.stdin) return execute(input);
-      const index = started++;
+      started += 1;
       active += 1;
       try {
-        if (index === 0) return { exitCode: 42, signal: null, timedOut: false, pid: null,
-          startedAt: new Date().toISOString(), stdout: "", stderr: "fixture upload failed" };
         await gate;
-        return await execute(input);
+        return { exitCode: 42, signal: null, timedOut: false, pid: null,
+          startedAt: new Date().toISOString(), stdout: "", stderr: "fixture upload failed" };
       } finally { active -= 1; }
     });
     const preparation = prepareGitHubOperationLaunchers({
@@ -134,13 +146,13 @@ describe("managed GitHub launcher environment", () => {
     });
     const outcome = preparation.then(() => { settled = true; return null; }, (error: unknown) => { settled = true; return error; });
     try {
-      await vi.waitFor(() => expect(started).toBe(3));
+      await vi.waitFor(() => expect(started).toBe(1));
       expect(settled).toBe(false);
-      expect(active).toBe(2);
+      expect(active).toBe(1);
     } finally { release(); await outcome; }
     expect(await outcome).toBeInstanceOf(Error);
     expect(String(await outcome)).toContain("stage GitHub operation launcher");
-    expect(started).toBe(3);
+    expect(started).toBe(1);
     expect(active).toBe(0);
     expect(fixture.runner.execute.mock.calls.some(([input]) => input.args?.join(" ").startsWith("chmod 700"))).toBe(false);
   });
@@ -171,7 +183,59 @@ describe("managed GitHub launcher environment", () => {
       cwd: fixture.root, env: { PATH: fixture.remotePath } });
     expect(maximum).toBe(1);
     expect(active).toBe(0);
-    expect(fixture.runner.execute).toHaveBeenCalledTimes(10);
+    expect(fixture.runner.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects corrupt batch input before replacing that file or staging later files", async () => {
+    const fixture = await sandbox("usr/bin");
+    const execute = fixture.runner.execute.getMockImplementation()!;
+    const directory = path.join(fixture.root, "batch");
+    const files = ["first", "corrupt", "later"].map(name => ({
+      remoteDir: directory, remotePath: path.join(directory, name), body: name + "\n",
+      label: name, action: "stage fixture", lockDir: path.join(directory, "." + name + ".lock"),
+    }));
+    fixture.runner.execute.mockImplementation(input => execute({ ...input,
+      stdin: input.stdin?.replace(Buffer.from("corrupt\n").toString("base64"), Buffer.from("invalid\n").toString("base64")),
+    }));
+    await expect(syncRemoteTextFilesWithHashSkip({ runner: fixture.runner, remoteCwd: fixture.root,
+      files, action: "stage fixtures" })).rejects.toThrow("sha mismatch");
+    expect(await readFile(path.join(directory, "first"), "utf8")).toBe("first\n");
+    expect(await readdir(directory)).toEqual(["first"]);
+  });
+
+  it("hash-skips a complete batch and repairs a missing executable bit", async () => {
+    const fixture = await sandbox("usr/bin");
+    const directory = path.join(fixture.root, "batch 'quoted'");
+    const files = [{ remoteDir: directory, remotePath: path.join(directory, "entry"), body: "#!/bin/sh\nprintf done\n",
+      label: "entry", action: "stage fixture", lockDir: path.join(directory, ".entry.lock"), executable: true }];
+    const input = { runner: fixture.runner, remoteCwd: fixture.root, files, action: "stage fixtures" };
+    expect((await syncRemoteTextFilesWithHashSkip(input))[0]?.uploaded).toBe(true);
+    const firstHash = (await syncRemoteTextFilesWithHashSkip(input))[0]?.sha256;
+    await fixture.runner.execute({ command: "chmod", args: ["600", files[0]!.remotePath] });
+    const restored = await syncRemoteTextFilesWithHashSkip(input);
+    expect(restored).toEqual([{ uploaded: false, sha256: firstHash }]);
+    const result = await fixture.runner.execute({ command: files[0]!.remotePath });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("done");
+    expect(await readdir(directory)).toEqual(["entry"]);
+  });
+
+  it.each([0, 17])("rejects an invalid batch size before remote work (%s)", async count => {
+    const fixture = await sandbox("usr/bin");
+    const file = { remoteDir: fixture.root, remotePath: path.join(fixture.root, "entry"), body: "entry",
+      label: "entry", action: "stage fixture", lockDir: path.join(fixture.root, ".entry.lock") };
+    await expect(syncRemoteTextFilesWithHashSkip({ runner: fixture.runner, remoteCwd: fixture.root,
+      files: Array.from({ length: count }, () => file), action: "stage fixtures" })).rejects.toThrow("1 to 16 files");
+    expect(fixture.runner.execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized batch before remote work", async () => {
+    const fixture = await sandbox("usr/bin");
+    await expect(syncRemoteTextFilesWithHashSkip({ runner: fixture.runner, remoteCwd: fixture.root,
+      files: [{ remoteDir: fixture.root, remotePath: path.join(fixture.root, "entry"), body: "x".repeat(1024 * 1024),
+        label: "entry", action: "stage fixture", lockDir: path.join(fixture.root, ".entry.lock") }],
+      action: "stage fixtures" })).rejects.toThrow("1 MiB");
+    expect(fixture.runner.execute).not.toHaveBeenCalled();
   });
 
   // The Daytona native directory oracle uses Linux inotify. Run its real
@@ -248,6 +312,14 @@ describe("managed GitHub launcher environment", () => {
         expect(JSON.parse(result.stdout)).toEqual(captured ? identity : {});
       }
     }
+  });
+
+  it("keeps task-only startup free of command probes and host credentials", async () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, providerKey: "plugin", remoteCwd: "/project", runnerTask: async () => ({}) };
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: false, networkAccess: true }))
+      .resolves.toMatchObject({ PAPERCLIP_GITHUB_AUTH_MODE: "managed", PAPERCLIP_GIT_METADATA_ROOTS: "[]", PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" });
+    await expect(prepareGitHubExecutionEnvironment({ target, cwd: "/absent-controller-path", env: {}, hostCredentials: true, networkAccess: true }))
+      .rejects.toThrow("cannot import host GitHub credentials");
   });
 
   it.each([false, true])("probes the remote workspace when the controller cwd is absent (host credentials: %s)", async (hostCredentials) => {

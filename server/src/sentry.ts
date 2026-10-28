@@ -58,11 +58,13 @@
 import os from "node:os";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
+import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -106,15 +108,21 @@ export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.r
  * never opens (the backend DSN resolves to `null`), or when bootstrap
  * failed. Never throws — observability must not change control flow.
  */
-export function captureException(error: unknown): void {
+export function captureException(error: unknown, reference?: SentryRunReference): void {
   if (!sentryHandle) return;
   try {
+    const tags = reference ? {
+      run_id: reference.runId,
+      ...(reference.companyId ? { company_id: reference.companyId } : {}),
+      ...(reference.agentId ? { agent_id: reference.agentId } : {}),
+    } : {};
+    const storageFailure = storageFailureDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
       exception.stack = error.stack;
       sentryHandle.captureException(exception, {
-        tags: { error_code: "adapter_stop_unconfirmed" },
+        tags: { ...tags, error_code: "adapter_stop_unconfirmed" },
         contexts: { adapter_stop: { ...error.diagnostics } },
         fingerprint: ["{{ default }}"],
       });
@@ -122,10 +130,20 @@ export function captureException(error: unknown): void {
       const exception = new Error(error.message);
       exception.stack = error.stack;
       sentryHandle.captureException(exception, {
-        tags: { error_code: "cloud_portfolio_failure" },
+        tags: { ...tags, error_code: "cloud_portfolio_failure" },
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (storageFailure) {
+      // The original error keeps its default grouping; only the normalized
+      // record is added, never the provider's request or response.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
+        contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (reference) {
+      sentryHandle.captureException(error, { tags, contexts: {}, fingerprint: ["{{ default }}"] });
     } else {
       sentryHandle.captureException(error);
     }
@@ -323,6 +341,7 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+  beforeSend: typeof addSentryRunLinks;
 }
 
 /**
@@ -341,6 +360,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    beforeSend: addSentryRunLinks,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(

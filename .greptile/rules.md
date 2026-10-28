@@ -10,3 +10,5 @@ Each rule's YAML frontmatter declares its scope with repository-relative
 do not apply a channel rule to unrelated subsystems. Keep the policy in the
 referenced file as the source of truth rather than maintaining a separate copy
 in dashboard instructions.
+
+Do not add package.json scripts for new utilities, checks, benchmarks, or specialized tests.

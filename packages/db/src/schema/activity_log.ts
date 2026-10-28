@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -33,5 +34,8 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    companyUserIssueActorIdx: index("activity_log_company_user_issue_actor_idx")
+      .on(table.companyId, table.actorId, table.entityId)
+      .where(sql`${table.actorType} = 'user' AND ${table.entityType} = 'issue'`),
   }),
 );

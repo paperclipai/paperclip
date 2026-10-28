@@ -32,4 +32,15 @@ describe("API payload persistence redaction", () => {
     expect(JSON.stringify(redactRunnerApiPayloads(value))).not.toContain("private-fixture-value");
     expect(redactRunnerApiPayloads(redactRunnerApiPayloads(value))).toEqual(redactRunnerApiPayloads(value));
   });
+  it.each(["create_case", "read_case", "update_case", "read_case_document", "write_case_document"])("keeps %s data on the wire while redacting persisted input and output", name => {
+    const value = {
+      item: { type: "tool_use", name, input: { caseId: "private-case", fields: { customer: "private-customer" }, body: "private-body", kickoff: { instructions: "private-kickoff" }, initialDocuments: [{ key: "brief", title: "Brief", body: "private-document" }] } },
+      result: { operationId: name, result: { data: { fields: { customer: "private-customer" } } } },
+    };
+    const saved = redactRunnerApiPayloads(value);
+    expect(JSON.stringify(saved)).not.toMatch(/private-case|private-customer|private-body|private-kickoff|private-document/);
+    expect(saved.item.input).toMatchObject({ apiPayloadRedacted: true, apiPayloadSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(value.item.input.body).toBe("private-body");
+    expect(redactRunnerApiPayloads(saved)).toEqual(saved);
+  });
 });

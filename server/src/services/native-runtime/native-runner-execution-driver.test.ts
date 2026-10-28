@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
-import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
+import { prepareNativeRemoteRunner, createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
 
 const transport = vi.hoisted(() => ({
   register: vi.fn(),
@@ -158,7 +158,7 @@ describe("shared Runner execution driver", () => {
     const identity = { runId: "run-b" } as Parameters<NonNullable<ReturnType<typeof createNativeRunnerExecutionDriver>["controlPlaneRegistration"]>>[1];
     const driver = createNativeRunnerExecutionDriver({ target: { kind: "local" }, binding, beforeConnect });
     await driver.controlPlaneRegistration!(authority, identity);
-    expect(beforeConnect).toHaveBeenCalledWith(identity);
+    expect(beforeConnect).toHaveBeenCalledWith(identity, authority);
     expect(transport.register).toHaveBeenCalledWith({ ...binding, runId: "run-b", authority });
     expect(beforeConnect.mock.invocationCallOrder[0]).toBeLessThan(transport.register.mock.invocationCallOrder[0]);
   });
@@ -180,4 +180,13 @@ describe("shared Runner execution driver", () => {
     const connection = await driver.controlPlaneRegistration!(authority);
     await expect(connection.ready!()).rejects.toThrow("process_identity_invalid");
   });
+});
+
+it("validates connectivity before resolving provider artifacts without acquiring an ingress endpoint", async () => {
+  const prepare = vi.fn(async () => {});
+  await expect(prepareNativeRemoteRunner({ target: ssh, runId: "run", prepareRemote: prepare })).rejects.toThrow("runner_transport_ineligible");
+  expect(prepare).not.toHaveBeenCalled();
+  await prepareNativeRemoteRunner({ target: sandbox(), runnerIngressAuthorized: true, runId: "run", prepareRemote: prepare });
+  expect(prepare).toHaveBeenCalledExactlyOnceWith("listen_ws");
+  expect(transport.connect).not.toHaveBeenCalled();
 });

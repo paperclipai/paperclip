@@ -16,6 +16,7 @@ mod configured_environment;
 mod credential_observer;
 pub mod dot_provider_backend;
 pub mod durable;
+pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;
 pub mod generated_acpx_sidecar_contract;
@@ -31,6 +32,7 @@ pub mod qualified_launch;
 pub mod question_response;
 pub mod replay;
 mod stable_identity;
+pub mod stdio_mcp;
 
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};

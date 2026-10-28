@@ -1,3 +1,5 @@
+import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
+import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
 import path from "node:path";
@@ -6,6 +8,9 @@ import { isManagedHiringCase } from "./chat-cases.js";
 import { FixtureRegistry } from "./fixture-registry.js";
 import { isImmutableDaytonaImage } from "./catalog.js";
 import { TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS } from "./chat-feature-cases.js";
+import { codexSubscriptionAgentConfig, stageCodexSubscriptionFixture } from "./codex-subscription-fixture.js";
+import { caseReceiptTask, CASE_RECEIPT_BUDGET_CENTS, CASE_RECEIPT_RUN_TIMEOUT_MS } from "./case-receipt-cases.js";
 import { stageGrokSubscriptionFixture } from "./grok-subscription-fixture.js";
 import type { RunnerApi } from "./api.js";
 import type {
@@ -42,11 +47,7 @@ interface AgentRecord {
 }
 interface ManagedAccountFixture {
   connectionId: string;
-  binding: {
-    provider: "openai" | "anthropic" | "openrouter";
-    method: "api_key";
-    mode: "responsible_user";
-  };
+  binding: AiConnectionBinding;
 }
 
 interface ProjectRecord {
@@ -141,8 +142,10 @@ export async function setupLiveFixtures(input: {
   workspacePath: string;
   credentials: Partial<Record<CredentialName, string>>;
   daytonaImage?: string;
+  onCompanyCreated?: (companyId: string) => Promise<void>;
 }): Promise<LiveFixtureValues> {
   const { api, execution } = input;
+  const receiptSmoke = execution.suite.id === "case-handoffs" && execution.task.id === caseReceiptTask.id;
   const registry = new FixtureRegistry();
   let setupProbe: LiveFixtureValues["setupProbe"];
 
@@ -163,14 +166,18 @@ export async function setupLiveFixtures(input: {
   registry.register<CompanyRecord>({
     id: "company",
     async setup() {
-      return api.post<CompanyRecord>("/api/companies", {
+      const company = await api.post<CompanyRecord>("/api/companies", {
         name: `Runner E2E ${execution.id} ${input.executionNonce}`,
         description: "Ephemeral paid full-stack runner acceptance fixture",
-        budgetMonthlyCents: ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
+        budgetMonthlyCents: execution.suite.id === CHAT_FEATURE_SUITE ? CHAT_FEATURE_BUDGET_CENTS
+          : receiptSmoke ? CASE_RECEIPT_BUDGET_CENTS
+          : ["native-completion", "native-instruction-consolidation", "native-connection-guidance"].includes(execution.suite.id)
           || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id)) ? NATIVE_COMPLETION_BUDGET_CENTS
           : execution.suite.id === "task-titles" ? TASK_TITLE_BUDGET_CENTS
-          : ["stock-harness", "task-workspaces"].includes(execution.suite.id) ? 1_000 : 0,
+          : ["stock-harness", "task-workspaces", "case-handoffs", "feedback-persistence", "daytona-restart-continuity"].includes(execution.suite.id) ? 1_000 : 0,
       });
+      await input.onCompanyCreated?.(company.id);
+      return company;
     },
     async teardown() {
       // The isolated instance/database is removed by the launcher. Do not call
@@ -186,7 +193,7 @@ export async function setupLiveFixtures(input: {
       const company = value<CompanyRecord>(resolved, "company");
       const refs: SecretReferenceMap = {};
       for (const credentialName of execution.requiredCredentials) {
-        if (credentialName === "GROK_AUTH_JSON") continue;
+        if (["GROK_AUTH_JSON", "CODEX_AUTH_JSON"].includes(credentialName)) continue;
         const rawValue = input.credentials[credentialName];
         if (!rawValue) throw new Error(`Missing credential ${credentialName}`);
         const secret = await api.postSensitive<SecretRecord>(
@@ -209,14 +216,15 @@ export async function setupLiveFixtures(input: {
   });
 
   const grokSubscription = execution.profile.credential === "GROK_AUTH_JSON";
-  if (grokSubscription) {
+  const codexSubscription = execution.profile.credential === "CODEX_AUTH_JSON";
+  if (grokSubscription || codexSubscription) {
     registry.register<() => Promise<void>>({
       id: "subscription-login",
       dependencies: ["company"],
       async setup(resolved) {
-        const raw = input.credentials.GROK_AUTH_JSON;
-        if (!raw) throw new Error("Missing credential GROK_AUTH_JSON");
-        return stageGrokSubscriptionFixture({
+        const raw = input.credentials[execution.profile.credential];
+        if (!raw) throw new Error("Missing explicit subscription login credential");
+        return (codexSubscription ? stageCodexSubscriptionFixture : stageGrokSubscriptionFixture)({
           raw, companyId: value<CompanyRecord>(resolved, "company").id,
           environment: process.env,
         });
@@ -230,7 +238,7 @@ export async function setupLiveFixtures(input: {
     dependencies: [
       "company",
       "secrets",
-      ...(grokSubscription ? ["subscription-login"] : []),
+      ...((grokSubscription || codexSubscription) ? ["subscription-login"] : []),
       ...(execution.environment.id === "daytona" ? ["sandbox-provider"] : []),
     ],
     async setup(resolved) {
@@ -269,34 +277,46 @@ export async function setupLiveFixtures(input: {
   });
 
   const managedHiring = isManagedHiringCase(execution.suite.id, execution.task.id);
-  if (managedHiring) {
+  const savedCopilot = execution.profile.qualificationCandidate === "copilot";
+  const gatewayUrl = process.env.PAPERCLIP_E2E_GATEWAY_BASE_URL;
+  const gatewayToken = process.env.PAPERCLIP_E2E_GATEWAY_TOKEN;
+  const budgetedGateway = Boolean(gatewayUrl || gatewayToken);
+  if (budgetedGateway && (!gatewayUrl || !gatewayToken || !(execution.environment.id === "local" ? /^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gatewayUrl)
+        : isEvalRemoteOrigin(gatewayUrl) && gatewayUrl === process.env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN)
+      || !["local", "daytona"].includes(execution.environment.id) || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id))) throw new Error("Unqualified fixture gateway route");
+  if (managedHiring || savedCopilot || budgetedGateway) {
     registry.register<ManagedAccountFixture>({
       id: "ai-connection",
-      dependencies: ["company"],
+      dependencies: ["company", ...(savedCopilot ? ["environment"] : [])],
       async setup(resolved) {
         const company = value<CompanyRecord>(resolved, "company");
-        const key = execution.profile.credential;
-        const provider = key === "ANTHROPIC_API_KEY" ? "anthropic"
+        const key = savedCopilot ? "COPILOT_GITHUB_TOKEN" : execution.profile.credential;
+        const provider = savedCopilot ? "github" : key === "ANTHROPIC_API_KEY" ? "anthropic"
           : key === "OPENROUTER_API_KEY" ? "openrouter"
           : key === "OPENAI_API_KEY" ? "openai" : null;
         if (!provider) throw new Error(`Unsupported managed hiring credential ${key}`);
         const apiKey = input.credentials[key];
         if (!apiKey) throw new Error(`Missing credential ${key}`);
-        const account = await api.postSensitive<{ connectionId: string }>(
+        const account = await api.postSensitive<{ connectionId: string; grantId: string }>(
           `/api/companies/${company.id}/ai-connections`,
           {
             provider,
             method: "api_key",
             name: `Runner E2E account ${input.executionNonce}`,
-            ownership: "personal",
-            apiKey,
+            ownership: budgetedGateway ? "shared" : "personal",
+            ...(budgetedGateway ? { routing: { kind: "gateway", protocol: provider === "anthropic" ? "messages" : "responses",
+              baseUrl: provider === "anthropic" ? gatewayUrl : `${gatewayUrl}/v1`, auth: "bearer", models: [{ id: execution.profile.model }] } } : {}),
+            ...(savedCopilot ? { environmentId: value<EnvironmentRecord>(resolved, "environment").id } : {}),
+            apiKey: budgetedGateway ? gatewayToken : apiKey,
             agentIds: [],
-            allAgents: false,
+            allAgents: budgetedGateway,
           },
         );
         return {
           connectionId: account.connectionId,
-          binding: { provider, method: "api_key", mode: "responsible_user" },
+          binding: budgetedGateway
+            ? { provider, method: "api_key", mode: "shared", connectionId: account.connectionId, grantId: account.grantId }
+            : { provider, method: "api_key", mode: "responsible_user" },
         };
       },
     });
@@ -308,8 +328,8 @@ export async function setupLiveFixtures(input: {
       "company",
       "secrets",
       "environment",
-      ...(grokSubscription ? ["subscription-login"] : []),
-      ...(managedHiring ? ["ai-connection"] : []),
+      ...((grokSubscription || codexSubscription) ? ["subscription-login"] : []),
+      ...(managedHiring || savedCopilot || budgetedGateway ? ["ai-connection"] : []),
     ],
     async setup(resolved) {
       const company = value<CompanyRecord>(resolved, "company");
@@ -349,13 +369,23 @@ export async function setupLiveFixtures(input: {
           setupProbe.defaultRunner = selected.defaultRunner;
         }
       }
-      if (["stock-harness", "native-connection-guidance"].includes(execution.suite.id)
+      if (["stock-harness", "native-connection-guidance", "feedback-persistence", "daytona-restart-continuity"].includes(execution.suite.id)
         || (execution.suite.id === "everyday-workflows" && ["hire-reuse", "delegate-feedback"].includes(execution.task.id))) {
         agent.budgetMonthlyCents = 1_000;
       }
-      if (managedHiring) {
+      if (receiptSmoke) {
+        agent.budgetMonthlyCents = CASE_RECEIPT_BUDGET_CENTS;
+        agent.adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>),
+          timeoutSec: CASE_RECEIPT_RUN_TIMEOUT_MS / 1_000, modelReasoningEffort: "low" };
+        const runtimeConfig = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
+        agent.runtimeConfig = { ...runtimeConfig,
+          heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),
+            enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 1, maxDailyCostCents: CASE_RECEIPT_BUDGET_CENTS } };
+      }
+      if (managedHiring || savedCopilot || budgetedGateway) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
+        if (budgetedGateway && execution.environment.id === "daytona") config.helloProbeTimeoutSec = 300;
         delete config.env;
         agent.runtimeConfig = {
           ...(agent.runtimeConfig as Record<string, unknown>),
@@ -364,7 +394,7 @@ export async function setupLiveFixtures(input: {
       }
       return api.post<AgentRecord>(
         `/api/companies/${company.id}/agents`,
-        agent,
+        codexSubscription ? codexSubscriptionAgentConfig(agent, process.env, company.id) : agent,
       );
     },
     async teardown() {
@@ -373,7 +403,10 @@ export async function setupLiveFixtures(input: {
     },
   });
 
-  if (execution.task.flow === "warm_three_turn"
+  if (execution.task.flow === "repository_verification"
+    || execution.task.flow === "finalization_recovery"
+    || execution.task.flow === "followup_stop_resume"
+    || execution.task.flow === "warm_three_turn"
     || (execution.suite.id === "extended-harnesses" && execution.task.id === "file-edit-validate")) {
     registry.register<ProjectRecord>({
       id: "project",

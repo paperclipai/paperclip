@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
+import { applyPendingMigrations } from '@paperclipai/db';
 import { reserveInitialSkillWork } from '../services/skill-source-import-budget.js';
 import { admitDeferredSkillImports, lockSkillImportQueue, MAX_COMPANY_PENDING_SKILL_IMPORTS, MAX_PROJECT_PENDING_SKILL_IMPORTS, SKILL_IMPORT_CAPACITY_WAIT } from '../services/skill-source-import-queue.js';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +21,8 @@ import { skillAccessService, withSkillActor } from '../services/skill-access.js'
 import type { AuthorizationActor } from '../services/authorization.js';
 import { forbidden, unprocessable } from '../errors.js';
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_PROJECT_SKILLS_TEST_DATABASE_URL');
+const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)('automatic project skill sources', () => {
   let testDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -37,8 +40,9 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
       return fixture;
     }, authorize: async () => {}, audit: async () => {} };
   beforeAll(async () => {
-    testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
-    db = createDb(testDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
+    db = createDb(externalUrl ?? testDb.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-project-skills-home-'));
     process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Project skills', issuePrefix: 'PSK' });
@@ -93,6 +97,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
   });
   afterAll(async () => {
     if (oldHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = oldHome;
+    await db?.$client.end({ timeout: 1 });
     await testDb?.cleanup();
     if (home) await fs.rm(home, { recursive: true, force: true });
   });

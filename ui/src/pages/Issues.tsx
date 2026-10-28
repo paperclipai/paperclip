@@ -1,8 +1,10 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { useDesignSandbox } from "../context/DesignSandboxContext";
+import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -34,6 +36,7 @@ import {
   taskView,
   type TaskViewKey,
 } from "../lib/task-views";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -91,11 +94,12 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
  * get the same Views control in their toolbar, so the switch reads as one page.
  */
 export function Issues() {
+  const designSandbox = useDesignSandbox();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {
@@ -169,7 +173,6 @@ function OrganizationIssues({
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const queryClient = useQueryClient();
   const fetchNextPageInFlightRef = useRef(false);
 
   const urlSearch = searchParams.get("q") ?? "";
@@ -254,13 +257,14 @@ function OrganizationIssues({
       participantAgentId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
-      "compact",
+      streamlinedUiEnabled ? "index" : "compact",
       "with-routine-executions",
       showAgentCreatedTasks,
       "infinite",
       issuePageSize,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
+      projection: streamlinedUiEnabled ? "index" : undefined,
       participantAgentId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
@@ -289,13 +293,8 @@ function OrganizationIssues({
     });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
-    },
-  });
+  // Optimistic, rolls back with a readable toast, and resends after an outage.
+  const updateIssue = useUpdateIssueMutation({ companyId: selectedCompanyId });
 
   if (!selectedCompanyId) {
     return (

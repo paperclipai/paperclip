@@ -45,10 +45,12 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
     async runHost(agent) {
       if (agent.lifecycleState === "verifying") return verify(agent);
       if (["pausing", "terminating", "cleaning_up"].includes(agent.lifecycleState)) {
-        const companyAgents = await db.select().from(agents).where(eq(agents.companyId, agent.companyId));
         const ids = agent.lifecycleState === "pausing" ? [agent.id]
-          : [agent.id, ...listInvalidOrgChainDescendantIds(agent.id, companyAgents)];
-        if (!await heartbeat.stopInvocationsForAgents(ids, "Agent lifecycle stop requested")) return "pending";
+          : [agent.id, ...listInvalidOrgChainDescendantIds(agent.id,
+            await db.select().from(agents).where(eq(agents.companyId, agent.companyId)))];
+        const reason = agent.lifecycleHolds?.includes("company_archived")
+          ? "Cancelled because the company was archived" : "Agent lifecycle stop requested";
+        if (!await heartbeat.stopInvocationsForAgents(ids, reason)) return "pending";
       }
       return "complete";
     },

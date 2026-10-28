@@ -88,10 +88,14 @@ function sanitizeSecretSensitiveResponse(
 }
 
 /** Report a server-side crash to every error sink. */
-function reportCrash(error: Error, reportToSentry = true): void {
+function reportCrash(error: Error, req: Request, reportToSentry = true): void {
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: error.name });
-  if (reportToSentry) captureException(error);
+  if (reportToSentry) {
+    if (req.actor?.type === "agent" && req.actor.runId && req.actor.companyId && req.actor.agentId) {
+      captureException(error, { runId: req.actor.runId, companyId: req.actor.companyId, agentId: req.actor.agentId });
+    } else captureException(error);
+  }
 }
 
 /** Set by the orderly shutdown just before it ends the database pools. */
@@ -186,7 +190,7 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError, !isExpectedMcpConnectionFailure(err));
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&
@@ -305,7 +309,7 @@ export function errorHandler(
     reportableError,
   );
 
-  reportCrash(reportableError);
+  reportCrash(reportableError, req);
 
   res.status(500).json({
     error: "Internal server error",

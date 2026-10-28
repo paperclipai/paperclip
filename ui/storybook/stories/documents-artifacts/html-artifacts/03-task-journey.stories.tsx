@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { Routes, Route } from "@/lib/router";
@@ -26,7 +27,13 @@ const attachment: IssueAttachment = {
   updatedAt: new Date("2026-10-07T12:54:00Z"),
 };
 
-function TaskJourney({ openInitially = false }: { openInitially?: boolean }) {
+interface JourneyProps {
+  openInitially?: boolean;
+  streamlinedTabs?: boolean;
+  panelWidth?: number;
+}
+
+function TaskJourney({ openInitially = false, streamlinedTabs = false, panelWidth }: JourneyProps) {
   const [open, setOpen] = useState<{ id: string; title: string; requestId: number } | null>(() => openInitially ? { id: attachment.id, title: attachment.originalFilename!, requestId: 1 } : null);
   const [client] = useState(() => {
     const cache = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
@@ -49,15 +56,15 @@ function TaskJourney({ openInitially = false }: { openInitially?: boolean }) {
           <TaskChatBubble item={{ id: "response", kind: "message", author: "agent", text: "Hyperswitch and Storybook lead the combined ranking. Open the report to explore the weighting and filter the results." }} />
           <IssueArtifactFile id={attachment.id} attachmentId={attachment.id} title="Interactive repository usage report" summary="" filename={attachment.originalFilename!} contentType={attachment.contentType} contentPath={attachment.contentPath} downloadPath={attachment.downloadPath!} byteSize={attachment.byteSize} author="CodexRunner" updatedAt="7:54 AM" />
         </section>
-        <section className="h-(--sz-640px) min-w-0 flex-1 overflow-hidden rounded-lg border border-border" aria-label="Task side panel">
-          <TaskSidePanel issue={issue} accountScope="storybook-html" inline onUpdate={() => {}} fileTabsEnabled={false} openAttachment={open} />
+        <section className={`h-(--sz-640px) min-w-0 max-w-full overflow-hidden rounded-lg border border-border ${panelWidth ? "shrink-0" : "flex-1"}`} style={panelWidth ? { width: panelWidth } : undefined} aria-label="Task side panel">
+          <TaskSidePanel issue={issue} accountScope="storybook-html" inline onUpdate={() => {}} fileTabsEnabled={false} openAttachment={open} streamlinedTabs={streamlinedTabs} artifactsOpenRequestId={streamlinedTabs ? 1 : undefined} />
         </section>
       </div>
     </TextAttachmentContext.Provider>
   </QueryClientProvider>;
 }
 
-function Journey(props: { openInitially?: boolean }) {
+function Journey(props: JourneyProps) {
   return <PluginLauncherProvider><Routes><Route path="/:companyPrefix" element={<Layout />}>
     <Route path="issues/:issueId" element={<TaskJourney {...props} />} />
   </Route></Routes></PluginLauncherProvider>;
@@ -69,7 +76,8 @@ const meta = {
     paperclip: {
       "capabilities": [
         "documents-artifacts/attachments",
-        "workspaces/files-git"
+        "workspaces/files-git",
+        "navigation-preferences/navigation"
       ],
       "implementation": "production",
       "boundary": "fixtures"
@@ -92,3 +100,30 @@ type Story = StoryObj<typeof meta>;
 export const OpenFromTask: Story = {};
 export const ReportOpen: Story = { args: { openInitially: true } };
 export const Mobile: Story = { args: { openInitially: true }, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const StableTabWidths: Story = {
+  args: { openInitially: true, streamlinedTabs: true, panelWidth: 320 },
+  parameters: {
+    docs: { description: { story: "Production task panel in a constrained pane. Switching between Artifacts, Properties, and the report keeps every tab the same width while the upload control appears or disappears. Upload requests remain outside this fixture's scope." } },
+  },
+  play: async ({ canvasElement }) => {
+    const panel = within(canvasElement).getByRole("region", { name: "Task side panel" });
+    const canvas = within(panel);
+    const widths = () => Array.from(panel.querySelectorAll<HTMLElement>("[data-side-panel-tab-wrapper]"))
+      .map((tab) => tab.getBoundingClientRect().width);
+    await userEvent.click(await canvas.findByRole("tab", { name: "Artifacts" }));
+    await expect(canvas.getByRole("button", { name: "Upload files" })).toBeVisible();
+    const baseline = widths();
+    await expect(baseline).toHaveLength(3);
+    await expect(new Set(baseline).size).toBe(1);
+    for (const name of ["Properties", "repository-usage.html", "Artifacts"]) {
+      await userEvent.click(canvas.getByRole("tab", { name }));
+      await waitFor(() => expect(widths()).toEqual(baseline));
+      if (name === "Artifacts") {
+        await expect(canvas.getByRole("button", { name: "Upload files" })).toBeVisible();
+      } else {
+        await expect(canvas.queryByRole("button", { name: "Upload files" })).toBeNull();
+      }
+    }
+  },
+};

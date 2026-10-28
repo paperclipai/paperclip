@@ -14,6 +14,7 @@ const statuses = ["current", "proposed", "historical", "mixed", "unreviewed"];
 const implementations = ["production", "prototype", "mixed", "guide", "unreviewed"];
 const boundaries = ["fixtures", "fixture-server", "static", "unreviewed"];
 const annotationFields = new Set(["capabilities", "status", "implementation", "boundary", "notes", "home", "exception", "replacement"]);
+const specialHomes = { overview: "Overview", "design-proposals": "Design proposals", foundations: "Foundations" };
 
 function files(root, dir) {
   return readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap(entry => {
@@ -74,7 +75,7 @@ export function catalogFromStories(stories, index) {
   const navigation = new Map(index.sections.flatMap(section => section.features.map(feature => [feature.id, `${sidebarLabel(section.title)}/${sidebarLabel(feature.title)}`])));
   return { version: 2, entries: stories.map(story => {
     const entry = { status: "unreviewed", implementation: "unreviewed", boundary: "unreviewed", notes: "", ...story.annotation, file: story.file, stableId: story.metaId, sidebarTitle: story.title };
-    const prefix = navigation.get(storyHome(entry)) ?? ({ overview: "Overview", foundations: "Foundations" })[storyHome(entry)];
+    const prefix = navigation.get(storyHome(entry)) ?? specialHomes[storyHome(entry)];
     return { ...entry, purpose: story.title?.startsWith(`${prefix}/`) ? story.title.slice(prefix.length + 1) : story.title };
   }) };
 }
@@ -91,14 +92,18 @@ export function validateCatalog(catalog, stories, index) {
     if (!boundaries.includes(entry.boundary)) errors.push(`${label}: invalid data boundary`);
     if (typeof entry.notes !== "string") errors.push(`${label}: notes must be text`);
     if (!Array.isArray(entry.capabilities) || entry.capabilities.some(ref => typeof ref !== "string")) { errors.push(`${label}: capabilities must be an array of IDs`); continue; }
-    if (entry.home !== undefined && entry.home !== "foundations") errors.push(`${label}: only shared foundations may override the capability home`);
+    if (entry.home !== undefined && !["foundations", "design-proposals"].includes(entry.home)) errors.push(`${label}: only shared foundations and design proposals may override the capability home`);
     if (entry.exception !== undefined && (typeof entry.exception !== "string" || !entry.exception.trim())) errors.push(`${label}: exception must be nonempty text`);
     if (entry.home === "foundations" && !entry.exception) errors.push(`${label}: foundation home needs an explicit reason`);
+    if (entry.home === "design-proposals") {
+      if (entry.status !== "proposed") errors.push(`${label}: design proposal home requires proposed status`);
+      if (!entry.exception) errors.push(`${label}: design proposal home needs an explicit staging reason`);
+    }
     for (const ref of entry.capabilities) if (!refs.has(ref)) errors.push(`${label}: unknown feature capability ${ref}`);
     if (!entry.capabilities.length && !entry.exception) errors.push(`${label}: unmapped story needs an explicit reason`);
     if (entry.capabilities.length !== new Set(entry.capabilities).size) errors.push(`${label}: duplicate capability references`);
     const area = storyHome(entry);
-    const prefix = navigation.get(area) ?? ({ overview: "Overview", foundations: "Foundations" })[area];
+    const prefix = navigation.get(area) ?? specialHomes[area];
     if (!label.startsWith(`${storyRoot}/${area}/`)) errors.push(`${label}: story must live in its primary feature folder ${area}`);
     if (!prefix || typeof entry.sidebarTitle !== "string" || !entry.sidebarTitle.startsWith(`${prefix}/`)) errors.push(`${label}: sidebar title must match its feature-map home`);
     if (typeof entry.stableId !== "string" || !entry.stableId.trim()) errors.push(`${label}: explicit meta ID is required`);
@@ -124,7 +129,10 @@ export function renderIndex(catalog, stories, index) {
     "[Contract and maintenance](../storybook-map/README.md) · [Verification routes](verification.md)", "",
     `${stories.length} story files; ${stories.reduce((n, story) => n + story.ids.length, 0)} indexed stories. Counts describe inventory, not passed tests or complete feature coverage.`, "",
     "Status describes product alignment; implementation describes the rendered subject; boundary describes simulated data. Limitations are authored alongside each story. Classification is not executed evidence. Related capabilities cross-list one canonical story file.", ""];
-  const homes = index.sections.flatMap(section => section.features.map(feature => ({ ...feature, section: section.title })));
+  const homes = [
+    { id: "design-proposals", title: "Proposed design system", section: "Design proposals", description: "Staged design work for review. These examples retain capability references but do not count as current product coverage." },
+    ...index.sections.flatMap(section => section.features.map(feature => ({ ...feature, section: section.title }))),
+  ];
   homes.push({ id: "foundations-and-guides", title: "Shared foundations and guides", section: "Foundations", description: "Shared components and contributor guidance outside the product feature index." });
   let currentSection;
   for (const feature of homes) {
@@ -134,7 +142,7 @@ export function renderIndex(catalog, stories, index) {
       lines.push(`## ${feature.section}`, "");
       currentSection = feature.section;
     }
-    lines.push(`### ${feature.title}`, "", feature.description, "", ...(area !== "foundations-and-guides" ? [`[Feature recipe](../feature-map/${area}.md)`, ""] : []));
+    lines.push(`### ${feature.title}`, "", feature.description, "", ...(!["foundations-and-guides", "design-proposals"].includes(area) ? [`[Feature recipe](../feature-map/${area}.md)`, ""] : []));
     if (!entries.length) lines.push("No primary story suite. Check capability lookup below for related examples; this does not imply a missing product feature.", "");
     else lines.push(
       "| Story suite | Capabilities | Product / implementation / data | Stories / play functions | Review note |",

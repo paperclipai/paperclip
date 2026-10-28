@@ -1,3 +1,5 @@
+import { gradeNecessaryQuestion } from "./necessary-question.js";
+import { necessaryQuestionContract } from "./continuation-cases.js";
 import { validResumeQuestionForm } from "./question-resume-scoring.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
@@ -107,7 +109,7 @@ export async function runContinuationFlow(input: {
         return ready;
       },
       reject: (state) =>
-        state.runs.length > (scenario.id === "question-answer-resume" ? 3 : 12)
+        state.runs.length > (scenario.id === "necessary-free-text" ? 2 : scenario.id === "question-answer-resume" ? 3 : 12)
           ? "Bounded continuation run count exceeded"
           : state.runs.some((r) =>
                 ["failed", "timed_out", "cancelled"].includes(r.status),
@@ -171,6 +173,34 @@ export async function runContinuationFlow(input: {
     });
     await input.evidence("api-state.json", checkpoints.at(-1));
     await open();
+    if (scenario.id === "necessary-free-text") {
+      if (phase === "initial") {
+        const contract = necessaryQuestionContract();
+        await expect(page.getByText(contract.prompt, { exact: true }).last()).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByText(contract.context, { exact: true }).last()).toBeVisible({ timeout: 30_000 });
+        const question = interactions.find(interaction => interaction.kind === "ask_user_questions" && interaction.status === "pending");
+        checkpoints.at(-1)!.questionPresentation = { interactionId: question?.id ?? "", promptVisible: true, contextVisible: true };
+      } else if (phase === "final") {
+        expect(documents).toHaveLength(1);
+        const document = documents[0]!;
+        expect(document.latestRevisionId).toBeTruthy();
+        const href = `/${encodeURIComponent(fixtures.company.issuePrefix!)}/issues/${encodeURIComponent(issue!.identifier ?? issue!.id)}#document-${encodeURIComponent(document.key)}`;
+        const url = new URL(href, page.url()).href;
+        const link = page.getByTestId("task-chat-agent-bubble").locator(`a[href=${JSON.stringify(href)}]`).last();
+        await expect(link).toBeVisible({ timeout: 30_000 });
+        await link.click();
+        await expect(page).toHaveURL(url);
+        const target = page.locator([
+          `[id=${JSON.stringify(`document-${document.key}`)}]:visible`,
+          `[id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`,
+        ].join(", "));
+        await expect(target).toHaveCount(1);
+        await expect(target).toBeVisible();
+        const visibleBody = `Booking confirmed: ${scenario.answer}`;
+        await expect(target).toContainText(visibleBody);
+        checkpoints.at(-1)!.outputDocument = { issueId: issue!.id, key: document.key, revisionId: document.latestRevisionId, href, visibleBody };
+      }
+    }
     await captureLoadedContinuation(page, String(issue!.title), () => input.capture(
       phase,
       `Continuation: ${phase}`,
@@ -186,7 +216,9 @@ export async function runContinuationFlow(input: {
     );
     expect(questions, "one real question must be shown").toHaveLength(1);
     const set = chatQuestionPresentation(questions[0].payload);
-    if (scenario.id === "question-answer-resume") {
+    if (scenario.id === "necessary-free-text") {
+      expect(validResumeQuestionForm(checkpoints[0]!, questions[0], false), "a bound text-only question").toBe(true);
+    } else if (scenario.id === "question-answer-resume") {
       expect(validResumeQuestionForm(checkpoints.at(-1)!, questions[0], !!choice), "a verified native question path and the requested form").toBe(true);
     } else if (scenario.id === "provider-question-bridge") {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
@@ -294,6 +326,7 @@ export async function runContinuationFlow(input: {
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
     checks.push(...gradeLifecycleBaseline(checkpoints));
+    if (scenario.id === "necessary-free-text") checks.push(...gradeNecessaryQuestion(checkpoints, scenario.answer));
     if (lifecycleProbe) checks.push(gradeLifecycleNarrative({
       narrative: lifecycleProbe.narrative,
       agentId: fixtures.agent.id,

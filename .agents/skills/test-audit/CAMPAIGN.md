@@ -30,10 +30,11 @@ prior findings, model if specified, and discovery/edit/publication authority.
 Tell workers to preserve others' changes. One coordinator owns shared fixtures,
 routing, and integration. Do not edit a checkout with active test runs.
 
-Keep one ledger: candidate, contract, retain/repair/consolidate/delete/defer,
-reason, keeper, baseline, validation, and branch/PR status. Record reviewed areas
-with no safe removals too. Discovery stays read-only until ownership is clear;
-qualified edits need no additional user-approval round within existing authority.
+Keep one ledger in the task: candidate, contract,
+retain/repair/consolidate/delete/defer, reason, keeper, baseline, validation, and
+branch/PR status. Record reviewed areas with no safe removals too. Discovery
+stays read-only until ownership is clear; qualified edits need no additional
+user-approval round within existing authority.
 
 ## 3. Plan removal of redundant layers
 
@@ -42,11 +43,11 @@ boundary. Look for suites that replay the same behavior through wrappers,
 mocked collaborators, or provider-specific copies of a shared implementation.
 Individual cases can look reasonable while the entire layer is redundant.
 
-Produce a compact layer plan: retired suites, retained owner per contract,
-unique assertions to transfer, affected routing/commands, validation controls,
-and any unused fixtures or production seams. Prefer a boundary that reaches
-the responsible code; preserve distinct transport, lifecycle, and permission
-risks. If no whole layer qualifies, record that and proceed with justified
+Record a compact layer plan in the task: retired suites, retained owner per
+contract, unique assertions to transfer, affected routing/commands, validation
+controls, and any unused fixtures or production seams. Prefer a boundary that
+reaches the responsible code; preserve distinct transport, lifecycle, and
+permission risks. If no whole layer qualifies, record that and proceed with justified
 case-level changes. Large deletions are not a requirement.
 
 The coordinator reconciles keeper dependencies across all batches before

@@ -33,9 +33,6 @@ export const SKILL_VERSION_RETENTION_DEFAULT_MAX_REMOVALS = 50;
 export const SKILL_VERSION_RETENTION_INTERVAL_MS = 60 * 60 * 1000;
 export const SKILL_VERSION_RETENTION_STARTUP_DELAY_MS = 60 * 1000;
 
-/** A run in one of these states can still read (or re-read) its captured skill versions. */
-export const SKILL_VERSION_LIVE_RUN_STATUSES = ["queued", "scheduled_retry", "running", "interrupted"] as const;
-
 const VERSIONS_DIR = "__versions__";
 const TRASH_PREFIX = ".trash-";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -76,6 +76,13 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.nextAction).toContain("stop it if it is stuck");
   });
 
+  it("offers retry without a workspace repair checklist", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "workspace_source_restricted" });
+    expect(seed.title).toBe("Task couldn’t start");
+    expect(seed.body).toBe("The task couldn’t start.");
+    expect(seed.nextAction).toBe("Retry the task.");
+  });
+
   it("keeps the secret-binding copy for other configuration gaps", () => {
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
       "secret/env bindings",

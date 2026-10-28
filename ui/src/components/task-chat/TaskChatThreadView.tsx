@@ -25,6 +25,7 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { compactAdjacentErrors } from "./adjacent-errors";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
@@ -317,43 +318,37 @@ export function TaskChatThreadView({
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
-      ? [...items]
+      ? [...visibleItems]
           .reverse()
           .find(
-            (item) =>
-              item.kind === "marker" &&
-              item.variant === "interrupted" &&
-              (item.label === "Run failed" ||
-                item.label === "Usage limit reached"),
+            (item) => {
+              const marker = item.kind === "marker" ? item : retryMarkers.get(item.id);
+              return marker?.variant === "interrupted" &&
+                (marker.label === "Run failed" || marker.label === "Usage limit reached");
+            },
           )?.id
       : undefined;
   // Streaming tail and header updates must not rebuild settled markdown/tool trees.
   const history = useMemo(() => {
+    const renderVisibleItem = (item: TaskChatItem) => {
+      const marker = item.id === retryableMarkerId ? retryMarkers.get(item.id) : undefined;
+      const runId = marker?.retryable !== false ? marker?.runId : undefined;
+      const runRetry = !onTryAgainNoLiveExecutionPath && onRetryFailedRun && runId
+        ? () => onRetryFailedRun(runId)
+        : undefined;
+      return renderItem(
+        item, onApprovalDecision, renderInteraction, renderBrief, renderMessageActions,
+        renderQueuedAction, onRuntimeRequestDecision, "classic",
+        runRetry ?? onTryAgainNoLiveExecutionPath,
+        runRetry ? retryFailedRunId === runId : tryAgainNoLiveExecutionPathPending,
+        retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+      );
+    };
     const renderedItems = streamlined
-      ? items
-          .map((item) => ({
-            item,
-            content: renderItem(
-              item,
-              onApprovalDecision,
-              renderInteraction,
-              renderBrief,
-              renderMessageActions,
-              renderQueuedAction,
-              onRuntimeRequestDecision,
-              "classic",
-              onTryAgainNoLiveExecutionPath,
-              tryAgainNoLiveExecutionPathPending,
-              retryableMarkerId,
-              onRetryFailedRun,
-              retryFailedRunId,
-              attachments,
-              onOpenSkill,
-              onOpenBrowser,
-            ),
-          }))
+      ? visibleItems.map((item) => ({ item, content: renderVisibleItem(item) }))
           .filter((entry) => entry.content !== null)
       : [];
     return (
@@ -364,6 +359,7 @@ export function TaskChatThreadView({
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -379,11 +375,12 @@ export function TaskChatThreadView({
                 {content}
               </div>
             ))
-          : items.map((item, index) => (
+          : visibleItems.map((item, index) => (
               <div
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -395,30 +392,13 @@ export function TaskChatThreadView({
                     "-mt-3",
                 )}
               >
-                {renderItem(
-                  item,
-                  onApprovalDecision,
-                  renderInteraction,
-                  renderBrief,
-                  renderMessageActions,
-                  renderQueuedAction,
-                  onRuntimeRequestDecision,
-                  "classic",
-                  onTryAgainNoLiveExecutionPath,
-                  tryAgainNoLiveExecutionPathPending,
-                  retryableMarkerId,
-                  onRetryFailedRun,
-                  retryFailedRunId,
-                  attachments,
-                  onOpenSkill,
-                  onOpenBrowser,
-                )}
+                {renderVisibleItem(item)}
               </div>
             ))}
       </>
     );
   }, [
-    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    visibleItems, retryMarkers, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
@@ -440,7 +420,7 @@ export function TaskChatThreadView({
         </div>
       ) : null}
       {history}
-      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
+      {tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
     </div>
   );
 
@@ -455,7 +435,7 @@ export function TaskChatThreadView({
 
 // Cheap content signature so streaming growth (text lengthening without the
 // item count changing) still advances the auto-follow key. Shared by the
-// desktop scroller above and the mobile window-scroll follow (TaskChatThread).
+// shared message scroller on desktop and mobile (TaskChatThread).
 function signatureOf(it: TaskChatItem): number {
   if (it.kind === "message") return it.text.length + (it.attachedTurn ? 1 : 0);
   if (it.kind === "thinking") return it.lines.reduce((n, l) => n + l.length, 0);

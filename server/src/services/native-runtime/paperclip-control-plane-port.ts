@@ -25,7 +25,7 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
+import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
@@ -83,6 +83,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   readonly #binding: PaperclipControlPlaneBinding;
   #sessionId: string | null = null;
   readonly #assertControllerActive?: () => void;
+  readonly #assertRunAdmissionActive?: () => void;
   readonly #onCommittedEvent?: (event: PrpEvent) => Promise<void>;
   readonly #onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
 
@@ -94,12 +95,15 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       privateKeyPem?: string;
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
+      /** Read-only admission may finish an existing startup solely for restart detachment. */
+      assertRunAdmissionActive?: () => void;
       onCommittedEvent?: (event: PrpEvent) => Promise<void>;
       onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     } = {},
   ) {
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
+    this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
     this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
@@ -123,7 +127,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   }
 
   async openRun(input: OpenControlPlaneRunInput): Promise<void> {
-    this.#assertControllerActive?.();
+    this.#assertRunAdmissionActive?.();
     const identity = input.identity;
     if (
       identity.companyId !== this.#binding.companyId
@@ -146,7 +150,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     if (!run || !this.#matchesPersistedBinding(run)) {
       throw new Error("native_open_run_not_authorized");
     }
-    this.#assertControllerActive?.();
+    this.#assertRunAdmissionActive?.();
     this.#sessionId = identity.sessionId;
   }
 
@@ -282,14 +286,23 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
     this.#assertActive(options);
     if (persisted.disposition === "committed") {
-      publishChatPublicationCommitSignal({
-        companyId: this.#binding.companyId,
-        issueId: this.#binding.issueId,
-        runId: this.#binding.runId,
-        agentId: this.#binding.agentId,
-        seq: persisted.row.seq,
-        eventType: event.eventType,
-      });
+      try {
+        publishLiveEvent({
+          companyId: this.#binding.companyId,
+          type: "heartbeat.run.event",
+          payload: {
+            runId: this.#binding.runId,
+            agentId: this.#binding.agentId,
+            issueId: this.#binding.issueId,
+            seq: persisted.row.seq,
+            eventType: persisted.row.eventType,
+            stream: persisted.row.stream,
+            level: persisted.row.level,
+            payload: persisted.row.payload,
+          },
+        });
+      } catch {
+      }
       await this.#onCommittedEvent?.(event);
     } else {
       // A recovered runner may replay the event whose durable side effects
@@ -420,6 +433,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         set: {
           phase: "workspace_finalizing",
           resultId: inserted.id,
+          recoveryState: null,
+          recoveryRequestId: null,
           failureCode: null,
           failureDetail: null,
           nextAttemptAt: null,

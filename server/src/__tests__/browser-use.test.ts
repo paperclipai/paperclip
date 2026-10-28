@@ -39,6 +39,14 @@ describe("Browser Use v4 transport", () => {
     ).rejects.toThrow("will not be retried");
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it("runs the authoritative dispatch gate before sending a paid request", async () => {
+    const request = vi.fn();
+    const gate = vi.fn(async () => { throw new Error("Budget changed before dispatch"); });
+    await expect(browserUseClient({}, request, randomUUID()).start({ task: "Do not dispatch" }, gate))
+      .rejects.toThrow("Budget changed before dispatch");
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(request).not.toHaveBeenCalled();
+  });
   it("sanitizes nested and serialized credential addresses and sensitive fields", () => {
     const url = "https://live.browser-use.com/watch?token=private";
     const data = {

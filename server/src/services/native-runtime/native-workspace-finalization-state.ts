@@ -1,5 +1,31 @@
-import { heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
-import { and, eq, exists } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { and, eq, exists, sql } from "drizzle-orm";
+import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+
+type WorkspaceSourceLease = Pick<typeof environmentLeases.$inferSelect,
+  "id" | "companyId" | "heartbeatRunId" | "provider" | "providerLeaseId">;
+
+export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
+  if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
+  const input = sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`;
+  const [run] = await db.select({
+    id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+    runtimeMode: heartbeatRuns.runtimeMode, driverKind: heartbeatRuns.driverKind,
+    reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+    executionScope: sql<Record<string, unknown>>`jsonb_build_object(
+      'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
+      'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}'))`,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  )).limit(1);
+  if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
+  const reference = readNativeWorkspaceSyncReference(run.reference);
+  return reference?.state === "prepared" && reference.leaseId === lease.id
+    && reference.providerLeaseId === lease.providerLeaseId;
+}
 
 /**
  * An accepted result transfers recovery to the workspace finalizer. A dead

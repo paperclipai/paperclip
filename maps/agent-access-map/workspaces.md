@@ -2,6 +2,20 @@
 
 Product map: [Execution workspaces, services, and files](../feature-map/workspaces.md).
 
+Feature ID: `workspaces`.
+
+Lost-source reconstruction adds the board-only
+`POST /api/issues/{id}/recovery-actions/reconstruct-workspace` action. It requires
+`runtime:manage` and ordinary task visibility. Agents cannot authorize it. The
+result is a durable fresh-session admission request, subject to current execution
+gates. It grants no additional tool access, budget, work window or permission to
+repeat completed actions. Attachments must belong to the same task and company.
+The original failed run and lost-export evidence remain unchanged.
+Later native run-only cancellations can coexist only with confirmed lease stops,
+board file-only repair and an external-action outcome of `not_performed`.
+Their immutable evidence is checked again at dispatch. Historical cancellation
+retention runs internally and grants no new agent operation or authority.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +26,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `binding`
+
+Capability ID: `workspaces/binding`.
 
 Review: `baseline`.
 
@@ -33,6 +49,12 @@ those APIs with their admitted run token. These paths do not require a project.
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
 
+Ordinary input may reuse the exact currently bound private task directory after
+an explicitly fresh retry. Preparation rechecks company, source task, current
+binding and canonical path; missing directories, symlinks and foreign roots are
+rejected. This preserves files without granting new access or replaying the
+previous turn. An explicitly fresh retry still creates a clean sibling.
+
 Task workspace writes require `issue:mutate`, an active owned task/run for agents,
 and current source visibility. Shared physical roots also require source-project
 workspace write authority. Accepting a new pending choice advances its binding
@@ -40,17 +62,21 @@ revision; superseded retries fail while current-choice retries remain idempotent
 Binding revisions and request keys fence retries;
 selection applies at the next normal admission without interrupting a live run.
 
-Fresh standard-trust tasks with an implicit repository default can use an owned
-remote clone when the shared default source fails the restricted-task workspace
-guard. This does not grant access to the private local checkout or its Git metadata.
-The normal admitted Git identity must already authorize the configured remote.
-Creation of a fallback source is unavailable for explicit, parent/channel, reused
-or low-trust selections, or branch templates without a task-derived placeholder;
-an existing verified owned source remains reusable. Literal branch selections
-retain the original denial without cloning or replacing their unpublished commits.
-New implicit Git defaults record project-source provenance. Untyped explicit,
-inherited and older ambiguous checkout bindings retain the denial; admission reads
-the current company-scoped binding before considering the fallback.
+Admission checks current task/run authority and the persisted selected configuration.
+It does not inventory physical aliases or authorize historical sources/readers.
+Explicit workspace-record selection and full workspace metadata disclosure retain
+app-record privacy. Existing isolated remote-source receipts remain restorable;
+new preparation does not create a remote fallback due to historical file ownership.
+Historical `workspace_source_restricted` failures retain existing recovery support.
+An authorized board recovery through `POST /api/issues/{id}/recovery-actions/resolve`
+can schedule a server-owned `recovery` selection for the latest restricted-source
+failure only when its saved evidence proves provider work never started. The
+selection requires task mutation and configured-source access and applies at normal
+admission. It keeps task environment settings and never reads or deletes the denied
+checkout. Pause, budget, approval, interaction, dependency, and ownership gates
+remain effective. Repeated resolution of the same action does not enqueue another
+run. Agents cannot mint recovery provenance through the workspace selection API;
+they can observe the existing recovery action and request board recovery.
 Local paths, unsupported transports and credential-bearing URLs are not fallback
 sources. Company/task/remote bindings, real paths, Git storage and the exact origin
 are revalidated for reuse, cleanup and reopening. A failed save removes only the
@@ -65,14 +91,13 @@ choose a newer commit or grant access to another company's source. Shared projec
 bases and unresolved recovery remain protected. Local lifecycle evidence is in
 [expiration tests](../../server/src/__tests__/git-workspace-expiration.test.ts).
 
-Writable aliases must also be compatible with current and retained physical
-source projects' trust boundaries. Incompatible choices are rejected before
-dispatch; a projectless alias cannot bypass required sandbox containment.
-Source-copy checks apply the same trust boundary before provisioning. The
+Only directly selected configuration policies participate in current execution trust.
+Physical aliases and historical source projects do not contribute filesystem policy.
+The
 authoritative sandbox or SSH selection suppresses configured and built-in
-controller worktree and runtime provisioning regardless of task trust, source
+controller worktree and runtime provisioning regardless of task trust, app configuration
 write grants or board sponsorship. Genuine isolated worktrees still permit
-authorized read-only source copying. Source write permission does not authorize
+authorized read-only source copying. Configuration write permission does not authorize
 controller execution. Explicit, channel, inherited, foreign or nondefault isolated
 source choices remain copy-only for controller provisioning even on local runs.
 Their deny-only workspace marker survives metadata and binding changes; a board
@@ -89,7 +114,7 @@ access. The merge still holds its canonical writer lock and runs both authority
 and publication hooks. Denials still propagate, and checkpoint/archive validation
 is unchanged. [Regression coverage](../../packages/adapter-utils/src/workspace-restore-unchanged.test.ts)
 is source-level evidence only.
-Child creation by an admitted agent checks an explicit prospective-task context before the child is saved. The creator run must have an authoritative saved policy and a verified company/agent/parent lineage. Current parent, prospective child and physical source policies must fit that boundary. This creation path does not relax exact task/run checks for existing-task writes. The [child trust regression](../../server/src/__tests__/task-workspace-child-trust.test.ts) is automated source-level evidence, not live agent qualification.
+Child creation by an admitted agent checks an explicit prospective-task context before the child is saved. The creator run must have an authoritative saved policy and a verified company/agent/parent lineage. Current parent, prospective child and selected source configuration policies must fit that boundary. This creation path does not relax exact task/run checks for existing-task writes. The [child trust regression](../../server/src/__tests__/task-workspace-child-trust.test.ts) is automated source-level evidence, not live agent qualification.
 Source review for these additions: PR #15749 and
 [task workspace routes](../../server/src/routes/task-workspaces.ts),
 [native authority](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts),
@@ -109,6 +134,15 @@ a running service.
 
 ## `provisioning`
 
+Capability ID: `workspaces/provisioning`.
+
+Source preparation keeps its dedicated lock connection active during work on
+other connections. It preserves company/source exclusion and existing admission
+authority; it adds no agent API or permission. The
+[source-lock regression](../../server/src/services/isolated-remote-workspace-source-lock.test.ts)
+covers PostgreSQL idle timeout, competing preparation, ordinary pool availability,
+and failure cleanup. Deployed agent recovery requires separate live evidence.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -123,12 +157,20 @@ server provisioning.
 Native `prepare_repository` and admitted legacy REST callers can request a
 catalog repository or validated repository URL for their current task.
 Preparation occurs at normal admission; the agent cannot supply a host path or
-controller identity. Current source permissions, responsible-user intersection,
-trust restrictions, immutable receipts, and retained physical-root ownership are
-checked before acquisition and publication. Low-trust callers cannot trigger a
+controller identity. Current selected-configuration permissions, responsible-user authority, trust
+restrictions, immutable receipts, and concrete binding/path integrity are checked
+before acquisition and publication. Low-trust callers cannot trigger a
 new controller-side Git acquisition. Evidence remains source-only here; focused
 [repository tests](../../server/src/__tests__/task-workspace-repositories-trust.test.ts)
 are separate from live agent qualification.
+
+An admitted native standard task can read a same-agent completion continuation
+for its own pending repository in its current workspace. An explicit yield may
+use that saved continuation; explicit completion remains completion. Existing
+status decisions and wake admission retain Stop and authorization gates. The
+[workspace API regression](../../server/src/__tests__/task-workspace-api.test.ts)
+and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
+cover this contract; live qualification remains separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
@@ -146,6 +188,8 @@ Gaps: Observing readiness exists. Creating host commands or arbitrary provision 
 is a separate protected operation.
 
 ## `services`
+
+Capability ID: `workspaces/services`.
 
 Review: `baseline`.
 
@@ -174,6 +218,8 @@ must be recorded.
 
 ## `files-git`
 
+Capability ID: `workspaces/files-git`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -199,16 +245,15 @@ remaining operations before qualifying the whole capability.
 Gaps: Files panel HTTP requires board. Agents can use their admitted workspace file
 tools; remote/Dot scope and Git command availability differ.
 
-File reads also enforce retained source privacy after local copy, configuration
-move/removal, reopen, and project deletion. A task assignment or repository
-receipt does not grant access to private files from another physical owner.
-
-Authorized Git-source capture also retains ownership on the actual shared Git
-storage. Source checks use verified checkout identities, including company-known
-owners when separate metadata has no primary-checkout registration. Removing that
-checkout does not release its private committed files in surviving worktrees.
+Task-bound file reads authorize the current task, company, and concrete binding;
+selected project roots require selected configuration access. Historical task,
+reader, physical-root, and directory acquisition classifications have no effect.
+Root containment and symlink escape checks remain, and attachments, task records,
+workspace metadata, and operation logs retain their app-data privacy.
 
 ## `closure`
+
+Capability ID: `workspaces/closure`.
 
 Review: `baseline`.
 

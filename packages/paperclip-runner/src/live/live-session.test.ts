@@ -1,9 +1,10 @@
 import { resolveQualifiedAcpxProfile } from "../drivers/acpx/qualified-profiles.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { setTimeout as realDelay } from "node:timers/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -1766,7 +1767,7 @@ describe("Capability live runnerd and Codex session", () => {
     expect((await store.load(replacement.id))?.status).toBe("suspended");
   });
 
-  it("durably resumes a distinct attempt, preserves partial usage, and deduplicates the semantic effect", async () => {
+  it.each([0, 650])("durably resumes a distinct attempt, preserves partial usage, and deduplicates the semantic effect (%i ms persistence delay)", async persistenceDelayMs => {
     const state = providerState();
     const directory = await mkdtemp(join(tmpdir(), "capability-live-durable-"));
     const binding = {
@@ -1786,6 +1787,17 @@ describe("Capability live runnerd and Codex session", () => {
       attemptId: "attempt-killed",
       turnTimeoutMs: 500,
     });
+    const save = firstStore.save.bind(firstStore);
+    let delayed = false;
+    const saveSpy = vi.spyOn(firstStore, "save").mockImplementation(async snapshot => {
+      if (!delayed && JSON.parse(snapshot.mockState).comments.length > 0) {
+        delayed = true;
+        await realDelay(persistenceDelayMs);
+      }
+      await save(snapshot);
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    onTestFinished(() => { vi.useRealTimers(); saveSpy.mockRestore(); });
     state.holdAfterTool = true;
     let turnSettled = false;
     let turnFailure: unknown = null;
@@ -1795,11 +1807,14 @@ describe("Capability live runnerd and Codex session", () => {
       return error;
     });
     try {
-      await vi.waitFor(async () => {
-        expect((await firstStore.load(binding.sessionId))?.mockState).toContain(
-          "Progress persisted through the live Codex tool loop.",
-        );
-      });
+      const deadline = performance.now() + 5_000;
+      while (true) {
+        await vi.advanceTimersByTimeAsync(0);
+        const persisted = (await firstStore.load(binding.sessionId))?.mockState;
+        if (persisted?.includes("Progress persisted through the live Codex tool loop.")) break;
+        expect(performance.now(), "durable progress did not arrive").toBeLessThan(deadline);
+        await realDelay(10);
+      }
     } catch (error) {
       try {
         const summarize = (snapshot: CapabilityLiveSessionSnapshot | null) => {
@@ -1833,6 +1848,7 @@ describe("Capability live runnerd and Codex session", () => {
       }
       throw error;
     }
+    expect(turnSettled, "watchdog fired before durable progress was captured").toBe(false);
     await expect(first.recordUsage({
       receiptId: "provider-response-1",
       providerResponseId: "response-1",
@@ -1845,7 +1861,9 @@ describe("Capability live runnerd and Codex session", () => {
       costNanodollars: 1_500,
     })).resolves.toBe("committed");
     await state.transports[0]?.close();
+    await vi.advanceTimersByTimeAsync(500);
     await expect(killedTurn).resolves.toMatchObject({ message: expect.stringContaining("timed out") });
+    vi.useRealTimers();
 
     // A new service models worker termination: it owns no in-memory session.
     const resumedService = new CapabilityLiveSessionService({

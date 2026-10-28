@@ -41,6 +41,7 @@ const mockInteractionService = vi.hoisted(() => ({
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
   skipInteraction: vi.fn(),
+  dismissInteraction: vi.fn(),
   withdrawInteraction: vi.fn(),
   recordSecretProposalExecutionResult: vi.fn(),
 }));
@@ -260,11 +261,10 @@ function createIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function loadAppModules() {
-  return Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+async function loadAppModules() {
+  const routes = await import("../routes/issues.js");
+  const middleware = await import("../middleware/index.js");
+  return [routes, middleware] as const;
 }
 
 async function createApp(actor: Record<string, unknown> = {
@@ -613,6 +613,37 @@ describe("issue thread interaction routes", () => {
       }),
     );
   }, 10_000);
+
+  it("records a board dismissal without resolving or waking, and denies agent dismissal", async () => {
+    mockInteractionService.dismissInteraction.mockResolvedValue({ id: "request-1", kind: "request_confirmation", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
+    const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    const result = await request(await createApp()).post(path).send({});
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
+    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.thread_interaction_dismissed" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    mockInteractionService.dismissInteraction.mockClear();
+    expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
+    expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("hides private task requests from same-company members without task access before dismissal", async () => {
+    mockAccessDecide.mockResolvedValue({ allowed: false, action: "issue:read", reason: "deny_issue_private",
+      explanation: "Task access was revoked.",
+    });
+    const app = await createApp({ type: "board", userId: "same-company-member", companyIds: ["company-1"],
+      source: "session", isInstanceAdmin: false,
+    });
+    const result = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss").send({});
+    expect(result.status).toBe(404);
+    expect(result.body).toEqual({ error: "Issue not found" });
+    expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+    expect(mockInteractionService.getForIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
 
   it("normalizes a canonical-only mixed question form at the HTTP boundary", async () => {
     const questionSet = { schema: "paperclip.question_set.v1", questions: [

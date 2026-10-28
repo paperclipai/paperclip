@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import { copilotDeathArguments } from "./copilot-provider-death.js";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -246,6 +247,40 @@ describe("remote native lease admission", () => {
     if (type === "bad-file") end.targets["result.txt"] = { ...end.targets["result.txt"], absent: false, sha256: hash("missing") };
     h.resolveTerminal(end); await expect(f.finish()).rejects.toThrow();
   });
+  it("retains bounded incomplete retirement diagnostics while rejecting the receipt", async () => {
+    const h = harness(), retain = vi.fn(async () => {});
+    const f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    const end: any = { ...structuredClone(h.current), complete: false, incompleteReasons: ["workspace_directory_added"], processes: { ...h.current.processes, live: [] }, files: {} };
+    h.resolveTerminal(end);
+    await expect(f.finish()).rejects.toThrow("terminal_evidence_incomplete");
+    expect(retain).toHaveBeenCalledExactlyOnceWith({ failureCodes: [], actionPublished: true, setupPublished: true, complete: false, watcherComplete: true, targetMutationCount: 0, workspaceMutationCount: 0, processRootCaptured: true, liveProcessCount: 0, incompleteReasons: ["workspace_directory_added"] });
+    await expect(f.readFile("result.txt")).rejects.toThrow();
+  });
+  it("rejects arbitrary diagnostic text before retaining terminal metadata", async () => {
+    const h = harness(), retain = vi.fn(async () => {});
+    const f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    h.resolveTerminal({ ...structuredClone(h.current), incompleteReasons: ["untrusted provider content"], processes: { ...h.current.processes, live: [] }, files: {} } as any);
+    await expect(f.finish()).rejects.toThrow("incomplete_reasons_shape");
+    expect(retain).not.toHaveBeenCalled();
+  });
+  it("reports only closed terminal failure reasons without weakening retirement proof", async () => {
+    const h = harness(), retain = vi.fn(async () => {}), f = await bindRemoteNativeFixture({ ...h.options, retainTerminalDiagnostics: retain });
+    await f.publishAction("action.txt", "task");
+    const end = { ...structuredClone(h.current), complete: false,
+      processes: { ...h.current.processes, live: [] }, files: {},
+      failureCodes: ["process_pid_reused", "secret-provider-payload", "process_pid_reused", { arbitrary: "payload" }] };
+    h.resolveTerminal(end);
+    const error = await f.finish().catch(error => error);
+    expect(error.message).toContain("terminal_evidence_incomplete:published=true,complete=false");
+    expect(error.message).toContain(":process_pid_reused");
+    expect(error.message).not.toContain("secret-provider-payload");
+    expect(error.message).not.toContain("arbitrary");
+    expect(retain).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ failureCodes: ["process_pid_reused"] }));
+    expect(JSON.stringify(retain.mock.calls)).not.toContain("secret-provider-payload");
+    expect(remoteNativeFixtureDiagnostics(error)).toEqual([{ phase: "wait", code: "terminal_evidence_incomplete" }]);
+  });
   it("retains a validated incomplete terminal receipt without raw file or RPC content", async () => {
     const h = harness(), f = await bindRemoteNativeFixture(h.options);
     await f.publishAction("action.txt", "task");
@@ -253,7 +288,7 @@ describe("remote native lease admission", () => {
       processes: { ...h.current.processes, live: [] }, files: { "private.txt": "PRIVATE RPC CONTENT" }, untrustedDump: "PRIVATE RPC CONTENT" };
     h.resolveTerminal(end);
     const error = await f.finish().catch(error => error);
-    expect(error.message).toBe("remote_native_fixture:terminal_evidence_incomplete");
+    expect(error.message).toContain("remote_native_fixture:terminal_evidence_incomplete");
     const retained = remoteNativeIncompleteTerminalEvidence(error)!;
     expect(retained.complete).toBe(false); expect(retained.watcher.complete).toBe(false);
     expect(retained.processes.liveCount).toBe(0);
@@ -392,10 +427,15 @@ describe("cell deadline and cleanup bounds", () => {
 });
 
 describe("independent filesystem and process observations", () => {
-  it("retains transient create/delete events and detects same-path parent replacement", async () => {
+  // This real filesystem probe qualifies the Linux Daytona observer.
+  it.runIf(process.platform === "linux")("retains transient create/delete events and detects same-path parent replacement", async () => {
     const dir = await mkdtemp(join(tmpdir(), "remote-watch-")); const watcher = createRemoteTargetWatch(dir, "denied.txt");
     try {
-      await writeFile(join(dir, "denied.txt"), "forbidden"); await rm(join(dir, "denied.txt"));
+      await writeFile(join(dir, "denied.txt"), "forbidden");
+      // macOS coalesces a create/remove pair before delivering fs.watch. Wait
+      // for the real create observation, then prove it survives removal.
+      await vi.waitFor(() => expect(watcher.snapshot().mutationCount).toBeGreaterThan(0));
+      await rm(join(dir, "denied.txt"));
       await vi.waitFor(() => expect(watcher.snapshot().mutationCount).toBeGreaterThan(0));
       expect(watcher.snapshot().complete).toBe(true);
       await rename(dir, `${dir}-old`); await writeFile(dir, "replacement");
@@ -437,6 +477,7 @@ describe("actual generated observer state machine", () => {
     const missing = () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }); };
     const fds = new Map<number, string>(); let nextFd = 50, runtimeInode = 4n;
     const symbolicLinks = new Set<string>(), directoryInodes = new Map<string, bigint>();
+    const processExecutables = new Map<string, { path: string; dev: bigint; ino: bigint }>();
     const directories = new Set(["/tmp", "/workspace", "/workspace/.paperclip-runtime", "/workspace/.paperclip-runtime/paperclip-runner", "/workspace/.paperclip-runtime/paperclip-runner/sessions"]);
     if (!deferStartup) directories.add(config.root);
     const listeners = new Map<string, (socket: any) => void>();
@@ -462,7 +503,8 @@ describe("actual generated observer state machine", () => {
         if (!directory && !files.has(path) && !symbolicLinks.has(path)) return missing();
         return { dev: 1n, ino: directoryInodes.get(path) ?? (path === config.root ? 2n : path === "/workspace/.paperclip-runtime/paperclip-runner" ? runtimeInode : 3n), mtimeNs: 4n, ctimeNs: 5n, isDirectory: () => directory, isFile: () => !directory, isSymbolicLink: () => symbolicLinks.has(path), size: files.get(path)?.length ?? 0 };
       },
-      realpathSync: (path: string) => path,
+      realpathSync: (path: string) => processExecutables.get(path)?.path ?? (/^\/proc\/\d+\/exe$/u.test(path) ? proc.get(Number(path.split("/")[2]))?.argv[0] : path),
+      statSync(path: string) { const identity = processExecutables.get(path); if (!identity) return missing(); return identity; },
       readdirSync(path: string) { if (path === "/proc") return [...proc.keys()].map(String); if (path.startsWith("/workspace/.paperclip-runtime/paperclip-runner")) throw new Error("excluded runtime must not be traversed"); return [...new Set([...files.keys(), ...directories, ...symbolicLinks].filter(p => p.startsWith(path + "/") && !p.slice(path.length + 1).includes("/")).map(p => p.slice(path.length + 1)))]; },
       watch(path: string, options: unknown, callback?: (_kind: string, name: string | null) => void) {
         const entry = { path, callback: (callback ?? options) as (_kind: string, name: string | null) => void, closed: false }; watches.push(entry);
@@ -492,8 +534,8 @@ describe("actual generated observer state machine", () => {
     const net = { createServer(fn: (socket: any) => void) { handlers.push(fn); return server; } };
     const faultSpawn = vi.fn(() => ({ status: 0, stdout: JSON.stringify(piFaultReceipt()) }));
     const context = {
-      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn(() => { const child = Object.assign(new EventEmitter(), { pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
-      process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn() },
+      require(name: string) { if (name === "node:fs") return fs; if (name === "node:net") return net; if (name === "node:child_process") return { spawnSync: faultSpawn, spawn: vi.fn((_node: string, argv: string[]) => { const child = Object.assign(new EventEmitter(), { argv, stdin: { end: vi.fn() }, pid: 88, exitCode: null, signalCode: null, kill: vi.fn() }); children.push(child); return child; }) }; if (name === "node:path") return { join: (...paths: string[]) => paths.join("/"), dirname: (path: string) => path.slice(0, path.lastIndexOf("/")), basename: (path: string) => path.slice(path.lastIndexOf("/") + 1) }; if (name === "node:crypto") return { createHash }; throw new Error("unexpected module"); },
+      process: { argv: ["node", `${config.root}/observer.cjs`, Buffer.from(JSON.stringify(config)).toString("base64")], execPath: "/node", hrtime: { bigint: () => 12345n }, exit: vi.fn(), kill: vi.fn() },
       Buffer, __filename: `${config.root}/observer.cjs`,
       setInterval(fn: () => void) { intervals.push(fn); return 1; }, clearInterval: vi.fn(),
       setTimeout(fn: () => void, ms: number) { timers.push({ fn, ms }); return { unref() {} }; },
@@ -504,7 +546,7 @@ describe("actual generated observer state machine", () => {
       const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
       handlers[0]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ op, nonce: config.nonce, ...args }) + "\n")); return replies;
     }
-    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, directoryInodes, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
+    return { request, proc, files, watches, fs, intervals, timers, config, handlers, children, faultSpawn, symbolicLinks, directoryInodes, processExecutables, context, server, directories, listeners, install: h.calls.find(c => c.request.op === "install")!, replaceRuntimeRoot() { runtimeInode = 999n; } };
   }
   it("keeps existing watched directory notifications complete without losing nested mutations", async () => {
     const o = await observerHarness(true);
@@ -733,6 +775,25 @@ describe("actual generated observer state machine", () => {
     o.proc.set(1, { ppid: 0, group: 1, ticks: "1", argv: ["/sbin/init"] });
     expect(o.request("snapshot")[0].result.processes.captured).toBe(true);
   });
+  it.each(["valid", "wrong-inode", "foreign-executable", "ambiguous", "wrong-arguments"])("dispatches generated provider death only for verified descriptor ownership: %s", async variant => {
+    const o = await observerHarness();
+    o.request("snapshot"); o.request("publish", { path: "action.txt", text: "do task" });
+    const executable = "/tmp/paperclip-acpx-native-owned/distribution/copilot";
+    o.proc.set(22, { ppid: 21, group: 21, ticks: "200", argv: ["/node"] });
+    o.proc.set(23, { ppid: 22, group: 21, ticks: "300", argv: ["/proc/self/fd/7", ...copilotDeathArguments] });
+    o.processExecutables.set("/proc/23/exe", { path: executable, dev: 1n, ino: 40n });
+    o.processExecutables.set("/proc/23/fd/7", { path: executable, dev: 1n, ino: 40n });
+    if (variant === "wrong-inode") o.processExecutables.get("/proc/23/fd/7")!.ino = 41n;
+    if (variant === "foreign-executable") { o.processExecutables.get("/proc/23/exe")!.path = "/usr/bin/copilot"; o.processExecutables.get("/proc/23/fd/7")!.path = "/usr/bin/copilot"; }
+    if (variant === "wrong-arguments") o.proc.get(23)!.argv.push("--allow-all");
+    if (variant === "ambiguous") o.proc.set(24, { ppid: 22, group: 21, ticks: "400", argv: [executable, ...copilotDeathArguments] });
+    const replies = o.request("provider-death");
+    if (variant === "valid") {
+      expect(replies[0]).toMatchObject({ ok: true, result: { schema: "paperclip.e2e.copilot-owned-provider-death.v1", signal: "SIGKILL", child: { pid: 23 } } });
+      expect(o.context.process.kill).toHaveBeenCalledExactlyOnceWith(23, "SIGKILL");
+      expect(o.request("provider-death")[0].ok).toBe(false);
+    } else { expect(replies[0].ok).toBe(false); expect(o.context.process.kill).not.toHaveBeenCalled(); }
+  });
   it("arms exact remote root then seals drained no-live proof and retained bytes", async () => {
     const o = await observerHarness(); expect(o.request("snapshot")[0].result.processes.captured).toBe(true);
     const wait = o.request("wait"); expect(wait).toHaveLength(0);
@@ -770,6 +831,25 @@ describe("actual generated observer state machine", () => {
     o.handlers[1]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ nonce: config.clientNonce, pid: 23 }) + "\n"));
     expect(o.children).toHaveLength(0); expect(socket.destroy).toHaveBeenCalled();
     expect(o.request("snapshot")[0].result.attached.failure).toBe("client_rejected");
+  });
+  it("releases a gated remote child once, through the owned controller after publication", async () => {
+    const o = await observerHarness(); o.request("snapshot");
+    const config = { marker: "result.txt", markerText: "settled", delayMs: 100, clientNonce: "test-gated-client", waitForFinishAttempt: true };
+    const fixture = o.request("attached", config)[0].result;
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    o.request("publish", { path: o.config.actionFile, text: "exact action" });
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    o.proc.set(23, { ppid: 21, group: 21, ticks: "300", argv: ["/node", fixture.clientScript, fixture.clientSocket, config.clientNonce] });
+    const replies: any[] = [], socket = Object.assign(new EventEmitter(), { end: (value: string) => replies.push(JSON.parse(value)), destroy: vi.fn() });
+    o.handlers[1]!(socket); socket.emit("data", Buffer.from(JSON.stringify({ nonce: config.clientNonce, pid: 23 }) + "\n"));
+    expect(o.children).toHaveLength(1); expect(o.files.has("/workspace/result.txt")).toBe(false);
+    expect(() => new Script(o.children[0].argv[1])).not.toThrow();
+    expect(o.request("release-attached")[0]).toMatchObject({ ok: true, result: { releasedAtMs: expect.any(Number) } });
+    expect(o.children[0].stdin.end).toHaveBeenCalledExactlyOnceWith("release\n");
+    expect(o.request("release-attached")[0].ok).toBe(false);
+    expect(replies).toHaveLength(0);
+    o.children[0].exitCode = 0; o.children[0].emit("exit", 0, null);
+    expect(replies).toEqual([{ code: 0 }]); expect(o.files.get("/workspace/result.txt")?.toString()).toBe("settled");
   });
   it("scopes actual runtime symlinks/state churn out while retaining sentinel and sibling coverage", async () => {
     const o = await observerHarness();

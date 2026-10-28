@@ -622,6 +622,46 @@ describe("P6-25 pre-result native session recovery", () => {
 
     expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(0);
   });
+
+  it("sends one Sentry event when a sweep ends an unreported pending retry", async () => {
+    const freshRunId = "79000000-0000-4000-8000-000000000103";
+    await db.insert(issues).values({ id: freshRunId, companyId, title: "Independent failure report",
+      status: "in_progress", assigneeAgentId: agentId });
+    // The executor stores a scheduled same-run retry as failed + retryable_failure,
+    // and reportRunFailure skips that write. The sweep's terminal write reports it.
+    await db.insert(heartbeatRuns).values({
+      id: freshRunId,
+      companyId,
+      agentId,
+      nativeIssueId: freshRunId,
+      status: "failed",
+      nativePhase: "retryable_failure",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      runnerProfileJson: {
+        nativeExecutionInput: {
+          ...persistedProfile.nativeExecutionInput,
+          binding: { runId: freshRunId },
+        },
+      },
+      contextSnapshot: { issueId: freshRunId },
+    });
+    await db.insert(nativeRunFinalizations).values({
+      runId: freshRunId,
+      companyId,
+      issueId: freshRunId,
+      phase: "retryable_failure",
+      attempt: 1,
+    });
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await claimNativeSessionResumptions({ db, runnerInstanceId: "reaper", runIds: [freshRunId] });
+    await waitForPendingRunFailureReports();
+
+    const newCaptures = mockCaptureRunFailure.mock.calls.slice(captureCallsBefore);
+    expect(newCaptures).toHaveLength(1);
+    expect(newCaptures[0]?.[0]).toMatchObject({ runId: freshRunId, runStatus: "failed" });
+  });
 });
 
 describe.each(["unchanged", "newer_active", "stale_idle"] as const)(

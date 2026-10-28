@@ -93,10 +93,15 @@ let pendingPermission = await readFile(
 let permissionStyle = "v2";
 
 await mkdir(process.env.XDG_DATA_HOME, { recursive: true });
+await writeFile(join(process.env.XDG_DATA_HOME, "fake-provider-custody.json"), JSON.stringify({
+  openrouterKey: process.env.OPENROUTER_API_KEY,
+  providerOptions: runtimeConfig.provider?.openrouter?.options,
+}));
 await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
     projectConfigDisabled: process.env.OPENCODE_DISABLE_PROJECT_CONFIG,
@@ -128,6 +133,24 @@ let promptTurnSeq = 0;
 // sealed.
 let lateStragglerRemaining = 0;
 function emit(value) {
+  if (value.type === "session.idle" && runtimeConfig.experimental?.openTelemetry) {
+    const now=Date.now();
+    const headers=Object.fromEntries((process.env.OTEL_EXPORTER_OTLP_HEADERS??"").split(",").map(entry=>{
+      const i=entry.indexOf("=");return [entry.slice(0,i),entry.slice(i+1)];
+    }));
+    void fetch(`${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,{method:"POST",headers,
+      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",
+        startTimeUnixNano:String(BigInt(now-22)*1000000n),endTimeUnixNano:String(BigInt(now)*1000000n),
+        attributes:[{key:"prompt",value:{stringValue:"private-performance-sentinel"}}],
+      }]}]}]})}).then(response=>{
+      if(!response.ok)throw new Error(`Performance fixture rejected: ${response.status}`);
+      emitFrame(value);
+    }).catch(error=>{process.stderr.write(String(error));process.exit(1)});
+    return;
+  }
+  emitFrame(value);
+}
+function emitFrame(value) {
   const scoped =
     promptTurnSeq > 0 && typeof value.id === "string"
       ? { ...value, id: `${value.id}#${promptTurnSeq}` }
@@ -193,9 +216,10 @@ async function callFirstPaperclipTool() {
 async function callTerminalTool(promptBody) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
+  const monitored = String(prompt.message ?? "").includes("monitor-default");
   const result = {
     schema: "paperclip.run_result.v1",
-    reportedWorkDisposition: blocked ? "blocked" : "done",
+    reportedWorkDisposition: blocked ? "blocked" : monitored ? "yielded" : "done",
     summary: blocked
       ? "Fake provider is blocked."
       : "Fake provider completed the task.",

@@ -662,8 +662,12 @@ describe("chat setup and identity-link clipboard actions", () => {
   it("keeps manual existing-App recovery write-only without generating or copying credentials", async () => {
     await render("github");
     await click("I already have an App");
-    expect(container.querySelector('input[type="password"]')).not.toBeNull();
-    expect(container.querySelector("textarea")?.value).toBe("");
+    const privateKey = container.querySelector<HTMLInputElement>("#github-private-key");
+    const webhookSecret = container.querySelector<HTMLInputElement>("#github-webhook-secret");
+    expect(privateKey?.type).toBe("password");
+    expect(privateKey?.value).toBe("");
+    expect(webhookSecret?.type).toBe("password");
+    expect(webhookSecret?.value).toBe("");
     expect(container.textContent).not.toContain("Copy webhook secret");
     expect(container.textContent).not.toContain("Generate webhook secret");
     expect(mocks.generateSetupSecret).not.toHaveBeenCalled();

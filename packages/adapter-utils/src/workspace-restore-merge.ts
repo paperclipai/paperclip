@@ -556,6 +556,16 @@ export async function withDirectoryPublicationLock<T>(
   }, env);
 }
 
+export async function tryWithDirectoryMergeLock<T>(targetDir: string, fn: () => Promise<T>): Promise<T | undefined> {
+  const canonicalTargetDir = await fs.realpath(targetDir);
+  try {
+    return await withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, process.env, undefined, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return undefined;
+    throw error;
+  }
+}
+
 async function withCanonicalDirectoryMergeLock<T>(
   canonicalTargetDir: string,
   fn: (canonicalTargetDir: string) => Promise<T>,

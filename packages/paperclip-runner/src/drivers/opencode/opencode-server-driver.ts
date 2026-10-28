@@ -1,9 +1,12 @@
+import { isOpenRouterUrl, OPENROUTER_ATTRIBUTION_HEADERS } from "../openrouter-attribution.js";
 import { spawn, type ChildProcess } from "node:child_process";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { createHash, randomBytes } from "node:crypto";
 import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -13,6 +16,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
+import { constants as osConstants } from "node:os";
 import { Agent as HttpAgent, createServer as createHttpServer, request as requestHttp, type IncomingMessage } from "node:http";
 import { Agent as HttpsAgent, request as requestHttps } from "node:https";
 import { getCACertificates } from "node:tls";
@@ -20,6 +24,8 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
+import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 
@@ -82,7 +88,10 @@ import {
   type OpenCodeMcpBridge,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
-import { materializeNativeRuntimeSkills } from "../runtime-context-materializer.js";
+import {
+  materializeNativeRuntimeSkills,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../runtime-context-materializer.js";
 
 export const OPENCODE_SERVER_DRIVER_KIND = "opencode_server" as const;
 export const QUALIFIED_OPENCODE_VERSION = "1.18.34" as const;
@@ -210,6 +219,7 @@ interface OpenCodeRuntime {
   bridge: OpenCodeMcpBridge;
   trace: ProviderTraceFileSink | null;
   sensitiveValues: readonly string[];
+  performanceDiagnostics: Awaited<ReturnType<typeof startOpenCodePerformanceDiagnostics>> | null;
   close(input?: {
     finalizeTrace?: boolean;
     reason?: string | null;
@@ -366,6 +376,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
     );
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "workspace"), `${cwd}\n`, { mode: 0o600 });
+    await removeLegacyIsolatedHomes(root);
     const trace = await createProviderTraceFileSink({
       path: this.#options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH,
       provider: "opencode",
@@ -512,6 +523,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #activeTraceEmittedEventIds: string[] = [];
   #sourceSequence: number;
   #activeTurnId: string | null;
+  #performanceBoundaryMs = 0;
   #result: PrpStructuredRunResult | null;
   #resultFingerprint: string | null;
   #resultCallId: string | null;
@@ -1018,7 +1030,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
-    const tool = canonicalOpenCodeMcpToolName(call.tool);
+    // The authenticated MCP bridge has resolved this against its closed
+    // declared catalog. A second prefix strip changes legitimate operation IDs.
+    const tool = call.tool;
     const turnId = this.#activeTurnId;
     if (turnId === null)
       throw new Error("OpenCode tool call is not bound to an active turn");
@@ -1040,7 +1054,15 @@ class OpenCodeHarnessSession implements HarnessSession {
       try {
         if (this.#closed || this.#completionSettlement)
           throw new Error("A completion is already settling or the session is closed");
-        const validation = validatePrpStructuredRunResult(call.arguments);
+        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
+        const completionInput = await resolveCompletionContinuation(call.arguments, this.#runId,
+          this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+            tool: "get_task_context", callId: `${call.callId}:continuation`,
+            threadId: this.#providerSessionId, turnId, arguments: {},
+          }) : undefined);
+        if (this.#closed || this.#activeTurnId !== turnId)
+          throw new Error("The turn ended while resolving completion");
+        const validation = validatePrpStructuredRunResult(completionInput);
         if (!validation.ok) throw new Error("Invalid semantic result");
         if (
           (tool === PRP_BLOCK_TOOL_NAME &&
@@ -1069,7 +1091,6 @@ class OpenCodeHarnessSession implements HarnessSession {
         const fingerprint = canonicalJson(validation.result);
         if (this.#resultFingerprint && this.#resultFingerprint !== fingerprint)
           throw new Error("A different semantic result was already committed");
-        this.#completionSettlement = new Promise<void>(resolve => { settle = resolve; });
         // Wait for the bound controller before committing or resolving the
         // provider call. A rejection remains repairable in this same turn.
         const feedback = this.#completionFeedback
@@ -1344,8 +1365,9 @@ class OpenCodeHarnessSession implements HarnessSession {
           signal: this.#abort.signal,
         });
         if (!response.ok || !response.body)
-          throw new Error(
-            `OpenCode event stream returned HTTP ${response.status}`,
+          throw Object.assign(
+            new Error(`OpenCode event stream returned HTTP ${response.status}`),
+            { httpStatus: response.status },
           );
         const outboundFrameId = this.#runtime.trace?.frame({
           direction: "client_to_provider",
@@ -1443,8 +1465,9 @@ class OpenCodeHarnessSession implements HarnessSession {
           }
           this.#mapProviderEvent(event, frameId);
         }
-        throw new Error(
-          "OpenCode event stream closed before the session became terminal",
+        throw Object.assign(
+          new Error("OpenCode event stream closed before the session became terminal"),
+          { streamClosed: true },
         );
       } catch (error) {
         if (this.#closed || this.#abort.signal.aborted) return;
@@ -1452,16 +1475,48 @@ class OpenCodeHarnessSession implements HarnessSession {
         if (attempts > 3) {
           await this.#completionSettlement;
           if (this.#closed) return;
+          const failure = await openCodeEventStreamFailure(error, this.#runtime.process);
+          if (this.#closed) return;
           this.#emit("harness.diagnostic", {
             code: "opencode_sse_failed",
             message: redact(String(error), this.#runtime.sensitiveValues),
+            failure,
           });
+          this.#failActiveTurnOnStreamLoss(failure);
           this.#events.fail(error);
           return;
         }
         await new Promise((resolve) => setTimeout(resolve, 50 * attempts));
       }
     }
+  }
+
+  /**
+   * The event stream is the only path for this turn's terminal event. Once it
+   * is gone the turn cannot finish, so record why before the stream ends
+   * instead of leaving runnerd to close it later with no cause.
+   */
+  #failActiveTurnOnStreamLoss(failure: OpenCodeEventStreamFailure): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#terminalTurns.has(turnId)) return;
+    this.#settlePendingRuntimeRequestsForTurn(turnId);
+    this.#emit(
+      "turn.failed",
+      {
+        status: "failed",
+        providerTerminalObserved: false,
+        error: {
+          code: failure.kind === "server_exited" ? "opencode_server_exited" : "opencode_event_stream_lost",
+          message: failure.kind === "server_exited"
+            ? "OpenCode stopped while the turn was running."
+            : "The OpenCode event stream failed while the turn was running.",
+          opencodeFailure: failure,
+        },
+      },
+      { turnId },
+    );
+    this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
+    this.#activeTurnId = null;
   }
 
   #mapProviderEvent(value: unknown, traceFrameId: number | null = null): void {
@@ -2082,6 +2137,11 @@ class OpenCodeHarnessSession implements HarnessSession {
       });
       return;
     }
+    if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(eventType)) {
+      const performance = this.#runtime.performanceDiagnostics?.take(this.#performanceBoundaryMs);
+      this.#performanceBoundaryMs = this.#now().getTime();
+      if (performance) this.#emit("harness.diagnostic", performance, refs);
+    }
     const sourceSeq = ++this.#sourceSequence;
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1",
@@ -2156,7 +2216,8 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(body.toString("utf8")); }
       catch { response.writeHead(400).end(); return; }
-      if (!payload || typeof payload !== "object" || payload.model !== model) {
+      if (!payload || typeof payload !== "object" || payload.model !== model ||
+        ["models", "route", "plugins", "transforms"].some(field => Object.hasOwn(payload, field))) {
         response.writeHead(400).end();
         return;
       }
@@ -2164,7 +2225,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
           agent,
-          headers: { "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+          headers: { ...(isOpenRouterUrl(baseUrl) ? OPENROUTER_ATTRIBUTION_HEADERS : {}), "Content-Type": "application/json", "Content-Length": body.length, ...(key ? { Authorization: `Bearer ${key}` } : {}) },
           signal: AbortSignal.any([controller.signal, AbortSignal.timeout(600_000)]),
         }, resolve);
         outgoing.once("error", reject);
@@ -2237,7 +2298,9 @@ async function startRuntime(input: {
   // HOME contains a read-only skill snapshot, whose destination must be fresh.
   // Keep OpenCode's XDG data stable for provider-session recovery while giving
   // every launch (including retries and recovery) a new isolated HOME.
-  const isolatedHome = await mkdtemp(join(input.root, "home-"));
+  const homesRoot = join(input.root, OPENCODE_ISOLATED_HOMES_DIRECTORY);
+  await mkdir(homesRoot, { recursive: true, mode: 0o700 });
+  const isolatedHome = await mkdtemp(join(homesRoot, "home-"));
   await chmod(isolatedHome, 0o700);
   try {
     await materializeNativeRuntimeSkills(
@@ -2245,18 +2308,14 @@ async function startRuntime(input: {
       join(isolatedHome, ".claude", "skills"),
     );
   } catch (error) {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
   }).catch(async (error) => {
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   });
   const assignedMcp = nativeMcpLaunchBinding(
@@ -2265,14 +2324,15 @@ async function startRuntime(input: {
   const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
   const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
     ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
+  const providerEnvironment = input.options.environment ?? process.env;
   const sensitiveValues = [
     ...identityValues,
     password,
     authHeader,
     bridge.secret,
     assignedMcp?.token,
-    input.options.environment?.OPENROUTER_API_KEY,
-    input.options.environment?.PAPERCLIP_AI_PROVIDER_KEY,
+    providerEnvironment.OPENROUTER_API_KEY,
+    providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
   input.trace?.addSensitiveValues(sensitiveValues);
   const instructionRoot =
@@ -2288,10 +2348,15 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const providerProxy = modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-    ? await startOpenCodeProviderProxy(input.options.environment.PAPERCLIP_AI_PROVIDER_URL, input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "", providerModelId, input.options.environment).catch(async error => {
+  const providerRoute = modelProvider === "openrouter"
+    ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
+    : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+      ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
+      : null;
+  const providerProxy = providerRoute
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
         await bridge.close().catch(() => {});
-        await rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
+        await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
       })
     : null;
@@ -2300,6 +2365,15 @@ async function startRuntime(input: {
     input.trace?.addSensitiveValues([providerProxy.token]);
   }
   let child: ChildProcess | undefined;
+  // Failure to collect diagnostics must not prevent the requested work.
+  const performanceDiagnostics = input.options.environment?.[PROVIDER_PERFORMANCE_ENV] === "1"
+    ? await startOpenCodePerformanceDiagnostics().catch(() => null) : null;
+  if (performanceDiagnostics) {
+    const values = [performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS,
+      performanceDiagnostics.environment.OTEL_EXPORTER_OTLP_HEADERS.replace("Authorization=Bearer ", "")];
+    sensitiveValues.push(...values);
+    input.trace?.addSensitiveValues(values);
+  }
   let launchPrepared = false;
   const releaseExecutable = () => {
     if (!launchPrepared) return;
@@ -2317,6 +2391,7 @@ async function startRuntime(input: {
       small_model: input.options.model,
       share: "disabled",
       autoupdate: false,
+      ...(performanceDiagnostics ? { experimental: { openTelemetry: true } } : {}),
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
@@ -2326,10 +2401,12 @@ async function startRuntime(input: {
       // provider instead of silently falling back or rejecting a newer model.
       provider: {
         [modelProvider!]: {
+          ...(modelProvider === "openrouter" ? { options: { headers: OPENROUTER_ATTRIBUTION_HEADERS } } : {}),
           ...(providerProxy ? {
             npm: "@ai-sdk/openai-compatible",
-            name: "Paperclip connection",
+            name: modelProvider === "openrouter" ? "OpenRouter" : "Paperclip connection",
             options: {
+              ...(modelProvider === "openrouter" ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}),
               baseURL: providerProxy.baseURL,
               apiKey: providerProxy.token,
             },
@@ -2400,7 +2477,8 @@ async function startRuntime(input: {
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
-        ...(providerProxy ? { NO_PROXY: [input.options.environment?.no_proxy ?? input.options.environment?.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
+        ...performanceDiagnostics?.environment,
+        ...(providerProxy ? { NO_PROXY: [providerEnvironment.no_proxy ?? providerEnvironment.NO_PROXY, "127.0.0.1", "localhost"].filter(Boolean).join(",") } : {}),
       },
     );
     const isolateProcessGroup = input.options.isolateProcessGroup ?? true;
@@ -2497,6 +2575,7 @@ async function startRuntime(input: {
       bridge,
       trace: input.trace,
       sensitiveValues,
+      performanceDiagnostics,
       close: async (closeInput = {}) => {
         await providerProxy?.close();
         await bridge.close().catch(() => {});
@@ -2520,18 +2599,18 @@ async function startRuntime(input: {
           }
           await waitForExit(providerChild, 2_000);
         }
+        await performanceDiagnostics?.close().catch(() => {});
         await rm(join(configHome, "opencode", "opencode.json"), {
           force: true,
         }).catch(() => undefined);
-        await rm(isolatedHome, { recursive: true, force: true }).catch(
-          () => undefined,
-        );
+        await removeIsolatedHome(isolatedHome).catch(() => undefined);
         if (closeInput.finalizeTrace !== false) {
           await input.trace?.finish({ reason: closeInput.reason ?? null });
         }
       },
     };
   } catch (error) {
+    await performanceDiagnostics?.close().catch(() => {});
     await providerProxy?.close();
     await bridge.close().catch(() => {});
     child?.kill("SIGKILL");
@@ -2540,9 +2619,7 @@ async function startRuntime(input: {
     await rm(join(configHome, "opencode", "opencode.json"), {
       force: true,
     }).catch(() => undefined);
-    await rm(isolatedHome, { recursive: true, force: true }).catch(
-      () => undefined,
-    );
+    await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   }
 }
@@ -2891,7 +2968,6 @@ function sanitizedEnvironment(
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
   const result: NodeJS.ProcessEnv = {};
   const candidate = source ?? process.env;
@@ -2913,12 +2989,12 @@ function sanitizedEnvironmentKeys(): string[] {
     "ALL_PROXY",
     "SSL_CERT_FILE",
     "SSL_CERT_DIR",
-    "OPENROUTER_API_KEY",
   ];
 }
 
-function sessionRoot(
-  runtimeDirectory: string,
+export const OPENCODE_ISOLATED_HOMES_DIRECTORY = "homes";
+
+export function opencodeRuntimeSessionDirectoryName(
   normalizedSessionId: string,
 ): string {
   const safe = normalizedSessionId
@@ -2926,7 +3002,35 @@ function sessionRoot(
     .slice(0, 120);
   if (!safe || safe === "." || safe === "..")
     throw new Error("Invalid normalized OpenCode session id");
-  return join(resolve(runtimeDirectory), safe);
+  return safe;
+}
+
+function sessionRoot(
+  runtimeDirectory: string,
+  normalizedSessionId: string,
+): string {
+  return join(
+    resolve(runtimeDirectory),
+    opencodeRuntimeSessionDirectoryName(normalizedSessionId),
+  );
+}
+
+async function removeIsolatedHome(home: string): Promise<void> {
+  const skillsParent = await lstat(join(home, ".claude")).catch(() => null);
+  if (skillsParent?.isDirectory()) {
+    await releaseMaterializedNativeRuntimeSkills(
+      join(home, ".claude", "skills"),
+    ).catch(() => undefined);
+  }
+  await rm(home, { recursive: true, force: true });
+}
+
+async function removeLegacyIsolatedHomes(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("home-")) continue;
+    await removeIsolatedHome(join(root, entry.name)).catch(() => undefined);
+  }
 }
 
 function validateWorkspace(value: string): string {
@@ -3021,7 +3125,55 @@ async function waitForExit(
   });
 }
 
-export const openCodeServerDriverInternals = { parseSse };
+/** Closed vocabulary for a lost OpenCode event stream. Never provider text. */
+export interface OpenCodeEventStreamFailure {
+  kind: "server_exited" | "connection_failed" | "http_error" | "stream_closed" | "stream_error";
+  exitCode?: number;
+  signal?: string;
+  connectionError?: string;
+  httpStatus?: number;
+}
+
+const OPENCODE_CONNECTION_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED", "ECONNRESET", "EPIPE", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH",
+  "UND_ERR_SOCKET", "UND_ERR_CLOSED", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+]);
+
+function connectionErrorCode(error: unknown): string | undefined {
+  // undici reports `TypeError: fetch failed` and keeps the socket error in `cause`.
+  for (let current = error, depth = 0; current && depth < 4; current = record(current).cause, depth += 1) {
+    const code = record(current).code;
+    if (typeof code === "string") return OPENCODE_CONNECTION_ERROR_CODES.has(code) ? code : "unrecognized";
+  }
+  return undefined;
+}
+
+async function openCodeEventStreamFailure(
+  error: unknown,
+  process: ChildProcess,
+): Promise<OpenCodeEventStreamFailure> {
+  const connectionError = connectionErrorCode(error);
+  // A refused or reset connection usually means `opencode serve` has died.
+  // Give its exit a moment to be observed so the cause is the exit itself.
+  if (connectionError) await waitForExit(process, 1_000);
+  if (process.exitCode !== null || process.signalCode !== null) {
+    return {
+      kind: "server_exited",
+      ...(process.exitCode !== null ? { exitCode: process.exitCode } : {}),
+      ...(process.signalCode !== null && process.signalCode in osConstants.signals ? { signal: process.signalCode } : {}),
+      ...(connectionError ? { connectionError } : {}),
+    };
+  }
+  const httpStatus = record(error).httpStatus;
+  if (typeof httpStatus === "number" && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599)
+    return { kind: "http_error", httpStatus };
+  if (connectionError) return { kind: "connection_failed", connectionError };
+  if (record(error).streamClosed === true) return { kind: "stream_closed" };
+  return { kind: "stream_error" };
+}
+
+export const openCodeServerDriverInternals = { parseSse, openCodeEventStreamFailure };
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   #items: T[] = [];

@@ -325,12 +325,8 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...remainingPolicy } = policy;
+  return normalizeIssueExecutionPolicy(remainingPolicy);
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(

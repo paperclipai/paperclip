@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PluginContext } from "@paperclipai/plugin-sdk";
 
 const getSandbox = vi.hoisted(() => vi.fn());
 vi.mock("@daytonaio/sdk", () => ({
@@ -7,7 +8,7 @@ vi.mock("@daytonaio/sdk", () => ({
   DaytonaTimeoutError: class extends Error {},
 }));
 
-import plugin, { __resetDaytonaSandboxHandleCacheForTest } from "./plugin.js";
+import plugin, { __resetDaytonaSandboxHandleCacheForTest, __setDaytonaPluginContextForTest } from "./plugin.js";
 
 function fixture() {
   const process = {
@@ -119,5 +120,124 @@ describe("Daytona completed session commands", () => {
     expect(await pending).toMatchObject({ exitCode: null, timedOut: true });
     expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
     expect(process.getSessionCommandLogs).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 7])("settles exit %s from its final snapshot before the follow socket closes", async (exitCode) => {
+    const { process, execute } = fixture();
+    process.getSessionCommand.mockResolvedValueOnce({ exitCode: undefined }).mockResolvedValue({ exitCode });
+    let lateOutput: ((chunk: string) => void) | undefined;
+    process.getSessionCommandLogs.mockImplementation(async (_session, _command, stdout) => {
+      if (stdout) {
+        lateOutput = stdout;
+        stdout("complete ");
+        return new Promise(() => {});
+      }
+      return { stdout: "complete stdout\n", stderr: "complete stderr\n" };
+    });
+    let settled = false;
+    const pending = execute(10_000).then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(250);
+    const settledBeforeSocketClose = settled;
+    if (!settled) await vi.advanceTimersByTimeAsync(10_000);
+    const result = await pending;
+    expect(settledBeforeSocketClose).toBe(true);
+    expect(result).toMatchObject({ exitCode, timedOut: false, stdout: "complete stdout\n", stderr: "complete stderr\n" });
+    lateOutput?.("late bytes must be ignored");
+    expect(result.stdout).toBe("complete stdout\n");
+    expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the early status reads while a longer command keeps streaming", async () => {
+    const { process, execute } = fixture();
+    process.getSessionCommand.mockResolvedValue({ exitCode: undefined });
+    let closeStream!: () => void;
+    process.getSessionCommandLogs.mockImplementation(async (_session, _command, stdout) => {
+      if (stdout) { stdout("complete "); return new Promise<void>(resolve => { closeStream = resolve; }); }
+      return { stdout: "complete stdout\n", stderr: "complete stderr\n" };
+    });
+    let settled = false;
+    const pending = execute(10_000).then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(settled).toBe(false);
+    expect(process.getSessionCommand).toHaveBeenCalledTimes(5);
+    process.getSessionCommand.mockResolvedValue({ exitCode: 0 });
+    closeStream();
+    expect(await pending).toMatchObject({ exitCode: 0, timedOut: false, stdout: "complete stdout\n" });
+    expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["rejected", "unavailable"])("retains the healthy stream after a %s early exit read", async (failure) => {
+    const { process, execute } = fixture();
+    process.getSessionCommand.mockResolvedValueOnce({ exitCode: undefined });
+    if (failure === "rejected") process.getSessionCommand.mockRejectedValueOnce(new Error("early status unavailable"));
+    else process.getSessionCommand.mockImplementationOnce(() => new Promise(() => {}));
+    let closeStream!: () => void;
+    process.getSessionCommandLogs.mockImplementation(async (_session, _command, stdout) => {
+      if (stdout) return new Promise<void>(resolve => { closeStream = resolve; });
+      return { stdout: "complete stdout\n", stderr: "complete stderr\n" };
+    });
+    let settled = false;
+    const pending = execute(10_000).then(result => { settled = true; return result; });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(settled).toBe(false);
+    expect(process.getSessionCommand).toHaveBeenCalledTimes(2);
+    closeStream();
+    expect(await pending).toMatchObject({ exitCode: 0, timedOut: false, stdout: "complete stdout\n", stderr: "complete stderr\n" });
+    expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the final snapshot deadline after observing an early exit", async () => {
+    const { process, execute } = fixture();
+    process.getSessionCommand.mockResolvedValueOnce({ exitCode: undefined });
+    process.getSessionCommandLogs.mockImplementation(() => new Promise(() => {}));
+    const pending = execute(100);
+    await vi.advanceTimersByTimeAsync(101);
+    expect(await pending).toMatchObject({ exitCode: null, timedOut: true,
+      metadata: { timeoutScope: "session_log_observation", commandExitConfirmed: true, observedExitCode: 0 } });
+    expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops early exit reads at the original command deadline", async () => {
+    const { process, execute } = fixture();
+    process.getSessionCommand.mockResolvedValueOnce({ exitCode: undefined }).mockImplementation(() => new Promise(() => {}));
+    const pending = execute(100);
+    await vi.advanceTimersByTimeAsync(101);
+    expect(await pending).toMatchObject({ exitCode: null, timedOut: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(process.getSessionCommand).toHaveBeenCalledTimes(2);
+    expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reconciles UTF-8 output and fences late follow callbacks after an early exit", async () => {
+    const { process, execute } = fixture();
+    const log = vi.fn();
+    const restore = __setDaytonaPluginContextForTest({ execution: { log } } as unknown as PluginContext);
+    process.getSessionCommand.mockResolvedValueOnce({ exitCode: undefined });
+    let lateStdout!: (chunk: string) => void;
+    let lateStderr!: (chunk: string) => void;
+    process.getSessionCommandLogs.mockImplementation(async (_session, _command, stdout, stderr) => {
+      if (stdout) {
+        lateStdout = stdout;
+        lateStderr = stderr!;
+        stdout("α");
+        return new Promise(() => {});
+      }
+      return { stdout: "αβ🚀\n", stderr: "γδ\n" };
+    });
+    try {
+      const pending = execute();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await pending).toMatchObject({ exitCode: 0, timedOut: false, stdout: "αβ🚀\n", stderr: "γδ\n" });
+      const deliveredCount = log.mock.calls.length;
+      lateStdout("late stdout");
+      lateStderr("late stderr");
+      expect(log).toHaveBeenCalledTimes(deliveredCount);
+      expect(process.executeSessionCommand).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { restore(); }
   });
 });

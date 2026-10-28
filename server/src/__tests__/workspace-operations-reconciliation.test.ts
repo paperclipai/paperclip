@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
   createDb,
@@ -270,5 +270,90 @@ describeEmbeddedPostgres("workspace operation reconciliation", () => {
     expect((await workspaceOperationService(db).readLog(operation.id)).content).toContain(
       "Workspace repair target_backup: succeeded.",
     );
+  });
+
+  describe("when the operation log file cannot be written", () => {
+    // The log file is created, then every append hits a full disk (PAPERCLIP-BACKEND-4H).
+    function failLogAppends() {
+      const enospc = Object.assign(new Error("ENOSPC: no space left on device, write"), {
+        code: "ENOSPC",
+        errno: -28,
+        syscall: "write",
+      });
+      const appendFile = fs.appendFile;
+      const spy = vi.spyOn(fs, "appendFile").mockImplementation(async (file, ...rest) => {
+        if (typeof file === "string" && file.startsWith(logRoot)) throw enospc;
+        return appendFile(file, ...rest);
+      });
+      return { enospc, spy };
+    }
+
+    async function seedCompany() {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Workspace operation full disk",
+        issuePrefix: `F${companyId.replace(/-/g, "").slice(0, 7).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      return companyId;
+    }
+
+    async function operationRows(companyId: string) {
+      return db.select().from(workspaceOperations).where(eq(workspaceOperations.companyId, companyId));
+    }
+
+    it("terminalizes the operation and surfaces the write error", async () => {
+      const companyId = await seedCompany();
+      const { enospc, spy } = failLogAppends();
+      try {
+        await expect(
+          workspaceOperationService(db)
+            .createRecorder({ companyId })
+            .recordOperation({
+              phase: "worktree_prepare",
+              command: "git worktree add",
+              cwd: "/tmp/full-disk-workspace",
+              run: async () => ({ status: "succeeded", exitCode: 0, stdout: "Preparing worktree\n" }),
+            }),
+        ).rejects.toBe(enospc);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const rows = await operationRows(companyId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: "failed", phase: "worktree_prepare" });
+      expect(rows[0]?.finishedAt).toBeInstanceOf(Date);
+      expect(rows[0]?.stderrExcerpt).toContain("ENOSPC: no space left on device, write");
+    });
+
+    it("keeps the operation's own error instead of the log write error", async () => {
+      const companyId = await seedCompany();
+      const { spy } = failLogAppends();
+      const gitError = new Error("fatal: could not create work tree dir");
+      try {
+        await expect(
+          workspaceOperationService(db)
+            .createRecorder({ companyId })
+            .recordOperation({
+              phase: "worktree_prepare",
+              command: "git worktree add",
+              cwd: "/tmp/full-disk-workspace",
+              run: async () => {
+                throw gitError;
+              },
+            }),
+        ).rejects.toBe(gitError);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const rows = await operationRows(companyId);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ status: "failed" });
+      expect(rows[0]?.finishedAt).toBeInstanceOf(Date);
+      expect(rows[0]?.stderrExcerpt).toContain("fatal: could not create work tree dir");
+    });
   });
 });

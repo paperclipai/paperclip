@@ -137,6 +137,14 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
+    return {
+      title: "Task couldn’t start",
+      body: "The task couldn’t start.",
+      nextAction: "Retry the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
     return {
       title: "AI connection needs attention",
@@ -256,6 +264,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

@@ -7,11 +7,43 @@ The maps describe the same capabilities from two perspectives:
 - [Agent access map](agent-access-map/README.md): the APIs and agent entry points
   for those capabilities, their permission boundaries, and access verification.
 
+The [chat scenario catalog](../tests/runner-e2e/chat-scenarios/README.md) adds
+natural-language requests, starting context and expected conversational outcomes
+for the same capability IDs. It lives with Product E2E as planning data; a scenario
+reference is neither a registered execution nor evidence that a journey passed.
+
 These are sibling directories under `maps/`. Each feature file has a same-named
 agent access companion. Reuse the product map's sub-feature IDs, so `tasks/create`
 identifies the same capability in both maps. Product behavior remains governed by
 [the implementation spec](../doc/SPEC-implementation.md); a map cannot grant
 authority or redefine a permission denial as success.
+
+## Capability identifiers
+
+The feature ID is the recipe filename without `.md`, such as `onboarding`.
+The full capability ID joins that feature ID and a Sub-features key with `/`:
+the `company` key in `feature-map/onboarding.md` is `onboarding/company`.
+Its `agent-access-map/onboarding.md` companion uses the same local `company` key.
+[The feature-map index](feature-map/README.md#browse-features) lists the existing
+feature and full capability IDs.
+
+Each child page states ``Feature ID: `onboarding`.`` after its introduction or
+product-map link. In feature recipes, show the full ID beside the parsed local
+key: ``- `company`: `onboarding/company` — create a company``. In access
+companions and Storybook verification guidance, keep the existing local heading
+and put ``Capability ID: `onboarding/company`.`` beneath it. These labels make
+the existing identifiers visible without changing keys, anchors, or ID generation.
+
+Use full capability IDs in cross-feature references, Storybook annotations,
+tests, issues, PRs, and verification evidence. Both segments use lowercase
+letters, digits, and hyphens. Keep filenames and keys stable when display titles
+or navigation labels change; renaming either changes the capability ID.
+
+Entry-point IDs describe a surface, such as `web-wizard`, and are scoped to their
+recipe. Reference them with a recipe link, such as
+[onboarding.md#web-wizard](feature-map/onboarding.md#web-wizard), and record the
+capability exercised separately. Navigation section labels are not capability IDs.
+See [IDs and references](feature-map/README.md#ids-and-references) for examples.
 
 ## Access contract
 
@@ -62,8 +94,9 @@ the agent path, even when a legacy agent can call the REST endpoint directly.
 ## Companion file format
 
 Each `agent-access-map/<area>.md` has an H1, a relative link to its product file,
-followed by one H2 backticked ID per product
-sub-feature. Each capability contains these fields:
+and its feature ID, followed by one H2 backticked local key per product
+sub-feature. Each capability starts with its full capability ID and contains
+these fields:
 
 - **Review:** `baseline` or `operation-reviewed`.
 - **API:** presence state and exact operation IDs, or a reasoned exception.
@@ -108,6 +141,9 @@ tool binding, CLI support, or work mode, update the affected companion and produ
 recipe as appropriate in the same change. Preserve IDs across renames where the
 capability is unchanged; update the affected cross-links together. Indexes discover recipes automatically. An API-only
 change may update the companion without rewriting unchanged user instructions.
+Update the corresponding chat scenarios when their request, assumptions or
+expected outcome changes; use multiple cases for meaningfully different starting
+conditions rather than treating an API path as conversational coverage.
 
 [maintain-verification-skill](../.agents/skills/maintain-verification-skill/SKILL.md)
 owns reconciliation of both maps. It follows changed source and authorization,
@@ -139,8 +175,10 @@ separate from generated `maps/generated/coverage.json`, which lists page referen
 
 Change only the recipes, access contracts and stories whose behavior or intent
 changed. Feature recipes own navigation metadata; stories own small
-`parameters.paperclip` annotations. Do not register entries or refresh counts in
-shared READMEs, inventories, fingerprints or review journals.
+`parameters.paperclip` annotations. Keep the feature-map README's readable ID
+index aligned with those sources; it does not register entries for generation.
+Do not refresh counts in shared READMEs, inventories, fingerprints or review
+journals.
 
 `node scripts/storybook-catalog.mjs` validates and generates aggregate navigation,
 Storybook data, verification routes and the page inventory. All outputs live in

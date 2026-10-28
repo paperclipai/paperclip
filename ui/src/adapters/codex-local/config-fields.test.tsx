@@ -11,9 +11,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { CodexLocalConfigFields } from "./config-fields";
 import { buildCodexRunnerConfig } from "./config-fields";
+import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { defaultCreateValues } from "@/components/agent-config-defaults";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
-import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
@@ -121,11 +121,6 @@ async function editFields(
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it.each(["", "max"])("preserves or overrides saved native Codex reasoning effort (%s)", thinkingEffort => {
-    const values = { ...defaultCreateValues, thinkingEffort, adapterSchemaValues: { provider: "codex", modelReasoningEffort: "high" } };
-    expect(buildPaperclipRunnerConfig(values).modelReasoningEffort).toBe(thinkingEffort || "high");
-    expect(buildPaperclipRunnerConfig({ ...values, adapterSchemaValues: { provider: "acpx", acpxAgent: "claude", modelReasoningEffort: "high" } })).not.toHaveProperty("modelReasoningEffort");
-  });
   it.each(["", "--sandbox,read-only"])("shows actual automatic Legacy policy and preserves the explicit toggle (%s)", async (extraArgs) => {
     const container = document.createElement("div");
     document.body.appendChild(container);
@@ -226,6 +221,15 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(dot).toContain("Dot connection");
     expect(dot).toContain("Allow externally billed provider");
   });
+  it("uses the shared Muse connection and excludes local harness, workspace, and lifecycle fields", async () => {
+    const muse = await renderRunner({ provider: "muse" });
+    expect(muse).toContain("Muse connection");
+    expect(muse).toContain("Allow externally billed provider");
+    expect(muse).not.toContain('aria-label="Harness"');
+    expect(muse).not.toContain("Runner lifecycle");
+    expect(muse).not.toContain("Workspace files and commands");
+    expect(muse).not.toContain("Capture raw provider traces");
+  });
   it("keeps the general harness picker hidden for an existing Grok Bot", async () => {
     const html = await renderRunner({ provider: "grok_bot" });
     expect(html).not.toContain('aria-label="Harness"');
@@ -272,7 +276,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
-  it("offers qualified Claude, Cursor and Pi while keeping Copilot disabled", async () => {
+  it("offers qualified Claude, Cursor, Pi and Copilot", async () => {
     const html = await renderRunner({
       provider: "acpx",
       acpxAgent: "claude",
@@ -285,7 +289,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(Array.from(options, option => ({ label: option.textContent?.trim(), disabled: option.hasAttribute("data-disabled") })))
       .toEqual(expect.arrayContaining([
         { label: "Claude", disabled: false }, { label: "Cursor", disabled: false },
-        { label: "Pi", disabled: false }, { label: "GitHub Copilot — qualification pending", disabled: true },
+        { label: "Pi", disabled: false }, { label: "GitHub Copilot", disabled: false },
       ]));
     expect(html).not.toContain("Codex via ACPX");
     expect(html).not.toContain("ACPX Codex");

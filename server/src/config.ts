@@ -82,12 +82,30 @@ export interface Config {
   gitCacheExpirationEnabled: boolean;
   gitBaseExpirationEnabled: boolean;
   gitCacheExpirationDryRun: boolean;
+  isolatedSourceRehomeEnabled: boolean;
+  isolatedSourceRehomeDryRun: boolean;
+  nestedCloneMigrationEnabled: boolean;
+  nestedCloneMigrationDryRun: boolean;
   workspaceReaperCooldownDays: number;
   workspaceCompactionDelayHours: number | null;
   skillVersionRetentionEnabled: boolean;
   skillVersionRetentionDryRun: boolean;
   skillVersionRetentionKeepNewest: number;
   skillVersionRetentionGraceMinutes: number;
+  nativeHarnessBackupExpirationEnabled: boolean;
+  nativeHarnessBackupExpirationDryRun: boolean;
+  nativeHarnessBackupExpirationDays: number;
+  nativeRunnerEvidenceRetentionDays: number;
+  nativeWorkspaceSyncRetentionEnabled: boolean;
+  nativeWorkspaceSyncRetentionDryRun: boolean;
+  nativeWorkspaceSyncRetentionDays: number;
+  gitRestorePointRetentionDays: number;
+  gitRestorePointsEnabled: boolean;
+  gitRestorePointTerminalDelayDays: number;
+  gitRestorePointIdleDays: number;
+  taskDirectoryRetentionEnabled: boolean;
+  taskDirectoryRetentionDryRun: boolean;
+  taskDirectoryOrphanGraceDays: number;
   serveUi: boolean;
   uiDevMiddleware: boolean;
   secretsProvider: SecretProvider;
@@ -333,6 +351,13 @@ export function loadConfig(): Config {
   };
   const skillVersionRetentionKeepNewest = nonNegativeIntegerEnv("PAPERCLIP_SKILL_VERSION_RETENTION_KEEP", 0);
   const skillVersionRetentionGraceMinutes = nonNegativeIntegerEnv("PAPERCLIP_SKILL_VERSION_RETENTION_GRACE_MINUTES", 60);
+  const nativeHarnessBackupExpirationDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DAYS", 7));
+  const nativeRunnerEvidenceRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS", 7));
+  const nativeWorkspaceSyncRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DAYS", 7));
+  const gitRestorePointRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS", 90));
+  const gitRestorePointTerminalDelayDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS", 3);
+  const gitRestorePointIdleDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS", 7);
+  const taskDirectoryOrphanGraceDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_TASK_DIRECTORY_ORPHAN_GRACE_DAYS", 7));
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -381,12 +406,30 @@ export function loadConfig(): Config {
     gitCacheExpirationEnabled: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_ENABLED === "true",
     gitBaseExpirationEnabled: process.env.PAPERCLIP_GIT_BASE_EXPIRATION_ENABLED === "true",
     gitCacheExpirationDryRun: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_DRY_RUN !== "false",
+    isolatedSourceRehomeEnabled: process.env.PAPERCLIP_ISOLATED_SOURCE_REHOME_ENABLED === "true",
+    isolatedSourceRehomeDryRun: process.env.PAPERCLIP_ISOLATED_SOURCE_REHOME_DRY_RUN === "true",
+    nestedCloneMigrationEnabled: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED === "true",
+    nestedCloneMigrationDryRun: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN === "true",
     workspaceReaperCooldownDays,
     workspaceCompactionDelayHours,
     skillVersionRetentionEnabled: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_ENABLED !== "false",
     skillVersionRetentionDryRun: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_DRY_RUN === "true",
     skillVersionRetentionKeepNewest,
     skillVersionRetentionGraceMinutes,
+    nativeHarnessBackupExpirationEnabled: process.env.PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED !== "false",
+    nativeHarnessBackupExpirationDryRun: process.env.PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN === "true",
+    nativeHarnessBackupExpirationDays,
+    nativeRunnerEvidenceRetentionDays,
+    nativeWorkspaceSyncRetentionEnabled: process.env.PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_ENABLED !== "false",
+    nativeWorkspaceSyncRetentionDryRun: process.env.PAPERCLIP_NATIVE_WORKSPACE_SYNC_RETENTION_DRY_RUN === "true",
+    nativeWorkspaceSyncRetentionDays,
+    gitRestorePointRetentionDays,
+    gitRestorePointsEnabled: process.env.PAPERCLIP_GIT_RESTORE_POINTS_ENABLED === "true",
+    gitRestorePointTerminalDelayDays,
+    gitRestorePointIdleDays,
+    taskDirectoryRetentionEnabled: process.env.PAPERCLIP_TASK_DIRECTORY_RETENTION_ENABLED === "true",
+    taskDirectoryRetentionDryRun: process.env.PAPERCLIP_TASK_DIRECTORY_RETENTION_DRY_RUN !== "false",
+    taskDirectoryOrphanGraceDays,
     serveUi:
       process.env.SERVE_UI !== undefined
         ? process.env.SERVE_UI === "true"

@@ -1,5 +1,8 @@
+import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
+import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+
 import {
   ISSUE_EXECUTION_DECISION_OUTCOMES,
   ISSUE_EXECUTION_MONITOR_CLEAR_REASONS,
@@ -43,6 +46,12 @@ import {
 } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
 import { questionSetToAskUserQuestionsPayload } from "../question-set.js";
+
+export const issueSummariesQuerySchema = z.object({
+  ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
+    .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
+    .transform((ids) => [...new Set(ids)]),
+}).strict();
 
 export const issueBlockedInboxStateSchema = z.enum([
   "needs_attention",
@@ -297,7 +306,9 @@ export const issueExecutionWorkspaceSettingsSchema = z
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
-    adapterConfig: z.record(z.string(), z.unknown()).optional(),
+    adapterConfig: z.record(z.string(), z.unknown())
+      .refine(config => !Object.prototype.hasOwnProperty.call(config, "homeMode"), "homeMode must be set by an operator on the agent, not on a task")
+      .optional(),
     useProjectWorkspace: z.boolean().optional(),
   })
   .strict();
@@ -569,6 +580,28 @@ export const retryWorkspaceExportSchema = z.object({
   actionId: z.string().guid(),
   runId: z.string().guid(),
   repairNote: z.string().trim().min(20).max(12000),
+}).strict();
+
+export const taskRetrySchema = z.object({
+  idempotencyKey: z.string().guid(),
+  observedRunId: z.string().guid().nullable(),
+}).strict();
+
+export const recoverWorkspaceSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  idempotencyKey: z.string().guid(),
+}).strict();
+
+export const reconstructWorkspaceSchema = z.object({
+  actionId: z.string().guid(),
+  runId: z.string().guid(),
+  expectedStatusVersion: z.number().int().nonnegative(),
+  attachmentIds: z.array(z.string().guid()).min(1).max(20).refine(ids => new Set(ids).size === ids.length),
+  missingWork: z.string().trim().min(20).max(12000),
+  actionOutcome: z.enum(["completed", "not_performed", "mixed"]),
+  outcomeEvidence: z.string().trim().min(20).max(12000),
+  acknowledgeLostWork: z.literal(true),
 }).strict();
 
 export const resolveIssueRecoveryActionSchema = z
@@ -902,6 +935,7 @@ export const updateIssueSchema = objectWithoutDefaults(
 )
   .partial()
   .extend({
+    expectedStatusVersion: z.number().int().nonnegative().optional(),
     /** Reject a policy write if the policy changed after the caller read it. */
     expectedExecutionPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
     requestDepth: issueRequestDepthInputSchema.optional(),
@@ -1053,7 +1087,8 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
-    sourceChannel: z.literal("imessage-photon").optional(),
+    recoveryResponsibility: z.enum(["system", "user"]).optional(),
+    sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()
@@ -1135,6 +1170,11 @@ const connectionIntentBrandAssetSchema = z
 
 export const connectionIntentPayloadSchema = z
   .object({
+    savedSetup: z.object({ endpointId: z.string().guid(), connectionId: z.string().guid(), action: z.enum(["enter_credentials", "rotate_credentials", "confirm_identity"]).optional(), credentialRotation: z.object({ previousId: z.string().guid().nullable() }).strict().optional(), credentialEntry: z.object({
+      previousGenerations: z.record(z.string().refine(field => ["signingSecret", "webhookSecret", "privateKey", "clientSecret", "projectSecret"].includes(field)), z.string().uuid().nullable()).refine(value => Object.keys(value).length > 0 && Object.keys(value).length <= 5),
+      requireAll: z.boolean(),
+    }).strict().optional() }).strict()
+      .refine(value => value.action !== "rotate_credentials" || !!value.credentialRotation, "Rotation requests need a completion boundary").optional(),
     accessRequest: z.object({
       connectionId: z.string().guid(),
       connectionName: z.string().trim().min(1).max(160),

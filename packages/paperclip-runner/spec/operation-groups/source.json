@@ -73,8 +73,8 @@
     },
     {
       "id": "cases",
-      "description": "Read and update case summaries without reusing issue-document authority.",
-      "operationIds": ["list_cases", "upsert_case"]
+      "description": "Read and update authorized case facts and revisioned documents, author company workflow prompts, and durably hand off the primary task. list_cases and upsert_case remain scenario mocks.",
+      "operationIds": ["list_cases", "upsert_case", "create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow", "handoff_case"]
     },
     {
       "id": "workspace_runtime",
@@ -186,12 +186,12 @@
       "legacyGroup": 6,
       "name": "Subtasks",
       "owner": "optional delegation tools",
-      "operationIds": ["create_task", "reassign_task", "hire_agent"],
+      "operationIds": ["create_task", "reassign_task", "hire_agent", "handoff_case"],
       "controlPlaneOperationIds": ["route_wake"],
       "realSurface": "company issue create, child issue, guarded reassignment, and wake services",
       "mockStateDomains": ["company", "task", "actor", "blockers", "wake", "audit"],
       "prpEvidence": "company/task state diff, audit reference, and continuation wake evidence",
-      "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency."
+      "gap": "create_task is production-bound to ordinary active-issue child creation with assignment, dependency-ready wake, company checks, child limits, and durable source-scoped idempotency. handoff_case is live-only: the dedicated case service moves the same primary task after source execution settles, or records completion intent subject to ordinary completion gates; legacy scenarios do not claim that coverage."
     },
     {
       "id": "bl",
@@ -209,13 +209,13 @@
       "id": "dp",
       "legacyGroup": 8,
       "name": "Documents and plans",
-      "owner": "always tools; restore optional; destructive lifecycle control-plane-only",
+      "owner": "always task-document tools; restore optional; destructive lifecycle control-plane-only",
       "operationIds": ["list_documents", "read_document", "list_document_revisions", "write_document"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "issue document list/read/upsert/revision/restore/lock/unlock/delete routes",
       "mockStateDomains": ["task", "documents", "interactions", "idempotency", "audit", "fault"],
       "prpEvidence": "bounded reads and revision-safe write/conflict/denial receipts with revision lineage",
-      "gap": "restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only."
+      "gap": "restore_document_revision is an approved optional-tool gap; lock/unlock/delete are intentionally control-plane-only. Case kickoff initialDocuments become ordinary task documents in the same transaction. Case reads roll up authorized task document metadata; historical case-document REST storage remains readable without dedicated native document tools."
     },
     {
       "id": "ix",
@@ -270,12 +270,12 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "always instruction tools + optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions", "submit_complaint", "submit_suggestion"],
+      "operationIds": ["list_cases", "upsert_case", "create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow", "list_routines", "manage_routine", "create_skill", "update_skill", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project", "read_agent_instructions", "update_agent_instructions", "get_agent_instruction_history", "restore_agent_instructions", "submit_complaint", "submit_suggestion"],
       "controlPlaneOperationIds": ["append_audit_record"],
       "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services, and run-attributed agent commentary",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage."
+      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only. Workflow definition tools are live-only company-scoped prompt authoring and bounded retrieval under the Cases flag. create_case, read_case and update_case are live-only authorized case creation, projections and fact mutations; list_cases and upsert_case remain scenario mocks. Other domain operations remain scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage."
     },
     {
       "id": "mh",

@@ -28,6 +28,10 @@ import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
+import { readNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+
+const EXITED_PID = 4_194_304;
 
 describe("native completed failure diagnostics", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -46,10 +50,12 @@ describe("native completed failure diagnostics", () => {
   });
   afterAll(async () => { await temporary?.cleanup(); });
 
-  it.each(["committed", "duplicate", "pending-review", "superseded-review", "resolved-review", "reassigned", "successor-race", "different-turn", "unknown-error", "untrusted-source", "untrusted-run", "untrusted-session", "succeeded", "cancelled"] as const)(
+  it.each(["committed", "duplicate", "pending-review", "superseded-review", "resolved-review", "reassigned", "successor-race", "different-turn", "unknown-error", "opencode-lost-server", "untrusted-source", "untrusted-run", "untrusted-session", "succeeded", "cancelled"] as const)(
     "preserves accepted results and only labels the matching provider rejection (%s)", async (scenario) => {
       const issueId = randomUUID();
       const runId = randomUUID();
+      const opencode = scenario === "opencode-lost-server";
+      const executionProvider = opencode ? { kind: "opencode" as const, model: `openrouter/${model}` } : { kind: "codex" as const, model };
       const [issue] = await db.insert(issues).values({ id: issueId, companyId, title: "Explain a provider rejection", status: "in_progress", workMode: "standard", assigneeAgentId: agentId }).returning();
       const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: issueId, invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } }).returning();
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
@@ -60,10 +66,10 @@ describe("native completed failure diagnostics", () => {
       const execution: NativeExecutionInputV1 = {
         schema: "paperclip.native-execution-input.v1",
         binding: { companyId, runId, issueId, agentId, executionWorkspaceId: runId },
-        provider: { kind: "codex", model },
+        provider: executionProvider,
         task: { identifier: issueId, title: issue.title, description: null, prompt: "Reply to the current message.", workMode: "standard" },
         workspace: { cwd: "/tmp", repoUrl: null, repoRef: null, branchName: null },
-        session: { normalizedSessionId: native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+        session: { normalizedSessionId: native.normalizedSessionId, driverKind: opencode ? "opencode_server" : "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
         completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1", contract: completionInput },
         interactionResponses: [], credentialBindings: [],
       };
@@ -94,7 +100,10 @@ describe("native completed failure diagnostics", () => {
         schema: "paperclip.prp.event.v1", runId, normalizedSessionId: native.normalizedSessionId,
         turnId: native.turnId, sourceInstanceId: native.runnerInstanceId, sourceEventId: "model-terminal", sourceSeq: 1,
         sourceKind: "runner", eventType: "turn.failed", schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(),
-        payload: { status: "failed", error: { codexErrorInfo: "other", message: JSON.stringify({
+        payload: opencode ? { status: "failed", providerTerminalObserved: false, error: {
+          code: "opencode_server_exited", message: "Private stream failure",
+          opencodeFailure: { kind: "server_exited", signal: "SIGKILL", connectionError: "ECONNREFUSED" },
+        } } : { status: "failed", error: { codexErrorInfo: "other", message: JSON.stringify({
           type: "error", status: 400, error: { type: "invalid_request_error", message: scenario === "unknown-error" ? "Private unknown failure" : `The '${model}' model is not supported when using Codex with a ChatGPT account.` },
         }) } },
       };
@@ -124,7 +133,7 @@ describe("native completed failure diagnostics", () => {
           expect((await options.controlPlane.appendEvent(event)).disposition).toBe(scenario === "duplicate" ? "duplicate" : "committed");
         }
         await options.controlPlane.completeRun({ result, terminal, turnId });
-        return { result, terminal, turnId, normalizedSessionId: native.normalizedSessionId, providerSessionId: "fixture-provider-session", driverKind: "codex_app_server", driverVersion: "fixture", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+        return { result, terminal, turnId, normalizedSessionId: native.normalizedSessionId, providerSessionId: "fixture-provider-session", driverKind: execution.session.driverKind, driverVersion: "fixture", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
       });
       const adapter = await executePaperclipNativeSession({ db, execution, runnerInstanceId: native.runnerInstanceId, backend: {
         descriptor: async () => { throw new Error("Unexpected provider call"); },
@@ -137,11 +146,13 @@ describe("native completed failure diagnostics", () => {
       expect(adapter.errorMessage).toBe(classified ? NATIVE_MODEL_REJECTION_MESSAGE : scenario === "succeeded" ? null : `Native session ${terminal.runTerminalState}`);
       expect(adapter.resultJson?.nativeProviderFailure).toEqual(classified ? NATIVE_MODEL_REJECTION_DIAGNOSTIC : undefined);
       // Only a committed, unclassified failure of the terminal turn explains the generic message.
-      const turnFailure = scenario === "unknown-error" ? { provider: "codex", category: "turn_failed", codexErrorInfo: "other" } : undefined;
+      const turnFailure = scenario === "unknown-error" ? { provider: "codex", category: "turn_failed", codexErrorInfo: "other" }
+        : opencode ? { provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_server_exited", streamFailure: "server_exited", signal: "SIGKILL", connectionError: "ECONNREFUSED" }
+          : undefined;
       expect(adapter.resultJson?.nativeTurnFailure).toEqual(turnFailure);
       expect(adapter.nativeFinalization).toMatchObject({ result, terminal, turnId, workspaceFinalizeStatus: "pending" });
       expect(provider.execute).toHaveBeenCalledTimes(1);
-      expect(execution.provider).toEqual({ kind: "codex", model });
+      expect(execution.provider).toEqual(executionProvider);
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
       expect(coordinator).toMatchObject({ phase: "workspace_finalizing", leaseOwner: null, attempt: 1, nextAttemptAt: null });
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toHaveLength(1);
@@ -263,9 +274,10 @@ describe("native completed failure diagnostics", () => {
           expect(provider.execute).toHaveBeenCalledTimes(1);
           await db.update(agents).set({ adapterConfig: { provider: "codex", model } }).where(eq(agents.id, agentId));
         }
-      } else if (scenario === "unknown-error") {
+      } else if (scenario === "unknown-error" || opencode) {
         // A lookalike diagnostic flag does not alter unknown failed-result policy.
         await db.update(heartbeatRuns).set({ resultJson: { nativeProviderFailure: NATIVE_MODEL_REJECTION_DIAGNOSTIC } }).where(eq(heartbeatRuns.id, runId));
+        await persistHeartbeatRunProcessMetadata(db, runId, { pid: EXITED_PID, processGroupId: EXITED_PID, startedAt: new Date().toISOString(), targetKind: "local" });
         await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded" });
         const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.runId, runId));
         expect(decision.reasonCode).toBe("run_failed_partial_evidence_preserved");
@@ -275,6 +287,18 @@ describe("native completed failure diagnostics", () => {
         expect(finalRun.resultJson?.nativeTurnFailure).toEqual(turnFailure);
         const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
         expect(wakes.filter(wake => wake.payload?.issueId === issueId)).toHaveLength(1);
+        if (scenario === "unknown-error") {
+          await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+          const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+          expect(coordinator.phase).toBe("committed");
+          expect(settled).toMatchObject({ status: "failed", processPid: EXITED_PID, processGroupId: EXITED_PID });
+          await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1_000, eventType: "harness.ready" });
+          expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
+          const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          expect(released).toMatchObject({ status: "failed", processPid: null, processGroupId: null, processStartedAt: null });
+          expect(await readNativeLocalProcessStop(db, companyId, runId)).toMatchObject({ processPid: EXITED_PID, processGroupId: EXITED_PID });
+        }
       }
     },
   );

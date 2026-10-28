@@ -6,27 +6,29 @@ navigation: {"section":"Agents and reusable capabilities","sectionOrder":30,"ord
 
 Operators discover or import skills, author and test them in Skill Studio, manage source versions, and decide which agents may use them.
 
+Feature ID: `skills`.
+
 Implementation: [skill library](../../ui/src/pages/CompanySkills.tsx), [studio](../../ui/src/pages/SkillStudio.tsx), [sources](../../ui/src/pages/SkillSources.tsx), [agent skills](../../ui/src/pages/agent-skills/AgentSkillsTab.tsx).
 
 Agent access: [companion](../agent-access-map/skills.md).
 
 ## Sub-features
 
-- `discovery`: browse installed/discover views and import a skill or source.
-- `authoring`: create/edit a writable skill or fork a read-only source.
-- `versions`: inspect revisions, source updates, diffs, and selected releases.
-- `policy`: apply agent enablement and skill usage policy independently from installation.
-- `testing`: run a bounded Studio test and inspect its result and interactions.
+- `discovery`: `skills/discovery` — browse installed/discover views and import a skill or source.
+- `authoring`: `skills/authoring` — create/edit a writable skill or fork a read-only source.
+- `versions`: `skills/versions` — inspect revisions, source updates, diffs, and selected releases.
+- `policy`: `skills/policy` — apply agent enablement and skill usage policy independently from installation.
+- `testing`: `skills/testing` — run a bounded Studio test and inspect its result and interactions.
 
 ## How to get to it (user POV)
 
 ### `library-sources`
 
-Open `/skills`, Discover, or `/skills/sources`; project import is available through the library’s import flow.
+Open `/skills`, Discover, or `/skills/sources`; project import is available through the library’s import flow. In Streamlined UI, Installed, Discover and My Skills are route links styled as tabs beneath the toolbar, with no secondary navigation rail. Sources stays separate under New → Manage sources. Legacy UI retains the Skills sidebar.
 
 ### `studio`
 
-Use New skill or `/skills/studio/:skillId`; writable copies and source-backed originals differ.
+Use New skill or `/skills/studio/:skillId`; writable copies and source-backed originals differ. In Streamlined UI, `/skills/studio` uses the shared Skills toolbar and card collection with My Skills active and Recently updated sorting; opening a card enters Studio.
 Direct authoring starts at `/skills/studio/new`: fill **Name** and **Slug**, then
 **Create skill**. Authoring/save/reload requires no model credential; running a
 Studio test is separate.
@@ -55,6 +57,16 @@ Manual: Create or fork a disposable skill, edit instructions, save, and reload. 
 
 Automated: [policy service](../../server/src/__tests__/company-skill-policy-service.test.ts) and [agent skills state](../../ui/src/pages/agent-skills/AgentSkillsTab.test.ts) cover policy/state contracts.
 
+The [version-cache regression](../../server/src/__tests__/skill-version-cache.test.ts)
+checks that listing assignments does not create repository caches, validate every
+support file, or extend cache use. Run preparation still restores and repairs the
+selected version. To check attachment, use a repository skill with a cold cache,
+add it to an agent, then reload the skill's Agents tab and the agent's Skills tab.
+Keep another repository skill set to Latest during this check. With beta version
+pins disabled, adding the new skill must preserve that Latest selection and save
+without a beta-pin error. The [HTTP regression](../../server/src/__tests__/agent-skills-routes.test.ts)
+checks this round trip and retention of explicit historical pins.
+
 Manual: Enable the skill for one test agent and leave another without access. Run a small task on each, inspect the available skill context, then change the release/policy and verify the next eligible run uses the intended version.
 
 A Paperclip Runner run with no selected skills must proceed while another run
@@ -62,6 +74,12 @@ holds the company skill-cache lock. A saved empty selection remains empty after
 later assignments. Selected skills and the legacy operational skill retain cache
 exclusion through version pinning. The [configuration regression](../../server/src/__tests__/heartbeat-execution-configuration.test.ts)
 uses a real PostgreSQL lock; live provider latency remains a separate check.
+
+Concurrent selected-skill preparations share one in-flight company inventory
+refresh before cache locking. Each run retains its own selection and durable
+version pins. The [concurrency regression](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
+checks shared work and separate actor access; the cache tests check that cleanup
+cannot remove a snapshot before the run stores its pins.
 
 ## Gotchas
 
@@ -113,6 +131,8 @@ Open Choose connection while a source is being refreshed. Select an authorized a
 
 #### `testing`
 
+Capability ID: `skills/testing`.
+
 Scope: ui
 Storybook: Studio test inputs/configuration, running, question/approval, result and failed test states.
 Production: Run bounded test of actual saved version with correct selected account/environment; inspect persisted test detail and eligible interaction response.
@@ -121,3 +141,9 @@ Sources: Source: [SkillStudio.tsx](../../ui/src/pages/SkillStudio.tsx), [company
 ### Documentation scope: Skills, Skill Studio, and teams
 
 Main library/Studio/source/policy and CLI team-install paths are mapped. Full source-provider conflicts, harness sync, and remote package variants remain; catalog UI is not a current top-level route.
+
+
+Installed skill updates and assignments can drive opt-in plugin runtime
+synchronization. Version pins remain effective. See
+[contract](../../doc/plugins/AGENT_RUNTIME_SYNC.md#skills) and
+[database coverage](../../server/src/__tests__/agent-runtime-skills.test.ts).

@@ -64,6 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
     let mut goal = Value::Null;
+    let mut provider_lost = false;
     let mut session_identity = Value::Null;
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
@@ -75,6 +76,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if mode == "turns-provider-death" && provider_lost && command == "session.goal.get" {
+            write_json(
+                &mut stdout,
+                &json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":false,"error":{"message":"provider has exited"}
+                }),
+            )?;
+            continue;
+        }
         if let Some(journal) = admission_journal.as_mut() {
             write_json(journal, &json!({"request":request}))?;
             let response = if command == "tool.resolve" {
@@ -251,7 +262,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "id": id,
                         "ok": false,
                         "error": {
-                            "code": "Q7Z9",
+                            "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
                             "message": "violet-circuit-4821",
                             "retryable": false,
                         },
@@ -315,6 +326,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "turns-provider-death"
+            | "turns-malformed-activity"
             | "permissions-forged-origin"
             | "turns-retired"
             | "turns-retired-terminal-first"
@@ -365,6 +378,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 write_json(&mut stdout, &response)?;
+                if command == "turn.start" && mode == "turns-malformed-activity" {
+                    stdout.write_all(b"{invalid sidecar activity\n")?;
+                    stdout.flush()?;
+                }
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -381,6 +398,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|suffix| format!("call-{suffix}"))
                         .unwrap_or_else(|| "call-1".to_owned())
                 };
+                if command == "turn.start" && mode == "turns-provider-death" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.permission_requested",
+                        "run-1",
+                        turn_id,
+                        json!({"requestId":"dead-input","kind":"edit","title":"Write the file?","choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Deny"}]}),
+                    )?;
+                    next_sequence += 1;
+                    provider_lost = true;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"failed","error":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"provider has exited","retryable":false}}),
+                    )?;
+                    next_sequence += 1;
+                }
                 if command == "turn.start" && matches!(mode, "turns" | "turns-wrong-scope") {
                     write_turn_event(
                         &mut stdout,

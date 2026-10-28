@@ -12,7 +12,7 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
-import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -34,7 +34,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     .select({ id: agents.id, name: agents.name, status: agents.status })
     .from(agents)
     .where(eq(agents.companyId, companyId));
-  const uniqueName = deduplicateAgentName(data.name, existingAgents);
+  const uniqueName = deduplicateAgentName(data.name, existingAgents.filter(agent => agent.id !== options?.setupAgentId));
 
   const role = data.role ?? "general";
   const normalizedPermissions = normalizeAgentPermissions(data.permissions, { context: "create" });
@@ -44,6 +44,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+  if (adapterType === "paperclip_runner" && !["openai_dot", "grok_bot", "muse"].includes(String(adapterConfig.provider)) &&
+      (await resolveAgentRunnerTaskDriverForCompany(db, companyId, data.defaultEnvironmentId))?.warmTaskVersion === 1) {
+    adapterConfig.lifecycleMode = "warm";
+  }
   await agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
     companyId, consume: true, environmentId: data.defaultEnvironmentId ?? null,
     childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,
@@ -60,7 +64,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
   // New standard agents receive the standard direct grants at activation.
   // Low-trust and bundled agents keep their explicit, narrower grants.
-  if (created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
+  if (!options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
       !readBuiltInAgentMarker(created.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
@@ -82,7 +86,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
     }))).onConflictDoNothing();
   }
   await agentCredentialService(txDb).syncAgentSecretBindings(created, txDb);
-  if (options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
+  if (!options?.setupOnly && options?.createdByUserId && !readBuiltInAgentMarker(created.metadata)) {
     await initializePrimaryAgent(txDb, companyId, options.createdByUserId, created.id);
   }
 }

@@ -6,6 +6,7 @@ describe("adapter display registry", () => {
   it.each([
     ["openai_dot", "OpenAI Dot"],
     ["grok_bot", "Grok Bot"],
+    ["muse", "Muse — Personal agent"],
   ])("keeps saved %s external runners branded by provider", (provider, label) => {
     const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } });
     expect(getAdapterDisplay(type).label).toBe(label);
@@ -18,6 +19,7 @@ describe("adapter display registry", () => {
     }
   });
   it("uses user-facing labels without the legacy local qualifier for built-in adapters", () => {
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } })).toBe("opencode_local");
     expect(getAdapterLabel("codex_local")).toBe("Codex");
     expect(getAdapterLabel("claude_local")).toBe("Claude Code");
     expect(getAdapterLabel("acpx_local")).toBe("ACPX (retired)");
@@ -29,6 +31,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi" } })).toBe("pi_local");
 
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",

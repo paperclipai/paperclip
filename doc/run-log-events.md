@@ -5,7 +5,78 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Startup reuse evidence
+
+`run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
+one layer: `environment` (the lease), `workspace`, `runner`, `provider_process`,
+or `provider_session`. Its state is `reused`, `fresh`, `unknown`, or
+`not_applicable`. Reasons use a closed set: `verified_reuse`, `created`,
+`replacement`, `not_found`, `expired`, `identity_mismatch`, `resume_failed`,
+`configuration_changed`, `tools_changed`, `workspace_changed`, `cache_miss`,
+`not_applicable`, and `evidence_missing`. No paths, identifiers, configuration
+values, or exception messages enter these fields.
+
+Provider-process receipts carry a cumulative `providerLaunchCount` for the run.
+`null` means unobserved; zero requires a physical launch observer. Direct ACPX
+processes count initial launches and respawns, including launches during retries.
+On the remote process-session bridge, ACPX observes the host relay rather than
+the sandbox provider. Provider-process reuse and launch counts stay unknown on
+that transport. Native Runner session events establish session continuity, but
+do not establish provider-process reuse or its launch count. Those values stay
+unknown without physical evidence. The final ACPX receipt does not wait for
+persistence, so a stalled diagnostic sink cannot hold the staging lease.
+The existing successful `runner.process.launch` performance receipt establishes
+a fresh Runner process, independently of provider-session continuity.
+
+The Product E2E result stores `startupReuse` by run, and its dashboard displays
+each layer, its reason, and the launch count. `warm` requires all applicable
+layers to be reused and zero observed provider launches. `cold` requires all
+applicable layers to be fresh. Some reuse with other fresh or missing evidence
+is `partial_reuse`; otherwise the label is `unknown`. Fresh decisions dominate
+later reuse receipts within a run. Legacy runs without receipts retain unknown
+layers and a null launch count. Session IDs and follow-up turns never establish
+warmth. These events stay in the local run log; they add no first-party Telemetry.
+
+## Ordinary event persistence
+
+Events without a native source identity or retry-exhaustion receipt use one
+atomic PostgreSQL statement. The statement checks the stored run's company and
+agent, allocates its next sequence, and inserts the event. An insertion failure
+also rolls back the sequence allocation. The returned row uses the existing
+column decoders, including the lossless payload codec. Callers still wait for
+the durable write before they publish or acknowledge the event. Native-source
+replay and retry-exhaustion deduplication retain their existing transaction path.
+
+## Legacy case handoff cleanup
+
+`legacy.case_handoff_cleanup_intent` records local cleanup ownership before
+dispatch, then binds it atomically to the observed process identity on spawn.
+It includes the host, controller/run generation, PID/group/start identity, and
+owned scratch descriptor or explicit `null`. It does not prove termination.
+`legacy.case_handoff_cleanup_verified` records the later stop proof before
+scratch removal. Restart recovery rechecks process, controller, workspace and
+ownership gates before completing cleanup and releasing the handoff.
+These controller receipts are cleanup bookkeeping, not evidence of agent task
+progress, and are excluded from run-liveness action counts.
+The controller authors both events on the system stream. Adapter ingestion
+rejects the reserved `legacy.case_handoff_` namespace. These events stay in the
+instance run log and add no first-party Telemetry or OpenTelemetry export.
+
 ## Provider-pack preparation timing
+
+`run.performance.span` also records `task.time_to_first_token` once per native
+dispatch at the first newly committed deliverable text: assistant or reasoning
+`item.delta`/`item.completed`, a redaction tail released at completion, or an
+accepted run-result summary. Its
+`durationMs` starts at the native run trace's historical start (accepted ingress,
+otherwise queued run creation, or dispatch when history is absent) and ends at Core
+commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
+`reasoning`. It includes preparation and startup, but excludes browser
+delivery/rendering. This measures text availability, not an exact model token.
+Empty text, item starts, tools, usage, result proposals, and duplicate replay do
+not qualify. No deliverable text means no timing sample. A recovered dispatch can
+record newly committed output from the original start; it does not reproduce
+earlier output timing. The event contains no text or provider identifiers.
 
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,
@@ -20,6 +91,14 @@ material. These events retain the existing schema and carry no paths or exceptio
 They also become native Observability spans only with an operator OTLP endpoint.
 
 ## Native PRP Run-Log Events
+
+Completed OpenCode builtin `bash` parts preserve the numeric process exit from
+`state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
+status stays `completed` even when the command exits with a nonzero code. This
+status describes completion of the tool call, not success of the command or the
+native run. Metadata adds an exit only when it is an integer. Conflicting supplied
+legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
+metadata on other tools cannot add process-exit proof.
 
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
@@ -546,3 +625,10 @@ retries cleanup. This event preserves the run outcome and does not claim a file
 save; `instruction_save` remains authoritative for collection. The event contains
 no raw exception, host path, file contents, or lock-owner metadata. Failure to
 write the warning must not replace the provider outcome or stop lease release.
+
+## Agent observability availability
+
+`agent_observability.unavailable` is one warning for a preparation snapshot that
+cannot apply company export settings. Its payload contains only a closed reason
+and the settings revision. It carries no endpoint, credential, secret reference
+or resolver error. Recording the diagnostic never contacts a destination.

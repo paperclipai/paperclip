@@ -125,6 +125,36 @@ describe("TaskMessageScroller", () => {
     vi.unstubAllGlobals();
   });
 
+  it("does not measure historical rows on each streaming update while following the bottom", () => {
+    let initialized = false;
+    let rowMeasurements = 0;
+    const update = (tick: number) => flushSync(() => root.render(
+      <TaskMessageScroller contentKey={tick}>
+        <div ref={(node) => {
+          if (node && !initialized) {
+            fakeGeometry(node.parentElement!, { scrollHeight: 20000, clientHeight: 400 });
+            initialized = true;
+          }
+        }}>
+          {Array.from({ length: 200 }, (_, index) => <div key={index} data-thread-anchor={`history-${index}`} ref={(node) => {
+            if (node) node.getBoundingClientRect = () => {
+              rowMeasurements++;
+              const top = index * 100 - scroller().scrollTop;
+              return { top, bottom: top + 100, height: 100 } as DOMRect;
+            };
+          }}>History {index}</div>)}
+          <p>Live response {tick}</p>
+        </div>
+      </TaskMessageScroller>,
+    ));
+    update(0);
+    rowMeasurements = 0;
+    for (let tick = 1; tick <= 30; tick++) update(tick);
+    expect(container.textContent).toContain("Live response 30");
+    expect(scroller().scrollTop).toBe(20000);
+    expect(rowMeasurements).toBe(0);
+  });
+
   it("applies same-task hash changes and restores each history entry without remounting", async () => {
     let initialized = false;
     function navigate(key: string, hash: string, restore = false) {
@@ -156,6 +186,62 @@ describe("TaskMessageScroller", () => {
     expect(viewport.scrollTop).toBe(150);
     navigate("desktop-entry-one", "#nav-comment-1", true);
     expect(viewport.scrollTop).toBe(500);
+  });
+
+  it("does not replace a saved reading position with a hidden route's geometry", async () => {
+    function mount(restore: boolean) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key: "hidden-route-entry", hash: "", restore }}>
+          <TaskMessageScroller contentKey="saved-thread">
+            <div ref={(node) => { if (node) fakeGeometry(node.parentElement!); }}>Saved messages</div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    mount(false);
+    const viewport = scroller();
+    await scrollTo(viewport, 150);
+    Object.defineProperty(viewport, "clientHeight", { value: 0, configurable: true });
+    await scrollTo(viewport, 0);
+    flushSync(() => root.render(null));
+    mount(true);
+    expect(scroller().scrollTop).toBe(150);
+  });
+
+  it("restores bottom-follow on Back after the viewport and message heights change", () => {
+    const configured = new WeakSet<HTMLElement>();
+    function mount(restore: boolean, scrollHeight: number, clientHeight: number) {
+      flushSync(() => root.render(
+        <TaskChatScrollNavigation.Provider value={{ key: "rotated-bottom-entry", hash: "", restore }}>
+          <TaskMessageScroller contentKey={scrollHeight}>
+            <div ref={(node) => {
+              const viewport = node?.parentElement;
+              if (viewport && !configured.has(viewport)) {
+                fakeGeometry(viewport, { scrollHeight, clientHeight });
+                let top = 0;
+                Object.defineProperty(viewport, "scrollTop", {
+                  configurable: true,
+                  get: () => top,
+                  set: (value: number) => {
+                    top = Math.max(0, Math.min(value, viewport.scrollHeight - viewport.clientHeight));
+                  },
+                });
+                configured.add(viewport);
+              }
+            }}>Latest response</div>
+          </TaskMessageScroller>
+        </TaskChatScrollNavigation.Provider>,
+      ));
+    }
+    mount(false, 1000, 400);
+    flushSync(() => root.render(null));
+    // Rotation changed wrapping and the available message viewport while away.
+    mount(true, 2000, 500);
+    expect(scroller().scrollTop).toBe(1500);
+    expect(pill()).toBeNull();
+    Object.defineProperty(scroller(), "scrollHeight", { value: 2400, configurable: true });
+    mount(true, 2400, 500);
+    expect(scroller().scrollTop).toBe(1900);
   });
 
   it("renders children inside the scroll container, pill hidden, scrolled to bottom on mount", () => {

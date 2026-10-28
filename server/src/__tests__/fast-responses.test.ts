@@ -36,6 +36,7 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { settleConversationTurn } from "../services/agent-conversations.js";
 import { buildLowTrustSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
+import { deliverBudgetEnforcement } from "../services/budgets.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>,
   db: ReturnType<typeof createDb>,
   home: string;
@@ -162,6 +163,36 @@ async function fixture() {
   };
 }
 describe("fast response accepted turns", () => {
+  it("returns acknowledgement text and a committed charge before slow budget stop delivery", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, notifyEnabled: false });
+    f.provider.mockResolvedValue({ ...structuredClone(outcome), receipt: { ...outcome.receipt, costCents: "2.0000000" } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancelWorkForScope = vi.fn(() => gate);
+    const service = fastResponseService(db, { provider: f.provider, budgetHooks: { cancelWorkForScope } });
+    const pending = service.test(f.companyId, "alice");
+    let delivery: Promise<void> | undefined;
+    let finished = false;
+    void pending.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "succeeded", text: outcome.text });
+      expect(f.provider).toHaveBeenCalledOnce();
+      expect(cancelWorkForScope).not.toHaveBeenCalled();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ usageKind: "fast_response", costCents: 2 });
+      const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
+      expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
+      delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
+      await vi.waitFor(() => expect(cancelWorkForScope).toHaveBeenCalledOnce());
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementDeliveredVersion);
+      release(); await delivery;
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
+    } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
   it("does not enqueue or infer while the experimental setting is disabled", async () => {
     const f = await fixture();
     await instanceSettingsService(db).updateExperimental({ enableFastResponses: false });

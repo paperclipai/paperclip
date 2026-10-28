@@ -11,6 +11,7 @@ import {
   validateRunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
+import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
 
 const context = {
@@ -57,7 +58,62 @@ describe("bounded response capture receipts", () => {
   });
 });
 
+describe("connection setup response protection", () => {
+  it.each([
+    ["POST", "/api/chat-endpoints/{endpointId}/setup"],
+    ["POST", "/api/chat-endpoints/{endpointId}/setup-secret"],
+    ["POST", "/api/chat-endpoints/{endpointId}/github/setup"],
+    ["POST", "/api/chat-endpoints/{endpointId}/slack/resume"],
+    ["POST", "/api/companies/{companyId}/adapters/{type}/login-sessions"],
+    ["GET", "/api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt"],
+    ["POST", "/api/tool-gateway/gateways/{gatewayId}/tokens"],
+    ["POST", "/api/companies/{companyId}/ai-connections/local/check"],
+    ["POST", "/api/tool-connections/{connectionId}/test-calls"],
+    ["GET", "/api/tool-connections/{connectionId}/test-calls/{actionRequestId}"],
+  ])("protects %s %s receipts and history", (method, path) => {
+    expect(runnerApiSensitiveResponse(method, path)).toBe(true);
+  });
+  it("keeps ordinary connection metadata shareable", () => {
+    expect(runnerApiSensitiveResponse("GET", "/api/tool-connections/{connectionId}")).toBe(false);
+  });
+});
+
 describe("runner API catalog", () => {
+  it("discovers the real handoff schema and recovery endpoints with standard-mode mutation authority", () => {
+    const operation = runnerApiOperation("POST /api/companies/{companyId}/case-handoffs");
+    expect(operation.dedicatedTools).toEqual(["handoff_case", "create_case"]);
+    expect(operation.allowedModes).toEqual(["standard"]);
+    expect(operation.requestBody?.content["application/json"].schema).toMatchObject({ oneOf: [
+      { additionalProperties: false, required: expect.arrayContaining(["case", "toAgentId", "phase", "instructions", "idempotencyKey", "workflow_document_text"]),
+        properties: { case: { required: ["create"] }, workflow_document_text: { type: "string", maxLength: 200000, pattern: "\\S" } } },
+      { additionalProperties: false, required: expect.arrayContaining(["case", "toAgentId", "phase", "instructions", "idempotencyKey", "workflowId"]),
+        properties: { case: { required: ["create"] }, workflowId: { type: "string", format: "uuid" } } },
+      { additionalProperties: false, required: expect.arrayContaining(["case", "toAgentId", "phase", "instructions", "idempotencyKey"]),
+        properties: { case: { required: ["id"] } } },
+      { additionalProperties: false, required: expect.arrayContaining(["to", "case", "instructions", "idempotencyKey"]),
+        properties: { to: { enum: ["done"] } } },
+    ] });
+    const branches = operation.requestBody!.content["application/json"].schema.oneOf;
+    expect(branches[1].required).not.toContain("workflow_document_text");
+    expect(branches[3].properties).not.toHaveProperty("workflow_document_text");
+    expect(operation.responses).toHaveProperty("202");
+    expect(runnerApiOperation("GET /api/cases/{caseId}/handoffs").parameters).toEqual(expect.arrayContaining([expect.objectContaining({ name: "cursor" })]));
+    for (const action of ["retry", "cancel"]) expect(runnerApiOperation(`POST /api/cases/{caseId}/handoffs/{handoffId}/${action}`).allowedModes).toEqual(["standard"]);
+  });
+  it("maps dedicated case data tools and describes the optional metadata projection", () => {
+    for (const [operationId, tool] of [
+      ["GET /api/cases/{id}", "read_case"], ["PATCH /api/cases/{id}", "update_case"],
+      ["GET /api/companies/{companyId}/workflows", "list_workflows"], ["POST /api/companies/{companyId}/workflows", "create_workflow"],
+      ["GET /api/workflows/{id}", "read_workflow"], ["PATCH /api/workflows/{id}", "update_workflow"],
+    ]) expect(runnerApiOperation(operationId!).dedicatedTools).toEqual([tool]);
+    const legacyCreate = runnerApiOperation("POST /api/companies/{companyId}/cases");
+    expect(legacyCreate.dedicatedTools).toEqual([]);
+    expect(legacyCreate.requestBody?.content["application/json"].schema.properties).not.toHaveProperty("createOnly");
+    for (const method of ["GET", "PUT"]) expect(runnerApiOperation(`${method} /api/cases/{id}/documents/{key}`).dedicatedTools).toEqual([]);
+    expect(runnerApiOperation("GET /api/cases/{id}").parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "includeDocumentBodies", in: "query" }),
+    ]));
+  });
   it.each(["standard", "ask", "planning", "skill_test"])("permits the title-only API in %s mode", workMode => {
     const operationId = "PUT /api/issues/{id}/title";
     const { operation } = validateRunnerApiCall({
@@ -162,8 +218,6 @@ describe("runner API request boundary", () => {
   it.each([
     "POST /api/mcp/project-tools",
     "POST /api/agents/{id}/claude-login",
-    "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
-    "POST /api/agents/me/connections/{connectionId}/start-authorization",
   ])(
     "directs authentication handshake %s to its existing client",
     async (operationId) => {
@@ -175,6 +229,16 @@ describe("runner API request boundary", () => {
       expect(request).not.toHaveBeenCalled();
     },
   );
+  it.each([
+    "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
+    "POST /api/agents/me/connections/{connectionId}/start-authorization",
+  ])("calls JSON authentication initiation through REST: %s", async operationId => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ error: "Route permission required" }, { status: 403 }));
+    expect(runnerApiOperation(operationId).transport).toBe("rest");
+    const result = await executeRunnerApi({ operationId, pathParams: operationId.includes("{type}") ? { type: "codex_local" } : { connectionId: "connection-a" }, body: {} }, context, io(request));
+    expect(result).toMatchObject({ status: 403 });
+    expect(request).toHaveBeenCalledOnce();
+  });
   it.each(
     runnerApiCatalog().filter(
       (operation) =>
@@ -527,12 +591,12 @@ describe("runner API request boundary", () => {
   it("reads text windows from a live response and supplies stable snapshots", async () => {
     const text = "prefix\n" + "🧭é\n".repeat(6000) + "END-OF-EVIDENCE";
     const saveResponse = vi.fn(io(fetch).saveResponse);
-    const request = vi.fn<typeof fetch>(async () => new Response(text, { headers: { "content-type": "application/json" } }));
+    const request = vi.fn<typeof fetch>(async () => new Response(text, { headers: { "content-type": "application/json", etag: '"content-identity"' } }));
     let offsetBytes = 0;
     let received = "";
     do {
       const result = await executeRunnerApi({ operationId: projects, responseText: { offsetBytes, limitBytes: 4096 } }, context, { ...io(request), saveResponse }) as any;
-      expect(result).toMatchObject({ ok: true, responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
+      expect(result).toMatchObject({ ok: true, etag: '"content-identity"', responseText: { offsetBytes, totalBytes: Buffer.byteLength(text) } });
       expect(Buffer.byteLength(result.data)).toBeLessThanOrEqual(4096);
       received += result.data;
       offsetBytes = result.responseText.nextOffsetBytes;

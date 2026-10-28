@@ -1,9 +1,47 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse } from "@playwright/test";
 
 import { idle, json, send, setup } from "./agent-chat.shared";
 
 test.use({ trace: "retain-on-failure" });
 test.setTimeout(120_000);
+
+test("cleanup restores agent chat experiments when cancellation fails", async ({ request }) => {
+  const original = await json(await request.get("/api/instance/settings/experimental"));
+  const response = (status: number, body: unknown) => ({
+    ok: () => status >= 200 && status < 300,
+    status: () => status,
+    text: async () => JSON.stringify(body),
+    json: async () => body,
+  }) as APIResponse;
+  const failingRequest = new Proxy(request, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<APIRequestContext["get"]>) =>
+        args[0].endsWith("/live-runs")
+          ? response(200, [{ id: "cleanup-cancellation-fixture" }])
+          : target.get(...args);
+      if (property === "post") return async (...args: Parameters<APIRequestContext["post"]>) =>
+        args[0].endsWith("/heartbeat-runs/cleanup-cancellation-fixture/cancel")
+          ? response(500, { error: "simulated cancellation failure" })
+          : target.post(...args);
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  try {
+    const f = await setup(failingRequest);
+    await expect(f.restore()).rejects.toThrow("500");
+    const restored = await json(await request.get("/api/instance/settings/experimental"));
+    expect(restored).toMatchObject({
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    });
+  } finally {
+    await json(await request.patch("/api/instance/settings/experimental", { data: {
+      enableAgentChat: original.enableAgentChat,
+      enableClassicTaskInterface: original.enableClassicTaskInterface,
+    } }));
+  }
+});
 
 /**
  * Agent chat project and content coverage: project cards, split handoff,

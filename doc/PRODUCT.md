@@ -1,5 +1,13 @@
 # Paperclip — Product Definition
 
+Reusable workflows stay inside the Cases experiment. A workflow is a company-shared
+name and Markdown prompt; a case may adopt, leave and revisit workflows without
+changing its primary task. The task's workflow document is the effective copy,
+so shared edits affect future adoptions and explicit refreshes. Existing handoffs
+record workflow/phase movement and document revisions, including names as they
+were at the time. Authoring starts with agents/APIs; the case UI reads current
+workflow information and history.
+
 ## What It Is
 
 Paperclip is the control plane for autonomous AI companies. One instance of Paperclip can run multiple companies. A **company** is a first-order object.
@@ -41,6 +49,24 @@ start execution. This preference does not change the org chart or permissions.
 
 ### Agent Execution
 
+Agents have an **Advanced** tab for editing their settings across all configuration tabs
+as a versioned YAML document. Instructions, skills, tools, channels, trust,
+secret operations, API keys, and revision restore use their existing domain APIs.
+It edits the same configuration as the regular settings pages, validates before saving, preserves masked secrets, and rejects
+stale edits. See [Agent configuration YAML](agent-configuration-yaml.md).
+
+Existing Claude, Codex, and Grok Build agents can upgrade from the legacy runner on their
+Harness / Runtime page when Paperclip Runner is the qualified default for their
+environment. One action saves pending edits and translates compatible settings
+while keeping the harness, selected model, account bindings, instructions, and
+history. Unsupported settings produce an actionable error without changing the
+saved agent. Future runs start fresh sessions.
+
+Qualifying an existing agent's sandbox for that upgrade uses the same agent
+configuration permission as saving the upgrade. The server checks the saved
+computer and its company binding. Company owners do not need instance-admin
+access for this step; general instance environment management remains restricted.
+
 Paperclip supports several ways to run an agent's heartbeat:
 
 1. **Local CLI/session adapters** — Paperclip starts or resumes local coding-tool sessions such as Claude Code, Codex, Gemini, OpenCode, Pi, and Cursor, then tracks the run.
@@ -67,6 +93,40 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Automatic monitor checks pause when a task is blocked. A person can use Check now
+to request one check of a retained monitor through normal execution admission.
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
+cannot start reports that result instead of claiming it was queued.
+
+The experimental Cases feature also supports persistent work records and
+prompt-driven agent handoffs. Native case creation requires kickoff and creates
+one primary task; later handoffs move that same task
+between agents with a phase and instructions. The case retains facts, document references,
+and history while normal task assignments form each agent's queue. Task sessions,
+workspaces, private access, review rules, and human intervention remain part of
+the ordinary execution model. Ordinary task completion leaves case status unchanged.
+An explicit handoff to `done` closes the case when primary-task completion is
+accepted through the existing gates; review and human waits keep it open.
+
+Native agents can create, read and update case facts through dedicated tools.
+Creation always includes a kickoff and either `workflowId` or explicit `workflow_document_text`.
+The latter becomes the primary task's Markdown `workflow` document, describing
+phase owners, routing, evidence and completion rules. Agents read it before
+choosing their next step. Recommended authoring includes both a Mermaid
+`stateDiagram-v2` map and prose explaining each transition's conditions, evidence,
+destination agent, human waits and correction limits. Transitions remain advisory. Initial documents belong to
+the first task and are saved before its agent wakes; the case displays documents
+from its primary and accessible linked tasks without copying them. Agents use
+ordinary task document tools; historical case-owned documents remain readable.
+Each phase receives its current handoff instructions;
+compatible resumed sessions receive changed facts without repeating unchanged
+case contents. Agents can read current persisted data whenever they need it.
+
+Case pages are a lightweight read-only view: search or filter the list, open a
+record, read its findings and documents, and follow its current task and handoff
+history. Agents and APIs author the records; the pages have no editing controls.
+
 When a task is assigned to the current human, the message composer defaults to
 the latest agent that assigned it to them. If no assignment is available, it uses
 the latest other commenter, or leaves the recipient empty. A manual recipient
@@ -83,14 +143,35 @@ ancestors and expandable subtasks as context without promoting unrelated automat
 work to independent results. Agent profiles, routine histories, and task-detail
 subtasks retain their full history.
 
-Inbox membership continues to follow human creation, assignment, comments, and
-existing qualifying participation actions, including manually running a routine.
-Routine ownership or responsibility alone does not subscribe a person to scheduled
-runs; opening or reading a task is not participation. Inbox discovery searches and
-Blocked hide unrelated automated tasks unless the checkbox is checked, while
-preserving tasks admitted by the existing participation rules. Checking it does
-not subscribe the user to all automation. Approvals and other non-task items keep
-their existing rules.
+Mine contains personal work. Channel tasks, routine tasks, and agent-created tasks
+stay outside Mine by default. This includes routines that a person starts manually.
+Linked accounts, creator IDs, responsible-user IDs, synchronized provider comments,
+and read markers do not establish participation in automatic work. Direct board or
+human API comments, human assignment, and deliberate user mutations do establish
+participation. Open requests addressed to the person also admit the task until
+resolution. Ordinary human-created tasks keep their creator's participation.
+These rules apply to existing tasks, Mine, unread counts, badges, and task toasts.
+Approvals retain their existing recipient and permission rules.
+
+An advisory PR review does not require human completion approval because its
+rating is low, CI is pending or failing, or the PR is unmerged. After publication,
+the bot may stay in review with an authorized provider-event wait or a saved
+monitor. Neither wait enrolls a person in Mine. Human requests are for concrete
+dependencies of the assigned review, such as missing repository access.
+A later published review with no human dependency withdraws the same bot's
+earlier completion request for a published review when its result commits and
+independent gates are clear. Finish-report validation is read-only. Independent approval gates
+and requests without that review evidence remain unchanged.
+
+New inbound comments retain their provider in `metadata.sourceChannel`. Historical
+imports use inbound message links or the stored provider-sender metadata. These
+checks preserve direct board comments on channel tasks. If both historical
+records are absent, the comment remains unclassified and keeps its previous
+behavior. A task origin alone cannot prove the source of an old comment.
+
+Inbox discovery searches and Blocked hide unrelated automatic tasks unless the
+checkbox is checked. The checkbox does not subscribe a person to automatic work.
+Source feeds and project task lists retain their existing access rules.
 
 ### Company Skills and Policy
 
@@ -307,3 +388,28 @@ and sticky headers help operators scan exports. Rendered and raw view icons
 remain next to download; raw view preserves the original source. The table
 shows up to 500 data rows and 100 columns, with a notice when the preview is
 limited. Download retains the complete file.
+
+### Filesystem access boundary (2026-10-20)
+
+Filesystem isolation belongs to the OS, execution environment, and storage layout.
+Paperclip authorizes the current task/run, company, explicitly selected configuration,
+execution policy, and repository credentials. It does not infer file permissions from
+other tasks or agents that previously used the same directory, overlapping roots,
+symlink aliases, or shared Git storage. Existing files under an authorized task root
+may be read subject to OS access and API path containment.
+
+Private task records, comments, attachments, run logs, full workspace metadata, and
+operation logs retain their app authorization. Workspace `_issuePrivacySources` and
+operation privacy metadata protect app-record disclosure; they do not grant or deny
+filesystem execution or task-bound file browsing. Current trust and sandbox policy,
+publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+## Agent connection administration (2026-10-13)
+
+Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.
+
+The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

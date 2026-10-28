@@ -31,6 +31,8 @@ const meta = {
 primary home; others cross-list the same suite. An empty array requires an
 `exception` explaining the intentional scope. Shared foundations may use
 `home: "foundations"` with an exception to keep their existing location and links.
+Staged design work may use `home: "design-proposals"`, with `status: "proposed"`
+and an exception explaining why it is staged separately from production references.
 The metadata must be literal; place it after any other parameter spreads.
 
 | Field | Values and purpose |
@@ -54,6 +56,23 @@ Stories live in `ui/storybook/stories/<primary-feature-area>/`. Sidebar titles u
 the recipe's section and H1 title, followed by the suite name. `/` in feature
 labels becomes `, ` in the sidebar. Preserve explicit CSF IDs across title/folder
 changes. Compare the built `index.json` when changing navigation.
+
+**Design proposals** is a separate top-level review section. Its stories live in
+`ui/storybook/stories/design-proposals/`, with titles beginning `Design proposals/`.
+Group these titles by **Foundations** (tokens), **Components** (reusable UI),
+**Layouts** (page structures), **Pages** (complete screens), **Patterns** (shared
+behavior) and **Guidelines** (usage and contribution rules), in that order.
+Create a group when there are stories for it; do not add empty placeholders.
+For example, color tokens belong in `Design proposals/Foundations/Colors (dark mode)`,
+the task table in `Design proposals/Components/Task list`, and its complete page
+in `Design proposals/Pages/Tasks`. Preserve explicit story IDs and exports when
+reorganizing so links and browser tests remain valid.
+Retain capability references so proposals remain discoverable from the feature
+guide, but never count them as current production examples. Keep using shared
+components and tokens rather than creating a parallel design implementation.
+When a proposal is reviewed and adopted in the app, move its story into the usual
+feature or Foundations home, update its classification and staging metadata, and
+preserve the explicit CSF ID and exports so review links remain valid.
 
 The generator discovers feature recipes and story annotations. It assembles:
 

@@ -272,3 +272,18 @@ export async function coordinateHeartbeatSchedulerShutdown<
     waitedForSchedulerIdle: true,
   };
 }
+
+export async function finishServiceShutdown(
+  stop: () => Promise<void>,
+  cleanup: () => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  let retryStop = false;
+  try { await stop(); } catch { retryStop = true; }
+  try { await cleanup(); } catch (error) { failures.push(error); }
+  if (retryStop) {
+    try { await stop(); } catch (error) { failures.unshift(error); }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Service shutdown failed");
+}
