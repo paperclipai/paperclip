@@ -43,6 +43,19 @@ describe("resolveBundledPluginInstalls", () => {
     }]);
     expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("createos");
   });
+  it("resolves the optional Smol Machines provider without enabling it by default", () => {
+    expect(resolveBundledPluginInstalls(["smolmachines"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "smolmachines",
+      pluginKey: "paperclip.smolmachines-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/smolmachines"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("smolmachines");
+  });
+
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,
