@@ -1791,6 +1791,14 @@ When a workspace service runs Paperclip for browser OAuth QA, configure its `exp
 
 ## Heartbeat Service Extractions
 
+Pending reviewer turns carry the complete policy/state generation from admission.
+For an ordinary review monitor, scheduling supplies a scoped claim to the queue.
+The queue consumes that exact monitor and captures the new run's complete
+post-consumption generation in one company-scoped issue transaction. Existing
+runs retain their original generation. Dispatch starts after the outer commit.
+Quota monitor retries still use their existing retry owner and require separate
+compatibility verification.
+
 Routine and issue-monitor dispatch uses saved future deadlines through
 `server/src/services/scheduled-work.ts` and the existing delivery coordinator.
 Startup restores the next deadline. Routine edits and monitor changes notify
