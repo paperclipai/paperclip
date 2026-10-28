@@ -7,7 +7,7 @@ const contexts = new WeakMap<Request, WatchdogServiceContext>();
 export const trustedWatchdogContext = (req: Request) => contexts.get(req);
 
 const origins = new WeakMap<Request, ReturnType<typeof watchdogSignalOrigin>>();
-export const trustedWatchdogOrigin = (req: Request) => origins.get(req) ?? {};
+export const trustedWatchdogOrigin = (req: Request): Partial<ReturnType<typeof watchdogSignalOrigin>> => origins.get(req) ?? {};
 
 export async function assertWatchdogServiceRequest(db: Db, req: Request): Promise<void> {
   if (req.actor.type !== "agent") return;

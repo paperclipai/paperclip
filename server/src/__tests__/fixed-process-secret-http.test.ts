@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import request from "supertest";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agentApiKeys, agents, authUsers, companies, companyMemberships,
@@ -164,6 +164,19 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       const incident = await request(server).post(`/api/companies/${companyId}/issues`)
         .set("Authorization", `Bearer ${jwt}`).send({ title: "[watchdog-blind] Проверить синтетический сигнал сторожа", status: "todo", assigneeAgentId: receiverId });
       expect(incident.status).toBe(201);
+      // A recent open issue with the same title must not absorb the signal,
+      // while a repeated signal still collapses into the watchdog's own issue.
+      const decoyId = randomUUID();
+      await db.insert(issues).values({ id: decoyId, companyId, title: "[watchdog-blind] matching title",
+        status: "todo", assigneeAgentId: receiverId, createdByAgentId: receiverId });
+      const titled = () => request(server).post(`/api/companies/${companyId}/issues`)
+        .set("Authorization", `Bearer ${jwt}`).send({ title: "[watchdog-blind] matching title", status: "todo", assigneeAgentId: receiverId });
+      const titledSignal = await titled();
+      expect(titledSignal.status).toBe(201);
+      expect(titledSignal.body.id).not.toBe(decoyId);
+      expect(titledSignal.body.originKind).toBe("watchdog_service_signal");
+      expect((await titled()).body.id).toBe(titledSignal.body.id);
+      await db.delete(issues).where(inArray(issues.id, [decoyId, titledSignal.body.id]));
       const comment = await request(server).post(`/api/issues/${incident.body.id}/comments`)
         .set("Authorization", `Bearer ${jwt}`).send({ body: "[watchdog-blind] Повторный синтетический сигнал" });
       expect(comment.status).toBe(201);
