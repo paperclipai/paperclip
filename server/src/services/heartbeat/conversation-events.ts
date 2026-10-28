@@ -1,17 +1,8 @@
 import { getTableColumns, sql } from "drizzle-orm";
 import { heartbeatRunEvents } from "@paperclipai/db";
 
-/**
- * Canonical PRP conversation data, excluding ordinary historical tool activity.
- * Successful document writes retain a body-free boundary for saved Plan cards.
- * Keep request lifecycles so a cold open cannot hide a question or approval.
- * Item identity may occur on started/completed rather than each text delta.
- */
-export function conversationEventCondition(runId: string) {
-  return sql`(
-    ${heartbeatRunEvents.eventType} like 'runtime_request.%'
-    or (
-      ${heartbeatRunEvents.eventType} = 'item.completed'
+function planWriteCondition(runId: string) {
+  return sql`(${heartbeatRunEvents.eventType} = 'item.completed'
       and ${heartbeatRunEvents.payload} #>> '{prpEvent,sourceKind}' = 'runner'
       and ${heartbeatRunEvents.payload} #>> '{prpEvent,schema}' = 'paperclip.prp.event.v1'
       and ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,type}' = 'tool_result'
@@ -37,7 +28,20 @@ export function conversationEventCondition(runId: string) {
           and e.payload #>> '{prpEvent,payload,item,type}' = 'tool_use'
           and e.payload #>> '{prpEvent,payload,item,name}' = 'write_document'
           and e.payload #>> '{prpEvent,payload,item,input,key}' = 'plan'
-      )
+      ))`;
+}
+
+/**
+ * Canonical PRP conversation data, excluding ordinary historical tool activity.
+ * Successful document writes retain a body-free boundary for saved Plan cards.
+ * Keep request lifecycles so a cold open cannot hide a question or approval.
+ * Item identity may occur on started/completed rather than each text delta.
+ */
+export function conversationEventCondition(runId: string) {
+  return sql`(
+    ${heartbeatRunEvents.eventType} like 'runtime_request.%'
+    or (
+      ${planWriteCondition(runId)}
     )
     or ${heartbeatRunEvents.eventType} in ('run.result.accepted', 'run.terminal', 'turn.completed', 'turn.failed', 'turn.cancelled', 'turn.interrupted')
     or (
@@ -60,9 +64,8 @@ export function conversationEventCondition(runId: string) {
 }
 
 /** Project Plan receipts inside PostgreSQL, before large tool bodies cross the wire. */
-export function conversationEventColumns() {
-  const planReceipt = sql`${heartbeatRunEvents.eventType} = 'item.completed'
-    and ${heartbeatRunEvents.payload} #>> '{prpEvent,payload,item,type}' = 'tool_result'`;
+export function conversationEventColumns(runId: string) {
+  const planReceipt = planWriteCondition(runId);
   const envelope = sql`${heartbeatRunEvents.payload} -> 'prpEvent'`;
   const item = sql`${heartbeatRunEvents.payload} #> '{prpEvent,payload,item}'`;
   const itemId = sql`coalesce(${item} ->> 'tool_use_id', ${item} ->> 'id')`;

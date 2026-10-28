@@ -1965,7 +1965,7 @@ export function createHeartbeatRunState(db: Db) {
 
     listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
-        .select(conversationOnly ? conversationEventColumns() : getTableColumns(heartbeatRunEvents))
+        .select(conversationOnly ? conversationEventColumns(runId) : getTableColumns(heartbeatRunEvents))
         .from(heartbeatRunEvents)
         .where(
           and(

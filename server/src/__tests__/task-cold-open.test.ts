@@ -1,3 +1,4 @@
+import nativePlanWrites from "./fixtures/native-plan-write-events.json";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -152,6 +153,8 @@ const support = await getEmbeddedPostgresTestSupport();
       event(16, "item.completed", result("read-plan")),
       { ...event(17, "item.completed", result("write-plan")), payload: { prpEvent: {
         schema: "unknown", sourceKind: "runner", turnId: "turn-1", payload: { item: result("write-plan") } } } },
+      event(18, "item.started", { id: "shared", type: "assistant_message", text: "ordinary conversation" }),
+      event(19, "item.completed", result("shared", "notes")),
     ]);
     const service = createHeartbeatRunState(db);
     const first = await service.listEvents(planRunId, 0, 1, true);
@@ -160,14 +163,30 @@ const support = await getEmbeddedPostgresTestSupport();
       payload: { item: { type: "tool_result", id: "write-plan", name: "write_document", input: { key: "plan" },
         result: { disposition: "applied", document: { key: "plan" } } } } } } });
     const rest = await service.listEvents(planRunId, 2, 1000, true);
-    expect(rest.map(event => event.seq)).toEqual([3, 5]);
+    expect(rest.map(event => event.seq)).toEqual([3, 5, 18, 19]);
+    expect(rest[3]).toMatchObject({ message: "private tool message", payload: { prpEvent: { payload: { item: { result: { document: { key: "notes" } } } } } } });
     expect(rest[0].payload).toMatchObject({ prpEvent: { payload: { item: { text: "Plan saved.\u0000" } } } });
     const writes = [first[0], rest[1]];
     expect(JSON.stringify(writes)).not.toContain("private");
     expect(Buffer.byteLength(JSON.stringify(writes))).toBeLessThan(4_000);
     const full = await service.listEvents(planRunId);
-    expect(full).toHaveLength(17);
+    expect(full).toHaveLength(19);
     expect(full[1].payload).toMatchObject({ extra: "private outer payload", prpEvent: { payload: { item: result("write-plan") } } });
+  });
+
+  it.each(nativePlanWrites.captures)("keeps the retained $provider Plan receipt alongside provider activity", async ({ events }) => {
+    const captureRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: captureRunId, companyId, agentId, issueId, runtimeMode: "native", status: "succeeded" });
+    await db.insert(heartbeatRunEvents).values(events.map(event => ({ ...event, companyId, agentId, runId: captureRunId,
+      payload: { prpEvent: { ...event.payload.prpEvent, runId: captureRunId } } })));
+    const service = createHeartbeatRunState(db);
+    const compact = await service.listEvents(captureRunId, 0, 1000, true);
+    expect(compact.map(event => event.seq)).toEqual([events.find(event => event.eventType === "item.completed")!.seq]);
+    expect(compact[0].payload).toMatchObject({ prpEvent: { payload: { item: {
+      type: "tool_result", name: "write_document", result: { document: { key: "plan" } },
+    } } } });
+    expect(JSON.stringify(compact)).not.toContain("private fixture body");
+    expect(await service.listEvents(captureRunId)).toHaveLength(events.length);
   });
 
 });
