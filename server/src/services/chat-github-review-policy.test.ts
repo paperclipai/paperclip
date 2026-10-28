@@ -15,6 +15,7 @@ import {
   githubReviewConfigurationPrompt,
   githubReviewConclusion,
   githubReviewLineIsInPatch,
+  githubReviewBaseBranchInScope,
   githubReviewSchedulingDecision,
   matchesGitHubReviewPattern,
   validateGitHubReviewAssessment,
@@ -179,6 +180,24 @@ describe("GitHub review authorization and scheduling", () => {
         activeSponsorUserIds: new Set(),
       }).allowed,
     ).toBe(false);
+  });
+  it("scopes base branches by target and excluded patterns, and refuses an out-of-scope base", () => {
+    const policy = defaultGitHubReviewPolicy();
+    expect(githubReviewBaseBranchInScope(policy, "production")).toBe(true);
+    policy.excludedBranches = ["production"];
+    expect(githubReviewBaseBranchInScope(policy, "production")).toBe(false);
+    expect(githubReviewBaseBranchInScope(policy, "staging")).toBe(true);
+    policy.targetBranches = ["release/*"];
+    expect(githubReviewBaseBranchInScope(policy, "staging")).toBe(false);
+    expect(githubReviewBaseBranchInScope(policy, "release/1")).toBe(true);
+    const config = configuration();
+    config.defaults.excludedBranches = ["production"];
+    expect(
+      decide(config, { context: { ...context, baseBranch: "production" } }).reason,
+    ).toBe("branch_excluded");
+    config.defaults.excludedBranches = [];
+    config.defaults.targetBranches = ["release/*"];
+    expect(decide(config).reason).toBe("branch_excluded");
   });
   it("manual requests bypass scheduling filters but never repository or actor authorization", () => {
     const config = configuration();

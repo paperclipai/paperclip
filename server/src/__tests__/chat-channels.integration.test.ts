@@ -6644,6 +6644,56 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })]);
       expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toHaveLength(0);
     });
+    it("publishes no gated check on a pull request into a base branch the configuration excludes", async () => {
+      const f = await reviewBotFixture();
+      const current = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(f.endpoint.id, {
+        expectedRevision: current.revision,
+        configuration: {
+          ...current.configuration,
+          defaults: { ...current.configuration.defaults, ratingThreshold: 4, excludedBranches: ["production"] },
+        },
+      }, "owner-user");
+      const head = "b".repeat(40);
+      const event = (number: number, base: string) => githubAutomaticReviewEvent({
+        action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 99, login: "release-bot" },
+        pull_request: {
+          number, title: "Production Release", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: base }, head: { sha: head },
+          user: { id: 99, login: "release-bot", type: "User" }, labels: [],
+        },
+      }, randomUUID())!;
+      const writes: Record<string, unknown>[] = [];
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (/\/pulls\/\d+$/.test(url)) return Response.json({ head: { sha: head } });
+        if (url.includes("/check-runs?")) return Response.json({ check_runs: [] });
+        if (url.endsWith("/check-runs") && init?.method === "POST") {
+          writes.push(JSON.parse(String(init.body)));
+          return Response.json({ id: 85, html_url: "https://github.com/checks/85" });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await readChatEndpointsById(f.endpoint.id);
+      const actions = () => db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_check"),
+      ));
+      await checks.enqueue(activeEndpoint, event(85, "production"), false, "person_not_authorized");
+      await checks.processPending();
+      expect(await actions()).toHaveLength(0);
+      expect(writes).toHaveLength(0);
+      await checks.enqueue(activeEndpoint, event(86, "master"), false, "person_not_authorized");
+      await checks.processPending();
+      expect(writes).toEqual([expect.objectContaining({
+        status: "completed", conclusion: "action_required", head_sha: head,
+        output: expect.objectContaining({ title: "Authorized manual review required" }),
+      })]);
+      await checks.enqueue(activeEndpoint, event(87, "production"), true, "authorized_manual_request");
+      expect(await actions()).toHaveLength(2);
+    });
     it.each(["succeeded", "failed", "cancelled"] as const)("keeps a report-only GitHub check neutral after a %s run without an assessment", async status => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
       const config = await f.management.configuration(f.endpoint.id, "owner-user");

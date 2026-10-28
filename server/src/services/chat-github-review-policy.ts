@@ -88,6 +88,20 @@ export function githubReviewLineIsInPatch(
   return false;
 }
 
+export function githubReviewBaseBranchInScope(
+  policy: GitHubReviewPolicy,
+  baseBranch: string,
+): boolean {
+  if (
+    policy.targetBranches.length &&
+    !policy.targetBranches.some((p) => matchesGitHubReviewPattern(baseBranch, p))
+  )
+    return false;
+  return !(policy.excludedBranches ?? []).some((p) =>
+    matchesGitHubReviewPattern(baseBranch, p),
+  );
+}
+
 export function githubReviewSchedulingDecision(input: {
   configuration: GitHubChatConfiguration;
   context: GitHubAutomaticPolicyContext;
@@ -168,18 +182,7 @@ export function githubReviewSchedulingDecision(input: {
     )
   )
     return { allowed: false, reason: "author_excluded" };
-  if (
-    !isIssue && policy.targetBranches.length &&
-    !policy.targetBranches.some((p) =>
-      matchesGitHubReviewPattern(context.baseBranch, p),
-    )
-  )
-    return { allowed: false, reason: "branch_excluded" };
-  if (
-    !isIssue && (policy.excludedBranches ?? []).some((p) =>
-      matchesGitHubReviewPattern(context.baseBranch, p),
-    )
-  )
+  if (!isIssue && !githubReviewBaseBranchInScope(policy, context.baseBranch))
     return { allowed: false, reason: "branch_excluded" };
   if (policy.requiredLabels.some((label) => !context.labels.includes(label)))
     return { allowed: false, reason: "required_label_missing" };

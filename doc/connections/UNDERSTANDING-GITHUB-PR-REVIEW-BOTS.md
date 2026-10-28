@@ -198,7 +198,9 @@ If nobody triggers a required review, the missing result prevents merging for
 users subject to the rule. If the connector receives a PR event but automatic
 execution is disallowed under its configured rating policy, it can publish
 **Authorized manual review required**. An authorized mention can then start the
-review.
+review. A PR into a base branch that the configuration excludes, or that is not
+among its target branches, gets no check from the bot. If a rule requires the
+check on such a branch, the PR waits until an authorized mention starts a review.
 
 GitHub plan and repository visibility affect whether these rules are available.
 Verify that the rule is active and applies to the target branch; a visible check
