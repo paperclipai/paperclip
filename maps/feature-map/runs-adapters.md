@@ -79,6 +79,8 @@ send two follow-ups without resetting its session. Verify that each continuation
 restores its external controller checkpoint, retains provider context and saved
 files, and finishes with no stranded task lock. A missing checkpoint, an active
 prior owner or a mismatched session must still stop admission. The
+rejected active-owner attempt must not prevent a later continuation from reading
+the owner's newer completed checkpoint. The
 [executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
 cover checkpoint restoration and its guards; real-provider acceptance remains
 separate evidence.

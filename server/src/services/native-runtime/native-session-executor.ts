@@ -5699,13 +5699,14 @@ async function restorePerTurnRunnerdController(input: {
   if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
       input.execution.session.lifecyclePolicy.mode !== "per_turn") return;
   const root = scopedRunnerdStateRoot(input.execution);
-  if (readRunnerdDurableIdentity(root)) return;
-  const reference = readRunnerdDurableIdentity(root, true);
+  const identity = readRunnerdDurableIdentity(root);
+  const reference = identity ?? readRunnerdDurableIdentity(root, true);
   if (!durableIdentityMatchesSession(reference, input.execution)) return;
+  if (identity?.runId === input.execution.binding.runId) return;
   const restored = await restoreNativeRunnerCheckpoint(input.db,
     { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId, runId: reference.runId },
     root, nativeSessionKey(input.execution));
-  if (!restored) throw new Error("native_runner_checkpoint_missing");
+  if (!restored && !identity) throw new Error("native_runner_checkpoint_missing");
 }
 
 /** Materialize opaque controller state before ordinary warm admission reads it.
