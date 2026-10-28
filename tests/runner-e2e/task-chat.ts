@@ -4,6 +4,11 @@ import { collectRunEvents } from "./run-observations.js";
 import { taskChatProgress } from "./task-chat-progress.js";
 
 type Row = Record<string, any>;
+interface TaskChatRun {
+  runId: string;
+  agentId: string;
+  runtimeMode?: "legacy" | "native";
+}
 export interface TaskChatMessage {
   id: string;
   at: string | null;
@@ -62,6 +67,10 @@ function answerBody(row: Row): string {
     }), row.result?.reason,
     ...(Array.isArray(row.result?.selectedOptionIds) ? row.result.selectedOptionIds.map((id: string) =>
       rows(row.payload?.items ?? row.payload?.options ?? []).find(item => item.id === id)?.label ?? id) : []),
+    ...rows(row.result?.items ?? []).map(result => lines([
+      rows(row.payload?.items ?? []).find(item => item.id === result.id)?.label ?? text(result.id),
+      result.verdict, result.reason,
+    ])),
   ]);
 }
 
@@ -161,10 +170,12 @@ export async function captureTaskChat(input: {
     try {
       const thread = projectTaskChatThread(issue, comments, interactions, names);
       try {
-        const runs = rows(await get(`/api/issues/${issue.id}/runs`));
+        const runs = await get<TaskChatRun[]>(`/api/issues/${issue.id}/runs`);
+        rows(runs);
         for (const run of runs.filter(run => run.runtimeMode === "native")) {
-          const events = await collectRunEvents((afterSeq, limit) => get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
-          thread.messages.push(...taskChatProgress(run.id, events, names.get(run.agentId) ?? "Agent"));
+          if (!text(run.runId)) throw new Error("Native task run has no runId");
+          const events = await collectRunEvents((afterSeq, limit) => get(`/api/heartbeat-runs/${encodeURIComponent(run.runId)}/events?afterSeq=${afterSeq}&limit=${limit}`));
+          thread.messages.push(...taskChatProgress(run.runId, events, names.get(run.agentId) ?? "Agent"));
         }
         thread.messages.sort((a, b) => (a.at ?? "").localeCompare(b.at ?? "") || a.id.localeCompare(b.id));
       } catch { complete = false; evidence.missing.push("progress"); }

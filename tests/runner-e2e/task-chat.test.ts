@@ -81,8 +81,8 @@ describe("automatic task conversation evidence", () => {
     const requests: string[] = [];
     const e = await captureTaskChat({ companyId: "company", secrets: [], get: async <T>(route: string): Promise<T> => {
       requests.push(route);
-      if (route.endsWith("/runs")) return [{ id: "run", runtimeMode: "native", agentId: "agent" }] as T;
-      if (route.includes("/events?")) {
+      if (route.endsWith("/runs")) return [{ runId: "run", runtimeMode: "native", agentId: "agent" }] as T;
+      if (route.startsWith("/api/heartbeat-runs/run/events?")) {
         const after = Number(new URL(route, "http://fixture.test").searchParams.get("afterSeq"));
         if (!after) return Array.from({ length: 1000 }, (_, i) => ({ seq: i + 1, eventType: "runtime.status" })) as T;
         return [{ seq: 1001, eventType: "item.completed", createdAt: time, payload: { prpEvent: {
@@ -96,6 +96,17 @@ describe("automatic task conversation evidence", () => {
     expect(e.threads[0]!.messages).toContainEqual(expect.objectContaining({ kind: "progress", body: "I found the file.", author: "Morgan" }));
     expect(requests.some(route => route.includes("afterSeq=1000"))).toBe(true);
     expect(JSON.stringify(e)).not.toContain("provider-item");
+    expect(requests.some(route => route.includes("undefined"))).toBe(false);
+  });
+
+  it("retains every item-review verdict and reason with its visible label", () => {
+    const review = { id: "review", kind: "request_item_verdicts", status: "resolved", createdAt: time, resolvedAt: time,
+      payload: { prompt: "Review both changes", items: [{ id: "a", label: "Release note" }, { id: "b", label: "Announcement" }] },
+      result: { items: [{ id: "a", verdict: "approve", reason: "Ready to publish" }, { id: "b", verdict: "reject", reason: "Fix the date", metadata: "PRIVATE_VERDICT_METADATA" }] } };
+    const thread = projectTaskChatThread(issue, [], [review], new Map());
+    const answer = thread.messages.find(message => message.kind === "answer")!;
+    for (const content of ["Release note", "approve", "Ready to publish", "Announcement", "reject", "Fix the date"]) expect(answer.body).toContain(content);
+    expect(JSON.stringify(thread)).not.toContain("PRIVATE_VERDICT_METADATA");
   });
 
   it("keeps company boundaries and does not read a foreign task's messages", async () => {
