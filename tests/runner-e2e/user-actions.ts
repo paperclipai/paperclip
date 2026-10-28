@@ -20,6 +20,7 @@ export async function fillTaskPrompt(editor: Locator, prompt: string): Promise<v
 
 export async function createTaskThroughUi(input: {
   page: Page;
+  origin?: string;
   issuePrefix: string;
   agentName: string;
   title: string;
@@ -28,7 +29,7 @@ export async function createTaskThroughUi(input: {
   projectName?: string;
   requireExplicitTitle?: boolean;
   attachments?: readonly string[];
-  beforeDispatch?: () => void;
+  beforeDispatch?: () => void | Promise<void>;
 }) {
   // Search's public creation action exposes the explicit title field. Strict
   // native-operation fixtures use it so automatic task naming is not an extra
@@ -42,7 +43,7 @@ export async function createTaskThroughUi(input: {
   let bootstrapError: unknown;
   for (let bootstrapAttempt = 1; bootstrapAttempt <= 3; bootstrapAttempt += 1) {
     try {
-      await input.page.goto(issuesUrl, {
+      await input.page.goto(input.origin ? new URL(issuesUrl, input.origin).href : issuesUrl, {
         waitUntil: "domcontentloaded",
         timeout: 30_000,
       });
@@ -106,7 +107,7 @@ export async function createTaskThroughUi(input: {
   }
   // The prompt-only composer generates a provisional title which the provider
   // can rename immediately. Bind the fixture to the actual creation response.
-  input.beforeDispatch?.();
+  await input.beforeDispatch?.();
   const submittedAtMs = Date.now();
   const [response] = await Promise.all([
     input.page.waitForResponse(response => response.request().method() === "POST"

@@ -2,7 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test";
 import type { ConnectionApi } from "../connection-target.js";
 
 export type JourneyOutcome = "passed" | "failed" | "blocked" | "unsupported";
-export type JourneyId = "task-properties" | "cloud-onboarding";
+export type JourneyId = "task-properties" | "task-create" | "ask-question" | "cloud-onboarding";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
@@ -80,6 +80,7 @@ export interface JourneyContext {
   identity: DeploymentIdentity;
   capabilities: string[];
   startingState: "recipe" | "onboarding";
+  agent?: { id: string; name: string; provider: string; model: string; runtimeMode: "native" | "legacy" };
   fixtures?: { backlogTask?: PreparedBacklogTask };
 }
 export interface PreparedBacklogTask {
