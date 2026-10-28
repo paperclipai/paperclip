@@ -616,8 +616,12 @@ export function createPostgresRunDispatchAdapter(
     const readiness = issue && (reviewerAssignment || retryReasonKind === "native_safe_replacement")
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
-    const activePauseHold = issue && reviewerAssignment
+    const pauseHold = issue && reviewerAssignment
       ? await issueTreeControlService(dbOrTx).getActivePauseHoldGate(input.companyId, issueId) : null;
+    const verifiedPauseInteraction = pauseHold && await isVerifiedIssueTreeControlInteractionWake(dbOrTx, {
+      companyId: input.companyId, issueId, agentId: input.agentId, runId: input.runId, contextSnapshot: context,
+    });
+    const activePauseHold = verifiedPauseInteraction ? null : pauseHold;
     const reviewerAgent = reviewerAssignment ? await dbOrTx.select().from(agents)
       .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId))).then(rows => rows[0]) : null;
     const invokability = reviewerAssignment ? await evaluateAgentInvokabilityFromDb(dbOrTx, reviewerAgent) : null;

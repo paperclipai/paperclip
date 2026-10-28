@@ -1,10 +1,12 @@
+import { reserveRunBudget } from "../services/budget-reservations.js";
+import { createRunDispatch } from "../modules/run-dispatch/index.js";
 import { tmpdir } from "node:os";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, agentWakeupRequests, issues, activityLog } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, agentWakeupRequests, issues, issueComments, activityLog } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -60,6 +62,68 @@ const support = await getEmbeddedPostgresTestSupport();
       args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`] } }).where(eq(agents.id, f.agentId));
     return { f, busy, marker };
   }
+
+  it("answers a verified comment while the review tree remains paused", async () => {
+    const { f, busy, marker } = await monitored();
+    const tree = issueTreeControlService(db);
+    const actor = { actorType: "system" as const, actorId: "fixture" };
+    const { hold } = await tree.createHold(f.companyId, f.issueId, { mode: "pause", actor });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: "board", body: "Please answer this verified comment while the review is paused." }).returning();
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    try {
+      const run = await service.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: "board",
+        contextSnapshot: { issueId: f.issueId, commentId: comment.id, wakeCommentId: comment.id, wakeReason: "issue_commented", source: "issue.comment" } });
+      expect(run).toMatchObject({ status: "queued" });
+      expect(run?.contextSnapshot?.reviewerAssignmentGeneration).toEqual(expect.any(String));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+      await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0])
+        .toMatchObject({ status: "succeeded", errorCode: null });
+      expect(await readFile(marker, "utf8")).toBe("started");
+      expect(await tree.getActivePauseHoldGate(f.companyId, f.issueId)).toMatchObject({ holdId: hold.id });
+    } finally { await service.drainActiveRunExecutions(); await tree.releaseHold(f.companyId, f.issueId, hold.id, { actor }); }
+  });
+
+  it.each(["present", "before accounting", "before handoff"] as const)("rechecks paused comment proof %s at the provider gates", async phase => {
+    const { f } = await monitored();
+    const tree = issueTreeControlService(db);
+    const actor = { actorType: "system" as const, actorId: "fixture" };
+    const { hold } = await tree.createHold(f.companyId, f.issueId, { mode: "pause", actor });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorUserId: "board", body: "A verified pause interaction." }).returning();
+    const service = heartbeatService(db);
+    try {
+      const run = await service.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: "board",
+        contextSnapshot: { issueId: f.issueId, commentId: comment.id, wakeCommentId: comment.id, wakeReason: "issue_commented", source: "issue.comment" } });
+      expect(run?.contextSnapshot?.reviewerAssignmentGeneration).toEqual(expect.any(String));
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+      await db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, f.issueId));
+      const reservation = await reserveRunBudget(db, f.companyId, run!.id, null);
+      if (phase === "before accounting") await issueService(db).removeComment(comment.id);
+      let removed = false;
+      const observed = new Proxy(db, { get(target, key) {
+        if (key !== "transaction") return Reflect.get(target, key);
+        return async (...args: Parameters<typeof db.transaction>) => {
+          const result = await Reflect.apply(target.transaction, target, args);
+          if (phase === "before handoff" && !removed && result?.kind === "value" && result.value?.claim) {
+            removed = true; await issueService(db).removeComment(comment.id);
+          }
+          return result;
+        };
+      } });
+      const invoke = vi.fn(async () => null);
+      const result = await createRunDispatch(observed).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId,
+        runId: run!.id, now: new Date(), expectedStatus: "running", reservationId: reservation.id,
+        enforceContinuationOwnership: false, dispatch: invoke });
+      if (phase === "present") { expect(result).toMatchObject({ dispatched: true }); expect(invoke).toHaveBeenCalledOnce(); }
+      else { expect(result).toMatchObject({ dispatched: false, cancellation: { errorCode: "issue_paused" } }); expect(invoke).not.toHaveBeenCalled(); }
+      if (phase === "before handoff") expect(removed).toBe(true);
+      expect(await tree.getActivePauseHoldGate(f.companyId, f.issueId)).toMatchObject({ holdId: hold.id });
+    } finally { await service.drainActiveRunExecutions(); await tree.releaseHold(f.companyId, f.issueId, hold.id, { actor }); }
+  });
 
   it("dispatches the unchanged reviewer after its own monitor consumption", async () => {
     const { f, busy } = await monitored();
