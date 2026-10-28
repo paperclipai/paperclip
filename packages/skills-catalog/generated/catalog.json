@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-11-09T20:56:52.178Z",
+  "generatedAt": "2026-11-12T04:31:38.912Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -37,6 +37,78 @@
         }
       ],
       "contentHash": "sha256:2e02299210fd17c1fe1867b4ee8c144a11b6fe1fe481f83b8268cfbaaf10f9aa"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:context-continuity",
+      "key": "paperclipai/bundled/paperclip-operations/context-continuity",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "context-continuity",
+      "name": "context-continuity",
+      "description": "Treat the issue thread as the source of truth across heartbeats, not your carried-over summary. Read before acting on any multi-heartbeat issue, especially before restating a prior decision, number, or status as fact.",
+      "path": "catalog/bundled/paperclip-operations/context-continuity",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "engineer",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "continuity",
+        "heartbeat",
+        "handoff"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 3052,
+          "sha256": "98d596227cef9d8aa3b870e6a528794a3ffb264c7b495025d0aef314399c6203"
+        }
+      ],
+      "contentHash": "sha256:660578ea79697609554f2fd4c8ca0a33e37b8e27c64857483e05580386afb9f8"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:definition-of-done",
+      "key": "paperclipai/bundled/paperclip-operations/definition-of-done",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "definition-of-done",
+      "name": "definition-of-done",
+      "description": "What \"done\" means and how sign-off works. Use when starting work on an issue (write the Done check), before moving an issue to done, and when an issue is waiting on you for review. Covers the Done check, the four points of done, verifying against the live source, and escalating to a human.",
+      "path": "catalog/bundled/paperclip-operations/definition-of-done",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "manager",
+        "engineer",
+        "product",
+        "general"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "done",
+        "review",
+        "verification",
+        "issues"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 7047,
+          "sha256": "928e60d22c68bf206b7871ba2006d6d84f17de635cac5d64ac7b5fcb39ea5f71"
+        }
+      ],
+      "contentHash": "sha256:84e18d20c475dfb78a137a39068e05200ac53c5d93ff4168d4c5576a0c47cf4f"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:issue-triage",
