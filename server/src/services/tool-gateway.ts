@@ -9587,6 +9587,37 @@ export function createToolGatewayService(
       };
     },
 
+    async googleWorkspaceScopesForAgent(input: {
+      companyId: string;
+      connectionId: string;
+      agentId: string;
+      responsibleUserId: string | null;
+      heartbeatRunId?: string | null;
+      issueId?: string | null;
+      projectId?: string | null;
+    }) {
+      const [connection] = await db.select().from(toolConnections).where(and(
+        eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+      ));
+      if (connection?.config.sourceTemplateKey !== "google-workspace") return null;
+      const session: ToolGatewaySession = {
+        id: "connection-readiness",
+        token: "connection-readiness",
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.heartbeatRunId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        actorType: "agent",
+        actorId: input.agentId,
+        responsibleUserId: input.responsibleUserId,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      try { return googleWorkspaceGrantedScopes(await resolveConnectionGrant(session, connection, false)); }
+      catch { return []; }
+    },
+
     async executeTestCall(input: ExecuteTestCallInput) {
       await input.managementContext?.reauthorize();
       const actingAgentId = input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : null;

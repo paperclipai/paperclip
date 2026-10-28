@@ -658,6 +658,23 @@ describePostgres("already available connection requests", () => {
     expect((await db.select().from(issueThreadInteractions))[0]).toMatchObject({ status: "expired", result: expect.objectContaining({ connectionId: f.connection.id }) });
   });
 
+  it.each([
+    ["agent", false],
+    ["user", true],
+  ] as const)("reads Google scopes from the per-user runtime grant, not an agent grant, when only the %s grant covers them", async (covered, retires) => {
+    const f = await seed();
+    await db.update(toolConnections).set({ config: { sourceTemplateKey: "google-workspace" } });
+    await db.update(toolCatalogEntries).set({ toolName: "gmail__get_message", name: "gmail__get_message" });
+    const oauth = (scopes: string[]) => ({ oauth: { scopes, scopeSource: "provider" as const } });
+    const readonly = ["https://www.googleapis.com/auth/gmail.readonly"];
+    await db.update(connectionGrants).set({ providerTenant: oauth(covered === "user" ? readonly : []) });
+    await db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: f.connection.id, kind: "agent", subjectAgentId: f.agentId, status: "active", providerTenant: oauth(covered === "agent" ? readonly : []) });
+    const google = { ...f, tool: { ...f.tool, toolName: "gmail__get_message" } };
+    await grantRequested(google, await requestAccess(google, "allowed", { serviceSlug: "google-workspace", serviceName: "Google Workspace" }));
+    await connectionIntentDeliveryService(db, { wakeup: vi.fn().mockResolvedValue(null) }).sweepPending();
+    expect((await db.select().from(issueThreadInteractions))[0].status).toBe(retires ? "expired" : "pending");
+  });
+
   it("moves a retired request to an installed replacement when its recorded connection fails the gateway", async () => {
     const f = await seed();
     await satisfiedConnectionIntentService(db).sweepPending();
