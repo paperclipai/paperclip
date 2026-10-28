@@ -68,8 +68,13 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: No dedicated production trigger-management binding; generic `call_api`
-provides the permitted REST path. Credential replies use inline delivery and encrypted
-mutation receipts rather than shared response assets.
+provides the permitted REST path. Native webhook create, key rotation, and revision
+restore replies omit credential material and link the authorized person to the
+company-scoped routine Triggers page. Raw replies remain in encrypted mutation
+receipts; retries and receipt-only recovery apply the same provider projection.
+The protected browser REST replies and scoped secret-value APIs are unchanged.
+See [native API contract](../../doc/runner-api-tools.md) and
+[projection](../../server/src/services/native-runtime/runner-api-provider-response.ts).
 
 The host-only `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1`
 extension reports the earliest supported future routine deadline under an owned

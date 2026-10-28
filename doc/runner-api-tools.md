@@ -203,17 +203,30 @@ Request bodies and uploads go
 through the route's validation and authorization; the fallback does not reject
 fields that an agent can supply through REST. Route-authorized responses normally use the bounded inline/artifact capture and
 replay mechanism. Credential-bearing responses (secret values, issued keys,
-invites, webhook secrets (including restored triggers) and gateway credentials) stay inline, with a 10 MiB
+invites and gateway credentials) stay inline, with a 10 MiB
 response bound. They never spill into plaintext files or saved response assets.
 Their durable mutation receipts encrypt the response with the existing local
 secret provider. Replays decrypt it only inside the authorized run; no HTTP
 request repeats. A working secret store is checked before credential dispatch.
+Routine webhook trigger creation, key rotation, and revision restoration are an
+exception to provider-visible inline credentials. Native tools return trigger,
+routine, and revision metadata plus a company-scoped `secureSetup.path` to the
+existing Triggers page. They omit `secretMaterial` and `secretMaterials`. An
+authorized person uses the protected key replacement control there to generate
+and copy a key. The browser API response and scoped secret-value APIs do not
+change. The raw routine response still has the bounded sensitive-response path
+and encrypted mutation receipt. Fresh responses, same-call retries, and
+receipt-only recovery all apply the same provider projection, without repeating
+the mutation. This is an intentional native-tool security contract change from
+returning restored webhook credentials inline.
+
 Other API responses retain the existing 24 KiB inline and 1 GiB capture limits.
 
 API request and response bodies are omitted from persisted native tool events,
 checkpoints and completion results. Saved events retain operation identity, HTTP
-status and a payload digest for replay conflict detection. The model still receives
-the original authorized HTTP response; this redaction affects durable history.
+status and a payload digest for replay conflict detection. The model receives
+the authorized HTTP response with the routine webhook projection above; other
+body redaction here affects durable history.
 Completion retries compare expected and persisted events through the same
 idempotent redaction projection. Repeated projection preserves the original
 payload digest. Provider recovery uses the same projection to compare saved

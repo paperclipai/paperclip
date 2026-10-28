@@ -7,6 +7,7 @@ import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, 
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { secretService } from "../secrets.js";
+import { getSecretProvider } from "../../secrets/provider-registry.js";
 import { authorizationService } from "../authorization.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../../vendor/paperclip-runner/index.js";
@@ -360,7 +361,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } })).rejects.toThrow("Artifact is not available to this actor");
   });
 
-  it("keeps restored webhook secrets inline and encrypts their replay receipts", async () => {
+  it("hands routine webhook credentials to browser setup while encrypting raw fresh and replay receipts", async () => {
     const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
     vi.stubEnv("PAPERCLIP_API_URL", fixture.apiUrl);
     await server.db.update(issues).set({ responsibleUserId: fixture.responsibleUserId }).where(eq(issues.id, fixture.issueId));
@@ -371,24 +372,48 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(created).toMatchObject({ status: 201 });
     const routineId = created.data.id;
     await server.db.update(routines).set({ description: "Restored routine description\n".repeat(2000) }).where(eq(routines.id, routineId));
-    const trigger = await call("webhook-trigger", { operationId: "POST /api/routines/{id}/triggers", pathParams: { id: routineId },
+    const triggerArgs = { operationId: "POST /api/routines/{id}/triggers", pathParams: { id: routineId },
       body: { kind: "webhook", signingMode: "bearer", replayWindowSec: 300 },
-    });
-    expect(trigger).toMatchObject({ status: 201 });
+    };
+    const trigger = await call("webhook-trigger", triggerArgs);
+    const setupPath = `/E${fixture.companyId.replaceAll("-", "").slice(0, 8)}/routines/${routineId}/triggers`;
+    expect(trigger).toMatchObject({ status: 201, data: { trigger: { routineId, kind: "webhook" }, revision: { id: expect.any(String) } }, secureSetup: { path: setupPath } });
+    expect(trigger.data).not.toHaveProperty("secretMaterial");
+    expect(await call("webhook-trigger", triggerArgs)).toEqual(trigger);
+    expect(await fixture.authority.recover({ tool: "call_api", callId: "webhook-trigger", arguments: triggerArgs })).toEqual({ result: trigger });
+    const rotateArgs = { operationId: "POST /api/routine-triggers/{id}/rotate-secret", pathParams: { id: trigger.data.trigger.id }, body: {} };
+    const rotated = await call("rotate-webhook", rotateArgs);
+    expect(rotated).toMatchObject({ status: 200, data: { trigger: { id: trigger.data.trigger.id } }, secureSetup: { path: setupPath } });
+    expect(rotated.data).not.toHaveProperty("secretMaterial");
+    expect(await call("rotate-webhook", rotateArgs)).toEqual(rotated);
+    expect(await fixture.authority.recover({ tool: "call_api", callId: "rotate-webhook", arguments: rotateArgs })).toEqual({ result: rotated });
     expect(await call("delete-webhook", { operationId: "DELETE /api/routine-triggers/{id}", pathParams: { id: trigger.data.trigger.id } }))
       .toMatchObject({ status: 204 });
     const args = { operationId: "POST /api/routines/{id}/revisions/{revisionId}/restore",
       pathParams: { id: routineId, revisionId: trigger.data.revision.id },
     };
     const restored = await call("restore-webhook", args);
-    expect(restored).toMatchObject({ ok: true, status: 200, data: { secretMaterials: [expect.objectContaining({ webhookSecret: expect.any(String) })] } });
+    expect(restored).toMatchObject({ ok: true, status: 200, data: { routine: { id: routineId, description: "Restored routine description\n".repeat(2000) }, revision: { id: expect.any(String) } }, secureSetup: { path: setupPath } });
+    expect(restored.data).not.toHaveProperty("secretMaterials");
     expect(restored).not.toHaveProperty("artifact");
     expect(await call("restore-webhook", args)).toEqual(restored);
-    const value = restored.data.secretMaterials[0].webhookSecret;
+    expect(await fixture.authority.recover({ tool: "call_api", callId: "restore-webhook", arguments: args })).toEqual({ result: restored });
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
-    expect(JSON.stringify(run.resultJson)).not.toContain(value);
-    expect(Object.values((run.resultJson as any).apiToolReceipts).find((receipt: any) => receipt.operationId === args.operationId))
-      .toHaveProperty("encryptedResult");
+    for (const operationId of [triggerArgs.operationId, rotateArgs.operationId, args.operationId]) {
+      const receipt = Object.values((run.resultJson as any).apiToolReceipts).find((entry: any) => entry.operationId === operationId) as any;
+      expect(receipt).toHaveProperty("encryptedResult");
+      const raw = JSON.parse(await getSecretProvider("local_encrypted").resolveVersion({ material: receipt.encryptedResult, externalRef: null }));
+      const value = raw.data.secretMaterial?.webhookSecret ?? raw.data.secretMaterials[0].webhookSecret;
+      expect(value).toEqual(expect.any(String));
+      expect(value.length).toBeGreaterThan(0);
+      expect(JSON.stringify(run.resultJson)).not.toContain(value);
+      expect(JSON.stringify([trigger, rotated, restored])).not.toContain(value);
+    }
+    const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId, fixture.responsibleUserId);
+    const restoredTriggerId = trigger.data.trigger.id;
+    const rawRotate = await fetch(`${fixture.apiUrl}/api/routine-triggers/${restoredTriggerId}/rotate-secret`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: "{}" });
+    expect(rawRotate.status).toBe(200);
+    expect(await rawRotate.json()).toMatchObject({ secretMaterial: { webhookSecret: expect.any(String) } });
     expect((await fixture.snapshot()).assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
   });
 
