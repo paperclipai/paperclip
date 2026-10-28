@@ -81,6 +81,33 @@ describe("ACPX runtime sandbox", () => {
     }
   });
 
+  it("reuses a prepared Claude home without importing old permission settings", async () => {
+    const fixture = await sandboxFixture("claude");
+    const home = await realpath(fixture.root);
+    const profile = join(home, "profile");
+    await mkdir(profile);
+    const skills = join(home, "skills");
+    await mkdir(skills);
+    await writeFile(join(skills, "SKILL.md"), "Shared skills");
+    await symlink(skills, join(profile, "skills"));
+    await writeFile(join(profile, "settings.json"), '{"agentOwned":true}');
+    const environment = { HOME: home, CLAUDE_CONFIG_DIR: profile, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: profile };
+    const first = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", environment, providerPolicy: {readOnly:true} });
+    await first.initializeOwnedConfiguration!();
+    expect(first.agentHomeDirectory).toBe(profile);
+    expect(first.launchEnvironment.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBe("1");
+    expect(first.protectedPaths).toContain(profile);
+    const settings = JSON.parse(await readFile(join(profile, "settings.json"), "utf8"));
+    expect(settings.agentOwned).toBeUndefined();
+    expect(settings.model).toBe(fixture.binding.requestedModel);
+    expect(await readFile(join(profile, "skills", "SKILL.md"), "utf8")).toBe("Shared skills");
+    const other = await sandboxFixture("claude");
+    const second = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment });
+    expect(second.agentHomeDirectory).toBe(profile);
+    expect(second.root).not.toBe(first.root);
+    await expect(prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment:{...environment,CLAUDE_CONFIG_DIR:home} })).rejects.toThrow("prepared_harness_home_invalid");
+  });
+
   it("restores Grok permission controls on recovery without importing compatible hooks or credentials", async () => {
     const fixture = await sandboxFixture("grok");
     const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "grok" });

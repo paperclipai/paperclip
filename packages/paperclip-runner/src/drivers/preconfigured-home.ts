@@ -1,6 +1,6 @@
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import { userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 export const PRECONFIGURED_HOME_ENV = "PAPERCLIP_RUNNER_HOME_MODE";
 export const PRECONFIGURED_HOME_KEYS = [
@@ -10,6 +10,18 @@ export const PRECONFIGURED_HOME_KEYS = [
 
 export function usesPreconfiguredHome(environment: NodeJS.ProcessEnv | undefined): boolean {
   return environment?.[PRECONFIGURED_HOME_ENV] === "preconfigured";
+}
+
+/** A prepared harness home changes storage lifetime, never the execution's permission policy. */
+export function preparedHarnessHome(environment: NodeJS.ProcessEnv | undefined, agent: string): string | null {
+  const directory = environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
+  if (directory === undefined) return null;
+  if (agent !== "claude" || !isAbsolute(directory) || /[\0\r\n]/.test(directory)
+    || directory !== environment?.CLAUDE_CONFIG_DIR || resolve(directory) !== directory
+    || !lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) {
+    throw new Error("prepared_harness_home_invalid");
+  }
+  return directory;
 }
 
 /** Resolve on the execution machine; never create or change a user's directory. */

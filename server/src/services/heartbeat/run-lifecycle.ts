@@ -2363,6 +2363,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       },
       "status_only",
     );
+    delete retryContextSnapshot.skillVersions;
+    delete retryContextSnapshot.skillSelectionSnapshot;
+    delete retryContextSnapshot.shadowedSkills;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,

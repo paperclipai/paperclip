@@ -67,6 +67,22 @@ describeDatabase("selected runtime skill reconciliation", () => {
     }
   }, 30_000);
 
+  it("reuses installed explicit selections without importing the company inventory again", async () => {
+    const service = companySkillService(db);
+    const initial = await service.listRuntimeSkillEntries(companyId, { includeLegacy:true, snapshotLatest:true });
+    expect(initial.length).toBeGreaterThan(0);
+    const insert = vi.spyOn(db, "insert"), update = vi.spyOn(db, "update");
+    try {
+      const selected = await service.listRuntimeSkillEntries(companyId, {
+        onlyKeys:new Set([initial[0]!.key]), snapshotLatest:true,
+      });
+      expect(selected.map(entry => entry.key)).toEqual([initial[0]!.key]);
+      expect(selected[0]!.versionId).toBe(initial[0]!.versionId);
+      expect(insert).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    } finally { insert.mockRestore(); update.mockRestore(); }
+  });
+
   it("bounds project-source authorization work without caching changed permissions", async () => {
     const [agent] = await db.insert(agents).values({ companyId, name: "Selected runtime reader", adapterType: "codex_local" }).returning();
     await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agent!.id, membershipRole: "member" });

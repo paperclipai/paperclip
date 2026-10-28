@@ -822,6 +822,22 @@ success value. The action may already have completed. Reconcile its saved
 result or receipt instead of repeating it. Replaying the same MCP call identity
 reuses the original handler execution, including when delivery failed.
 
+## Prepared harness storage
+
+An execution environment can supply an existing Claude configuration directory
+through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME` and the same absolute,
+non-symlinked `CLAUDE_CONFIG_DIR`. This selects persistent harness storage without
+changing the run's permission mode or enabling preconfigured-home behavior.
+`HOME` remains the execution account's home. Each account must use its own
+configuration directory. The environment must publish the selected skills before
+admission; Runner does not copy or delete skills in this directory.
+
+Runner binds the home into recovery identity and uses its existing provider
+lifetime lease. After acquiring that lease, it replaces Core-owned Claude settings
+with the current launch settings. History remains in the account directory.
+Task control files remain in the session runtime directory. Separate directories
+under one OS user are not a credential isolation boundary.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config

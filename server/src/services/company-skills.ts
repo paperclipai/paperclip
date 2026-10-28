@@ -6185,7 +6185,13 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   ): Promise<T> {
     if (options.onlyKeys?.size === 0 || (!options.onlyKeys && options.selectionConfig && !options.includeLegacy
       && readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills.length === 0)) return consume([]);
-    await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
+    // Installed selections need current authorization, not a company-wide import on every turn.
+    const selected = options.onlyKeys ?? (options.selectionConfig && !options.includeLegacy
+      ? new Set(readPaperclipSkillSyncPreference(options.selectionConfig).desiredSkills) : null);
+    const installed = selected ? await listReferenceTargets(companyId) : [];
+    if (!selected || [...selected].some(key => !installed.some(skill => skill.key === key))) {
+      await measureRunPhase("skills.inventory", () => ensureSkillInventoryCurrent(companyId));
+    }
     return withSkillVersionCacheLock(db, companyId, async () => {
       const entries = await listRuntimeSkillEntriesLocked(companyId, options);
       return measureRunPhase("skills.consume", () => consume(entries));

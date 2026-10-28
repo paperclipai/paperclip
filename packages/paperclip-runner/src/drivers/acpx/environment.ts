@@ -133,6 +133,8 @@ export function createSanitizedAcpxSpawnInput(
     ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
     ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT"] : []),
     ...(usesPreconfiguredHome(source) ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_HOME_MODE", "ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] : []),
+    ...(agent === "claude" && environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME
+      ? [...PRECONFIGURED_HOME_KEYS, "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME"] : []),
   ]);
   let retainedBytes = 0;
   for (const [key, value] of Object.entries(source)) {
