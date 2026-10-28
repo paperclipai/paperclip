@@ -52,7 +52,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
-import { routineService } from "../routines.js";
+import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
@@ -2114,7 +2114,7 @@ export async function commitNativeStatusDecision(input: {
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
       if (updated.originKind === "routine_execution") {
-        await routineService(tx as unknown as Db).syncRunStatusForIssue(input.issueId, tx as unknown as Db);
+        await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
       }
       materialized.unshift({
         effectKind: "issue_status_projection",

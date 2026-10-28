@@ -44,6 +44,7 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
       await db.insert(routineRuns).values({ id: invocationId, companyId: mode === "foreign-company" ? otherCompanyId : companyId,
         routineId: routine!.id, linkedIssueId: mode === "wrong-issue" ? null : issueId, source: "manual", status: "issue_created", triggerPayload: { retainedInput: "Launch" } });
     }
+    const [priorIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
     await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1, schemaVersion: "paperclip.completion-contract.v1",
       policyVersion: "routine-status-test", risk: "standard", completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
       contractJson: { revision: "1", objective: "Save summary", criteria: [] }, canonicalSha256: `contract-${contractId}`, createdByActorType: "system", createdByActorId: "test" });
@@ -52,15 +53,15 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
     await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId,
       serverFingerprint: `fp-${resultId}`, schemaStatus: "accepted", resultJson: {}, canonicalSha256: `sha-${resultId}` });
     await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId, contractId, resultId, triggerKind: "native_result",
-      triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 0, policyVersion: "routine-status-test", assessmentJson: {}, inputDigest: `assessment-${assessmentId}` });
+      triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: priorIssue.statusVersion, policyVersion: "routine-status-test", assessmentJson: {}, inputDigest: `assessment-${assessmentId}` });
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "arbitrating", resultId });
-    return { issueId, invocationId, runId, assessmentId };
+    return { issueId, invocationId, runId, assessmentId, priorStatusVersion: priorIssue.statusVersion, priorDecisionId: priorIssue.lastStatusDecisionId };
   }
   async function commit(f: Awaited<ReturnType<typeof seed>>, status: "done" | "blocked" | "cancelled" | "in_progress", executor: Db = db) {
     const decision: NativeStatusDecision = { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: status, toStatus: status,
       reasonCode: "routine_status_test", unblockDescriptor: null, effects: [] };
     return commitNativeStatusDecision({ db: executor, companyId, issueId: f.issueId, runId: f.runId, assessmentId: f.assessmentId,
-      priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null, decision });
+      priorStatus: "in_progress", priorStatusVersion: f.priorStatusVersion, priorDecisionId: f.priorDecisionId, decision });
   }
   it.each(["done", "blocked", "cancelled", "in_progress"] as const)("projects real %s task status into the exact routine invocation", async status => {
     const f = await seed(); const first = await commit(f, status);
