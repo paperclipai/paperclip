@@ -23,6 +23,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
+import { resolveIntegrationApprovalActor } from "../services/chat-channels/approval-attribution.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -42,14 +43,9 @@ function isStatusOnlyRecoveryContext(contextSnapshot: unknown) {
 }
 
 function resolveApprovalDecisionActor(req: Request): string {
-  const externalActor = typeof req.body?.decidedByUserId === "string"
-    ? req.body.decidedByUserId.trim()
-    : "";
-  if (
-    req.actor.source === "board_key" &&
-    /^telegram:[A-Za-z0-9_-]+$/.test(externalActor)
-  ) {
-    return externalActor;
+  if (req.actor.source === "board_key") {
+    const externalActor = resolveIntegrationApprovalActor(req.body?.decidedByUserId);
+    if (externalActor) return externalActor;
   }
   return req.actor.userId ?? "board";
 }
