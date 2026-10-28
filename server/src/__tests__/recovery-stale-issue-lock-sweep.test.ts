@@ -327,7 +327,12 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
 
     const result = await heartbeatService(db).sweepStaleIssueLocks();
 
-    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    expect(result).toEqual({
+      cleared: 0,
+      issueIds: [],
+      terminalizedRunIds: [],
+      releasedAgentIds: [],
+    });
     await expect(db.select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runningRunId)))
@@ -669,5 +674,107 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runningRunId));
     expect(events).toEqual([]);
+  });
+
+  it("releases an agent pinned on running when the sweep terminalizes its only live run", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    // The run looks live but its process is gone, so the issue-terminal
+    // authority below is what terminalizes it. The agent row is pinned on
+    // "running" exactly as the execution-start gate leaves it.
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned run — agent must be released",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    expect(result.releasedAgentIds).toEqual([agentId]);
+
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.status).toBe("idle");
+  });
+
+  it("leaves the agent running when the sweep terminalizes one run but another is still live", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+
+    // A second live run that no issue references, so the sweep never sees it
+    // and the agent still owns real work.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned run — agent must stay running",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    expect(result.releasedAgentIds).toEqual([]);
+
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.status).toBe("running");
+  });
+
+  it("does not revive a paused agent whose run the sweep terminalizes", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned run — paused agent stays paused",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([runningRunId]);
+    expect(result.releasedAgentIds).toEqual([]);
+
+    const agent = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.status).toBe("paused");
   });
 });

@@ -4951,6 +4951,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       cleared: 0,
       issueIds: [] as string[],
       terminalizedRunIds: [] as string[],
+      releasedAgentIds: [] as string[],
     };
 
     const candidates = await db
@@ -5031,6 +5032,49 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome.terminalized) result.terminalizedRunIds.push(row.id);
     }
 
+    // An agent row is flipped to status="running" when an execution starts, and
+    // only the normal teardown (finalizeAgentStatus) flips it back. The
+    // terminalization above writes heartbeat_runs directly, so an agent whose
+    // only live run was reached this way would stay on "running" forever: the
+    // board shows a phantom live agent and every reader treating "running" as
+    // busy waits on it. Release those agents once the sweep knows their runs are
+    // terminal. This is bookkeeping only, so it must never abort the sweep.
+    if (result.terminalizedRunIds.length > 0) {
+      const affectedAgentIds = [
+        ...new Set(
+          runRows
+            .filter((row) => result.terminalizedRunIds.includes(row.id))
+            .map((row) => row.agentId),
+        ),
+      ];
+      for (const agentId of affectedAgentIds) {
+        try {
+          const released = await db
+            .update(agents)
+            .set({ status: "idle", updatedAt: new Date() })
+            .where(
+              and(
+                eq(agents.id, agentId),
+                eq(agents.status, "running"),
+                sql`not exists (
+                  select 1 from ${heartbeatRuns}
+                  where ${heartbeatRuns.agentId} = ${agentId}
+                    and ${heartbeatRuns.status} = 'running'
+                )`,
+              ),
+            )
+            .returning({ id: agents.id })
+            .then((rows) => rows[0] ?? null);
+          if (released) result.releasedAgentIds.push(released.id);
+        } catch (error) {
+          logger.warn(
+            { err: error, agentId },
+            "failed to release agent status after sweep terminalized its last run",
+          );
+        }
+      }
+    }
+
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
       const status = runStatusById.get(runId);
@@ -5089,12 +5133,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    if (result.cleared > 0 || result.terminalizedRunIds.length > 0) {
+    if (
+      result.cleared > 0 ||
+      result.terminalizedRunIds.length > 0 ||
+      result.releasedAgentIds.length > 0
+    ) {
       logger.warn(
         {
           cleared: result.cleared,
           issueIds: result.issueIds,
           terminalizedRunIds: result.terminalizedRunIds,
+          releasedAgentIds: result.releasedAgentIds,
         },
         "swept stale issue lock columns",
       );
