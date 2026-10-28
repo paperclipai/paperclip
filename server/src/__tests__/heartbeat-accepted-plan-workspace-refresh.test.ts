@@ -1132,7 +1132,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     expect(adapterInput.runtime.sessionId).toBe("accepted-plan-retry-session");
     expect(adapterInput.context.acceptedPlanWakeRouting).toBeUndefined();
     expect(adapterInput.context.paperclipTaskMarkdown).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Execute only the current Paperclip stage.",
     );
   }, 20_000);
 });

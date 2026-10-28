@@ -52,7 +52,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(acceptedConfirmation).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Execute only the current Paperclip stage.",
     );
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
@@ -71,7 +71,7 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(acceptedConfirmation).toContain("Accepted plan directive:");
     expect(acceptedConfirmation).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Execute only the current Paperclip stage.",
     );
     expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
   });
@@ -108,7 +108,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("- Work mode: \"skill_test\"");
     expect(assignment).toContain("Skill test mode directive:");
     expect(assignment).toContain("Make no durable changes outside this issue.");
-    expect(assignment).toContain("Write your final output as issue document `output`");
+    expect(assignment).toContain("You are executing one Paperclip stage.");
   });
 
   it("strips the description for the compact resume variant but keeps directives and the wake comment", () => {

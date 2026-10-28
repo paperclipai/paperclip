@@ -7640,7 +7640,7 @@ export function buildPaperclipTaskMarkdown(input: {
       }
       if (acceptedPlanContinuation) {
         directive =
-          "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.";
+          "Execute only the current Paperclip stage. Paperclip owns task status, dependencies, retries, and terminal completion. Read the required Skill and stage contract first; do not mark the issue done, push, publish, or claim Hermes PASS unless the contract permits it and the matching receipt exists. Return structured output with stage, status, commit SHA, exact checks and exit codes, Hermes status bound to the current HEAD, blockers, artifacts, and next stage. A successful command is not business acceptance.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -7653,13 +7653,13 @@ export function buildPaperclipTaskMarkdown(input: {
         `- Work mode: ${quoteTaskScalar("skill_test")}`,
         "",
         "Skill test mode directive:",
-        "You are testing a pinned skill revision. Make no durable changes outside this issue. Do not push, publish, send external messages, or mutate other issues. Write your final output as issue document `output`, then finish by marking this issue done.",
+        "You are executing one Paperclip stage. Make no durable changes outside this issue. Do not push, publish, send external messages, or mutate other issues unless the stage contract allows it. Write the required structured output artifact and stop at the stage boundary; do not mark the issue done unless this is the declared terminal stage and all required receipts are present.",
       );
     } else if (acceptedPlanContinuation) {
       lines.push(
         "",
         "Accepted plan directive:",
-        "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
+        "Execute only the current Paperclip stage. Paperclip owns task status, dependencies, retries, and terminal completion. Read the required Skill and stage contract first; do not mark the issue done, push, publish, or claim Hermes PASS unless the contract permits it and the matching receipt exists. Return structured output with stage, status, commit SHA, exact checks and exit codes, Hermes status bound to the current HEAD, blockers, artifacts, and next stage. A successful command is not business acceptance.",
       );
     }
     if (acceptedPlanContinuation && input.acceptedPlan?.revisionId) {
