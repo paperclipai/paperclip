@@ -333,6 +333,25 @@ test("store setup and task connection intent share one fake provider through con
         },
       }),
     );
+    const profiles = await json<{
+      profiles: Array<{ id: string; profileKey: string }>;
+    }>(await request.get(`/api/companies/${seed.companyId}/tools/profiles`));
+    const appProfile = profiles.profiles.find(
+      (profile) => profile.profileKey === `app:${connectionId}`,
+    );
+    expect(appProfile).toBeTruthy();
+    await json(
+      await request.post(
+        `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/bind`,
+        { data: { targetType: "agent", targetId: holder.id, priority: 100 } },
+      ),
+    );
+    await json(
+      await request.post(
+        `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/unbind`,
+        { data: { targetType: "company", targetId: seed.companyId } },
+      ),
+    );
 
     await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
     const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
