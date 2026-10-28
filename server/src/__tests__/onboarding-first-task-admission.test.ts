@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agentWakeupRequests, authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { documentService } from "../services/documents.js";
@@ -35,7 +35,7 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   beforeAll(async () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
-    server = await startRunnerApiTestServer();
+    server = await startRunnerApiTestServer({ humanSessions: true });
   }, 60_000);
   afterAll(async () => {
     await server?.close();
@@ -140,6 +140,34 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       if (actor === "human") await expect(create(f)).resolves.toMatchObject({ task: { parentId: f.issueId } });
       else await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
     }
+  });
+
+  it.each(["confirmation", "checkbox"] as const)("rejecting the shipped native %s recipe saves an assignee continuation without authorizing child work", async kind => {
+    const f = await fixture();
+    const issueIds = (await f.snapshot()).issues.map(issue => issue.id).sort();
+    const plan = kind === "checkbox" ? (await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: "plan",
+      title: "Proposed child plan", format: "markdown", body: "Create one child for the proposed deliverable.",
+      createdByAgentId: f.agentId, createdByRunId: f.runId })).document : null;
+    const args = await nativeProposalRecipe(kind, plan?.latestRevisionId ?? undefined);
+    const { interaction } = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: args }) as { interaction: { id: string } };
+    const response = await fetch(`${server.apiUrl}/api/issues/${f.issueId}/interactions/${interaction.id}/reject`, {
+      method: "POST", headers: { cookie: await server.humanSession(f.responsibleUserId!), "Content-Type": "application/json", origin: server.apiUrl },
+      body: JSON.stringify({ reason: "Please revise the proposed scope." }),
+    });
+    const rejected = await response.json();
+    expect(rejected, JSON.stringify(rejected)).toMatchObject({ status: "rejected", continuationPolicy: "wake_assignee",
+      resolvedByUserId: f.responsibleUserId, result: { outcome: "rejected", reason: "Please revise the proposed scope." } });
+    expect(response.status).toBe(200);
+    const wakes = (await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .filter(wake => wake.payload?.interactionId === interaction.id);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({ agentId: f.agentId, requestedByActorType: "user", requestedByActorId: f.responsibleUserId,
+      payload: { issueId: f.issueId, interactionId: interaction.id, interactionStatus: "rejected",
+        paperclipAgentMessage: { text: "Please revise the proposed scope.", source: "interaction_rejection" } } });
+    // The fixture disables execution: observe the real durable wake, not a model call.
+    expect((await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).map(run => run.id)).toEqual([f.runId]);
+    await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
+    expect((await f.snapshot()).issues.map(issue => issue.id).sort()).toEqual(issueIds);
   });
 
   it.each([false, true])("admits persisted human proposal acceptance (checkbox=%s)", async checkbox => {
