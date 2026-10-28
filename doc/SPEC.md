@@ -61,6 +61,12 @@ See [human Operator defaults](SPEC-implementation.md#91-board-auth).
 
 **V1: Single human Board.** One human operator.
 
+Moving a local trusted instance to authenticated mode transfers operational
+ownership from the implicit Board to the signed-in claimant. Existing personal
+credentials and revocations take precedence. Older incomplete claims are repaired
+only when one administrator's company ownership is unambiguous. See the
+[board auth contract](SPEC-implementation.md#91-board-auth).
+
 #### Board Approval Gates (V1)
 
 - New Agent hires (creating new Agents)

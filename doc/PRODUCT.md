@@ -245,6 +245,12 @@ There are two runtime modes Paperclip must support:
 
 Canonical mode design and command expectations live in `doc/DEPLOYMENT-MODES.md`.
 
+When a local trusted instance moves to authenticated mode, the board claim
+transfers existing work and connection ownership to the signed-in operator.
+Older incomplete claims are repaired at startup when a sole administrator's
+company ownership is unambiguous. Existing personal connections and credential
+revocations are preserved.
+
 ## Further Detail
 
 See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./TASKS.md) for the task management data model.
