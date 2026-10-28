@@ -537,7 +537,7 @@ test("access granted outside the card retires the request and continues to a too
     const { seed, holder, connectionId, scout, issue, requesterAccess } = requested;
     const connectionIntents = async () =>
       (
-        await json<Array<{ kind: string; status: string }>>(
+        await json<Array<{ kind: string; status: string; result?: { outcome?: string; connectionId?: string } | null }>>(
           await request.get(`/api/issues/${issue.id}/interactions`),
         )
       ).filter((interaction) => interaction.kind === "connection_intent");
@@ -556,7 +556,8 @@ test("access granted outside the card retires the request and continues to a too
     expect(await requesterAccess()).toBe("allowed");
 
     await expectContinuationDone(request, provider, requested);
-    expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["expired"]);
+    const [retired] = await connectionIntents();
+    expect(retired).toMatchObject({ status: "expired", result: { outcome: "expired", connectionId } });
 
     await page.waitForTimeout(15_000);
     expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["expired"]);
