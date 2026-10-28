@@ -4985,6 +4985,11 @@ export function issueRoutes(
 
   async function assertCanReuseCreatedIssue(req: Request, issue: typeof issueRows.$inferSelect) {
     if (req.actor.type !== "agent") return;
+    const watchdogOrigin = trustedWatchdogOrigin(req);
+    if (watchdogOrigin.originKind && (issue.originKind !== watchdogOrigin.originKind
+      || issue.originId !== watchdogOrigin.originId || issue.createdByAgentId !== req.actor.agentId)) {
+      throw conflict("Idempotency key belongs to an issue that is not a signal of this watchdog");
+    }
     await assertCanAssignTasks(req, issue.companyId, {
       issueId: issue.id,
       projectId: issue.projectId,

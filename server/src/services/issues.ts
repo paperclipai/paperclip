@@ -346,6 +346,22 @@ export async function executeIssuePostCommitActions(
   }
 }
 
+// A watchdog signal may only collapse into an earlier signal of the same
+// watchdog; an unrelated issue with a matching title must not absorb it.
+function watchdogSignalTitleScope(input: {
+  originKind?: string | null;
+  originId?: string | null;
+  createdByAgentId?: string | null;
+}) {
+  if (input.originKind !== "watchdog_service_signal") return undefined;
+  if (!input.originId || !input.createdByAgentId) return sql`false`;
+  return and(
+    eq(issues.originKind, "watchdog_service_signal"),
+    eq(issues.originId, input.originId),
+    eq(issues.createdByAgentId, input.createdByAgentId),
+  );
+}
+
 function wakeRequestTargetsIssue(issueId: string) {
   return sql`(
     ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
@@ -10324,6 +10340,7 @@ export function issueService(db: Db) {
                   issues.createdAt,
                   new Date(Date.now() - 48 * 60 * 60 * 1000),
                 ),
+                watchdogSignalTitleScope(issueData),
                 sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
               ),
             )
