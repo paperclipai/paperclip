@@ -41,8 +41,9 @@ const server=createServer((request,response)=>{
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const base=`http://127.0.0.1:${server.address().port}/`;
-const browser=await chromium.launch();
+let browser;
 try{
+ browser=await chromium.launch();
  const page=await browser.newPage({viewport:{width:1440,height:1000},colorScheme:'dark'});
  const errors=[];page.on('pageerror',error=>errors.push(error.message));
  await page.goto(base+'?view=history');
@@ -99,4 +100,4 @@ try{
  await mobile.close();
  if(errors.length)throw Error(errors.join('\n'));
  console.log('E2E history browser passed: recorded full runs, subsets, unfinished selections, correlated filters, QA preset, URL/back/reload, desktop and touch navigation. No provider calls.');
-}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
+}finally{try{await browser?.close();}finally{await new Promise(resolve=>server.close(resolve));}}
