@@ -468,3 +468,156 @@ describe("no company-scope decision bypasses the role check", () => {
     expect(READS_ACTOR_COMPANY_IDS.test("input.companyIds ?? []")).toBe(false);
   });
 });
+
+/**
+ * A second, larger class of authority check, found by review of this change.
+ *
+ * The sweep above detects modules that read an actor's `companyIds`. It does
+ * not detect a module that reads `membership_role` from the database and then
+ * tests it against `viewer`, in either of these shapes:
+ *
+ *     membership.membershipRole !== "viewer"                      // "has authority"
+ *     ne(companyMemberships.membershipRole, "viewer")              // the same, in SQL
+ *
+ * Both shapes treat *any* non-`viewer` role as a staff member, so a role that
+ * is merely added to the role list satisfies them. 36 of the modules below
+ * never call a company-scope helper, so no route gate runs before them;
+ * external pipelines reach them (chat, MCP, OAuth callbacks, the token broker,
+ * git credentials).
+ *
+ * These sites are NOT yet converted. Converting them is held on one upstream
+ * decision, because the two candidate shapes differ for the `member` role:
+ * `services/access.ts` stores `"member"` as its default `membershipRole`, so
+ * an allow-list of `owner | admin | operator` would deny memberships that
+ * already exist, while excluding only the new role would not.
+ *
+ * So this is a ratchet, not a green light. It pins the inventory: a *new*
+ * viewer-shaped authority check fails this test, and a converted one has to be
+ * removed from the list. It stops the gap from growing while the decision is
+ * open, and it keeps the gap visible in the test suite rather than in a
+ * comment thread.
+ */
+describe("the viewer-shaped authority check is a known, pinned gap", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const serverSrc = join(here, "..");
+
+  /** Either shape of "this member is not a viewer, so it has authority". */
+  const TESTS_ROLE_AGAINST_VIEWER =
+    /(?:!==|===)\s*"viewer"|ne\(\s*[\w.]*membershipRole\s*,\s*"viewer"\s*\)/;
+
+  /**
+   * Every module that currently decides authority this way. Ordered, so a diff
+   * to this list is readable. `routes/authz.ts` is included because it is the
+   * designated home of the deny and still uses the shape for `viewer` itself.
+   */
+  const VIEWER_SHAPED_AUTHORITY_SITES = [
+    "modules/external-agents/native-broker.ts",
+    "routes/agent-profile-avatar.ts",
+    "routes/ai-connections.ts",
+    "routes/authz.ts",
+    "routes/costs.ts",
+    "routes/dot-runner.ts",
+    "routes/issues.ts",
+    "routes/muse.ts",
+    "routes/tool-access.ts",
+    "routes/tool-gateway.ts",
+    "services/authorization.ts",
+    "services/browser-use.ts",
+    "services/case-handoff-authority.ts",
+    "services/chat-channels/discord/root-threads.ts",
+    "services/chat-channels/inbound/authorization.ts",
+    "services/chat-channels/microsoft-teams/file-transfer-authority.ts",
+    "services/chat-channels/slack/setup-services.ts",
+    "services/chat-channels/slack/task-authority.ts",
+    "services/chat-channels/slack/task-start-resolution.ts",
+    "services/chat-channels/slack/task-start.ts",
+    "services/chat-github-access.ts",
+    "services/chat-github-events.ts",
+    "services/chat-github-management.ts",
+    "services/chat-github-registration.ts",
+    "services/chat-github-wizard.ts",
+    "services/connection-intent-delivery.ts",
+    "services/connection-intents.ts",
+    "services/connectors/slack/test-message.ts",
+    "services/email-channels.ts",
+    "services/external-bot-authority.ts",
+    "services/git-credentials.ts",
+    "services/muse-identity.ts",
+    "services/native-runtime/chat-attachment-reuse.ts",
+    "services/plugin-host-services.ts",
+    "services/project-git-authorization.ts",
+    "services/public-mcp/capabilities.ts",
+    "services/public-mcp/file-transfers.ts",
+    "services/public-mcp/oauth.ts",
+    "services/satisfied-connection-intents.ts",
+    "services/slack-board-authority.ts",
+    "services/tool-access/oauth/cloud-callback.ts",
+    "services/tool-access/oauth/direct-callback.ts",
+    "services/tool-access/oauth/vercel-callback.ts",
+    "services/tool-access/token-broker/admission.ts",
+    "services/tool-access.ts",
+    "services/tool-gateway.ts",
+  ] as const;
+
+  async function sourceFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const found: string[] = [];
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "__tests__" || entry.name === "node_modules") continue;
+        found.push(...(await sourceFiles(full)));
+        continue;
+      }
+      if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) found.push(full);
+    }
+    return found;
+  }
+
+  it("no module outside the pinned inventory decides authority by `viewer`", async () => {
+    const files = await sourceFiles(serverSrc);
+    const found: string[] = [];
+    for (const file of files) {
+      const rel = relative(serverSrc, file).split("\\").join("/");
+      if (TESTS_ROLE_AGAINST_VIEWER.test(readFileSync(file, "utf8"))) found.push(rel);
+    }
+
+    const pinned = new Set<string>(VIEWER_SHAPED_AUTHORITY_SITES);
+    const added = found.filter((rel) => !pinned.has(rel)).sort();
+    const removed = [...pinned].filter((rel) => !found.includes(rel)).sort();
+
+    expect(added, [
+      "These modules decide authority with `membershipRole !== \"viewer\"` (or the",
+      "SQL form) and are not in the pinned inventory. That shape treats every",
+      "non-viewer role as staff, so a `client` passes it. Deny the client role",
+      "here, or add the file to VIEWER_SHAPED_AUTHORITY_SITES with a reason.",
+    ].join(" ")).toEqual([]);
+
+    expect(removed, [
+      "These modules no longer use the viewer-shaped check. That is the goal --",
+      "remove them from VIEWER_SHAPED_AUTHORITY_SITES so the inventory shrinks",
+      "and cannot silently regrow.",
+    ].join(" ")).toEqual([]);
+  });
+
+  it("recognizes both real shapes of the viewer-shaped check", () => {
+    // Taken verbatim from the modules in the inventory above.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "membership.membershipRole !== \"viewer\" &&",
+    )).toBe(true);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "eq(companyMemberships.status, \"active\"), ne(companyMemberships.membershipRole, \"viewer\"),",
+    )).toBe(true);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "membership?.status === \"active\" && membership.membershipRole !== \"viewer\"",
+    )).toBe(true);
+    // The read-only direction is the same hazard: it catches `viewer` by name
+    // and therefore lets every other role, including a client, write.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test(
+      "if (membership.membershipRole === \"viewer\") throw forbidden(\"read-only\");",
+    )).toBe(true);
+    // Not a role decision.
+    expect(TESTS_ROLE_AGAINST_VIEWER.test("const label = \"viewer\";")).toBe(false);
+    expect(TESTS_ROLE_AGAINST_VIEWER.test("role === \"client\"")).toBe(false);
+  });
+});
