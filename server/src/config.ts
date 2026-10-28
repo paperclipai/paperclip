@@ -56,6 +56,13 @@ export interface Config {
   customBindHost: string | undefined;
   host: string;
   port: number;
+  /**
+   * When true, refuse to start if the requested port is already in use.
+   * Two servers sharing one database corrupt run state (both schedulers claim
+   * the same `heartbeat_runs` rows and kill each other's adapter processes),
+   * so silently falling back to a free port is dangerous in shared-DB setups.
+   */
+  portStrict: boolean;
   allowedHostnames: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
@@ -312,6 +319,7 @@ export function loadConfig(): Config {
     customBindHost: resolvedBind.customBindHost,
     host: resolvedBind.host,
     port: Number(process.env.PORT) || fileConfig?.server.port || 3100,
+    portStrict: /^(1|true|yes)$/i.test(process.env.PAPERCLIP_PORT_STRICT ?? ""),
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,

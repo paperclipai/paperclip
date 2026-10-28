@@ -622,6 +622,20 @@ export async function startServer(): Promise<StartedServer> {
     port: requestedListenPort,
     hostname: config.host,
   });
+  // Two servers pointed at the same database corrupt run state: each has its own
+  // scheduler, so they claim the same `heartbeat_runs` rows, resurrect runs the
+  // other is executing, and terminate the other's adapter child processes. The
+  // symptom is runs stuck in `running` with empty error fields.
+  // Refuse to start rather than silently binding a different port when the
+  // operator asked for a specific one.
+  if (listenPort !== requestedListenPort && config.portStrict) {
+    throw new Error(
+      `Port ${requestedListenPort} is already in use and PAPERCLIP_PORT_STRICT is set. ` +
+        `Another Paperclip server may be running against the same database. ` +
+        `Stop it first (two servers sharing one DB corrupt run state), or start with ` +
+        `PAPERCLIP_PORT_STRICT unset to let Paperclip pick a free port.`,
+    );
+  }
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLoopbackUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -868,7 +882,11 @@ export async function startServer(): Promise<StartedServer> {
   server.headersTimeout = 186000;
   
   if (listenPort !== requestedListenPort) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
+    logger.warn(
+      `Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort}). ` +
+        `If another Paperclip server is already serving this database, stop it — concurrent schedulers corrupt run state. ` +
+        `Set PAPERCLIP_PORT_STRICT=1 to make this fatal instead.`,
+    );
   }
   
   const runtimeListenHost = config.host;
