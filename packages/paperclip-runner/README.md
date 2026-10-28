@@ -831,6 +831,8 @@ changing the run's permission mode or enabling preconfigured-home behavior.
 `HOME` remains the execution account's home. Each account must use its own
 configuration directory. The environment must publish the selected skills before
 admission; Runner does not copy or delete skills in this directory.
+On Unix, the directory must belong to the Runner user and use mode `0700`;
+the provider lifetime lease rejects group/world access or another owner.
 
 Runner binds the home into recovery identity and uses its existing provider
 lifetime lease. After acquiring that lease, it replaces Core-owned Claude settings
