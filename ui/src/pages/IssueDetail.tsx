@@ -5064,6 +5064,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           mode: policy.mode ?? "normal",
           commentRequired: policy.commentRequired ?? true,
           stages: policy.stages ?? [],
+          // An omitted `monitor` key now means "keep the schedule"; clearing needs to be explicit.
+          monitor: null,
         },
       });
     },

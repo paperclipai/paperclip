@@ -1321,7 +1321,9 @@ export function IssueProperties({
         mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
-        ...(nextMonitor ? { monitor: nextMonitor } : {}),
+        // Omitting `monitor` now means "leave the schedule alone", so an explicit clear
+        // has to say so.
+        monitor: nextMonitor ?? null,
       },
     });
   };
