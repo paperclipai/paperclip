@@ -496,6 +496,11 @@ describe("no company-scope decision bypasses the role check", () => {
  * removed from the list. It stops the gap from growing while the decision is
  * open, and it keeps the gap visible in the test suite rather than in a
  * comment thread.
+ *
+ * The detector matches source text, so it cannot tell an authority decision
+ * apart from any other predicate that names `viewer`. Both are pinned, in two
+ * separate lists, so that the authority inventory stays an honest count of the
+ * gap while a new file in either shape still fails the build.
  */
 describe("the viewer-shaped authority check is a known, pinned gap", () => {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -559,6 +564,24 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     "services/tool-gateway.ts",
   ] as const;
 
+  /**
+   * Files that name `viewer` in a predicate that does not decide authority, so
+   * they are not part of the gap the deny has to close. They are still pinned,
+   * because the detector cannot tell the two apart from the source text alone
+   * and the sweep has to stay a ratchet: a new file is a build failure either
+   * way, and triage then decides which list it belongs in.
+   */
+  const VIEWER_SHAPED_NOTICE_SITES = [
+    // Both gate a `notifyChatRunMilestones(tx, { companyId })` call when a
+    // membership becomes active or is restored. The predicate chooses whether
+    // to send a company notice, not what a principal may reach, and the notice
+    // is company-scoped with no principal in it. A `client` membership does
+    // trip these notices, which is untidy but grants nothing; left alone here
+    // because it is behavior in code this PR does not otherwise touch.
+    "middleware/auth.ts",
+    "services/access.ts",
+  ] as const;
+
   async function sourceFiles(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true });
     const found: string[] = [];
@@ -574,7 +597,7 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
     return found;
   }
 
-  it("no module outside the pinned inventory decides authority by `viewer`", async () => {
+  it("no module outside the pinned inventory tests a role against `viewer`", async () => {
     const files = await sourceFiles(serverSrc);
     const found: string[] = [];
     for (const file of files) {
@@ -582,21 +605,25 @@ describe("the viewer-shaped authority check is a known, pinned gap", () => {
       if (TESTS_ROLE_AGAINST_VIEWER.test(readFileSync(file, "utf8"))) found.push(rel);
     }
 
-    const pinned = new Set<string>(VIEWER_SHAPED_AUTHORITY_SITES);
+    const pinned = new Set<string>([
+      ...VIEWER_SHAPED_AUTHORITY_SITES,
+      ...VIEWER_SHAPED_NOTICE_SITES,
+    ]);
     const added = found.filter((rel) => !pinned.has(rel)).sort();
     const removed = [...pinned].filter((rel) => !found.includes(rel)).sort();
 
     expect(added, [
-      "These modules decide authority with `membershipRole !== \"viewer\"` (or the",
-      "SQL form) and are not in the pinned inventory. That shape treats every",
-      "non-viewer role as staff, so a `client` passes it. Deny the client role",
-      "here, or add the file to VIEWER_SHAPED_AUTHORITY_SITES with a reason.",
+      "These modules name `viewer` in a role predicate and are not pinned. If",
+      "the predicate decides authority, that shape treats every non-viewer role",
+      "as staff, so a `client` passes it -- deny the client role here, or add",
+      "the file to VIEWER_SHAPED_AUTHORITY_SITES with a reason. If it decides",
+      "something else, add it to VIEWER_SHAPED_NOTICE_SITES with a reason.",
     ].join(" ")).toEqual([]);
 
     expect(removed, [
-      "These modules no longer use the viewer-shaped check. That is the goal --",
-      "remove them from VIEWER_SHAPED_AUTHORITY_SITES so the inventory shrinks",
-      "and cannot silently regrow.",
+      "These modules no longer name `viewer` in a role predicate. For an",
+      "authority site that is the goal -- remove it from the inventory so the",
+      "gap shrinks and cannot silently regrow.",
     ].join(" ")).toEqual([]);
   });
 
