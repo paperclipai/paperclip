@@ -2188,6 +2188,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
+  issueExecutionState: unknown;
   requestAddsExplicitBlockers?: boolean;
 }) {
   // A request that wires a non-empty blockedByIssueIds list is declaring that
@@ -2196,6 +2197,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // edits — flipping to todo here would contradict the caller's stated intent
   // in the same request.
   if (input.requestAddsExplicitBlockers) return false;
+  if (
+    input.issueStatus === "blocked" &&
+    parseIssueExecutionState(input.issueExecutionState)?.status === "pending"
+  ) {
+    return false;
+  }
   // Local-CLI agents post comments under user auth, so the actor.type is "user"
   // even though the comment originates from the same heartbeat run that owns
   // the issue lock. Without this guard, an agent that closes its own issue and
@@ -14050,6 +14057,7 @@ export function issueRoutes(
               actorRunId: actor.runId,
               checkoutRunId: existing.checkoutRunId,
               executionRunId: existing.executionRunId,
+              issueExecutionState: existing.executionState,
               requestAddsExplicitBlockers:
                 Array.isArray(req.body.blockedByIssueIds) &&
                 req.body.blockedByIssueIds.length > 0,
@@ -18580,6 +18588,7 @@ export function issueRoutes(
             actorRunId: actor.runId,
             checkoutRunId: issue.checkoutRunId,
             executionRunId: issue.executionRunId,
+            issueExecutionState: issue.executionState,
           }) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =
@@ -18597,6 +18606,24 @@ export function issueRoutes(
           .json({ error: "Issue follow-up blocked by unresolved blockers" });
         return;
       }
+      const heldReviewReopenPatch =
+        effectiveMoveToTodoRequested &&
+        isBlocked &&
+        !hasUnresolvedFirstClassBlockers &&
+        parseIssueExecutionState(issue.executionState)?.status === "pending"
+          ? applyIssueExecutionPolicyTransition({
+              issue,
+              policy: normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
+              requestedStatus: "todo",
+              requestedAssigneePatch: {},
+              actor: {
+                agentId: actor.agentId ?? null,
+                userId: actor.actorType === "user" ? actor.actorId : null,
+              },
+              allowBoardOverride: req.actor.type === "board" && req.actor.source !== "mcp_oauth",
+              commentBody: null,
+            }).patch
+          : null;
       if (
         !(await assertCrossIssueInfluenceWithinRunCap(
           req,
@@ -18675,7 +18702,7 @@ export function issueRoutes(
         scheduledRetrySupersededByComment =
           shouldResumeInProgressScheduledRetry &&
           issue.status === "in_progress";
-        const reopenedIssue = await svc.update(id, { status: "todo" });
+        const reopenedIssue = await svc.update(id, { status: "todo", ...heldReviewReopenPatch });
         if (!reopenedIssue) {
           res.status(404).json({ error: "Issue not found" });
           return;
@@ -18695,7 +18722,7 @@ export function issueRoutes(
           entityType: "issue",
           entityId: currentIssue.id,
           details: {
-            status: "todo",
+            status: currentIssue.status,
             ...(reopened
               ? { reopened: true, reopenedFrom: reopenFromStatus }
               : {}),
