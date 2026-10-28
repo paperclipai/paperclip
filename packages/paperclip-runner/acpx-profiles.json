@@ -5,12 +5,12 @@
   "protocolVersion": 1,
   "profiles": {
     "grok": {
-      "agentProfileVersion": 8,
+      "agentProfileVersion": 9,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:647d4628f3c9502814895f927a0c9bf0b856fbbca155c9bdd4247e10da97c01b",
+      "commandDigest": "sha256:7b777fa603809ff2efa9c69bd2105a980dbf9c71967f76460dca047ecd9612f3",
       "requiresProviderPolicy": false
     },
     "pi": {
@@ -32,12 +32,12 @@
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 72,
+      "agentProfileVersion": 73,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:a6a8b2ed778571abc8f61e497b59387887a1b7bb78ebce6fda663f38fc008bf4",
+      "commandDigest": "sha256:53d6b53ecbad96175acf39a075bf5fd7041c485b5da2bc19765e32ba53806542",
       "requiresProviderPolicy": true
     },
     "claude": {

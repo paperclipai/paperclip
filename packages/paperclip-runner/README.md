@@ -838,6 +838,10 @@ with the current launch settings. History remains in the account directory.
 Task control files remain in the session runtime directory. Separate directories
 under one OS user are not a credential isolation boundary.
 
+The shared implementation advances the Grok, Pi, and Copilot source profiles;
+historical declarations remain decodable. New launches use their current
+profile identities.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config
