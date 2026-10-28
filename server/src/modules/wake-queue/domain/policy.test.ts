@@ -303,6 +303,7 @@ const baseReleaseRecoveryFacts: ReleaseRecoveryFacts = {
   reviewParticipant: {
     applies: false,
     isExecutionReviewParticipantRecoveryRun: false,
+    hasExplicitBlockerPath: false,
   },
   immediate: {
     applies: false,
@@ -454,6 +455,30 @@ describe("decideReleaseRecovery", () => {
         },
       },
       expected: { kind: "blocked", notice: "execution_review_participant" },
+    },
+    {
+      name: "released: review-participant recovery applies but the issue waits on an unresolved explicit blocker",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          ...baseReleaseRecoveryFacts.reviewParticipant,
+          applies: true,
+          hasExplicitBlockerPath: true,
+        },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "released: an unresolved explicit blocker also stops escalation after a review-participant recovery retry",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        reviewParticipant: {
+          applies: true,
+          isExecutionReviewParticipantRecoveryRun: true,
+          hasExplicitBlockerPath: true,
+        },
+      },
+      expected: { kind: "released" },
     },
     {
       name: "queue_review_participant_recovery: review-participant recovery applies and no suppression or block condition fires",
