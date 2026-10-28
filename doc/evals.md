@@ -377,6 +377,12 @@ and startup evidence under Diagnostics. Optional `presentation` metadata in a
 retained campaign supplies its title, description, notes, and evidence links
 inside the shared report shell when the dashboard is regenerated.
 
+Standard runner Product E2E attempts also retain a sanitized `taskChat` recording
+for Test details: task briefs, complete saved messages, requests and answers,
+and native agent progress. Related task threads are separate; incomplete capture
+is labeled. This automatic capture runs before teardown on success and failure.
+See the [Product E2E evidence contract](../tests/runner-e2e/README.md#evidence-and-cleanup).
+
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)
 and [Runner Product E2E history](https://d1p6rlowie26tp.cloudfront.net/runner-e2e/).

@@ -1,4 +1,5 @@
 import { createWorkerTiming } from "./worker-timing.js";
+import { captureTaskChat, type TaskChatEvidence } from "./task-chat.js";
 import { FEEDBACK_PERSISTENCE_SUITE, gradeFeedbackPersistence } from "./feedback-persistence.js";
 import { EvalAttemptTrace, evalBraintrustConfig, EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { captureFollowupStopFailureApiState } from "./followup-stop-evidence.js";
@@ -659,6 +660,7 @@ for (const execution of executions) {
     let fixtures: LiveFixtureValues | undefined;
     let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
+    let taskChat: TaskChatEvidence | undefined;
     let workflowCase: { id: string; identifier?: string } | undefined;
     let selectedRuns: RunRecord[] = [];
     let feedback = emptyFeedbackSummary();
@@ -3198,6 +3200,15 @@ for (const execution of executions) {
             },
             assertions: beforeEnvironmentTeardownAssertions,
             teardown: async () => {
+              try {
+                taskChat = await captureTaskChat({ get: route => api.get(route, { timeout: 5_000 }), companyId: fixtures!.company.id,
+                  issueIds: [...new Set([issue?.id, ...selectedRuns.flatMap(run => [run.nativeIssueId,
+                    run.contextSnapshot?.issueId as string | undefined])].filter((id): id is string => Boolean(id)))], secrets });
+              } catch {
+                // Supplemental evidence must never prevent owned fixture cleanup.
+                taskChat = { schema: "paperclip.runner-e2e.task-chat/v1", capturedAt: new Date().toISOString(),
+                  status: "unavailable", threads: [], missing: ["capture"] };
+              }
               await workerTiming.enter("feedback");
               trace?.phase("feedback");
               try {
@@ -3339,6 +3350,7 @@ for (const execution of executions) {
         provider: execution.profile.provider,
         model: firstTaskEvidence ? firstTaskEvidence.observedModels[0] ?? firstTaskEvidence.configuredModel ?? "provider-default (unreported)" : execution.profile.model,
         ...(firstTaskEvidence ? { firstTask: firstTaskEvidence } : {}),
+        ...(taskChat ? { taskChat } : {}),
         ...(completionQuality.length ? { completionQuality } : {}),
         ...(publicMcpUsage ? { publicMcp: publicMcpUsage } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,

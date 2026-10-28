@@ -10,6 +10,7 @@ import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
 import { STARTUP_REUSE_LAYERS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
+import { renderTaskChat } from "./task-chat-report.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
 import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
 import { renderEvalOperationsReport } from "./operations-report.js";
@@ -160,6 +161,8 @@ function renderCase(
   const outcome = entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : "";
   const passed = state === "passed" && entry?.result.status === "passed";
   const firstTaskChecks = entry?.result.firstTask?.checks;
+  const taskChatCoversOnboarding = entry?.result.taskChat?.status === "complete" &&
+    entry.result.taskChat.threads.some(thread => thread.issueId === entry.result.firstTask?.onboardingIssueId);
   const productChecks = entry?.result.productJourney?.checks;
   const notReached = firstTaskChecks?.filter((c) => c.notReached).length ?? 0;
   const matcherResults = firstTaskChecks?.length
@@ -323,7 +326,8 @@ function renderCase(
     </dl>` : ""}
     ${matcherResults.length || notReached ? `<ul class="case-checks" aria-label="Recorded checks">${matcherResults.map(result => `<li><span class="check-state ${result.passed ? "check-passed" : "check-failed"}">${result.passed ? "Pass" : "Fail"}</span><span>${html(result.detail)}</span></li>`).join("")}${firstTaskChecks?.filter(check => check.notReached).map(check => `<li><span class="check-state">Not reached</span><span>${html(check.detail)} · ${html(check.notReached)}</span></li>`).join("") ?? ""}</ul>` : ""}
     ${billingStrip}
-    ${renderFirstTaskDetails(entry?.result)}
+    ${renderFirstTaskDetails(entry?.result, !taskChatCoversOnboarding)}
+    ${renderTaskChat(entry?.result.taskChat)}
     ${links}
     <details class="case-context case-advanced">
     <summary>Diagnostics</summary>
