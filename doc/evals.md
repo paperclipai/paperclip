@@ -331,6 +331,14 @@ compatible complete campaigns. Refreshing an existing report from retained
 evidence has zero provider calls and is a new presentation of the old
 measurement, not a new model run.
 
+Product E2E test details and screenshot galleries show the recorded application
+URL when it is available. The worker environment, such as Daytona, does not
+imply an application URL. Public projections can retain the reviewed URL in
+`targetUrl`. Test details put recorded checks first and keep raw usage, timing,
+and startup evidence under Diagnostics. Optional `presentation` metadata in a
+retained campaign supplies its title, description, notes, and evidence links
+inside the shared report shell when the dashboard is regenerated.
+
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)
 and [Runner Product E2E history](https://d1p6rlowie26tp.cloudfront.net/runner-e2e/).
