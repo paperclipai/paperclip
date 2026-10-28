@@ -62,6 +62,7 @@ import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
+import { historicalQuestionCondition } from "./issue-question-context.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -1278,6 +1279,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          sql`not exists (
+            select 1 from ${issues}
+            where ${issues.id} = ${issueThreadInteractions.issueId}
+              and ${issues.companyId} = ${issueThreadInteractions.companyId}
+              and (${issues.status} = 'cancelled'
+                or (${issues.status} = 'done' and not ${historicalQuestionCondition()}))
+          )`,
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       // Addressee invokability needs the org graph; the audience line also needs

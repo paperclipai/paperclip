@@ -29,6 +29,7 @@ import {
   invites,
   issueApprovals,
   issueAttachments,
+  issueComments,
   issueDocuments,
   issueRecoveryActions,
   issueRelations,
@@ -78,6 +79,7 @@ describeEmbeddedPostgres("attention service", () => {
     await db.delete(decisionQueues);
     await db.delete(decisions);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(issueApprovals);
     await db.delete(issueAttachments);
     await db.delete(issueDocuments);
@@ -1464,6 +1466,57 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it("lists pending interactions on closed tasks only while a human can still answer them", async () => {
+    const { companyId, workerId } = await seedCompany("ATX");
+    const openIssueId = await insertIssue({ companyId, identifier: "ATX-1", title: "Open", status: "in_progress", assigneeAgentId: workerId });
+    const cancelledIssueId = await insertIssue({ companyId, identifier: "ATX-2", title: "Cancelled", status: "cancelled", assigneeAgentId: workerId });
+    const doneIssueId = await insertIssue({ companyId, identifier: "ATX-3", title: "Done", status: "done", assigneeAgentId: workerId });
+    const askedAt = new Date("2026-07-09T12:00:00.000Z");
+    const question = (id: string, issueId: string, title: string) => ({
+      id, companyId, issueId, kind: "ask_user_questions", status: "pending", continuationPolicy: "wake_assignee",
+      createdByAgentId: workerId, title,
+      payload: { version: 1, questions: [] },
+      createdAt: askedAt, updatedAt: askedAt,
+    });
+    const ids = {
+      open: randomUUID(), cancelled: randomUUID(), doneConfirmation: randomUUID(),
+      doneActiveQuestion: randomUUID(), doneHistoricalQuestion: randomUUID(), doneDismissedQuestion: randomUUID(),
+    };
+    const historicalIssueId = await insertIssue({ companyId, identifier: "ATX-4", title: "Done later", status: "done", assigneeAgentId: workerId });
+    const dismissedIssueId = await insertIssue({ companyId, identifier: "ATX-5", title: "Done dismissed", status: "done", assigneeAgentId: workerId });
+    await db.insert(issueThreadInteractions).values([
+      question(ids.open, openIssueId, "Open question"),
+      question(ids.cancelled, cancelledIssueId, "Cancelled question"),
+      {
+        id: ids.doneConfirmation, companyId, issueId: doneIssueId, kind: "request_confirmation", status: "pending",
+        continuationPolicy: "wake_assignee", createdByAgentId: workerId, title: "Approve done work",
+        payload: { version: 1, prompt: "Approve?" }, createdAt: askedAt, updatedAt: askedAt,
+      },
+      question(ids.doneActiveQuestion, doneIssueId, "Unanswered done question"),
+      question(ids.doneHistoricalQuestion, historicalIssueId, "Historical done question"),
+      {
+        ...question(ids.doneDismissedQuestion, dismissedIssueId, "Dismissed done question"),
+        dismissedAt: new Date("2026-07-09T12:30:00.000Z"), dismissedByUserId: "board-user",
+      },
+    ]);
+    await db.insert(issueComments).values({
+      companyId, issueId: historicalIssueId, authorUserId: "board-user", authorType: "user",
+      body: "Moving on without this.", createdAt: new Date("2026-07-09T13:00:00.000Z"),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactionIds = feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.id);
+
+    expect(interactionIds).toContain(ids.open);
+    expect(interactionIds).toContain(ids.doneHistoricalQuestion);
+    expect(interactionIds).toContain(ids.doneDismissedQuestion);
+    expect(interactionIds).not.toContain(ids.cancelled);
+    expect(interactionIds).not.toContain(ids.doneConfirmation);
+    expect(interactionIds).not.toContain(ids.doneActiveQuestion);
   });
 
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {
