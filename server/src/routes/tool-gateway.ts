@@ -91,8 +91,6 @@ async function handleMcpGatewayProtocol(
         bearerToken: token,
         callerHeaders: headers,
       });
-      // Advertise only what the token may list: clients request every advertised
-      // capability, and some drop the whole connection on the resulting 403.
       const allowedActions = session.gatewayTokenAllowedActions;
       const canList = (action: "tools/list" | "resources/list" | "prompts/list") =>
         !allowedActions || allowedActions.includes(action);
