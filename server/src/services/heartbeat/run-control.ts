@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { resumeDeferredChatWake } from "../durable-chat-wakeup.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
@@ -1016,6 +1017,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
     if (wakeupIds.length === 0) return 0;
 
+    await notifyChatInboundWakeNotices(tx, { companyId: scope.companyId });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -1576,35 +1578,29 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     );
     if (uniqueAgentIds.length === 0) return 0;
 
-    const now = new Date();
-    const wakeupIds = await db
-      .select({ id: agentWakeupRequests.id })
-      .from(agentWakeupRequests)
-      .where(
-        and(
+    return db.transaction(async tx => {
+      const wakeups = await tx
+        .select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+        .from(agentWakeupRequests)
+        .where(and(
           inArray(agentWakeupRequests.agentId, uniqueAgentIds),
-          inArray(agentWakeupRequests.status, [
-            "queued",
-            "deferred_issue_execution",
-          ]),
-          sql`${agentWakeupRequests.runId} is null`,
-        ),
-      )
-      .then((rows) => rows.map((row) => row.id));
-
-    if (wakeupIds.length === 0) return 0;
-
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        status: "cancelled",
-        finishedAt: now,
-        error: reason,
-        updatedAt: now,
-      })
-      .where(inArray(agentWakeupRequests.id, wakeupIds));
-
-    return wakeupIds.length;
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          isNull(agentWakeupRequests.runId),
+        ));
+      if (!wakeups.length) return 0;
+      for (const companyId of new Set(wakeups.map(row => row.companyId))) {
+        await notifyChatInboundWakeNotices(tx, { companyId });
+      }
+      const now = new Date();
+      const cancelled = await tx.update(agentWakeupRequests).set({
+        status: "cancelled", finishedAt: now, error: reason, updatedAt: now,
+      }).where(and(
+        inArray(agentWakeupRequests.id, wakeups.map(row => row.id)),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        isNull(agentWakeupRequests.runId),
+      )).returning({ id: agentWakeupRequests.id });
+      return cancelled.length;
+    });
   }
 
   async function cancelInvocationsForAgentsInternal(

@@ -582,6 +582,50 @@ appears, followed briefly by **Back online**. Recovery does not reload the
 browser. Authorization failures still require sign-in or an explicit retry.
 Storybook **App / Connection recovery** shows the startup screens and banner.
 
+Writes keep the user's text through an outage:
+
+- Comments, new tasks, and board sends store the request and its key
+  (`clientRequestId` or `idempotencyKey`) before they send
+  (`ui/src/lib/pending-send.ts`, `ui/src/hooks/useDurableSubmit.ts`). After a
+  transient failure or a lost response, the composer shows **Sending when
+  reconnected…** with **Resend now** and **Cancel**, and resends with the same
+  key on recovery. The server dedupes by that key. Restored board publications
+  wait for an explicit retry. Restored plain comments and keyed requests resend
+  after their initial backoff. A combined comment that also reassigns, reopens,
+  or changes run settings waits for a matching server receipt or Cancel: comment
+  deduplication alone cannot safely replay those task changes. Cancel returns
+  the text for a fresh, intentional send. A new task restored without its staged
+  files is not sent; the dialog asks for the files again. Restored subtasks keep
+  their saved parent and goal defaults even when reopened from the normal New
+  Task action. Successful staged-file
+  uploads are identified by content digest as well as metadata, so distinct files
+  with identical names, sizes and timestamps are both uploaded. Without browser
+  hashing support, uploads proceed without receipt-based deduplication.
+- Document and inline-editor autosave (`ui/src/hooks/useDurableAutosave.ts`)
+  keeps unsaved edits in browser storage, shows **Will save when reconnected**,
+  and saves the newest draft for each task or document on recovery. A `409`
+  whose server copy equals the draft counts as saved. A temporary failure of
+  that verification stays pending. Exhausted attempts show a manual retry action.
+  Admitted edits can finish after route navigation unmounts the editor. That
+  work waits for recovery events while offline, uses bounded backoff while
+  online, and verifies the current account before each retry. The latest admitted
+  save is shared by account and target across editor mounts, so a superseded
+  detached retry cannot overwrite a newer edit after reopening the same task.
+  Replayable task-field updates and interaction resolutions bind the original
+  account, account generation and operation at dispatch. A sign-out or account
+  change cancels that intent before it can send, including after waiting behind
+  another write; callbacks cannot apply an old result to the next account.
+  Stored document drafts and mounted editors belong to the signed-in user.
+  Storage failure shows a warning to keep the tab open or copy the text.
+- Issue field updates go through `useUpdateIssueMutation`: optimistic, rolled
+  back with readable copy on failure, and replayed on reconnect for absolute
+  fields. Updates run in order, so an older update that retries cannot
+  overwrite a newer one.
+- Uploads and other non-idempotent requests never resend on their own; they
+  keep the input and offer **Retry**.
+
+The banner counts every write that waits for the connection.
+
 To reproduce a deploy blip in a dev or QA build, set the outage simulator in the
 browser console and remove it to end the outage:
 
@@ -993,6 +1037,22 @@ IDs. Missing or foreign tasks stay unreadable in every privacy mode. The batch
 snapshot lasts for one request only; the next request checks current grants,
 membership, and run restrictions again. Adapters that expose only `decide`
 retain the individual-read path with duplicate bindings shared within the request.
+
+### Managed Cloud runner images
+
+Paperclip-managed Cloud sandbox images do not require a saved platform or
+snapshot qualification. Discovery offers Paperclip Runner, and execution uses
+the current platform-selected image even when an older qualification exists.
+The real runtime startup and handshake report compatibility failures. Test goes
+directly to that runtime check when discovery already offers Paperclip Runner.
+Company access, adapter availability, credentials and runtime integrity checks
+still apply. Self-hosted sandboxes, custom environments and active captured
+custom images keep their existing qualification and snapshot binding.
+The active Cloud configuration must still provision the sandbox provider; a
+leftover managed marker alone does not enable this policy. Discovery reads
+custom-image metadata without resolving provider credentials.
+Outdated captures that no longer match the base configuration do not change
+the managed runner default, consistent with execution's template selection.
 
 ### Local Linux runner qualification
 
@@ -3434,6 +3494,64 @@ reuse runs the workspace provision command (or `scripts/provision-worktree.sh`),
 which reinstalls dependencies when `node_modules` is missing. Repositories without
 a provision command rely on the agent's own install step, as they do for a new
 worktree.
+
+### Browser write recovery
+
+Use `useDurableAutosave` for replayable field updates and `useDurableSubmit` for
+user submissions that have an idempotent server contract. Bind queued jobs to
+the original task and save callback. A task switch must not retarget pending work.
+Keep the original creation key when a restored draft needs its attachments again;
+attachment selection order does not create a new request. Document and decision
+writes with an uncertain response verify the saved result before reporting failure.
+Verification reads can themselves need retry. Conflicts and permanent failures
+must reach the caller. Once automatic attempts stop, show **Resend now** instead
+of promising another automatic attempt. See the hook, document, task creation and
+connected-task banner tests for these contracts.
+
+Inline editors preserve typing through the first owner lookup and remount after
+a known draft owner changes. Connected-channel sends use
+account-scoped storage and publication queries; retries and receipts retain the
+original account generation. Returning to that account restores its saved send
+for an explicit same-key retry. Earlier unowned channel receipts are preserved
+without revealing or replaying their text. They require inspecting Activity
+before a new send because their original sender cannot be established safely.
+After checking Activity, a person can explicitly discard the unowned browser
+record to start a fresh update. This never replays the old text or cancels an
+already accepted publication; storage failures keep the hold in place.
+
+Task-creation drafts and recovery state are account-scoped. A known account
+change remounts the dialog, clears staged in-memory files and stops old creates
+before any subsequent upload. An interrupted account-bound request stays pending
+under its original key; it is never relabelled as a provider refusal. Legacy
+unowned form drafts remain in browser storage but are not restored into another
+account. Storybook fixtures seed the same account-specific keys.
+
+Successful pending-record writes have the same readable size range as browser
+storage. In particular, a large task description cannot silently drop its
+creation key on reload. Reselected text documents recover their original
+file-to-document-key mapping before fingerprint comparison and upload.
+Document editors remount on subject changes, and a message attempt settles only
+once when a server receipt races its HTTP retry. Startup autosaves bind to the
+first resolved account; a later known-account change still cancels old work.
+Account-bound status changes and decisions also wait for the first lookup rather
+than rejecting an action made while it loads. Waiting work starts a bounded retry
+of a failed session lookup; exhaustion reaches the original error callback instead
+of leaving the operation pending. Removing that session scope cancels its lookup
+work. Account cancellation after an uncertain POST keeps the original request key.
+Comment retries check the original
+account generation at the click and again immediately before their POST, including
+after optimistic cache cancellation or conversation creation. A retained accepted
+comment returns its existing receipt before the route can reopen a completed task.
+`server/src/services/issue-comment-receipt.ts` completes reference and activity
+records for keyed board comments. It locks the same-company task before its
+comment, matching task and company deletion, comment removal and tombstoning. It repairs references and
+inserts a missing activity record in one
+transaction, and publishes after commit. The task uses `FOR NO KEY UPDATE` so
+concurrent comments can reference each other without blocking foreign-key checks. Both the initial send and a retained
+receipt use this owner so concurrent completion cannot duplicate the activity.
+Large comment request records use the same readable range as successful writes,
+including JSON-escaped bodies. Account changes retire only the original optimistic
+echo and cannot apply its rollback to the next account.
 
 ### Browser realtime connection recovery
 

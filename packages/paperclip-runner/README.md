@@ -333,6 +333,10 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
+Use the returned `nextOffset` as `offset` to read the next page. The tool and
+parameter descriptions include these bounds for providers that render numeric
+schema constraints as plain number types.
 Search returns bounded pages of names, descriptions, and input schemas. Each
 page intersects the session's pinned assignments with current gateway grants.
 An individual schema that exceeds a page returns an `inputSchemaRef`. The same

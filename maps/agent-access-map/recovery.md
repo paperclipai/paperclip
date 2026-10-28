@@ -7,6 +7,9 @@ Feature ID: `recovery`.
 Native finalization deadline reconciliation records unfinished workspace
 preservation through the existing server-owned recovery path. It grants no
 additional agent API, provider-stop authority or permission to replay work.
+The server also retires an unowned failed sandbox retry after its linked explicit
+Retry completes. This only registers exact-source preservation; it neither changes
+the current task nor supplies stop or saved-file proof.
 
 Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
 zombie with the saved generation. Unknown adopted-process ownership rejects the
@@ -513,6 +516,12 @@ Gaps: Legacy/native/channel runtimes separately qualify; preserve original undis
 ## `reconnect`
 
 Capability ID: `recovery/reconnect`.
+
+Browser autosave and resend preserve the existing actor, task and idempotency
+contracts. They grant no new agent access. Retrying a document or decision still
+requires its normal authorized operation; an uncertain outcome requires saved-result
+verification rather than an unguarded repeat.
+
 
 Review: `operation-reviewed`.
 

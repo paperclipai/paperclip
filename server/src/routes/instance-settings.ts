@@ -136,7 +136,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);

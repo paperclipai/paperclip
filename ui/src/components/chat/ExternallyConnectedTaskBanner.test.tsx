@@ -9,6 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 import { boardSendDraftKey, readBoardSendDraft } from "./board-send-draft";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
+const mockSession = vi.hoisted(() => ({ userId: "user-1" }));
+vi.mock("@/api/auth", () => ({
+  authApi: { getSession: vi.fn(async () => ({ user: { id: mockSession.userId } })) },
+}));
 
 const mockChatEndpointsApi = vi.hoisted(() => ({
   getIssueBinding: vi.fn(),
@@ -20,6 +25,19 @@ const uploadAttachmentMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/issues", () => ({
   issuesApi: { uploadAttachment: uploadAttachmentMock },
 }));
+// Lets a test report that automatic resends stopped, without running eight
+// backoff rounds; otherwise the real hook runs.
+const autoResendOverride = vi.hoisted(() => ({ stalled: false }));
+vi.mock("@/hooks/useDurableSubmit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/useDurableSubmit")>();
+  return {
+    ...actual,
+    useAutoResend: (options: Parameters<typeof actual.useAutoResend>[0]) => {
+      const result = actual.useAutoResend(options);
+      return autoResendOverride.stalled ? { ...result, stalled: true } : result;
+    },
+  };
+});
 vi.mock("@/hooks/useChatConnectorsEnabled", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/hooks/useChatConnectorsEnabled")>(),
   useChatConnectorsEnabled: () => ({ enabled: true, githubEnabled: true, loaded: true }),
@@ -99,6 +117,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
       new QueryClient({
         defaultOptions: { queries: { retry: false } },
       });
+    if (!existingQueryClient) queryClient.setQueryData(queryKeys.auth.session, { user: { id: mockSession.userId } });
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -131,6 +150,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSession.userId = "user-1";
     sessionStorage.clear();
     mockChatEndpointsApi.getPublicationBatchStatus.mockImplementation(
       () => new Promise(() => {}),
@@ -154,6 +174,131 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
     flushSync(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    autoResendOverride.stalled = false;
+  });
+
+  it("cancels an automatic resend and hides its draft after an account change", async () => {
+    mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(new ApiError("Bad gateway", 502, {}));
+    const client = await renderBanner();
+    await composeAndSubmit("Private account A message");
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);
+    const retainedA = [...Array(sessionStorage.length)].map((_, index) => sessionStorage.getItem(sessionStorage.key(index)!));
+    mockSession.userId = "user-2";
+    await act(() => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); });
+    await flushReact();
+    await new Promise(resolve => setTimeout(resolve, 1_100));
+    await flushReact();
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("textarea")?.value ?? "").not.toContain("Private account A message");
+    expect(container.textContent).not.toContain("Sending when reconnected");
+    expect([...Array(sessionStorage.length)].map((_, index) => sessionStorage.getItem(sessionStorage.key(index)!))).toEqual(retainedA);
+    client.clear();
+  });
+
+  it("ignores an old account's late receipt after the session changes", async () => {
+    let finish!: (result: unknown) => void;
+    mockChatEndpointsApi.publishBoardMessage.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const client = await renderBanner();
+    await composeAndSubmit("Private pending account A message");
+    mockSession.userId = "user-2";
+    await act(() => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); });
+    await flushReact();
+    await act(() => { finish({ id: "publication-old", state: "published", attempts: 1 }); });
+    await flushReact();
+    expect(pushToastMock).not.toHaveBeenCalled();
+    expect(container.querySelector("textarea")?.value ?? "").not.toContain("Private pending account A message");
+    expect(sessionStorage.length).toBe(1);
+    client.clear();
+  });
+
+  it("restores only the original account's retained send after returning to it", async () => {
+    mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(new ApiError("Bad gateway", 502, {}));
+    const client = await renderBanner();
+    await composeAndSubmit("Account A retained request");
+    const originalKey = mockChatEndpointsApi.publishBoardMessage.mock.calls[0][3];
+    mockSession.userId = "user-2";
+    await act(() => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } }); });
+    await flushReact();
+    await act(() => findButton(container, "Send to channel").click());
+    expect(container.querySelector("textarea")?.value).toBe("");
+    mockSession.userId = "user-1";
+    await act(() => { client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } }); });
+    await flushReact();
+    expect(container.querySelector("textarea")?.value).toBe("Account A retained request");
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);
+    mockChatEndpointsApi.publishBoardMessage.mockResolvedValueOnce({ id: "publication-recovered", state: "published", attempts: 1 });
+    await act(() => findButton(container, "Retry safely").click());
+    await flushReact();
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenLastCalledWith("endpoint-1", "conversation-1", "Account A retained request", originalKey, []);
+  });
+
+  it("does not reveal or replay an older retained send without a known owner", async () => {
+    const key = boardSendDraftKey("company-1", "issue-1", "endpoint-1", "conversation-1");
+    const saved = JSON.stringify({ body: "Unowned private message", attachmentIds: [], idempotencyKey: "legacy-request-key-1", publication: null });
+    sessionStorage.setItem(key, saved);
+    await renderBanner();
+    expect(container.querySelector("textarea")?.value).toBe("");
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    expect(container.textContent).toContain("Open Activity");
+    expect(container.textContent).not.toContain("Unowned private message");
+    expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(key)).toBe(saved);
+  });
+
+  it.each([false, true])("can explicitly discard an unowned receipt without replaying its message (storage failure=%s)", async (storageFailure) => {
+    const key = boardSendDraftKey("company-1", "issue-1", "endpoint-1", "conversation-1");
+    const saved = JSON.stringify({ body: "Unowned private message", attachmentIds: [], idempotencyKey: "legacy-request-key-1", publication: null });
+    sessionStorage.setItem(key, saved);
+    await renderBanner();
+    await act(() => findButton(container, "Discard saved delivery record").click());
+    await flushReact();
+    expect(document.body.textContent).toContain("does not cancel an update");
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(dialog).toBeTruthy();
+    await act(() => findButton(dialog, "Keep record").click());
+    await flushReact();
+    expect(sessionStorage.getItem(key)).toBe(saved);
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    if (storageFailure) {
+      const remove = vi.spyOn(Object.getPrototypeOf(sessionStorage), "removeItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+      await act(() => findButton(container, "Discard saved delivery record").click());
+      await flushReact();
+      await act(() => findButton(document.body, "Discard record").click());
+      await flushReact();
+      expect(sessionStorage.getItem(key)).toBe(saved);
+      expect(container.querySelector("textarea")?.disabled).toBe(true);
+      expect(container.textContent).toContain("could not be discarded");
+      expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+      remove.mockRestore();
+    }
+    await act(() => findButton(container, "Discard saved delivery record").click());
+    await flushReact();
+    await act(() => findButton(document.body, "Discard record").click());
+    await flushReact();
+    expect(sessionStorage.getItem(key)).toBeNull();
+    await act(() => findButton(container, "Send to channel").click());
+    await flushReact();
+    expect(container.querySelector("textarea")?.disabled).toBe(false);
+    expect(container.querySelector("textarea")?.value).toBe("");
+    expect(mockChatEndpointsApi.publishBoardMessage).not.toHaveBeenCalled();
+    await act(() => setTextareaValue(container.querySelector("textarea")!, "Fresh deliberate message"));
+    mockChatEndpointsApi.publishBoardMessage.mockResolvedValueOnce({ id: "fresh-publication", state: "published", attempts: 1 });
+    await act(() => [...container.querySelectorAll("button")].filter(button => button.textContent?.trim() === "Send to channel").at(-1)!.click());
+    await flushReact();
+    expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledWith("endpoint-1", "conversation-1", "Fresh deliberate message", expect.not.stringMatching("legacy-request-key-1"), []);
+  });
+
+  it("asks for Resend now once automatic resends stop", async () => {
+    autoResendOverride.stalled = true;
+    mockChatEndpointsApi.publishBoardMessage.mockRejectedValue(
+      new ApiError("Bad gateway", 502, { error: "Bad gateway" }),
+    );
+    await renderBanner();
+    await composeAndSubmit();
+    expect(container.textContent).toContain("Couldn’t send this update yet.");
+    expect(container.textContent).toContain("Automatic resends stopped; choose Resend now");
+    expect(container.textContent).not.toContain("It resends on its own");
+    expect(findButton(container, "Resend now")).toBeTruthy();
   });
 
   it("only reports success and clears the draft after confirmed publication", async () => {
@@ -322,6 +467,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           "issue-1",
           "endpoint-1",
           "conversation-1",
+          "user-1",
         ),
       )?.attachmentNames,
     ).toEqual([{ id: "uploaded-image", name: "cat.png" }]);
@@ -879,7 +1025,12 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           ?.click(),
       );
       await flushReact();
-      expect(container.textContent).toContain("Delivery result not confirmed");
+      // A 5xx may have committed: it waits to resend with the same identity.
+      expect(container.textContent).toContain(
+        kind === "server-error"
+          ? "Sending when reconnected…"
+          : "Delivery result not confirmed",
+      );
       expect(container.textContent).not.toContain("Edit rejected send");
       expect(container.querySelector("textarea")?.disabled).toBe(true);
       expect(mockChatEndpointsApi.publishBoardMessage).toHaveBeenCalledTimes(1);
@@ -1068,6 +1219,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
               "issue-1",
               "endpoint-1",
               "conversation-1",
+          "user-1",
             ),
           ),
         ).toBeNull();
@@ -1217,6 +1369,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           "issue-1",
           "endpoint-1",
           "conversation-1",
+          "user-1",
         ),
       ),
     ).toMatchObject({
@@ -1231,6 +1384,7 @@ describe("ExternallyConnectedTaskBanner publication truth", () => {
           "issue-1",
           "endpoint-2",
           "conversation-2",
+          "user-1",
         ),
       ),
     ).toBeNull();

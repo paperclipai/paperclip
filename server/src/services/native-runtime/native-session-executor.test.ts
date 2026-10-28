@@ -11260,6 +11260,80 @@ describe("runnerd provider runtime wiring", () => {
     };
   }
 
+  it("admits a warm follow-up after resuming a suspended plugin session", async () => {
+    const first = { ...scopedNativeExecution("plugin-cold-then-warm"),
+      schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
+      provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
+      planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+      session: { ...execution.session, normalizedSessionId: "plugin-cold-then-warm",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } },
+    };
+    parseNativeExecutionInput(first);
+    const identity = { runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId,
+      runnerInstanceId: "plugin-runner", environmentLeaseId: "original-lease", turnId: "original-turn", itemId: "original-item" };
+    const root = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    const journal = (runId: string) => JSON.stringify({ ...durableControlPlaneState({ ...identity, runId }),
+      commands: [{ status: "completed" }], committedEvents: [{ eventType: "run.terminal", envelope: { ...identity, runId } }] });
+    await writeFile(join(root, "control-plane/control-plane-state.json"), journal(identity.runId));
+    const receiptPath = join(root, "plugin-runner-state.json");
+    await writeFile(receiptPath, JSON.stringify(durableRunnerState(identity, "suspended")));
+    const home = join(isolatedStateDirectory, "plugin-account");
+    await mkdir(home);
+    await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+    const task = vi.fn(async (operation: any) => operation.kind === "read_state"
+      ? { kind: "state", taskId: "replacement-task", state: { ...durableRunnerState(identity, "suspended"),
+          outbox: [], pendingTerminalDelivery: null } }
+      : { kind: "description", taskId: "replacement-task", launchPreparationVersion: 1,
+          projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const resumed = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-resumed` } };
+    const followup = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
+    const session = { close: vi.fn(async () => undefined) };
+    const result = { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+      normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "original-provider-history",
+      driverKind: "codex_app_server", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    const resume = vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockResolvedValue("original-task");
+    const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+    const rebind = vi.fn();
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner")
+      .mockImplementation(input => ({ ...createOwner(input), rebind }));
+    state.execute.mockReset().mockImplementation(async options => {
+      if (options.input.binding.runId === resumed.binding.runId) expect(existsSync(receiptPath)).toBe(true);
+      await writeFile(join(root, "control-plane/control-plane-state.json"), journal(options.input.binding.runId));
+      await options.onSession?.(session);
+      return result;
+    });
+    const options = { runnerInstanceId: identity.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
+      managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account" };
+    const dbFor = (current: NativeExecutionInput, previous: NativeExecutionInput) => {
+      const db = leaseDb(current);
+      const select = db.select.bind(db);
+      db.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status
+        && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson ? priorNativeRunDb(previous).select(fields as never)
+        : select(fields as never)) as Db["select"];
+      return db;
+    };
+    const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "plugin-environment",
+      remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
+      sandboxLeaseAcquisition: { outcome: "replacement" as const, providerLeaseId: "replacement-task" } };
+    try {
+      await expect(executePaperclipNativeSession({ ...options, execution: resumed, db: dbFor(resumed, first),
+        runnerExecutionTarget: target as never })).resolves.toMatchObject({ exitCode: 0 });
+      const checkpointReads = task.mock.calls.filter(([operation]) => operation.kind === "read_state").length;
+      await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
+        runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
+          outcome: "resumed", providerLeaseId: "replacement-task" } } as never })).resolves.toMatchObject({ exitCode: 0 });
+      expect(state.execute.mock.calls[1]![0].existingSession).toBe(session);
+      expect(rebind).toHaveBeenCalledOnce();
+      expect(session.close).not.toHaveBeenCalled();
+      expect(task.mock.calls.filter(([operation]) => operation.kind === "read_state")).toHaveLength(checkpointReads);
+      expect(existsSync(receiptPath)).toBe(false);
+    } finally {
+      owner.mockRestore();
+      resume.mockRestore();
+    }
+  });
+
   function priorNativeRunDb(priorExecution: NativeExecutionInput, status = "succeeded"): Db {
     return {
       select: () => ({ from: (table: unknown) => {

@@ -1369,6 +1369,16 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+A failed, unowned native sandbox retry can outlive an explicit Retry that already
+completed successfully. Startup recovery and ordinary retry admission retire that
+old retry only with the same company, task and agent, a linked completed successor,
+and the exact prepared source lease. They atomically register file preservation
+without replaying provider work or changing the current task. A live owner,
+recorded process or mismatched source remains held. Retirement does not prove
+termination or saved files; the existing stop-and-save worker must establish both
+before workspace selection can proceed. Both callers hold the task, coordinator
+and source-run locks throughout retirement and preservation registration.
+
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
 lifecycle evidence. This includes retries after a provider turn omitted its
@@ -1376,6 +1386,16 @@ completion result. The existing lease-transfer policy must verify the company,
 agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
+
+After a plugin session passes provider recovery and durable run admission, its
+local suspension receipt is removed. The running session then owns authority;
+the old receipt must not conflict with a later warm run's journal identity.
+Failed admission retains the receipt. Normal suspension writes a new receipt.
+
+A repository-free fresh plugin task directory remains the task's directory on
+ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
+owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
+that directory into a Git worktree. Explicit strategy settings still apply.
 
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt

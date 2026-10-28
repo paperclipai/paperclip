@@ -1,6 +1,7 @@
 import { settleNewReviewRunIdentity, settleReviewRunClaimIdentity } from "../run-identity.js";
 import type { IssueMonitorAdmission } from "./scheduling.js";
 import { issueExecutionGeneration, parseIssueExecutionState } from "../issue-execution-policy.js";
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryBoardMessageOrigin, retireSupersededTaskRetry, taskRetryMutationAllowed } from "../task-retry.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
@@ -2507,12 +2508,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         const waitIssueId = issueId;
         return db.transaction(async (tx) => {
           await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
+          if (durableRequest) await notifyChatInboundWakeNotices(tx, {
+            companyId: durableRequest.companyId, issueId: durableRequest.issueId,
+          });
           return recordExecutionWait(tx as unknown as Db, {
             issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
           });
         });
       }
-      await db.insert(agentWakeupRequests).values(request);
+      if (durableRequest) {
+        await db.transaction(async tx => {
+          await notifyChatInboundWakeNotices(tx, {
+            companyId: durableRequest.companyId, issueId: durableRequest.issueId,
+          });
+          await tx.insert(agentWakeupRequests).values(request);
+        });
+      } else {
+        await db.insert(agentWakeupRequests).values(request);
+      }
       return { created: true };
     };
     const writeSkippedHeartbeatRequest = async (

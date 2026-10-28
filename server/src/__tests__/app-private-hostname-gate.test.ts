@@ -79,6 +79,7 @@ describe("createChatReconciliationCoordinator", () => {
     expect(maintenance).not.toContain("chatChannels.voice.");
     expect(maintenance).not.toContain("enqueueSafeNativeChatProgress");
     expect(source).toContain("nativeChatProgressWork(db).register(deliveryWork,");
+    expect(source).toContain("chatInboundWakeNoticeWork(chatChannels).register(deliveryWork,");
     expect(source).toContain("chatChannels.registerReceiverWork(deliveryWork,");
     expect(source).toContain("chatChannels.registerTeamsConsentExpiryWork(deliveryWork,");
     const teams = readFileSync(new URL("../services/chat-channels/microsoft-teams/file-delivery.ts", import.meta.url), "utf8");
@@ -87,6 +88,14 @@ describe("createChatReconciliationCoordinator", () => {
     expect(teams).not.toContain("selectDistinct");
     const chat = readFileSync(new URL("../services/chat-channels.ts", import.meta.url), "utf8");
     expect(chat).not.toContain("scheduleTeamsFileMaintenance");
+    const publicationMaintenance = chat.slice(chat.indexOf("async function processPublicationMaintenance("),
+      chat.indexOf("async function schedulePendingPublications("));
+    expect(publicationMaintenance).not.toContain("await enqueueInboundWakeupPublications(");
+    expect(publicationMaintenance).not.toContain("await enqueueFailedChatRetryPublications(");
+    expect(publicationMaintenance).not.toContain("reconcileTerminalConfirmationActions(");
+    expect(source).toContain("chatChannels.registerInteractionContinuationWork(deliveryWork,");
+    expect(source).toContain("chatChannels.registerTerminalConfirmationWork(deliveryWork,");
+    expect(source).toContain("chatFailedRetryNoticeWork(chatChannels).register(deliveryWork,");
   });
 
   it("separates live voice recovery from the remaining periodic maintenance", () => {

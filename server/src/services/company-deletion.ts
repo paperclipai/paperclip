@@ -100,6 +100,9 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
+        // Match receipt completion and comment deletion: task before comment.
+        await tx.select({ id: issues.id }).from(issues)
+          .where(eq(issues.companyId, id)).orderBy(issues.id).for("no key update");
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await notifyCompanyRetentionWork(tx, id);
