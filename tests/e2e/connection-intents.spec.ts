@@ -543,8 +543,6 @@ test("access granted outside the card retires the request and continues to a too
       ).filter((interaction) => interaction.kind === "connection_intent");
     expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["pending"]);
 
-    // Installing the connection for the requester satisfies the request
-    // without anyone answering the card.
     await json(
       await request.put(`/api/tool-connections/${connectionId}/installs`, {
         data: {
@@ -560,8 +558,6 @@ test("access granted outside the card retires the request and continues to a too
     await expectContinuationDone(request, provider, requested);
     expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["expired"]);
 
-    // Several passive maintenance cycles later the retired card has not
-    // produced another card or wake.
     await page.waitForTimeout(15_000);
     expect((await connectionIntents()).map((interaction) => interaction.status)).toEqual(["expired"]);
     const runs = await json<Array<{ id: string; status: string }>>(
