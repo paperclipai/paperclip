@@ -16,6 +16,7 @@ import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
 import { validateJourneyCollection } from "./collection.js";
+import { captureProductScreenshot } from "./product-screenshot.js";
 import { validateOnboardingArtifact } from "./artifact-evidence.js";
 
 const cleanupGraceMs = 600_000;
@@ -100,7 +101,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "basic-flows.ts", "basic-evidence.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of ["catalog.ts", "task-properties.ts", "basic-flows.ts", "basic-evidence.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
   definitionHash.update(await readFile(path.join(import.meta.dirname, "../user-actions.ts")));
   definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
@@ -208,7 +209,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.status = "passed";
         const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
         await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
-        await ready.page.screenshot({ path: path.join(evidenceDir, `${id}.png`) });
+        await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}.png`));
         result.screenshots = [{ id, label: productJourneys.find(j => j.id === id)!.label, file: `${id}.png` }];
       } catch (error) {
         const failure = journeyFailure(error);
@@ -224,7 +225,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             if (url.origin === ready.api.origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname)) {
               const evidenceDir = path.join(outputDir, "evidence", result.executionId, "attempt-1");
               await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
-              await ready.page.screenshot({ path: path.join(evidenceDir, `${id}-failed.png`) });
+              await captureProductScreenshot(ready.page, ready.api.origin, path.join(evidenceDir, `${id}-failed.png`));
               result.screenshots = [{ id: `${id}-failed`, label: "Failed journey screen", file: `${id}-failed.png` }];
             }
           } catch { /* Preserve the original failure when its page is unavailable. */ }

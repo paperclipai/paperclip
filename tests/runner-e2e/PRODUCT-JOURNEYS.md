@@ -79,7 +79,9 @@ server proves that no provider work started. A scheduled replacement remains
 pending and consumes the run limit. It cannot satisfy completion; the child must
 still finish through native execution and pass the independent artifact checks.
 
-The attached `ask-question` recipe requires a prepared general agent. A registered
+The attached `ask-question` recipe requires a prepared native general agent and
+an explicit execution environment. Legacy execution is unsupported until its
+saved model/provider identity can be verified. A registered
 agent avoids a new setup probe; a disposable QA agent uses the existing native
 fixture defaults and its setup remains separately unpriced. A restricted review
 bot is not a general-work fixture.

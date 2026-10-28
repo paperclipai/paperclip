@@ -28,6 +28,7 @@ export async function taskCreate(context: JourneyContext, session: TargetSession
 export async function askQuestion(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence) {
   const agent = context.agent;
   if (!agent) throw new JourneyError("blocked", "configured_agent_required");
+  if (agent.runtimeMode !== "native" || !context.environmentId || !agent.model || !agent.provider) throw new JourneyError("unsupported", "question_execution_identity_unavailable");
   // Reuse the exact existing cross-model Ask fixture, including its terminal marker.
   const fixture = runnerTasks.find(task => task.id === "ask-question")!;
   const nonce = campaignId.replace(/-/g, "_");
