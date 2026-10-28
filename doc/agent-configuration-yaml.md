@@ -291,7 +291,9 @@ Core changes use `PATCH /api/agents/:id` with
 adapter key uses `replaceAdapterConfig: true`. The opaque revision uses a
 domain-separated HMAC with the instance's private signing key. Credential edits
 invalidate an open draft without exposing a public credential digest. Rotating
-the signing key requires reloading open editors. Managed instruction files and
+the signing key requires reloading open editors. Server processes for one
+instance must share that key. File-based rotation takes effect on the next
+revision calculation without a server restart. Managed instruction files and
 entry revisions enforce hash/revision preconditions. External supporting file
 writes/deletions do not enforce these preconditions. Other resources retain
 their own API guarantees; changes between preflight and an unversioned resource

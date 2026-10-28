@@ -4,18 +4,9 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { unprocessable } from "../errors.js";
 import { resolveDecisionSigningSecret } from "../services/decision-signing.js";
-import { resolveDefaultSecretsKeyFilePath } from "../home-paths.js";
-
-let signingKey: { scope: string; key: string } | undefined;
-
-function configurationSigningKey() {
-  const scope = `${process.env.PAPERCLIP_DECISION_SIGNING_SECRET ?? ""}:${resolveDefaultSecretsKeyFilePath()}`;
-  if (signingKey?.scope !== scope) signingKey = { scope, key: resolveDecisionSigningSecret() };
-  return signingKey.key;
-}
 
 export function agentConfigurationRevision(agent: AgentConfigurationSource & { permissions: Record<string, unknown> }) {
-  return createHmac("sha256", configurationSigningKey()).update("agent-configuration-v1:").update(canonicalAgentConfiguration({
+  return createHmac("sha256", resolveDecisionSigningSecret()).update("agent-configuration-v1:").update(canonicalAgentConfiguration({
     id: agent.id, ...agentConfigurationSpec(agent), permissions: normalizeAgentPermissions(agent.permissions),
   })).digest("hex");
 }
