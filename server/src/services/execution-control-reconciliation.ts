@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
 import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
@@ -10,6 +11,10 @@ import {
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
+import { hasLiveLegacyController } from "./legacy-controller-lease.js";
+import { reportRunFailure } from "./run-failure-report.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -66,6 +71,10 @@ export async function reconcileAbandonedExecutionControl(
     while (nextCandidate < due.length) {
       const candidate = due[nextCandidate++]!;
       try {
+        // Set inside the transaction only when the write below genuinely
+        // transitions the run into "failed". Read after the transaction
+        // commits, so a rolled-back write never reports a false failure.
+        let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
         const repaired = await db.transaction(async (tx) => {
           await tx.execute(
             sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -145,6 +154,13 @@ export async function reconcileAbandonedExecutionControl(
               .where(eq(nativeRunFinalizations.runId, run.id));
             return true;
           }
+          if (await hasLiveLegacyController(tx as unknown as Db, run)) {
+            await tx
+              .update(heartbeatRuns)
+              .set({ executionControlDeadlineAt: run.controllerLeaseExpiresAt })
+              .where(eq(heartbeatRuns.id, run.id));
+            return false;
+          }
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
@@ -167,7 +183,8 @@ export async function reconcileAbandonedExecutionControl(
                 updatedAt: now,
               })
               .where(eq(nativeRunFinalizations.runId, run.id));
-          await tx
+          await notifyExecutionRunWork(tx);
+          const [updatedRun] = await tx
             .update(heartbeatRuns)
             .set({
               status: "failed",
@@ -181,7 +198,11 @@ export async function reconcileAbandonedExecutionControl(
               nextAction,
               updatedAt: now,
             })
-            .where(eq(heartbeatRuns.id, run.id));
+            .where(eq(heartbeatRuns.id, run.id))
+            .returning();
+          if (updatedRun && updatedRun.status !== run.status) {
+            terminalRunToReport = updatedRun;
+          }
           await tx
             .update(agents)
             .set({ status: "idle", updatedAt: now })
@@ -190,20 +211,33 @@ export async function reconcileAbandonedExecutionControl(
                 eq(agents.id, run.agentId),
                 eq(agents.companyId, run.companyId),
                 eq(agents.status, "running"),
+                eq(agents.lifecycleState, "ready"),
                 sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.agentId} = ${run.agentId} and ${heartbeatRuns.status} = 'running')`,
               ),
             );
+          const nativeReviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+          const nativeReviewAssignment = nativeReviewContext && task
+            ? await getNativeReviewAssignment(tx as unknown as Db, {
+                companyId: run.companyId,
+                issueId: task.id,
+                agentId: run.agentId,
+                contextSnapshot: nativeReviewContext,
+              })
+            : null;
           const review = task?.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
-          const isCurrentReviewer = review?.status === "pending" &&
-            review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId;
+          const isCurrentReviewer = (review?.status === "pending" &&
+            review.currentParticipant?.type === "agent" && review.currentParticipant.agentId === run.agentId)
+            || nativeReviewAssignment?.interaction.status === "pending";
           if (
             !task ||
             (task.assigneeAgentId !== run.agentId && !isCurrentReviewer) ||
             ["done", "cancelled"].includes(task.status) ||
             (task.executionRunId && task.executionRunId !== run.id) ||
             (task.checkoutRunId && task.checkoutRunId !== run.id)
-          )
+          ) {
+            if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
             return true;
+          }
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
@@ -230,9 +264,11 @@ export async function reconcileAbandonedExecutionControl(
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
           });
+          if (updatedRun) await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun);
           return true;
         });
         if (repaired) surfaced += 1;
+        if (terminalRunToReport) void reportRunFailure(db, terminalRunToReport);
       } catch {
         logger.warn(
           { runId: candidate.runId },

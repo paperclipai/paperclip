@@ -24,7 +24,10 @@ for (const name of ['index.html', 'iframe.html', 'index.json']) {
     throw new Error(`Missing Storybook output: ${name}`);
   }
 }
-fs.writeFileSync(path.join(source, 'deployment.json'), JSON.stringify(destination, null, 2) + '\n');
+fs.writeFileSync(path.join(source, 'deployment.json'), JSON.stringify({ ...destination,
+  ...(fs.existsSync(path.join(source, 'agent-avatar-images/manifest.json'))
+    ? { avatarManifest: 'agent-avatar-images/manifest.json' } : {}),
+}, null, 2) + '\n');
 const aws = (args) => execFileSync('aws', args, { stdio: 'inherit' });
 // Complete a unique build before changing the branch's entry point. No deletion
 // permissions, shared root writes or mixed-version branch assets are needed.
@@ -34,6 +37,8 @@ aws(['s3', 'cp', source, `s3://${destination.bucket}/${destination.buildPrefix}/
 const indexFile = path.join(process.env.RUNNER_TEMP, 'storybook-branch-index.html');
 fs.writeFileSync(indexFile, branchIndex(destination.buildUrl));
 aws(['s3', 'cp', indexFile, `s3://${destination.bucket}/${destination.prefix}/index.html`,
+  '--content-type', 'text/html; charset=utf-8', '--cache-control', 'no-cache,max-age=0,must-revalidate', '--only-show-errors']);
+aws(['s3', 'cp', indexFile, `s3://${destination.bucket}/${destination.bookmarkPrefix}/index.html`,
   '--content-type', 'text/html; charset=utf-8', '--cache-control', 'no-cache,max-age=0,must-revalidate', '--only-show-errors']);
 const report = `[Branch Storybook](${destination.url})\n\n[This build](${destination.buildUrl})\n\nCommit: \`${destination.sha}\`\n`;
 const reportPath = path.join(process.env.RUNNER_TEMP, 'storybook-deployment.md');

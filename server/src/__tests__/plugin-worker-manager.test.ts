@@ -31,6 +31,7 @@ import {
   appendStderrExcerpt,
   createDuplexRouteSlotController,
   createPluginWorkerHandle,
+  createPluginWorkerManager,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
@@ -55,6 +56,28 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("worker configuration completion", () => {
+  it("notifies only after a successful config callback and releases subscriptions", async () => {
+    const manager = createPluginWorkerManager();
+    const applied = vi.fn(), unsubscribe = manager.onConfigApplied(applied);
+    try {
+      await manager.startWorker("test.plugin", {
+        entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+      });
+      expect(applied).not.toHaveBeenCalled();
+      const updating = manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { delayMs: 20 } });
+      expect(applied).not.toHaveBeenCalled();
+      await updating; expect(applied).toHaveBeenCalledTimes(1);
+      await expect(manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { fail: true } })).rejects.toThrow("configuration rejected");
+      expect(applied).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      await manager.call("test.plugin", "configChanged", { companyId: "company-1", config: {} });
+      expect(applied).toHaveBeenCalledTimes(1);
+    } finally { unsubscribe(); await manager.stopAll(); }
+  });
+});
 
 describe("resolveRpcCallTimeoutMs", () => {
   const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
@@ -255,6 +278,33 @@ describe("plugin-worker-manager stderr failure context", () => {
       process.off("unhandledRejection", unhandledRejection);
       await handle.stop().catch(() => undefined);
     }
+  });
+
+  it("mints project Git scope only for project lifecycle and workspace operations", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "companies.get": (async (_params, context) => context?.invocationScope) as never },
+    });
+    const common = { companyId: "company-a", params: { mode: "echo", requestedCompanyId: "company-a" } };
+    try {
+      await handle.start();
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "project", resourceId: "project-a" } as never))
+        .resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a" } });
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "agent", resourceId: "agent-a" } as never))
+        .resolves.toEqual({ companyId: "company-a" });
+      for (const kind of ["prepare", "inspect", "remove", "finalize"]) {
+        const params = { ...common, projectId: "project-a", runId: "run-a", agentId: "agent-a", operation: {
+          kind, source: { id: "workspace-a" }, binding: { projectWorkspaceId: "workspace-a" } } };
+        await expect(handle.call("workspaceOperation", params as never)).resolves.toEqual({ companyId: "company-a",
+          ...(kind === "finalize" ? {} : { projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: kind,
+            ...(kind === "prepare" ? { runId: "run-a", agentId: "agent-a" } : {}) } }) });
+      }
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: null,
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: "prepare" } });
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: "agent-a",
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a" });
+    } finally { await handle.stop().catch(() => undefined); }
   });
 
   it("passes performAction invocation scope to nested worker host calls", async () => {
@@ -605,12 +655,14 @@ describe("plugin proactive company scope (LOOA-629)", () => {
   }) {
     const companiesGet = overrides?.companiesGet ?? vi.fn(async () => ({ id: "company-1", name: "Co" }));
     const stateGet = overrides?.stateGet ?? vi.fn(async () => ({ value: "ok" }));
+    const listLifecycle = vi.fn(async () => [{ id: "1", companyId: "company-1" }]);
     const hostHandlers = createHostClientHandlers({
       pluginId: "test.plugin",
-      capabilities: ["companies.read", "plugin.state.read"],
+      capabilities: ["companies.read", "plugin.state.read", "events.subscribe"],
       services: {
         companies: { get: companiesGet },
         state: { get: stateGet },
+        events: { listLifecycle },
       } as unknown as HostServices,
     });
     const handle = createPluginWorkerHandle("test.plugin", {
@@ -621,7 +673,7 @@ describe("plugin proactive company scope (LOOA-629)", () => {
       apiVersion: 1,
       hostHandlers,
     });
-    return { handle, companiesGet, stateGet };
+    return { handle, companiesGet, stateGet, listLifecycle };
   }
 
   it("denies a proactive company-scoped call when no company is authorized", async () => {
@@ -635,6 +687,25 @@ describe("plugin proactive company scope (LOOA-629)", () => {
         message: expect.stringContaining("company context is required"),
       });
       expect(companiesGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits lifecycle polling only for configured proactive companies", async () => {
+    const { handle, listLifecycle } = makeHandle();
+    const poll = (companyId: string) => handle.call("getData", {
+      params: { mode: "omit", hostMethod: "events.listLifecycle", requestedCompanyId: companyId },
+    } as unknown as HostToWorkerMethods["getData"][0]);
+    try {
+      await handle.start();
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes(["company-1"]);
+      expect(await poll("company-1")).toEqual([{ id: "1", companyId: "company-1" }]);
+      await expect(poll("company-2")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      handle.setProactiveCompanyScopes([]);
+      await expect(poll("company-1")).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(listLifecycle).toHaveBeenCalledTimes(1);
     } finally {
       await handle.stop().catch(() => undefined);
     }
@@ -1636,10 +1707,13 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       const route = await handle.openLoginPtySession(
         ptyOpenInput({
           workerSessionId: "ws-A",
+          emitOnInput: true,
           outputs: [{ chunk: "legacy-output", omitHostRouteId: true }],
         }),
       );
       route.onData((chunk) => chunks.push(chunk));
+      // Legacy notifications require the open reply to bind the worker ID.
+      route.write("emit-scripted-output");
       await vi.waitFor(() => expect(chunks).toContain("legacy-output"));
 
       const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
@@ -1661,8 +1735,9 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
     try {
       await handle.start();
       const route = await handle.openLoginPtySession(
-        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true }),
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true, emitOnInput: true }),
       );
+      route.write("emit-scripted-exit");
       await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
     } finally {
       await handle.stop().catch(() => undefined);

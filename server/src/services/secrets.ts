@@ -36,6 +36,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
+  agentHarnessType,
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
@@ -190,6 +191,31 @@ export function isFixedClaudeOAuthBinding(binding: unknown): boolean {
   return record.type === "user_secret_ref" && record.key === CLAUDE_CODE_OAUTH_TOKEN_KEY;
 }
 
+/**
+ * Reads the `CLAUDE_CODE_OAUTH_TOKEN` binding from an adapter config, or
+ * `null` when the config carries no such key.
+ */
+export function readClaudeOAuthBinding(config: unknown): unknown {
+  const value = readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY];
+  return value === undefined ? null : value;
+}
+
+/**
+ * Returns true when both bindings are the exact fixed Claude Code OAuth
+ * reference and select the exact same secret version. The hire-inheritance
+ * gate compares the parent's current reference, re-read inside the write
+ * transaction, against the reference already copied onto the child before the
+ * transaction started. A concurrent version change on the parent must fail
+ * this check, so the child never keeps a stale version under a claim the gate
+ * treats as current.
+ */
+export function claudeOAuthBindingsMatchExactly(parentBinding: unknown, childBinding: unknown): boolean {
+  if (!isFixedClaudeOAuthBinding(parentBinding) || !isFixedClaudeOAuthBinding(childBinding)) return false;
+  const parentVersion = (parentBinding as Record<string, unknown>).version;
+  const childVersion = (childBinding as Record<string, unknown>).version;
+  return parentVersion === childVersion;
+}
+
 /** True when the config carries the exact fixed OAuth binding. */
 function hasFixedClaudeOAuthBinding(config: unknown): boolean {
   return isFixedClaudeOAuthBinding(readAdapterEnvRecord(config)[CLAUDE_CODE_OAUTH_TOKEN_KEY]);
@@ -254,7 +280,7 @@ export interface ClaudeOAuthBindingInvariantDecision {
 export function assertClaudeOAuthBindingInvariant(
   input: ClaudeOAuthBindingInvariantInput,
 ): ClaudeOAuthBindingInvariantDecision {
-  const isClaudeLocal = input.adapterType === CLAUDE_LOCAL_ADAPTER_TYPE;
+  const isClaudeLocal = agentHarnessType(input.adapterType ?? "", asRecord(input.nextConfig) ?? {}) === CLAUDE_LOCAL_ADAPTER_TYPE;
   const nextIsFixed = hasFixedClaudeOAuthBinding(input.nextConfig);
   const priorIsFixed = hasFixedClaudeOAuthBinding(input.priorConfig);
 
@@ -313,7 +339,6 @@ function remoteProviderHttpError(error: unknown, context: {
   if (isSecretProviderClientError(error)) {
     logger.warn(
       {
-        err: error,
         companyId: context.companyId,
         provider: context.provider,
         providerConfigId: context.providerConfigId,
@@ -327,7 +352,6 @@ function remoteProviderHttpError(error: unknown, context: {
   if (error instanceof HttpError) return error;
   logger.warn(
     {
-      err: error,
       companyId: context.companyId,
       provider: context.provider,
       providerConfigId: context.providerConfigId,
@@ -481,7 +505,7 @@ function safeRemoteProviderErrorDetails(
       if (context.operation === "secret.create") {
         details.requiredCapability = "secretsmanager:CreateSecret";
         details.actionableMessage =
-          "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, the runtime credentials also need KMS write permissions for that key.";
+          "Ensure the Paperclip server runtime can resolve valid AWS credentials, then grant them secretsmanager:CreateSecret in the selected region for this provider vault. If the vault config uses a KMS key, those credentials also need KMS write permissions for that key.";
         details.safeAlternative =
           "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.";
       } else if (context.operation === "secret.rotate") {
@@ -609,7 +633,7 @@ type SecretConsumerContext = {
   responsibleUserId?: string | null;
   actorType?: "agent" | "user" | "system" | "plugin";
   actorId?: string | null;
-  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+  actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
@@ -620,10 +644,14 @@ type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
   consumerType: SecretBindingTargetType;
 };
 
+type InstanceSecretOwner = { pluginId: string } & ({ agentId: string; projectId?: never } | { projectId: string; agentId?: never });
+type InstanceSecretScope = InstanceSecretOwner & { companyId: string };
+
 type SecretResolutionOptions = {
   bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
   allowUserSecretScope?: boolean;
+  instanceOwner?: InstanceSecretOwner;
 };
 
 export type AgentSecretReadContext = {
@@ -1336,7 +1364,10 @@ export function secretService(db: Db | DbTransaction) {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
-    if (secret.scope !== "company" && !options?.allowUserSecretScope) {
+    const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
+      secret.ownerAgentId === (options.instanceOwner.agentId ?? null) &&
+      secret.ownerProjectId === (options.instanceOwner.projectId ?? null) && secret.ownerPluginId === options.instanceOwner.pluginId;
+    if (secret.scope !== "company" && !(secret.scope === "user" && options?.allowUserSecretScope) && !instanceOwned) {
       throw unprocessable("User-scoped secrets must be resolved through user secret declarations", {
         code: "secret_scope_invalid",
       });
@@ -1477,9 +1508,11 @@ export function secretService(db: Db | DbTransaction) {
               ? "local_implicit" as const
               : context.actorSource === "board_key"
                 ? "board_key" as const
-                : context.actorSource === "cloud_tenant"
-                  ? "cloud_tenant" as const
-                  : "session" as const,
+                : context.actorSource === "mcp_oauth"
+                  ? "mcp_oauth" as const
+                  : context.actorSource === "cloud_tenant"
+                    ? "cloud_tenant" as const
+                    : "session" as const,
           };
     const decision = await authorization.decide({
       actor,
@@ -2159,12 +2192,13 @@ export function secretService(db: Db | DbTransaction) {
       providerMetadata?: Record<string, unknown> | null;
     },
     actor?: { userId?: string | null; agentId?: string | null },
+    instanceOwner?: InstanceSecretOwner,
   ) {
-    const existing = await getByName(companyId, input.name);
+    const existing = instanceOwner ? null : await getByName(companyId, input.name);
     if (existing) throw conflict(`Secret already exists: ${input.name}`);
     const key = normalizeSecretKey(input.key ?? input.name);
     if (!key) throw unprocessable("Secret key is required");
-    const duplicateKey = await db
+    const duplicateKey = instanceOwner ? null : await db
       .select()
       .from(companySecrets)
       .where(and(
@@ -2202,6 +2236,10 @@ export function secretService(db: Db | DbTransaction) {
       .insert(companySecrets)
       .values({
         companyId,
+        scope: instanceOwner ? "instance" : "company",
+        ownerAgentId: instanceOwner?.agentId ?? null,
+        ownerProjectId: instanceOwner?.projectId ?? null,
+        ownerPluginId: instanceOwner?.pluginId ?? null,
         key,
         name: input.name,
         provider: input.provider,
@@ -2372,6 +2410,8 @@ export function secretService(db: Db | DbTransaction) {
       // update matches the latest version, so a concurrent rotation between the
       // read and the write cannot pass. A mismatch throws a 409 conflict.
       expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
     },
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
@@ -2497,26 +2537,19 @@ export function secretService(db: Db | DbTransaction) {
     }
 
     try {
+      // Lock and update the parent secret row before touching its version
+      // rows. A credential write-back locks the parent secret row first, then
+      // calls this function. If this transaction updated the version rows
+      // first instead, the two transactions would take their two row locks
+      // in opposite order and could deadlock. Matching the order here removes
+      // that risk: every caller now locks the parent row before the version
+      // rows, so a lock cycle between the two tables cannot form.
       return await db.transaction(async (tx) => {
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "previous" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            ne(companySecretVersions.version, nextVersion),
-          ));
-        await tx
-          .update(companySecretVersions)
-          .set({ status: "current" })
-          .where(and(
-            eq(companySecretVersions.secretId, secret.id),
-            eq(companySecretVersions.version, nextVersion),
-          ));
-
         const updated = await tx
           .update(companySecrets)
           .set({
             latestVersion: nextVersion,
+            aiSessionEpoch: input.preserveAiSessionEpoch ? secret.aiSessionEpoch : sql`${companySecrets.aiSessionEpoch} + 1`,
             externalRef: prepared.externalRef,
             providerConfigId,
             lastRotatedAt: new Date(),
@@ -2536,11 +2569,28 @@ export function secretService(db: Db | DbTransaction) {
         if (!updated) {
           // The predicate matched no row. A supplied expected version means a
           // concurrent rotation won the race; return the stale conflict. An
-          // unguarded rotation means the secret is gone.
+          // unguarded rotation means the secret is gone. Neither version row
+          // has been touched yet, so there is nothing to undo here.
           throw input.expectedLatestVersion === undefined
             ? notFound("Secret not found")
             : conflict(SECRET_VERSION_STALE_CONFLICT);
         }
+
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "previous" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            ne(companySecretVersions.version, nextVersion),
+          ));
+        await tx
+          .update(companySecretVersions)
+          .set({ status: "current" })
+          .where(and(
+            eq(companySecretVersions.secretId, secret.id),
+            eq(companySecretVersions.version, nextVersion),
+          ));
+
         return updated;
       });
     } catch (error) {
@@ -2851,7 +2901,7 @@ export function secretService(db: Db | DbTransaction) {
         status: companySecrets.status,
       })
       .from(companySecrets)
-      .where(and(eq(companySecrets.companyId, companyId), ne(companySecrets.status, "deleted")));
+      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.scope, "company"), ne(companySecrets.status, "deleted")));
     return {
       byProviderConfigExternalRef: new Map(
         activeSecrets
@@ -3387,7 +3437,24 @@ export function secretService(db: Db | DbTransaction) {
         }
       }
     }
-    await db.delete(companySecrets).where(eq(companySecrets.id, secretId));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await db.transaction(async tx => {
+          if (secret.scope !== "instance") {
+            await tx.select({ id: agents.id }).from(agents)
+              .where(eq(agents.companyId, secret.companyId)).orderBy(agents.id).for("no key update");
+          }
+          await tx.select({ id: companySecrets.id }).from(companySecrets)
+            .where(eq(companySecrets.id, secretId)).for("update", { noWait: true });
+          await tx.delete(companySecrets).where(eq(companySecrets.id, secretId));
+        });
+        break;
+      } catch (error) {
+        const failure = error as { code?: string; cause?: { code?: string } };
+        if ((failure?.cause?.code ?? failure?.code) !== "55P03") throw error;
+        if (attempt >= 2) throw conflict("Secret changed during removal. Retry removal.", { retryable: true });
+      }
+    }
     return secret;
   }
 
@@ -3426,8 +3493,61 @@ export function secretService(db: Db | DbTransaction) {
       .then((rows) => rows[0] ?? null);
   }
 
+  const instanceSecrets = {
+    async read(scope: InstanceSecretScope): Promise<Record<string, string>> {
+      const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
+        eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
+        eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
+      const values: Record<string, string> = Object.create(null);
+      for (const row of rows) {
+        const resolved = await resolveSecretValueInternal(scope.companyId, row.id, "latest", {
+          instanceOwner: scope, accessContext: { consumerType: "plugin_worker", consumerId: scope.pluginId,
+            actorType: "plugin", actorId: scope.pluginId, pluginId: scope.pluginId },
+        });
+        values[row.name] = resolved.value;
+      }
+      return values;
+    },
+    async set(scope: InstanceSecretScope, key: string, value: string | null) {
+      return withAccountHomeSecretMutationLock(undefined, scope.companyId, async () => {
+        if (value) await assertAccountHomeCacheDirStillValid(undefined, scope.companyId, value);
+        const normalizedKey = normalizeSecretKey(key);
+        const [existing] = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
+          eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
+          eq(companySecrets.ownerPluginId, scope.pluginId), eq(companySecrets.key, normalizedKey), ne(companySecrets.status, "deleted")));
+        if (value === null) {
+          if (existing) await removeSecretUnlocked(existing.id);
+        } else if (existing) {
+          await rotateUnlocked(existing.id, { value, expectedLatestVersion: existing.latestVersion });
+        } else {
+          await createSecretUnlocked(scope.companyId, { name: key, key, provider: "local_encrypted", value }, undefined, scope);
+        }
+      });
+    },
+  };
+
   return {
     listProviders: () => listSecretProviders(),
+
+    async hasInstanceAccountHomeClaim(companyId: string, accountHomeDir: string): Promise<boolean> {
+      try {
+        const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "instance"), ne(companySecrets.status, "deleted")));
+        for (const row of rows) {
+          if ((!row.ownerAgentId && !row.ownerProjectId) || !row.ownerPluginId) return true;
+          const resolved = await resolveSecretValueInternal(companyId, row.id, "latest", {
+            instanceOwner: row.ownerAgentId ? { agentId: row.ownerAgentId, pluginId: row.ownerPluginId } : { projectId: row.ownerProjectId!, pluginId: row.ownerPluginId },
+            accessContext: { consumerType: "system", consumerId: DEVICE_LOGIN_SECRET_CHECK_CONSUMER_ID,
+              actorType: "system", actorId: null },
+          });
+          if (resolved.value === accountHomeDir) return true;
+        }
+        return false;
+      } catch { return true; }
+    },
+
+    agentInstance: instanceSecrets,
+    projectInstance: instanceSecrets,
 
     checkProviders: () => checkSecretProviders(),
 
@@ -4555,6 +4675,8 @@ export function secretService(db: Db | DbTransaction) {
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
         expectedLatestVersion?: number;
+      /** Internal authenticated refresh write-back only; never accepted by HTTP schemas. */
+      preserveAiSessionEpoch?: boolean;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {

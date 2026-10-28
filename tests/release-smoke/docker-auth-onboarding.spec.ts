@@ -9,6 +9,29 @@ const ADMIN_PASSWORD =
   process.env.SMOKE_ADMIN_PASSWORD ??
   "paperclip-smoke-password";
 
+// A hire needs a live-verified credential since #13344 — the subscription
+// path now dead-ends on a `claude auth login` no CI machine can finish — so
+// the wizard is driven through "Use API key instead". The server verifies the
+// key against api.anthropic.com, which the docker-onboard-smoke harness
+// serves from its own mock inside the container's network, so the placeholder
+// below passes without any real credential in CI.
+//
+// The placeholder is offered only to a loopback target — where the mocked
+// harness lives. Any other target reaches the real provider, which would
+// reject the placeholder late inside the wizard, so those runs must set
+// PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY and fail up front without it.
+// A real key entered here also lands in Playwright's failure traces and DOM
+// snapshots (the field is masked on screen, not in the DOM) — those artifacts
+// stay on the machine running the suite, and CI never uses a real key.
+const BASE_URL =
+  process.env.PAPERCLIP_RELEASE_SMOKE_BASE_URL ?? "http://127.0.0.1:3232";
+const TARGET_IS_LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(
+  BASE_URL
+);
+const ANTHROPIC_API_KEY =
+  process.env.PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY ??
+  (TARGET_IS_LOOPBACK ? "sk-ant-release-smoke-placeholder" : "");
+
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "Release Smoke Lead";
 // The arc asks for a name, not a role, so every onboarding hire is filed under
@@ -76,6 +99,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
+    // Only bites off-loopback: fail on arrival rather than submitting the
+    // placeholder to the real provider and timing out deep in the wizard.
+    expect(
+      ANTHROPIC_API_KEY,
+      "This target reaches the real provider — set PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY to a key it accepts"
+    ).toBeTruthy();
+
     await signIn(page);
 
     const baseUrl = new URL(page.url()).origin;
@@ -112,22 +142,43 @@ test.describe("Docker authenticated onboarding smoke", () => {
     // Step 4: answer the model-source question, then connect (hire) the lead.
     // The step now opens as a row of source tiles and the footer button has
     // nothing to do until one is picked (#12796/#12801 rebuilt the step around
-    // that question); picking Claude collapses the row and turns the button
-    // into "Connect". In the smoke container the resolved login environment is
-    // the local host, not a sandbox, so there is no sign-in to run and Connect
-    // goes straight to the hire, with the missing agent CLI reported by the
-    // probe as a warning rather than an error — a genuine failure here means
-    // the published artifact cannot hire on a clean machine. Allow generous
-    // time for the probe + hire + auto-approval.
+    // that question); picking Claude collapses the row.
+    //
+    // Since #13344, a hire requires a verified credential: the subscription
+    // path opens an isolated `claude auth login` attempt that only a human at
+    // a terminal on the server can finish, and Connect refuses to proceed
+    // until it has. The clean-machine path this suite guards is therefore the
+    // API key: switch modes, pick Claude, paste a key, Connect — the server
+    // verifies it against the provider endpoint (the harness's mock, here)
+    // and then hires. A genuine failure here means the published artifact
+    // cannot hire on a clean machine even when the provider accepts the
+    // credential. Allow generous time for the validation + hire +
+    // auto-approval.
+    //
+    // The mode switch comes before the tile: picking a tile starts the step's
+    // collapse sequence and the "Use API key instead" link only offers itself
+    // while the row is still a question (`connectLinkVisible` in
+    // OnboardingWizard.tsx).
     await expect(
       page.getByRole("heading", { name: "Connect a model" })
     ).toBeVisible({ timeout: 20_000 });
 
+    await page
+      .getByRole("button", { name: "Use API key instead", exact: true })
+      .click();
+
+    // "Claude API" once the mode has swapped the tile's tag — matched on the
+    // stable half.
     const claudeSourceTile = page
       .getByRole("radiogroup", { name: "Model source" })
       .getByRole("radio", { name: /Claude/ });
     await expect(claudeSourceTile).toBeVisible({ timeout: 10_000 });
     await claudeSourceTile.click();
+
+    // OnboardingCardField carries the accessible name via aria-label.
+    const apiKeyField = page.getByLabel("API key");
+    await expect(apiKeyField).toBeVisible({ timeout: 10_000 });
+    await apiKeyField.fill(ANTHROPIC_API_KEY);
 
     const connectButton = page.getByRole("button", {
       name: "Connect",
@@ -201,7 +252,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(
       page.getByText("Welcome to Paperclip!").first()
     ).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("What would you like to do?")).toBeVisible();
+    // The timeline also summarizes the unanswered question. Check the open
+    // question card so a summary alone cannot satisfy this assertion.
+    await expect(
+      page
+        .getByTestId("task-chat-interaction")
+        .getByText("What would you like to do?", { exact: true })
+    ).toBeVisible();
 
     // … and that the no-run contract holds. This spec used to poll for an
     // assignment-triggered heartbeat run here; a run appearing before the

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRuns,
   issueDocuments,
   issues,
 } from "@paperclipai/db";
@@ -40,6 +42,8 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -74,6 +78,7 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       title: "Plan",
       format: "markdown",
       body: "# Plan",
+      createdByUserId: "board-user",
     });
     await svc.upsertIssueDocument({
       issueId,
@@ -83,7 +88,7 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Handoff",
     });
 
-    return { issueId };
+    return { issueId, companyId };
   }
 
   it("filters continuation summaries from default document lists and issue payload summaries", async () => {
@@ -111,6 +116,62 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
       body: "# Handoff",
     }));
+  });
+
+  it("returns each actual writer run in revision history without attributing human revisions to a run", async () => {
+    const { issueId, companyId } = await createIssueWithDocuments();
+    const agentId = randomUUID(), firstRunId = randomUUID(), secondRunId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Receipt writer", role: "engineer", adapterType: "process" });
+    await db.insert(heartbeatRuns).values([firstRunId, secondRunId].map(id => ({ id, companyId, agentId,
+      status: "succeeded", invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId } })));
+    const first = await svc.upsertIssueDocument({ issueId, key: "receipt", title: "Receipt", format: "markdown",
+      body: '{"total":6}', createdByAgentId: agentId, createdByRunId: firstRunId });
+    const second = await svc.upsertIssueDocument({ issueId, key: "receipt", title: "Receipt", format: "markdown",
+      body: '{"total":6,"currency":"USD"}', createdByAgentId: agentId, createdByRunId: secondRunId,
+      baseRevisionId: first.document.latestRevisionId });
+    expect(await svc.listIssueDocumentRevisions(issueId, "receipt")).toMatchObject([
+      { id: second.document.latestRevisionId, revisionNumber: 2, createdByAgentId: agentId, createdByRunId: secondRunId,
+        body: '{"total":6,"currency":"USD"}' },
+      { id: first.document.latestRevisionId, revisionNumber: 1, createdByAgentId: agentId, createdByRunId: firstRunId,
+        body: '{"total":6}' },
+    ]);
+    expect(await svc.listIssueDocumentRevisions(issueId, "plan")).toMatchObject([{ createdByUserId: "board-user", createdByRunId: null }]);
+    expect(await svc.listIssueDocumentRevisions(randomUUID(), "receipt")).toEqual([]);
+  });
+
+  it("explains the revision guard and rejects missing or stale update revisions without changing the document", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const current = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+    const update = {
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown" as const,
+      body: "# Revised plan",
+    };
+
+    await expect(svc.upsertIssueDocument(update)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("set baseRevisionId to that latestRevisionId"),
+      details: { currentRevisionId: current.latestRevisionId },
+    });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: current.body,
+      latestRevisionId: current.latestRevisionId,
+    });
+
+    const saved = await svc.upsertIssueDocument({ ...update, baseRevisionId: current.latestRevisionId });
+    expect(saved.document.body).toBe(update.body);
+    expect(saved.document.latestRevisionNumber).toBe(current.latestRevisionNumber + 1);
+    await expect(svc.upsertIssueDocument({
+      ...update,
+      body: "# Stale replacement",
+      baseRevisionId: current.latestRevisionId,
+    })).rejects.toMatchObject({ status: 409, message: "Document was updated by someone else" });
+    expect(await svc.getIssueDocumentByKey(issueId, "plan")).toMatchObject({
+      body: saved.document.body,
+      latestRevisionId: saved.document.latestRevisionId,
+    });
   });
 
   it("locks and unlocks issue documents", async () => {

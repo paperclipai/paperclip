@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
 
 /**
  * Structural subset of an ACP runtime event consumed by the canonical event
@@ -15,6 +16,7 @@ export interface AcpRuntimeEventShape {
   text?: string;
   status?: string;
   rawOutput?: unknown;
+  inputUpdated?: boolean;
   tag?: string;
   entries?: Array<{ content: string; status?: string }>;
   [key: string]: unknown;
@@ -77,6 +79,7 @@ export interface TypedEventFamilyCapability {
 }
 
 export const CANONICAL_PROVIDER_EVENT_TYPES = [
+  "auth.credentials.updated",
   "harness.diagnostic",
   "plan.updated",
   "tool.execution.started",
@@ -116,6 +119,28 @@ export interface CanonicalProviderEvent {
 }
 
 const MAX_OUTPUT = 64 * 1024;
+
+/**
+ * Set by a bounded provider transport on the object that owns a string it
+ * shortened before parsing, keyed by property name. JSON serialization skips
+ * symbol keys, so the marker never reaches persisted payloads.
+ */
+export const OMITTED_PROVIDER_TEXT = Symbol("paperclip.omittedProviderText");
+export interface OmittedProviderText {
+  chars: number;
+  bytes: number;
+}
+
+function omittedProviderText(
+  owner: Record<string, unknown>,
+  key: string,
+): OmittedProviderText | null {
+  const marker = (owner as Record<PropertyKey, unknown>)[OMITTED_PROVIDER_TEXT];
+  const entry = record(record(marker)[key]);
+  return Number.isSafeInteger(entry.chars) && Number.isSafeInteger(entry.bytes)
+    ? { chars: Number(entry.chars), bytes: Number(entry.bytes) }
+    : null;
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -245,6 +270,23 @@ function boundedAcpxLifecycleLocations(value: unknown): unknown[] | undefined {
  * title as the literal `tool call`, so consumers must restore lifecycle
  * identity before translating the event into a durable protocol record.
  */
+/** Grok omits message IDs. A tool boundary ends its preceding output segment.
+ * Thoughts never become output and tool progress cannot fragment output chunks.
+ * Create one normalizer per turn; native IDs, when present, remain authoritative.
+ */
+export function createGrokMessageNormalizer<T extends AcpRuntimeEventShape>(): (event: T) => T {
+  let segment = 0;
+  let hasOutput = false;
+  let boundary = false;
+  return (event) => {
+    if (event.type === "tool_call" && hasOutput) boundary = true;
+    if (event.type !== "text_delta" || event.stream === "thought" || event.tag === "agent_thought_chunk") return event;
+    if (boundary) { segment += 1; boundary = false; }
+    hasOutput = true;
+    return { ...event, messageId: event.messageId || `grok-output-${segment}` };
+  };
+}
+
 export function createAcpxToolEventNormalizer<
   T extends AcpRuntimeEventShape,
 >(): (event: T) => T {
@@ -411,6 +453,7 @@ function digest(value: string): string {
 
 function boundedOutput(
   value: string,
+  omitted: OmittedProviderText | null = null,
 ): Pick<
   Record<string, unknown>,
   "output" | "outputBytes" | "outputTruncated" | "outputDigest"
@@ -419,6 +462,15 @@ function boundedOutput(
   const output = Buffer.from(value)
     .subarray(Math.max(0, bytes - MAX_OUTPUT))
     .toString("utf8");
+  // The transport retained only an excerpt. Report the provider's real size;
+  // a digest of the excerpt would misidentify the output, so none is claimed.
+  if (omitted)
+    return {
+      output,
+      outputBytes: omitted.bytes,
+      outputTruncated: true,
+      outputDigest: null,
+    };
   return {
     output,
     outputBytes: bytes,
@@ -575,6 +627,29 @@ export function canonicalProviderEventsFromCodex(
   const type = text(item.type);
   const itemId = safeId(text(item.id, text(params.itemId)), "provider-item");
   const completed = method === "item/completed";
+  if (method === "warning" && params.classification === "unrelated_information") {
+    const boundedField = (key: string, limit: number) => {
+      if (typeof params[key] !== "string") return null;
+      const characters = [...redactCodexDiagnostic(params[key])];
+      const marker = "…[truncated]";
+      return characters.length <= limit
+        ? characters.join("")
+        : characters.slice(0, limit - marker.length).join("") + marker;
+    };
+    return [{
+      eventType: "harness.diagnostic",
+      itemId,
+      payload: {
+        code: "codex_unrelated_information",
+        classification: "unrelated_information",
+        providerMethod: boundedField("providerMethod", 160),
+        expectedThreadId: boundedField("expectedThreadId", 256),
+        receivedThreadId: boundedField("receivedThreadId", 256),
+        expectedTurnId: boundedField("expectedTurnId", 256),
+        receivedTurnId: boundedField("receivedTurnId", 256),
+      },
+    }];
+  }
   if (method === "turn/plan/updated") {
     const turnPlanId = safeId(text(params.turnId), "turn-plan");
     return [
@@ -912,7 +987,10 @@ export function canonicalProviderEventsFromCodex(
               ? "environment"
               : "turn",
           recoverable: method !== "error",
-          userActionable: method === "error" || method === "warning",
+          // Provider severity does not establish a decision the task user can
+          // make. Authentication, approval and model-choice actions have typed
+          // admission paths; generic runtime notices remain diagnostics.
+          userActionable: false,
           summary: [params.summary, params.message, params.details]
             .map((value) => text(value).trim())
             .find(Boolean)?.slice(0, 4000) || "Provider notice",
@@ -944,7 +1022,15 @@ export function canonicalProviderEventsFromOpenCodePart(
     );
     // OpenCode places terminal tool failures in `state.error`, not `output`.
     // Preserve the bounded provider message so a failed row is actionable.
-    const output = text(state.output, text(part.output, text(state.error)));
+    const outputOwner: [Record<string, unknown>, string] | null =
+      typeof state.output === "string"
+        ? [state, "output"]
+        : typeof part.output === "string"
+          ? [part, "output"]
+          : typeof state.error === "string"
+            ? [state, "error"]
+            : null;
+    const output = outputOwner ? text(outputOwner[0][outputOwner[1]]) : "";
     const payload = {
       schema: "paperclip.tool.execution.v1",
       executionId: itemId,
@@ -968,7 +1054,10 @@ export function canonicalProviderEventsFromOpenCodePart(
       exitCode: integer(state.exit),
       progress:
         status === "running" ? text(state.title).slice(0, 4000) || null : null,
-      ...boundedOutput(output),
+      ...boundedOutput(
+        output,
+        outputOwner ? omittedProviderText(...outputOwner) : null,
+      ),
     };
     const eventType =
       nativeStatus === "pending"
@@ -1133,6 +1222,11 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       target: safeAcpLocation(event.locations?.[0]),
       namespace: mcp?.namespace ?? null,
       readOnly: ["read", "search", "list"].includes(operation),
+      ...(Object.prototype.hasOwnProperty.call(event, "rawInput")
+        ? { inputUpdated: event.rawInput !== undefined }
+        : typeof event.inputUpdated === "boolean"
+          ? { inputUpdated: event.inputUpdated }
+          : {}),
       status,
       durationMs: null,
       exitCode: null,

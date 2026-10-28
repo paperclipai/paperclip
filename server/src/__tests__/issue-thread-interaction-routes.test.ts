@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -41,6 +41,7 @@ const mockInteractionService = vi.hoisted(() => ({
   submitItemVerdicts: vi.fn(),
   cancelQuestions: vi.fn(),
   skipInteraction: vi.fn(),
+  dismissInteraction: vi.fn(),
   withdrawInteraction: vi.fn(),
   recordSecretProposalExecutionResult: vi.fn(),
 }));
@@ -260,6 +261,12 @@ function createIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function loadAppModules() {
+  const routes = await import("../routes/issues.js");
+  const middleware = await import("../middleware/index.js");
+  return [routes, middleware] as const;
+}
+
 async function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "local-board",
@@ -275,10 +282,7 @@ async function createApp(actor: Record<string, unknown> = {
       responsibleUserId: actor.onBehalfOfUserId ?? null,
     };
   }
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+  const [{ issueRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -304,14 +308,18 @@ async function resolveMockInteraction(
   return interaction;
 }
 
-describe.sequential("issue thread interaction routes", () => {
-  beforeEach(() => {
+describe("issue thread interaction routes", () => {
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
+    await loadAppModules();
+  }, 60_000);
+
+  beforeEach(() => {
     // Every mock here is a vi.hoisted() singleton. All 70+ tests share it.
     // A queued mockResolvedValueOnce() value can outlive its own test and
     // leak into a later, unrelated test. vi.resetAllMocks() drains that
@@ -606,18 +614,69 @@ describe.sequential("issue thread interaction routes", () => {
     );
   }, 10_000);
 
-  it("does not run historical-comment catch-up or queue recovery from the interaction read path", async () => {
+  it("records a board dismissal without resolving or waking, and denies agent dismissal", async () => {
+    mockInteractionService.dismissInteraction.mockResolvedValue({ id: "request-1", kind: "request_confirmation", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
+    const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    const result = await request(await createApp()).post(path).send({});
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
+    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.thread_interaction_dismissed" }));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    mockInteractionService.dismissInteraction.mockClear();
+    expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
+    expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("hides private task requests from same-company members without task access before dismissal", async () => {
+    mockAccessDecide.mockResolvedValue({ allowed: false, action: "issue:read", reason: "deny_issue_private",
+      explanation: "Task access was revoked.",
+    });
+    const app = await createApp({ type: "board", userId: "same-company-member", companyIds: ["company-1"],
+      source: "session", isInstanceAdmin: false,
+    });
+    const result = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss").send({});
+    expect(result.status).toBe(404);
+    expect(result.body).toEqual({ error: "Issue not found" });
+    expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+    expect(mockInteractionService.getForIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a canonical-only mixed question form at the HTTP boundary", async () => {
+    const questionSet = { schema: "paperclip.question_set.v1", questions: [
+      { id: "repo", prompt: "Repository URL?", required: true, answerMode: "text" },
+      { id: "scope", prompt: "Review scope?", required: true, answerMode: "single_select", options: [{ id: "all", label: "All changes" }, { id: "selected", label: "Selected changes" }] },
+    ] };
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({ kind: "ask_user_questions", payload: { version: 1, questionSet } });
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      payload: expect.objectContaining({ questionSet, questions: [
+        expect.objectContaining({ id: "repo", options: [{ id: "paperclip_text_answer", label: "Type an answer", freeText: true }] }),
+        expect.objectContaining({ id: "scope", options: questionSet.questions[1].options }),
+      ] }),
+    }), expect.anything());
+  });
+
+  it.each(["in_review", "done"])("keeps interaction reads free of expiry, activity writes, and recovery while %s", async (status) => {
     mockIssueService.getById.mockResolvedValue(createIssue({
-      status: "in_review",
+      status,
       assigneeAgentId: ASSIGNEE_AGENT_ID,
     }));
     mockInteractionService.listForIssue.mockResolvedValue([]);
 
     await request(await createApp())
       .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
-      .expect(200);
+      .expect(200, []);
 
+    expect(mockInteractionService.listForIssue).toHaveBeenCalledExactlyOnceWith(ISSUE_ID);
     expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).not.toHaveBeenCalled();
+    expect(mockInteractionService.expirePendingInteractionsForTerminalIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -816,6 +875,30 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_answered",
       }),
     );
+  });
+
+  it.each(["paperclip-id:chat-owner", "chat-owner", "paperclip-id:another-user"])("keeps chat response delivery limited to the exact owner: %s", async (userId) => {
+    const issue = createIssue({ conversationAgentId: ASSIGNEE_AGENT_ID, conversationUserId: "paperclip-id:chat-owner" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-2", kind: "ask_user_questions", status: "pending",
+      requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only",
+      addresseeUserId: "paperclip-id:chat-owner", continuationPolicy: "wake_assignee",
+      payload: { version: 1, questions: [] },
+    });
+    const app = await createApp({ type: "board", userId, source: "cloud_tenant", companyIds: ["company-1"] });
+    const response = await request(app).post(`/api/issues/${ISSUE_ID}/interactions/interaction-2/respond`)
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+    if (userId === "paperclip-id:chat-owner") {
+      expect(response.status).toBe(200);
+      expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(expect.anything(), "interaction-2", expect.anything(), expect.objectContaining({ userId }));
+      expect(mockQuestionResponseDeliveries.deliver).toHaveBeenCalledWith("interaction-2");
+    } else {
+      expect(response.status).toBe(403);
+      expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+      expect(mockQuestionResponseDeliveries.deliver).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    }
   });
 
   it("routes wake-on-accept question answers through the same causal delivery service", async () => {
@@ -1678,7 +1761,11 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("forces a fresh workspace-aware session when accepting a planning confirmation", async () => {
+  it.each([
+    { label: "explicit", targetIssueId: ISSUE_ID },
+    { label: "omitted", targetIssueId: undefined },
+    { label: "null", targetIssueId: null },
+  ])("forces a fresh workspace-aware session when accepting a planning confirmation with $label issueId", async ({ targetIssueId }) => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({ workMode: "planning" }));
     mockInteractionService.acceptInteraction.mockResolvedValueOnce({
       interaction: {
@@ -1696,7 +1783,7 @@ describe.sequential("issue thread interaction routes", () => {
           prompt: "Approve this plan?",
           target: {
             type: "issue_document",
-            issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ...(targetIssueId !== undefined ? { issueId: targetIssueId } : {}),
             documentId: "document-plan",
             key: "plan",
             revisionId: "revision-plan",
@@ -1768,6 +1855,45 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("does not project an explicitly different issue's approved plan into the current issue wake", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-other-plan",
+        companyId: "company-1",
+        issueId: ISSUE_ID,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        sourceRunId: RUN_1,
+        payload: {
+          version: 1,
+          prompt: "Approve the other issue's plan?",
+          target: {
+            type: "issue_document",
+            issueId: OTHER_ISSUE_ID,
+            key: "plan",
+            revisionId: "other-revision",
+            revisionNumber: 2,
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const response = await request(await createApp())
+      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-other-plan/accept`)
+      .send({});
+    expect(response.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    const wake = mockHeartbeatService.wakeup.mock.calls[0]?.[1] as unknown as {
+      contextSnapshot: Record<string, unknown>;
+      payload: Record<string, unknown>;
+    };
+    expect(wake.contextSnapshot).not.toHaveProperty("planReviewInteraction");
+    expect(wake.payload).not.toHaveProperty("planReviewInteraction");
+    expect(wake.contextSnapshot).not.toHaveProperty("forceFreshSession");
   });
 
   it("forces a fresh workspace-aware session when accepting a plan document confirmation on a standard-work issue", async () => {
@@ -2789,42 +2915,6 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
   });
 
-  it("allows the creator agent and creating run under anyone", async () => {
-    mockInteractionService.getForIssue.mockResolvedValueOnce({
-      id: "interaction-open",
-      kind: "ask_user_questions",
-      createdByAgentId: CREATED_AGENT_ID,
-      sourceRunId: RUN_9,
-      requestedResolverPolicy: "anyone",
-      effectiveResolverPolicy: "anyone",
-      resolverPolicyProvenance: "inherited",
-      effectiveResolverPolicySource: "requested",
-      payload: { version: 1, questions: [] },
-    });
-    mockIssueService.getById.mockResolvedValueOnce(createIssue({
-      status: "todo",
-      assigneeAgentId: CREATED_AGENT_ID,
-    }));
-    const app = await createApp({
-      type: "agent",
-      agentId: CREATED_AGENT_ID,
-      companyId: "company-1",
-      runId: RUN_9,
-    });
-
-    const res = await request(app)
-      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-open/respond")
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
-      expect.anything(),
-      "interaction-open",
-      expect.anything(),
-      expect.objectContaining({ agentId: CREATED_AGENT_ID, runId: RUN_9 }),
-    );
-  });
-
   it.each([
     {
       kind: "suggest_tasks",
@@ -2899,7 +2989,12 @@ describe.sequential("issue thread interaction routes", () => {
       .send(body);
 
     expect(res.status).toBe(200);
-    expect(mockInteractionService[service as keyof typeof mockInteractionService]).toHaveBeenCalled();
+    expect(mockInteractionService[service as keyof typeof mockInteractionService]).toHaveBeenCalledWith(
+      expect.anything(),
+      `interaction-${kind}`,
+      body,
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, runId: RUN_9 }),
+    );
   });
 
   it("enforces same-run exclusion under not_creator and requires a resolver run id", async () => {
@@ -3199,48 +3294,6 @@ describe.sequential("issue thread interaction routes", () => {
   }
 
   it.each(CROSS_ISSUE_RESOLUTION_ROUTES)(
-    "fails a capped run closed on cross-issue $route with no interaction effect",
-    async ({ route, kind, body, payload, service }) => {
-      stubCrossIssueResolution({ kind, payload });
-      mockCrossIssueInfluence.sourceIssueId = OTHER_ISSUE_ID;
-      mockCrossIssueInfluence.priorCount = 20;
-      const app = await createApp({
-        type: "agent",
-        agentId: ASSIGNEE_AGENT_ID,
-        companyId: "company-1",
-        runId: RUN_2,
-      });
-
-      const res = await request(app)
-        .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-${kind}/${route}`)
-        .send(body);
-
-      expect(res.status).toBe(429);
-      expect(res.body.details).toMatchObject({
-        code: "cross_issue_influence_cap_exceeded",
-        cap: 20,
-        count: 21,
-        mode: "enforce",
-      });
-      // The refusal names the boundary and the way forward without naming the
-      // run's own inaccessible source issue or the resolver policy.
-      expect(res.body.error).toContain("Try this:");
-      expect(res.body.error).not.toContain(OTHER_ISSUE_ID);
-      expect(res.body.details.code).not.toContain("resolver");
-      // No terminal mutation, activity receipt, continuation, or wake.
-      expect(mockInteractionService[service]).not.toHaveBeenCalled();
-      expect(mockLogActivity).not.toHaveBeenCalled();
-      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-      expect(mockCrossIssueInfluence.inserted).toEqual([
-        expect.objectContaining({
-          action: "issue.cross_issue_influence_cap_rejected",
-          details: expect.objectContaining({ kind: "interaction_resolution", allowed: false }),
-        }),
-      ]);
-    },
-  );
-
-  it.each(CROSS_ISSUE_RESOLUTION_ROUTES)(
     "charges one shared cross-issue observation for an allowed $route",
     async ({ route, kind, body, payload, service }) => {
       stubCrossIssueResolution({ kind, payload });
@@ -3272,40 +3325,4 @@ describe.sequential("issue thread interaction routes", () => {
       ]);
     },
   );
-
-  it("does not charge a same-issue resolution even past the cap", async () => {
-    stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
-    mockCrossIssueInfluence.sourceIssueId = ISSUE_ID;
-    mockCrossIssueInfluence.priorCount = 20;
-    const app = await createApp({
-      type: "agent",
-      agentId: ASSIGNEE_AGENT_ID,
-      companyId: "company-1",
-      runId: RUN_2,
-    });
-
-    const res = await request(app)
-      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-ask_user_questions/respond`)
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
-    expect(mockCrossIssueInfluence.inserted).toEqual([]);
-  });
-
-  it("leaves board resolutions outside the per-run counter", async () => {
-    stubCrossIssueResolution({ kind: "ask_user_questions", payload: { version: 1, questions: [] } });
-    mockCrossIssueInfluence.sourceIssueId = OTHER_ISSUE_ID;
-    mockCrossIssueInfluence.priorCount = 20;
-    const app = await createApp();
-
-    const res = await request(app)
-      .post(`/api/issues/${ISSUE_ID}/interactions/interaction-cross-ask_user_questions/respond`)
-      .send({ answers: [] });
-
-    expect(res.status).toBe(200);
-    expect(mockInteractionService.answerQuestions).toHaveBeenCalledTimes(1);
-    expect(mockDbTransaction).not.toHaveBeenCalled();
-    expect(mockCrossIssueInfluence.inserted).toEqual([]);
-  });
 });

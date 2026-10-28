@@ -47,8 +47,10 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
       await fs.mkdir(dir, { recursive: true });
 
       const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await fs.writeFile(tempPath, input.body);
-      await fs.rename(tempPath, targetPath);
+      try {
+        await fs.writeFile(tempPath, input.body);
+        await fs.rename(tempPath, targetPath);
+      } finally { await fs.rm(tempPath, { force: true }); }
     },
 
     async getObject(input): Promise<GetObjectResult> {

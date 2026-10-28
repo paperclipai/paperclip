@@ -44,6 +44,41 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("forwards credential updates before a turn with P0 priority", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-credential-update", normalizedSessionId: "session-credential-update", workingDirectory: WORKSPACE,
+    });
+    const payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+      bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const updates = events.filter(event => event.eventType === "auth.credentials.updated");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ priority: 0, payload });
+    expect(validatePrpEvent(updates[0]).ok).toBe(true);
+  });
+
+  it("rejects credential payloads containing secret fields before emitting them", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-invalid-credential-update", normalizedSessionId: "session-invalid-credential-update", workingDirectory: WORKSPACE,
+    });
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload: {
+      schema: "paperclip.auth.credentials.updated.v1", provider: "codex", bindingId: "harness-auth",
+      revision: 1, detection: "credential_store", access_token: "credential-secret-sentinel",
+    } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "auth.credentials.updated")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("credential-secret-sentinel");
+    expect(events).toContainEqual(expect.objectContaining({ eventType: "session.failed",
+      payload: expect.objectContaining({ code: "credential_update_invalid" }) }));
+  });
+
   it("admits a strictly bound semantic result from the durable runner", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -292,6 +327,28 @@ describe("Codex app-server Codex driver", () => {
     expect(events.find((event) => event.eventType === "workspace.diff.recorded")?.payload)
       .toMatchObject({ revision: 1, source: "runner_verified", complete: true, totals: { files: 0 } });
     expect(events.some((event) => event.eventType === "turn.interrupted")).toBe(true);
+  });
+
+  it.each(["output", "cache"])("does not certify partial provider usage using retained %s counters", async omitted => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-partial-usage", normalizedSessionId: "normalized-partial-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const first = { inputTokens: 10, outputTokens: 4, ...(omitted === "cache" ? { cachedInputTokens: 2 } : {}) };
+    const second = { inputTokens: 20, ...(omitted === "cache" ? { outputTokens: 8 } : {}) };
+    for (const total of [first, second]) {
+      transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total } });
+    }
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const usage = events.filter(event => event.payload.kind === "usage");
+    expect(usage.map(event => event.payload.usage)).toMatchObject([
+      { runDelta: first, runDeltaComplete: true },
+      { runDelta: { ...first, ...second }, runDeltaComplete: false },
+    ]);
+    expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
   });
 
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {

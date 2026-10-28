@@ -23,6 +23,7 @@ import {
   parseHarnessRuntimeRequestResolution,
 } from "../../contracts/harness-driver.js";
 import type { NativeUserMessage } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import {
   CODEX_RESULT_OUTPUT_SCHEMA,
   type CodexModelContextSnapshot,
@@ -64,12 +65,33 @@ export class CodexHarnessSession
     this.transport.setServerRequestHandler((request) =>
       handleServerRequest(this, request),
     );
-    initializeCodexSessionEvents(this, input);
+    const restored = this.transport.takeRestoredRuntimeRequests?.() ?? [];
+    const restoredIds = new Set(restored.map(request => String(request.id)));
+    initializeCodexSessionEvents(this, {
+      ...input,
+      stalePendingRuntimeRequests: input.stalePendingRuntimeRequests?.filter(request => !restoredIds.has(request.requestId)),
+    });
+    for (const request of restored) {
+      void handleServerRequest(this, request, { restored: true }).catch(error => this.failProtocol(
+        "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
+      ));
+    }
     if (this.terminal) {
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
     }
+  }
+
+  supportsTurnReasoning(): boolean {
+    return this.transport.supportsTurnReasoning?.() === true;
+  }
+
+  turnControlCapabilities() {
+    if (this.driverKind === "acpx_runtime") {
+      return this.transport.turnControlCapabilities?.() ?? { steering: false, queuedFollowUp: false };
+    }
+    return { steering: this.capabilities.steering, queuedFollowUp: false };
   }
 
   ids(): ReturnType<HarnessSession["ids"]> {
@@ -80,7 +102,7 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string }): Promise<void> {
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -95,6 +117,7 @@ export class CodexHarnessSession
       runId: input.runId,
       turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
       itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
+      ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
     });
     this.assertProtocolIntegrity();
     if (transportOwnsQuiescence) {
@@ -137,12 +160,19 @@ export class CodexHarnessSession
 
   async startTurn(input: {
     message: NativeUserMessage;
+    /** Set by orchestration only after successful provider-session recovery. */
+    continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode: "default" | "plan";
   }> {
     this.assertProtocolIntegrity();
+    if (input.reasoningMode !== undefined && !this.supportsTurnReasoning()) {
+      throw new Error("Per-turn reasoning is not supported by this provider");
+    }
     if (this.protocolFailed && this.protocolFailureCode) {
       throw new NativeProviderTerminalFailure(this.protocolFailureCode, false, this.protocolFailureMessage ?? undefined);
     }
@@ -160,10 +190,15 @@ export class CodexHarnessSession
       );
     }
     const dispositionOnlyRecovery = this.dispositionOnlyRecoveryAvailable;
+    // A native continuation already carries just new events and the current
+    // completion IDs. Do not wrap it in the prior task objective/constraints
+    // or re-invoke a skill whose instructions are already in this session.
+    const continuationTurn = input.continuation === true;
+    const turnSkills = continuationTurn ? [] : this.skillInputs;
     const taskText =
-      this.conversationMode === "direct"
+      this.conversationMode === "direct" || this.conversationMode === "prepared"
         ? input.message.text
-        : dispositionOnlyRecovery
+        : dispositionOnlyRecovery || continuationTurn
           ? input.message.text
           : JSON.stringify({
               task: this.taskEnvelope,
@@ -192,6 +227,7 @@ export class CodexHarnessSession
     this.emit("turn.submitted", {
       envelopeSchema: this.taskEnvelope.schema,
       text: input.message.text,
+      ...(turnSkills.length ? { skillInputs: turnSkills } : {}),
       requestedCollaborationMode:
         input.requestedCollaborationMode ?? effectiveCollaborationMode,
       effectiveCollaborationMode,
@@ -206,6 +242,8 @@ export class CodexHarnessSession
     try {
       response = await this.transport.request("turn/start", {
         threadId: this.opened.threadId,
+        ...(input.reasoningMode === undefined ? {} : { reasoningMode: input.reasoningMode }),
+        ...(this.reasoningEffort ? { effort: this.reasoningEffort } : {}),
         cwd: this.opened.context.workingDirectory,
         permissions:
           text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
@@ -215,7 +253,15 @@ export class CodexHarnessSession
         ...(this.opened.collaborationMode === null
           ? {}
           : { collaborationMode: this.opened.collaborationMode }),
-        input: [userInput({ role: "user", text: taskText })],
+        input: [
+          userInput({
+            role: "user",
+            text: turnSkills.length
+              ? `${turnSkills.map((skill) => `$${skill.name}`).join(" ")}\n\n${taskText}`
+              : taskText,
+          }),
+          ...turnSkills,
+        ],
         ...(this.conversationMode === "direct"
           ? {}
           : { outputSchema: CODEX_RESULT_OUTPUT_SCHEMA }),
@@ -284,18 +330,23 @@ export class CodexHarnessSession
   }
 
   async steer(input: {
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
   }): Promise<void> {
     this.assertProtocolIntegrity();
-    this.requireCapability("steering");
+    const controls = this.turnControlCapabilities();
+    if (!(input.mode === "follow_up" ? controls.queuedFollowUp : controls.steering)) {
+      throw this.unsupported("steering", "requested turn control was not negotiated");
+    }
     this.requireActiveTurn(input.turnId, "steering");
     if (input.correlationId) {
       const acknowledgedTurnId = this.acknowledgedSteeringCorrelations.get(
         input.correlationId,
       );
       if (acknowledgedTurnId) {
+        if (this.driverKind === "acpx_runtime") throw new Error("ACP turn control correlation was already acknowledged");
         if (acknowledgedTurnId !== input.turnId)
           throw new HarnessOperationAlreadyTerminalError("steering");
         return;
@@ -307,6 +358,7 @@ export class CodexHarnessSession
         input: [userInput(input.message)],
         expectedTurnId: input.turnId,
         correlationId: input.correlationId,
+        ...(input.mode === undefined ? {} : { mode: input.mode }),
       });
       if (this.activeTurnId !== input.turnId) {
         throw new HarnessOperationAlreadyTerminalError("steering");
@@ -321,7 +373,8 @@ export class CodexHarnessSession
         "item.completed",
         {
           kind: "steering_acknowledgement",
-          text: "Steering acknowledged for the active turn.",
+          text: input.mode === "follow_up" ? "Follow-up queued by the active provider." : "Steering acknowledged for the active turn.",
+          ...(this.driverKind === "acpx_runtime" ? { mode: input.mode ?? "steer" } : {}),
           status: "acknowledged",
         },
         {
@@ -373,6 +426,7 @@ export class CodexHarnessSession
       await this.transport.request("turn/interrupt", {
         threadId: this.opened.threadId,
         turnId,
+        ...(reason ? { reason: boundedText(reason) } : {}),
       });
       if (this.activeTurnId !== turnId) {
         throw new HarnessOperationAlreadyTerminalError("interruption");
@@ -433,12 +487,12 @@ export class CodexHarnessSession
         `request ${input.requestId} is already settling`,
       );
     }
-    pending.settlingResolution = structuredClone(resolution);
     const response = runtimeRequestResponse(
       pending.request,
       resolution,
       pending.responseContext,
     );
+    pending.settlingResolution = structuredClone(resolution);
     try {
       await this.transport.resolveRuntimeRequest?.({
         requestId: input.requestId,

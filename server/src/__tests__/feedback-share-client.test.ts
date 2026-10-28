@@ -1,6 +1,6 @@
 import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createFeedbackTraceShareClientFromConfig } from "../services/feedback-share-client.js";
+import { FEEDBACK_UPLOAD_TIMEOUT_MS, createFeedbackTraceShareClientFromConfig } from "../services/feedback-share-client.js";
 
 describe("feedback trace share client", () => {
   beforeEach(() => {
@@ -12,6 +12,7 @@ describe("feedback trace share client", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("defaults to telemetry.paperclip.ing when no backend url is configured", async () => {
@@ -98,4 +99,43 @@ describe("feedback trace share client", () => {
     expect(parsed.objectKey.endsWith("/export-1.json")).toBe(true);
     expect(parsed.bundle.envelope).toEqual({ hello: "world" });
   });
+  it.each(["headers", "body"])("cancels a stalled upload at its deadline while waiting for %s", async phase => {
+    const deadline = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    vi.mocked(fetch).mockImplementation(async (_url, options) => {
+      const block = () => new Promise<never>((_resolve, reject) => {
+        options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+        started();
+      });
+      if (phase === "headers") return block();
+      return { ok: true, json: block } as unknown as Response;
+    });
+    const client = createFeedbackTraceShareClientFromConfig({ feedbackExportBackendUrl: undefined, feedbackExportBackendToken: undefined });
+    const bundle = { companyId: "company", traceId: "trace" } as Parameters<typeof client.uploadTraceBundle>[0];
+    const uploading = client.uploadTraceBundle(bundle);
+    const rejected = expect(uploading).rejects.toThrow("upload deadline");
+    await waiting;
+    expect(timeout).toHaveBeenCalledWith(FEEDBACK_UPLOAD_TIMEOUT_MS);
+    deadline.abort(new Error("upload deadline"));
+    await rejected;
+  });
+
+  it("passes shutdown cancellation through to a pending upload", async () => {
+    const shutdown = new AbortController();
+    let started!: () => void;
+    const waiting = new Promise<void>(resolve => { started = resolve; });
+    vi.mocked(fetch).mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+      options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+      started();
+    }));
+    const client = createFeedbackTraceShareClientFromConfig({ feedbackExportBackendUrl: undefined, feedbackExportBackendToken: undefined });
+    const bundle = { companyId: "company", traceId: "trace" } as Parameters<typeof client.uploadTraceBundle>[0];
+    const rejected = expect(client.uploadTraceBundle(bundle, shutdown.signal)).rejects.toThrow("shutdown");
+    await waiting;
+    shutdown.abort(new Error("shutdown"));
+    await rejected;
+  });
+
 });

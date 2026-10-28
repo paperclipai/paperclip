@@ -157,6 +157,27 @@ describe("command managed runtime", () => {
     }
   });
 
+  it("reports a missing sandbox file as ENOENT without masking command failures", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-missing-"));
+    try {
+      const { runner } = makeSpawnRunner();
+      const client = createCommandManagedRuntimeClient({ runner, commandCwd: root, timeoutMs: 5000 });
+      const missingPath = path.join(root, "auth.json");
+      await expect(client.readFile(missingPath)).rejects.toMatchObject({ code: "ENOENT", path: missingPath });
+      await writeFile(missingPath, "present");
+      const failedClient = createCommandManagedRuntimeClient({
+        commandCwd: root, timeoutMs: 5000,
+        runner: { ...runner, execute: async (input) => input.args?.some((arg) => arg.startsWith("wc -c"))
+          ? { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "transport read failed", pid: null, startedAt: new Date().toISOString() }
+          : runner.execute(input) },
+      });
+      await expect(failedClient.readFile(missingPath)).rejects.toThrow("transport read failed");
+      await expect(client.readFile(missingPath)).resolves.toEqual(Buffer.from("present"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the runtime overlay out of sandbox workspace sync by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-"));
     cleanupDirs.push(rootDir);
@@ -443,15 +464,14 @@ describe("command managed runtime", () => {
     cleanupDirs.push(rootDir);
     const remotePath = path.join(rootDir, "nested", "payload.bin");
 
-    // ~3 MB of every byte value so the test catches any non-binary-safe handling.
-    const payload = Buffer.alloc(3 * 1024 * 1024);
+    const payload = Buffer.alloc(9 * 1024 * 1024);
     for (let i = 0; i < payload.length; i++) payload[i] = i % 256;
 
     const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
     const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
 
     const progress: Array<{ done: number; total: number | null }> = [];
-    await withBase64StringByteLimit(4 * 1024 * 1024, async () => {
+    await withBase64StringByteLimit(9 * 1024 * 1024, async () => {
       await client.writeFile(remotePath, toArrayBuffer(payload), {
         onProgress: (done, total) => {
           progress.push({ done, total });
@@ -897,30 +917,6 @@ describe("command managed runtime", () => {
     expect(executed.some((s) => s.includes("SHOULD-NOT-RUN"))).toBe(false);
   });
 
-  it("test_single_stream_writeFile_collapses_roundtrips_under_96MiB", async () => {
-    // Research A1: with single-stream enabled a ≤96 MiB write is ONE round-trip;
-    // without it, the chunked path is `2 + ceil(bytes / 3 MiB)`. Same payload,
-    // same client API — only the runner capability flag differs.
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-single-stream-collapse-"));
-    cleanupDirs.push(rootDir);
-    const payload = Buffer.alloc(9 * 1024 * 1024, 7); // 9 MiB → chunked = 2 + 3 = 5 execs
-
-    const single = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
-    const singleClient = createCommandManagedRuntimeClient({ runner: single.runner, commandCwd: "/", timeoutMs: 30_000 });
-    await singleClient.writeFile(path.join(rootDir, "single.bin"), toArrayBuffer(payload));
-    expect(single.calls.length).toBe(2);
-
-    const chunked = makeSpawnRunner({ supportsSingleStreamStdinProgress: false });
-    const chunkedClient = createCommandManagedRuntimeClient({ runner: chunked.runner, commandCwd: "/", timeoutMs: 30_000 });
-    await chunkedClient.writeFile(path.join(rootDir, "chunked.bin"), toArrayBuffer(payload));
-    // 3 (init temp + final mv + cleanup) + ceil(9MiB / 3MiB) = 6 round-trips.
-    expect(chunked.calls.length).toBe(3 + Math.ceil(payload.byteLength / (3 * 1024 * 1024)));
-    expect(chunked.calls.length).toBeGreaterThan(single.calls.length);
-
-    expect((await readFile(path.join(rootDir, "single.bin"))).equals(payload)).toBe(true);
-    expect((await readFile(path.join(rootDir, "chunked.bin"))).equals(payload)).toBe(true);
-  });
-
   it("falls back to chunked upload progress when the runner cannot report mid-stream stdin progress", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-write-fallback-"));
     cleanupDirs.push(rootDir);
@@ -944,7 +940,7 @@ describe("command managed runtime", () => {
 
     // Provider-backed sandbox runners cannot surface mid-flight progress for a
     // single stdin RPC, so we intentionally use several large append commands.
-    expect(calls.length).toBeGreaterThan(2);
+    expect(calls.length).toBe(3 + Math.ceil(payload.byteLength / (3 * 1024 * 1024)));
     const stdinCalls = calls.filter((call) => call.stdin != null);
     expect(stdinCalls.length).toBeGreaterThan(2);
     expect(stdinCalls.every((call) => Buffer.byteLength(call.stdin ?? "", "utf8") <= 4.1 * 1024 * 1024)).toBe(true);

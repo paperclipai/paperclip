@@ -32,7 +32,9 @@ use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedTool, AuthorizedToolSet,
     PendingToolCall, ToolResult, MAX_PENDING_CALLS, TOOL_SET_SCHEMA,
 };
-use crate::provider_events::{normalize_codex_notification, NormalizedProviderEvent};
+use crate::provider_events::{
+    normalize_codex_notification, with_terminal_outcome, NormalizedProviderEvent,
+};
 
 pub const MANAGED_PROVIDER_STATE_FILE: &str = "managed-provider-state.json";
 const MANAGED_PROVIDER_STATE_SCHEMA: &str = "paperclip.runner.managed-provider-state.v1";
@@ -252,6 +254,25 @@ impl ManagedProviderDescriptor {
             Self::AwsAgentcore(config) => config.max_estimated_session_cost_usd = value,
         }
     }
+
+    fn budget(&self) -> f64 {
+        match self {
+            Self::ClaudeManaged(config) => config.max_session_list_cost_usd,
+            Self::AwsAgentcore(config) => config.max_estimated_session_cost_usd,
+        }
+    }
+
+    fn immutable_profile(&self) -> Value {
+        let mut value = serde_json::to_value(self).expect("managed descriptor is serializable");
+        if let Some(context) = value
+            .pointer_mut("/config/runtimeContext")
+            .and_then(Value::as_object_mut)
+        {
+            context.remove("mcp");
+            context.remove("aggregateDigest");
+        }
+        value
+    }
 }
 
 #[derive(Debug)]
@@ -364,6 +385,14 @@ struct ManagedDurableState {
     model_request_count: u64,
     #[serde(default)]
     provider_usage: Option<Value>,
+    // Persisted independently of turn/retry state so warm run attachment can
+    // subtract prior runs without resetting this run during crash recovery.
+    #[serde(default)]
+    accounting_baseline: Option<Value>,
+    #[serde(default)]
+    accounting_latest: Option<Value>,
+    #[serde(default)]
+    accounting_latest_complete: bool,
     #[serde(default)]
     claude_managed_skills: Option<Vec<ClaudeManagedSkillRef>>,
     #[serde(default)]
@@ -489,6 +518,9 @@ impl ManagedDurableState {
             durable_event_cursor: None,
             model_request_count: 0,
             provider_usage: None,
+            accounting_baseline: Some(zero_managed_usage()),
+            accounting_latest: Some(zero_managed_usage()),
+            accounting_latest_complete: true,
             claude_managed_skills: None,
             claude_managed_skill_cleanup: None,
             active_turn_id: None,
@@ -765,7 +797,7 @@ impl ManagedProviderCommandExecutor {
                 .expect("managed state remains present during recovery");
             let prior_turn = state.active_turn_id.take();
             state.lifecycle = "failed".to_owned();
-            state.push(NormalizedProviderEvent {
+            let provider_terminal = NormalizedProviderEvent {
                 event_type: "turn.failed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
@@ -775,9 +807,9 @@ impl ManagedProviderCommandExecutor {
                     "providerTerminalObserved": false,
                     "code": "agentcore_active_turn_recovery_requires_review",
                 }),
-            })?;
+            };
             let terminal = terminal_events(state, "turn.failed");
-            for event in terminal {
+            for event in with_terminal_outcome(vec![provider_terminal], terminal) {
                 state.push(event)?;
             }
             self.save_state()?;
@@ -955,6 +987,107 @@ impl ManagedProviderCommandExecutor {
             ))
         })?;
         Ok(())
+    }
+
+    fn attach(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
+        if self.state.is_none() {
+            self.prepare(payload)?;
+        } else if payload.get("provider").is_some() {
+            let mut descriptor = ManagedProviderDescriptor::parse(payload["provider"].clone())?;
+            descriptor.validate()?;
+            let tool_set = authorized_tool_set(payload)?;
+            let contract = completion_contract(payload)?;
+            let state = self.state.as_ref().expect("managed state exists");
+            // Only provider.budget.raise changes the durable session ceiling.
+            // Run attachment may carry the original configured value.
+            descriptor.set_budget(state.descriptor.budget());
+            if state.descriptor.immutable_profile() != descriptor.immutable_profile() {
+                return Err(DurableRunnerError::invalid(
+                    "managed provider immutable profile changed across run attachment",
+                ));
+            }
+            if state.active_turn_id.is_some()
+                || !state.pending_tool_calls.is_empty()
+                || !state.ambiguous_tool_deliveries.is_empty()
+                || state
+                    .pending_events
+                    .iter()
+                    .any(|event| event.event_type != "session.resumed")
+                || !matches!(
+                    state.lifecycle.as_str(),
+                    "prepared" | "session_open" | "suspended"
+                )
+            {
+                return Err(DurableRunnerError::invalid(
+                    "managed run.attach requires an idle session with no pending work",
+                ));
+            }
+            let next_run_id =
+                if let Some(identity) = payload.pointer("/paperclipNextAuthority/identity") {
+                    if identity.get("normalizedSessionId").and_then(Value::as_str)
+                        != Some(self.config.normalized_session_id.as_str())
+                    {
+                        return Err(DurableRunnerError::invalid(
+                            "managed run.attach changed the session identity",
+                        ));
+                    }
+                    Some(
+                        identity
+                            .get("runId")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .ok_or_else(|| {
+                                DurableRunnerError::invalid("managed run.attach requires runId")
+                            })?
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                };
+            if let Some(provider) = self.provider.as_mut() {
+                provider
+                    .configure_tools(tool_set.operations.clone())
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "managed run.attach could not refresh tools: {error}"
+                        ))
+                    })?;
+            }
+            let state = self.state.as_mut().expect("managed state exists");
+            if let Some(run_id) = next_run_id {
+                // Checkpoint validation must use the attachment's run identity.
+                // The durable runner separately activates the external authority
+                // after this command succeeds, then rotates the full config.
+                if state.run_id != run_id {
+                    state.accounting_baseline = if state.accounting_latest_complete {
+                        state.accounting_latest.clone()
+                    } else {
+                        None
+                    };
+                }
+                state.run_id = run_id.clone();
+                self.config.run_id = run_id;
+            }
+            state.descriptor = descriptor;
+            state.tool_set = tool_set;
+            state.completion_contract = contract;
+            state.last_agent_message = None;
+            state.pending_events.clear();
+            self.save_state()?;
+        }
+        let mut execution = self.open_session()?;
+        let provider = self
+            .state
+            .as_ref()
+            .expect("managed state exists")
+            .descriptor
+            .provider_label();
+        execution.events.push((
+            "run.attached".to_owned(),
+            EventPriority::P0,
+            json!({"provider": provider}),
+        ));
+        Ok(execution)
     }
 
     fn prepare(&mut self, payload: &Value) -> Result<CommandExecution, DurableRunnerError> {
@@ -1460,7 +1593,26 @@ impl ManagedProviderCommandExecutor {
                     }
                 }
                 if method == "thread/tokenUsage/updated" {
-                    state.push(managed_usage_event(&state.descriptor, &params))?;
+                    let current =
+                        complete_managed_usage(&state.descriptor, &params).filter(|current| {
+                            state.accounting_latest.as_ref().is_none_or(|previous| {
+                                managed_usage_delta(previous, current).is_some()
+                            })
+                        });
+                    let delta = current.as_ref().and_then(|current| {
+                        state
+                            .accounting_baseline
+                            .as_ref()
+                            .and_then(|baseline| managed_usage_delta(baseline, current))
+                    });
+                    let mut usage_event = managed_usage_event(&state.descriptor, &params);
+                    usage_event.payload["runDeltaAvailable"] = json!(delta.is_some());
+                    usage_event.payload["runDelta"] = delta.unwrap_or(Value::Null);
+                    state.accounting_latest_complete = current.is_some();
+                    if current.is_some() {
+                        state.accounting_latest = current;
+                    }
+                    state.push(usage_event)?;
                     state.model_request_count =
                         usage_request_count(&params).unwrap_or(state.model_request_count);
                     return Ok(());
@@ -1483,7 +1635,7 @@ impl ManagedProviderCommandExecutor {
                     })?;
                     let prior_turn = state.active_turn_id.take();
                     state.lifecycle = "session_open".to_owned();
-                    state.push(NormalizedProviderEvent {
+                    let provider_terminal = NormalizedProviderEvent {
                         event_type: "turn.failed".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
@@ -1493,8 +1645,11 @@ impl ManagedProviderCommandExecutor {
                             "stopReason": params.get("stopReason"),
                             "code": "provider_limit_reached",
                         }),
-                    })?;
-                    for event in terminal_events(state, "turn.failed") {
+                    };
+                    for event in with_terminal_outcome(
+                        vec![provider_terminal],
+                        terminal_events(state, "turn.failed"),
+                    ) {
                         state.push(event)?;
                     }
                     return Ok(());
@@ -1532,15 +1687,14 @@ impl ManagedProviderCommandExecutor {
                         );
                     }
                 }
-                for event in normalized {
-                    state.push(event)?;
-                }
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
                     state.lifecycle = "session_open".to_owned();
-                    for event in terminal_events(state, &event_type) {
-                        state.push(event)?;
-                    }
+                    normalized =
+                        with_terminal_outcome(normalized, terminal_events(state, &event_type));
+                }
+                for event in normalized {
+                    state.push(event)?;
                 }
             }
             ProviderEvent::SemanticResult { result, .. } => {
@@ -1594,7 +1748,7 @@ impl ManagedProviderCommandExecutor {
             .expect("managed state exists while failing provider");
         let active = state.active_turn_id.take();
         state.lifecycle = "failed".to_owned();
-        state.push(NormalizedProviderEvent {
+        let mut failures = vec![NormalizedProviderEvent {
             event_type: "session.failed".to_owned(),
             priority: EventPriority::P0,
             payload: json!({
@@ -1602,9 +1756,10 @@ impl ManagedProviderCommandExecutor {
                 "code": "managed_provider_failed",
                 "message": message,
             }),
-        })?;
+        }];
+        let mut outcome = Vec::new();
         if active.is_some() {
-            state.push(NormalizedProviderEvent {
+            failures.push(NormalizedProviderEvent {
                 event_type: "turn.failed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
@@ -1613,10 +1768,11 @@ impl ManagedProviderCommandExecutor {
                     "status": "failed",
                     "code": "managed_provider_failed",
                 }),
-            })?;
-            for event in terminal_events(state, "turn.failed") {
-                state.push(event)?;
-            }
+            });
+            outcome = terminal_events(state, "turn.failed");
+        }
+        for event in with_terminal_outcome(failures, outcome) {
+            state.push(event)?;
         }
         self.save_state()
     }
@@ -1627,24 +1783,7 @@ impl CommandExecutor for ManagedProviderCommandExecutor {
         self.restore()?;
         match command.command_type.as_str() {
             "run.prepare" => self.prepare(&command.payload),
-            "run.attach" => {
-                if self.state.is_none() && command.payload.get("provider").is_some() {
-                    self.prepare(&command.payload)?;
-                }
-                let mut execution = self.open_session()?;
-                let provider = self
-                    .state
-                    .as_ref()
-                    .expect("managed state exists after attach")
-                    .descriptor
-                    .provider_label();
-                execution.events.push((
-                    "run.attached".to_owned(),
-                    EventPriority::P0,
-                    json!({"provider": provider}),
-                ));
-                Ok(execution)
-            }
+            "run.attach" => self.attach(&command.payload),
             "session.open" => self.open_session(),
             "turn.start" => self.start_turn(&command.payload),
             "turn.steer" => Ok(CommandExecution::result(json!({
@@ -1899,6 +2038,111 @@ fn usage_request_count(params: &Value) -> Option<u64> {
         .pointer("/usage/requestCount")
         .or_else(|| params.get("requestCount"))
         .and_then(Value::as_u64)
+}
+
+fn zero_managed_usage() -> Value {
+    json!({"inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0,
+        "cacheWriteTokens": 0, "activeSeconds": 0.0, "requests": 0, "providerCostUsd": 0.0})
+}
+
+fn complete_managed_usage(descriptor: &ManagedProviderDescriptor, params: &Value) -> Option<Value> {
+    let usage = params.get("usage").unwrap_or(params);
+    if descriptor.kind() == ManagedProviderKind::AwsAgentcore {
+        // An interrupted invocation may return old numeric totals while its
+        // metadata is pending, or a ceiling estimate with lower-bound tokens.
+        // Neither is a complete receipt, even when every counter is present.
+        for report in [params, usage] {
+            if report
+                .get(AGENTCORE_USAGE_RECONCILIATION_FIELD)
+                .is_some_and(|state| {
+                    state.as_str() != Some(AGENTCORE_USAGE_RECONCILIATION_OBSERVED)
+                })
+                || report
+                    .get("tokenCountsLowerBound")
+                    .is_some_and(|value| value.as_bool() != Some(false))
+                || report.get(AGENTCORE_PENDING_INVOCATION_FIELD).is_some()
+                || report.get(AGENTCORE_PENDING_CEILING_FIELD).is_some()
+            {
+                return None;
+            }
+        }
+    }
+    let count = |camel: &str, snake: &str| usage.get(camel).or_else(|| usage.get(snake));
+    for (camel, snake) in [
+        ("inputTokens", "input_tokens"),
+        ("outputTokens", "output_tokens"),
+        ("cacheReadInputTokens", "cache_read_input_tokens"),
+    ] {
+        if count(camel, snake)?.as_u64()? > 9_007_199_254_740_991 {
+            return None;
+        }
+    }
+    if let Some(cache) = usage.get("cache_creation") {
+        cache.as_object()?;
+        for key in ["ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"] {
+            if let Some(value) = cache.get(key) {
+                if value.as_u64()? > 9_007_199_254_740_991 {
+                    return None;
+                }
+            }
+        }
+    } else if let Some(value) = count("cacheWriteInputTokens", "cache_write_input_tokens") {
+        if value.as_u64()? > 9_007_199_254_740_991 {
+            return None;
+        }
+    } else if descriptor.kind() == ManagedProviderKind::AwsAgentcore {
+        return None;
+    }
+    if let Some(value) = count("activeSeconds", "active_seconds") {
+        let value = value.as_f64()?;
+        if !value.is_finite() || value < 0.0 {
+            return None;
+        }
+    }
+    let price = if descriptor.kind() == ManagedProviderKind::AwsAgentcore {
+        usage.get("estimatedCostUsd")?.as_f64()?
+    } else {
+        let cost = usage.get("list_cost").or_else(|| usage.get("listCost"))?;
+        if cost.get("currency")?.as_str()? != "USD" {
+            return None;
+        }
+        cost.get("amount")?.as_str()?.parse::<f64>().ok()? / 100.0
+    };
+    if !price.is_finite() || price < 0.0 {
+        return None;
+    }
+    let mut measurement = managed_usage_event(descriptor, params).payload["cumulative"].clone();
+    measurement["providerCostUsd"] = json!(price);
+    // Also reject integer overflow or values that cannot survive JSON/JS intact.
+    managed_usage_delta(&zero_managed_usage(), &measurement)?;
+    Some(measurement)
+}
+
+fn managed_usage_delta(baseline: &Value, current: &Value) -> Option<Value> {
+    let mut delta = serde_json::Map::new();
+    for key in [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "requests",
+    ] {
+        let prior = baseline.get(key)?.as_u64()?;
+        let next = current.get(key)?.as_u64()?;
+        if next > 9_007_199_254_740_991 || prior > 9_007_199_254_740_991 {
+            return None;
+        }
+        delta.insert(key.to_owned(), json!(next.checked_sub(prior)?));
+    }
+    for key in ["activeSeconds", "providerCostUsd"] {
+        let prior = baseline.get(key)?.as_f64()?;
+        let next = current.get(key)?.as_f64()?;
+        if !prior.is_finite() || !next.is_finite() || prior < 0.0 || next < prior {
+            return None;
+        }
+        delta.insert(key.to_owned(), json!(next - prior));
+    }
+    Some(Value::Object(delta))
 }
 
 fn managed_usage_event(
@@ -2183,6 +2427,7 @@ mod tests {
 
     struct FakeClaudeProvider {
         session_id: String,
+        tools: Vec<AuthorizedTool>,
         skills: Vec<ClaudeManagedSkillRef>,
         destroy_failures: Arc<AtomicUsize>,
     }
@@ -2244,7 +2489,15 @@ mod tests {
         }
 
         fn read(&mut self) -> Result<Value, crate::local_runner::LocalRunnerError> {
-            Ok(json!({}))
+            Ok(json!({"tools": self.tools}))
+        }
+
+        fn configure_tools(
+            &mut self,
+            tools: Vec<AuthorizedTool>,
+        ) -> Result<(), crate::local_runner::LocalRunnerError> {
+            self.tools = tools;
+            Ok(())
         }
 
         fn poll(&mut self) -> Result<Option<ProviderEvent>, crate::local_runner::LocalRunnerError> {
@@ -2288,6 +2541,7 @@ mod tests {
                 .push(resume_claude_managed_skills.map(<[_]>::to_vec));
             Ok(Box::new(FakeClaudeProvider {
                 session_id: resume_session_id.unwrap_or("claude-session-1").to_owned(),
+                tools: _tools,
                 skills: resume_claude_managed_skills
                     .map(<[_]>::to_vec)
                     .unwrap_or_else(|| self.created_skills.clone()),
@@ -2332,6 +2586,7 @@ mod tests {
                 session_id: resume_session_id
                     .unwrap_or("claude-checkpointed-session")
                     .to_owned(),
+                tools: _tools,
                 skills: resume_claude_managed_skills
                     .map(<[_]>::to_vec)
                     .unwrap_or_else(|| self.skills.clone()),
@@ -2440,6 +2695,456 @@ mod tests {
                 },
             },
         })
+    }
+
+    #[test]
+    fn attach_refreshes_tools_in_the_same_session_and_preserves_profile_fences() {
+        let directory =
+            std::env::temp_dir().join(format!("paperclip-managed-refresh-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_factory(
+            &directory,
+            &config,
+            Box::new(FakeClaudeFactory {
+                observed_resume_skills: Arc::new(Mutex::new(Vec::new())),
+                created_skills: vec![
+                    ClaudeManagedSkillRef {
+                        skill_id: "skill_instructions".to_owned(),
+                        version: "v1".to_owned(),
+                    },
+                    ClaudeManagedSkillRef {
+                        skill_id: "skill_custom".to_owned(),
+                        version: "v1".to_owned(),
+                    },
+                ],
+                destroy_failures: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        let mut payload = claude_prepare_payload();
+        payload["provider"]["runtimeContext"]["mcp"] = json!({"digest": "before"});
+        payload["provider"]["runtimeContext"]["aggregateDigest"] = json!("before");
+        executor.prepare(&payload).unwrap();
+        executor.open_session().unwrap();
+        let session_id = executor.state.as_ref().unwrap().provider_session_id.clone();
+        let operations = vec![AuthorizedTool {
+            operation_id: "github.search".to_owned(),
+            version: 1,
+            description: "Search repositories".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        }];
+        payload["authorizedTools"] = json!({"schema": TOOL_SET_SCHEMA, "schemaVersion": 1,
+            "catalogDigest": authorized_tool_catalog_digest(&operations).unwrap(), "operations": operations});
+        payload["provider"]["runtimeContext"]["mcp"] = json!({"digest": "after"});
+        payload["provider"]["runtimeContext"]["aggregateDigest"] = json!("after");
+        let mut invalid = payload.clone();
+        invalid["provider"]["instructions"] = json!("different instructions");
+        assert!(executor.attach(&invalid).is_err());
+        let mut invalid_identity = payload.clone();
+        invalid_identity["paperclipNextAuthority"] = json!({"identity": {
+            "normalizedSessionId": "another-session", "runId": "next-run"
+        }});
+        assert!(executor.attach(&invalid_identity).is_err());
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"],
+            json!([])
+        );
+        executor.state.as_mut().unwrap().active_turn_id = Some("active".to_owned());
+        assert!(executor.attach(&payload).is_err());
+        executor.state.as_mut().unwrap().active_turn_id = None;
+        let usage = |input, cents| ProviderEvent::Notification {
+            method: "thread/tokenUsage/updated".to_owned(),
+            params: json!({"usage": {"input_tokens": input, "output_tokens": 8,
+                "cache_read_input_tokens": 13, "list_cost": {"currency": "USD", "amount": cents}}}),
+        };
+        executor.project_event(usage(21, "25")).unwrap();
+        executor.state.as_mut().unwrap().pending_events.clear();
+        payload["paperclipNextAuthority"] = json!({"identity": {
+            "normalizedSessionId": config.normalized_session_id, "runId": "next-run"
+        }});
+        executor.attach(&payload).unwrap();
+        let mut next_config = config.clone();
+        next_config.run_id = "next-run".to_owned();
+        executor.rotate_authority(&next_config);
+        executor.project_event(usage(40, "50")).unwrap();
+        let state = executor.state.as_mut().unwrap();
+        let receipt = &state.pending_events.back().unwrap().payload["runDelta"];
+        assert_eq!(receipt["inputTokens"], json!(19));
+        assert_eq!(receipt["providerCostUsd"], json!(0.25));
+        state.pending_events.clear();
+        executor.save_state().unwrap();
+        assert_eq!(
+            executor.state.as_ref().unwrap().provider_session_id,
+            session_id
+        );
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"][0]["operationId"],
+            "github.search"
+        );
+        executor
+            .state
+            .as_ref()
+            .unwrap()
+            .validate(&next_config)
+            .unwrap();
+        // Reopening the durable checkpoint keeps both the conversation and the
+        // refreshed catalog. Removing tools is a replacement, not a merge.
+        executor.suspend().unwrap();
+        executor.restore_provider_if_needed().unwrap();
+        assert_eq!(
+            executor.state.as_ref().unwrap().provider_session_id,
+            session_id
+        );
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"][0]["operationId"],
+            "github.search"
+        );
+        payload["authorizedTools"] = claude_prepare_payload()["authorizedTools"].clone();
+        executor.attach(&payload).unwrap();
+        // Same-run reconnect is not a new billing baseline, even after recovery.
+        executor.project_event(usage(50, "75")).unwrap();
+        executor.project_event(usage(50, "75")).unwrap();
+        let state = executor.state.as_mut().unwrap();
+        let receipt = &state.pending_events.back().unwrap().payload["runDelta"];
+        assert_eq!(receipt["inputTokens"], json!(29));
+        assert_eq!(receipt["providerCostUsd"], json!(0.5));
+        state.pending_events.clear();
+        assert_eq!(
+            executor.provider.as_mut().unwrap().read().unwrap()["tools"],
+            json!([])
+        );
+        executor
+            .state
+            .as_ref()
+            .unwrap()
+            .validate(&next_config)
+            .unwrap();
+        // An incomplete last report cannot become the next run's baseline.
+        executor
+            .project_event(ProviderEvent::Notification {
+                method: "thread/tokenUsage/updated".to_owned(),
+                params: json!({"usage": {"input_tokens": 60}}),
+            })
+            .unwrap();
+        executor.state.as_mut().unwrap().pending_events.clear();
+        payload["paperclipNextAuthority"]["identity"]["runId"] = json!("third-run");
+        executor.attach(&payload).unwrap();
+        assert!(executor
+            .state
+            .as_ref()
+            .unwrap()
+            .accounting_baseline
+            .is_none());
+        executor.project_event(usage(70, "100")).unwrap();
+        assert_eq!(
+            executor
+                .state
+                .as_ref()
+                .unwrap()
+                .pending_events
+                .back()
+                .unwrap()
+                .payload["runDelta"],
+            Value::Null
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn managed_failure_event_types(recovery: bool) -> Vec<String> {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-managed-terminal-test-{}",
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        let mut payload = agentcore_prepare_payload();
+        payload["completionContract"] = json!({
+            "revision": "contract-1",
+            "criterionIds": ["requested-work"],
+        });
+        executor.prepare(&payload).unwrap();
+        let state = executor.state.as_mut().unwrap();
+        state.lifecycle = "turn_active".to_owned();
+        state.active_turn_id = Some("provider-turn-1".to_owned());
+        state.provider_session_id = Some("provider-session-1".to_owned());
+        state.provider_usage = Some(json!({
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cacheReadInputTokens": 0,
+            "cacheWriteInputTokens": 0,
+            "requestCount": 1,
+            "estimatedCostUsd": 0.0,
+            "costSource": "paperclip_estimate",
+        }));
+        state.pending_events.clear();
+        if recovery {
+            executor.restore_provider_if_needed().unwrap();
+        } else {
+            executor
+                .fail_provider("synthetic provider crash".to_owned())
+                .unwrap();
+        }
+        let events = executor
+            .state
+            .as_ref()
+            .unwrap()
+            .pending_events
+            .iter()
+            .map(|event| event.event_type.clone())
+            .collect();
+        fs::remove_dir_all(directory).unwrap();
+        events
+    }
+
+    #[test]
+    fn managed_crash_preserves_result_before_failure_closes_authority() {
+        assert_eq!(
+            managed_failure_event_types(false),
+            vec![
+                "run.result.proposed",
+                "session.failed",
+                "turn.failed",
+                "run.terminal",
+            ]
+        );
+    }
+
+    #[test]
+    fn managed_active_turn_recovery_preserves_result_before_failure() {
+        assert_eq!(
+            managed_failure_event_types(true),
+            vec!["run.result.proposed", "turn.failed", "run.terminal",]
+        );
+    }
+
+    #[test]
+    fn managed_usage_publishes_a_fresh_run_receipt_for_each_provider() {
+        for payload in [claude_prepare_payload(), agentcore_prepare_payload()] {
+            let directory =
+                std::env::temp_dir().join(format!("managed-receipt-{}", Uuid::new_v4()));
+            let config = test_config(&directory);
+            let mut executor =
+                ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+            executor.prepare(&payload).unwrap();
+            executor
+                .project_event(ProviderEvent::Notification {
+                    method: "thread/tokenUsage/updated".to_owned(),
+                    params: json!({"usage": {
+                        "inputTokens": 21, "outputTokens": 8, "cacheReadInputTokens": 13,
+                        "cacheWriteInputTokens": 5, "estimatedCostUsd": 0.25,
+                        "list_cost": {"currency": "USD", "amount": "25"}
+                    }}),
+                })
+                .unwrap();
+            let event = executor
+                .state
+                .as_ref()
+                .unwrap()
+                .pending_events
+                .back()
+                .unwrap();
+            assert_eq!(event.payload["runDeltaAvailable"], json!(true));
+            assert_eq!(event.payload["runDelta"]["inputTokens"], json!(21));
+            assert_eq!(event.payload["runDelta"]["providerCostUsd"], json!(0.25));
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn agentcore_pending_or_lower_bound_usage_never_certifies_a_run() {
+        for wrapped in [false, true] {
+            for price in [0.0, 0.25] {
+                for marker in [
+                    json!({"usageReconciliation": AGENTCORE_USAGE_RECONCILIATION_PENDING}),
+                    json!({"usageReconciliation": AGENTCORE_USAGE_RECONCILIATION_CONSERVATIVE}),
+                    json!({"usageReconciliation": "unknown"}),
+                    json!({"usageReconciliation": null}),
+                    json!({"tokenCountsLowerBound": true}),
+                    json!({"tokenCountsLowerBound": "false"}),
+                    json!({"pendingInvocationId": "unresolved-invocation"}),
+                    json!({"pendingEstimatedCeilingUsd": 1.0}),
+                ] {
+                    let directory =
+                        std::env::temp_dir().join(format!("managed-pending-{}", Uuid::new_v4()));
+                    let config = test_config(&directory);
+                    let mut executor =
+                        ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+                    executor.prepare(&agentcore_prepare_payload()).unwrap();
+                    let usage = json!({"inputTokens": 10, "outputTokens": 2,
+                        "cacheReadInputTokens": 0, "cacheWriteInputTokens": 0,
+                        "estimatedCostUsd": price});
+                    let mut params = if wrapped {
+                        json!({"usage": usage})
+                    } else {
+                        usage.clone()
+                    };
+                    params
+                        .as_object_mut()
+                        .unwrap()
+                        .extend(marker.as_object().unwrap().clone());
+                    executor
+                        .project_event(ProviderEvent::Notification {
+                            method: "thread/tokenUsage/updated".to_owned(),
+                            params,
+                        })
+                        .unwrap();
+                    let state = executor.state.as_ref().unwrap();
+                    let receipt = &state.pending_events.back().unwrap().payload;
+                    assert_eq!(receipt["runDeltaAvailable"], json!(false), "{marker}");
+                    assert_eq!(receipt["runDelta"], Value::Null, "{marker}");
+                    assert!(!state.accounting_latest_complete);
+                    executor.save_state().unwrap();
+                    executor =
+                        ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+                    executor.restore().unwrap();
+                    executor
+                        .project_event(ProviderEvent::Notification {
+                            method: "turn/completed".to_owned(),
+                            params: json!({"turn": {"id": "interrupted", "status": "interrupted"}}),
+                        })
+                        .unwrap();
+                    assert!(!executor.state.as_ref().unwrap().accounting_latest_complete);
+                    let mut observed = usage;
+                    observed["usageReconciliation"] =
+                        json!(AGENTCORE_USAGE_RECONCILIATION_OBSERVED);
+                    observed["tokenCountsLowerBound"] = json!(false);
+                    executor
+                        .project_event(ProviderEvent::Notification {
+                            method: "thread/tokenUsage/updated".to_owned(),
+                            params: observed,
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        executor
+                            .state
+                            .as_ref()
+                            .unwrap()
+                            .pending_events
+                            .back()
+                            .unwrap()
+                            .payload["runDeltaAvailable"],
+                        json!(true)
+                    );
+                    fs::remove_dir_all(directory).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn managed_accounting_rejects_partial_invalid_or_regressing_totals() {
+        let descriptor =
+            ManagedProviderDescriptor::parse(claude_prepare_payload()["provider"].clone()).unwrap();
+        let good = json!({"usage": {"input_tokens": 21, "output_tokens": 8,
+            "cache_read_input_tokens": 13, "list_cost": {"currency": "USD", "amount": "25"}}});
+        for (field, value) in [
+            ("input_tokens", Value::Null),
+            ("output_tokens", json!(-1)),
+            ("cache_read_input_tokens", json!(9007199254740992_u64)),
+            ("cache_creation", json!({"ephemeral_1h_input_tokens": -1})),
+            ("list_cost", json!({"currency": "EUR", "amount": "25"})),
+            ("list_cost", json!({"currency": "USD", "amount": "NaN"})),
+            ("list_cost", Value::Null),
+        ] {
+            let mut bad = good.clone();
+            bad["usage"][field] = value;
+            assert!(
+                complete_managed_usage(&descriptor, &bad).is_none(),
+                "{field}"
+            );
+        }
+        let current = complete_managed_usage(&descriptor, &good).unwrap();
+        for field in [
+            "inputTokens",
+            "outputTokens",
+            "cacheReadTokens",
+            "cacheWriteTokens",
+            "requests",
+            "activeSeconds",
+            "providerCostUsd",
+        ] {
+            let mut baseline = current.clone();
+            baseline[field] = current[field]
+                .as_u64()
+                .map(|value| json!(value + 1))
+                .unwrap_or_else(|| json!(current[field].as_f64().unwrap() + 1.0));
+            assert!(
+                managed_usage_delta(&baseline, &current).is_none(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_usage_keeps_high_water_across_partial_reports_and_recovery() {
+        let directory = std::env::temp_dir().join(format!("managed-high-water-{}", Uuid::new_v4()));
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        executor.prepare(&claude_prepare_payload()).unwrap();
+        for (input, output, price, complete) in [
+            (100, Some(8), "100", true),
+            (50, Some(8), "50", false),
+            (150, None, "150", false),
+            (75, Some(8), "75", false),
+            (200, Some(8), "200", true),
+        ] {
+            executor.project_event(ProviderEvent::Notification {
+                method: "thread/tokenUsage/updated".to_owned(),
+                params: json!({"usage": {"input_tokens": input, "output_tokens": output,
+                    "cache_read_input_tokens": 0, "list_cost": {"currency": "USD", "amount": price}}}),
+            }).unwrap();
+            let state = executor.state.as_mut().unwrap();
+            assert_eq!(
+                state.pending_events.back().unwrap().payload["runDeltaAvailable"],
+                json!(complete)
+            );
+            assert_eq!(state.accounting_latest_complete, complete);
+            assert_eq!(
+                state.accounting_latest.as_ref().unwrap()["inputTokens"],
+                json!(if input == 200 { 200 } else { 100 })
+            );
+            state.pending_events.clear();
+            executor.save_state().unwrap();
+            executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+            executor.restore().unwrap();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn restored_legacy_managed_state_never_certifies_a_session_total_as_this_run() {
+        let directory =
+            std::env::temp_dir().join(format!("managed-legacy-receipt-{}", Uuid::new_v4()));
+        let config = test_config(&directory);
+        let mut executor = ManagedProviderCommandExecutor::with_runner_config(&directory, &config);
+        executor.prepare(&claude_prepare_payload()).unwrap();
+        let mut old = serde_json::to_value(executor.state.as_ref().unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("accountingBaseline");
+        old.as_object_mut().unwrap().remove("accountingLatest");
+        executor.state = Some(serde_json::from_value(old).unwrap());
+        executor
+            .project_event(ProviderEvent::Notification {
+                method: "thread/tokenUsage/updated".to_owned(),
+                params: json!({"usage": {"input_tokens": 21, "output_tokens": 8,
+                "cache_read_input_tokens": 13, "list_cost": {"currency": "USD", "amount": "25"}}}),
+            })
+            .unwrap();
+        let event = executor
+            .state
+            .as_ref()
+            .unwrap()
+            .pending_events
+            .back()
+            .unwrap();
+        assert_eq!(event.payload["runDeltaAvailable"], json!(false));
+        assert_eq!(event.payload["runDelta"], Value::Null);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2696,6 +3401,13 @@ mod tests {
         assert_eq!(
             raised_observed.lock().unwrap().as_slice(),
             &[Some(persisted["providerUsage"].clone())]
+        );
+        let session_id = raised.state.as_ref().unwrap().provider_session_id.clone();
+        raised.attach(&agentcore_prepare_payload()).unwrap();
+        assert_eq!(raised.state.as_ref().unwrap().descriptor.budget(), 2.0);
+        assert_eq!(
+            raised.state.as_ref().unwrap().provider_session_id,
+            session_id
         );
         raised
             .execute(&test_command(

@@ -1,3 +1,48 @@
+import { createHash } from "node:crypto";
+import type { ManagedExperimentalFeatureKey } from "@paperclipai/shared";
+
+const CLOUD_STAGING_EXPERIMENTAL_KEYS: ReadonlySet<string> = new Set([
+  "autoRestartDevServerWhenIdle",
+  "enableAgentChat",
+  "enableBetaSkills",
+  "enableBuiltInAgents",
+  "enableCases",
+  "enableArtifactsV1",
+  "enableChatConnectors",
+  "enableClassicTaskInterface",
+  "enableCombinedInboxTasks",
+  "enableConferenceRoomChat",
+  "enableDecisions",
+  "enableEnvironments",
+  "enableExperimentalFileViewer",
+  "enableExternalObjects",
+  "enableFastResponses",
+  "enableFirstTaskPlanProposal",
+  "enableGitHubReviewBots",
+  "enableGoalsSidebarLink",
+  "enableGrokBot",
+  "enableIsolatedWorkspaces",
+  "enableIsolatedWorkspacesByDefault",
+  "enableIssuePlanDecompositions",
+  "enableMemoryConnectors",
+  "enableMuse",
+  "enableNativeRunner",
+  "enableOpenAiDot",
+  "enablePaperclipDeveloperMode",
+  "enablePublicMcp",
+  "enableServerInfoDebugView",
+  "enableSimplifiedEnglishInteractions",
+  "enableSmokeLab",
+  "enableStatusCards",
+  "enableStreamlinedUi",
+  "enableSummaries",
+  "enableWorktreeRunExecution",
+] satisfies ManagedExperimentalFeatureKey[]);
+
+export function isCloudStagingExperimentalSetting(key: string): boolean {
+  return CLOUD_STAGING_EXPERIMENTAL_KEYS.has(key);
+}
+
 export type CloudInstanceEnv = Record<string, string | undefined>;
 
 export type CloudStackContext = {
@@ -30,6 +75,11 @@ export function isCloudManagedInstance(
   );
 }
 
+export function isCloudStagingInstance(env: CloudInstanceEnv = process.env): boolean {
+  const host = normalizeOptionalEnvValue(env.PAPERCLIP_PRIMARY_HOST);
+  return isCloudManagedInstance(env) && host !== null && /^[a-z0-9-]+\.staging\.paperclip\.app$/i.test(host);
+}
+
 /**
  * Public stack metadata injected by the Paperclip Cloud provisioner.
  *
@@ -49,4 +99,18 @@ export function getCloudStackContext(
     primaryHost: normalizeOptionalEnvValue(env.PAPERCLIP_PRIMARY_HOST),
     cloudOrigin: normalizeOptionalEnvValue(env.PAPERCLIP_CLOUD_API_ORIGIN),
   };
+}
+
+/**
+ * The Cloud-pinned primary company id for a stack: the deterministic
+ * v5-style UUID the trusted-header lane seeds and every Cloud surface pins.
+ * The derivation is frozen — seeded companies fleet-wide already carry
+ * these ids. middleware/auth.ts delegates here; this is the one definition.
+ */
+export function cloudTenantPrimaryCompanyId(stackId: string): string {
+  const bytes = createHash("sha256").update(`paperclip-cloud-tenant-company:${stackId}`).digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

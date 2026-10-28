@@ -1910,6 +1910,38 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
     }
   });
 
+  it("serves only exact GET schema discovery through HTTP/2", async () => {
+    const schema = { openapi: "3.1.0", paths: {} };
+    const forwarded: string[] = [];
+    const { gateway, handle } = createTestPair({
+      forwardRequest: async (request) => {
+        forwarded.push(`${request.method} ${request.pathname}`);
+        return { status: 200, body: Buffer.from(JSON.stringify(schema)) };
+      },
+    });
+    try {
+      for (const [method, path, status] of [
+        ["GET", "/api/openapi.json", 200],
+        ["POST", "/api/openapi.json", 403],
+        ["PATCH", "/api/openapi.json", 403],
+        ["DELETE", "/api/openapi.json", 403],
+        ["GET", "/api/openapi.json/extra", 403],
+        ["GET", "/api/openapiXjson", 403],
+        ["GET", "/api/secrets", 403],
+      ] as const) {
+        const response = await gateway.forwardRequest({
+          method, path, query: "", headers: {}, body: Buffer.alloc(0), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status).toBe(status);
+        if (status === 200) expect(JSON.parse(response.body!.toString())).toEqual(schema);
+      }
+      expect(forwarded).toEqual(["GET /api/openapi.json"]);
+    } finally {
+      await gateway.close();
+      await handle.close();
+    }
+  });
+
   it("rejects a route the allowlist does not carry, before the forwarder runs", async () => {
     const forwarderTracker = createForwarderCallTracker();
     const { gateway, handle } = createTestPair({
@@ -1929,6 +1961,60 @@ describe("createHttp2BridgeServer + createSandboxHttp2BridgeGateway", () => {
       });
       expect(response.status).toBe(403);
       expect(forwarderTracker.called).toBe(false);
+    } finally {
+      await gateway.close();
+      await handle.close();
+    }
+  });
+
+  it("relays diagnostic reads and controller denials without admitting execution writes", async () => {
+    const seen: Http2BridgeForwardRequest[] = [];
+    const { gateway, handle } = createTestPair({
+      routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+      forwardRequest: async (request) => {
+        seen.push(request);
+        return {
+          status: request.pathname.includes("other-company") ? 403 : 200,
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({ path: request.pathname })),
+        };
+      },
+    });
+    const query = "?limit=25&summary=true";
+    try {
+      for (const requestPath of [
+        "/api/companies/co-1/heartbeat-runs",
+        "/api/companies/co-1/live-runs",
+        "/api/heartbeat-runs/run-1",
+        "/api/heartbeat-runs/run-1/events",
+        "/api/heartbeat-runs/run-1/log",
+        "/api/heartbeat-runs/run-1/workspace-operations",
+        "/api/heartbeat-runs/run-1/issues",
+        "/api/issues/issue-1/runs",
+        "/api/issues/issue-1/recovery-actions",
+        "/api/companies/other-company/heartbeat-runs",
+      ]) {
+        const response = await gateway.forwardRequest({
+          method: "GET", path: requestPath, query, headers: {},
+          body: Buffer.alloc(0), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status, requestPath).toBe(requestPath.includes("other-company") ? 403 : 200);
+        expect(JSON.parse(response.body.toString("utf8"))).toEqual({ path: requestPath });
+        expect(seen.at(-1)).toMatchObject({ method: "GET", pathname: requestPath, query });
+        expect(seen.at(-1)?.headers.authorization).toBeUndefined();
+      }
+      const forwardedCount = seen.length;
+      for (const requestPath of [
+        "/api/heartbeat-runs/run-1/cancel",
+        "/api/issues/issue-1/recovery-actions/resolve",
+      ]) {
+        const response = await gateway.forwardRequest({
+          method: "POST", path: requestPath, query: "", headers: {},
+          body: Buffer.from("{}"), receivedToken: BRIDGE_TOKEN,
+        });
+        expect(response.status).toBe(403);
+      }
+      expect(seen).toHaveLength(forwardedCount);
     } finally {
       await gateway.close();
       await handle.close();

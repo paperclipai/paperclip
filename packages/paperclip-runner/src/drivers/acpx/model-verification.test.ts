@@ -3,7 +3,32 @@ import { describe, expect, it, vi } from "vitest";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { requireVerifiedAcpxModel } from "./model-verification.js";
 
-describe("ACPX qualified model verification", () => {
+describe("ACPX requested model verification", () => {
+  it.each(["claude", "codex", "pi", "grok", "cursor", "copilot"] as const)("selects and verifies an unlisted model unchanged with %s", async agent => {
+    const model = "custom/model[context=272k,reasoning=medium]";
+    let currentModelId = "default";
+    const getStatus = vi.fn(async () => ({
+      models: { currentModelId, availableModelIds: ["default"] },
+    }));
+    const setModel = vi.fn(async (selected: string) => { currentModelId = selected; });
+    await expect(requireVerifiedAcpxModel(
+      { getStatus, setModel }, resolveQualifiedAcpxProfile(agent, model),
+    )).resolves.toMatchObject({ models: { currentModelId: model } });
+    expect(setModel).toHaveBeenCalledExactlyOnceWith(model);
+    expect(getStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a provider's model rejection without selecting a fallback", async () => {
+    const rejected = new Error("Model is not available for this account");
+    const getStatus = vi.fn(async () => ({ models: { currentModelId: "default" } }));
+    const setModel = vi.fn(async () => { throw rejected; });
+    await expect(requireVerifiedAcpxModel(
+      { getStatus, setModel }, resolveQualifiedAcpxProfile("codex", "unavailable-model"),
+    )).rejects.toBe(rejected);
+    expect(setModel).toHaveBeenCalledExactlyOnceWith("unavailable-model");
+    expect(getStatus).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts an exact model already reported by the provider", async () => {
     const getStatus = vi.fn(async () => ({
       models: {
@@ -24,7 +49,7 @@ describe("ACPX qualified model verification", () => {
     expect(setModel).not.toHaveBeenCalled();
   });
 
-  it("accepts and normalizes Claude's qualified ACP selector", async () => {
+  it("accepts and normalizes Claude's requested ACP selector", async () => {
     const setModel = vi.fn(async () => undefined);
     const getStatus = vi.fn(async () => ({
       models: {
@@ -48,7 +73,7 @@ describe("ACPX qualified model verification", () => {
     expect(getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("selects Claude's profile-pinned ACP selector from a stale default", async () => {
+  it("selects Claude's requested ACP selector from a stale default", async () => {
     let selected = false;
     const setModel = vi.fn(async (model: string) => {
       expect(model).toBe("claude-sonnet-5");
@@ -113,7 +138,7 @@ describe("ACPX qualified model verification", () => {
     ).rejects.toThrow(/config options/);
   });
 
-  it("rejects a provider that ignores the qualified model selection", async () => {
+  it("rejects a provider that ignores the requested model selection", async () => {
     const profile = resolveQualifiedAcpxProfile(
       "pi",
       "openrouter/deepseek/deepseek-v4-flash-0731",

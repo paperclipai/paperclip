@@ -19,6 +19,8 @@
 //     misdelivering it. `omitHostRouteId: true` sends the notification with no
 //     `hostRouteId` field at all, so a test proves the host warns about a plugin
 //     build old enough to omit the field, instead of silently dropping it.
+//   - `emitOnInput`: when true, wait for the first input before sending scripted
+//     notifications, so legacy routing tests know the worker session is bound.
 //   - `exitCode`: when set, the fixture emits an exit notification after the outputs.
 //   - `omitHostRouteIdOnExit`: when true, the main `exitCode` exit notification
 //     carries no `hostRouteId` field, so a test proves the host still resolves
@@ -184,7 +186,13 @@ rl.on("line", (line) => {
     const mode = directive.mode ?? "normal";
     const workerSessionId = directive.workerSessionId ?? "ws-1";
     const closeMode = directive.closeMode ?? "ack";
-    routes.set(params.hostRouteId, { workerSessionId, closeMode });
+    routes.set(params.hostRouteId, {
+      workerSessionId,
+      closeMode,
+      pendingOutput: directive.emitOnInput === true
+        ? scriptedOutputLines(directive, params.hostRouteId, workerSessionId)
+        : null,
+    });
 
     if (mode === "no-open-reply") {
       // Never reply, so the host open call times out.
@@ -230,6 +238,8 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (directive.emitOnInput === true) return;
+
     // Emit the scripted output and the exit after the open reply, so the host
     // binds the route first.
     setImmediate(() => {
@@ -243,6 +253,11 @@ rl.on("line", (line) => {
     // test proves the input reaches the worker and the output routes back.
     for (const [hostRouteId, entry] of routes.entries()) {
       if (entry.workerSessionId === params.workerSessionId) {
+        if (entry.pendingOutput !== null) {
+          process.stdout.write(entry.pendingOutput);
+          entry.pendingOutput = null;
+          continue;
+        }
         send({
           jsonrpc: "2.0",
           method: "loginPty.output",

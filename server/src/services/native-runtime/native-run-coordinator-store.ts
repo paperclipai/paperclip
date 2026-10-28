@@ -1,3 +1,5 @@
+import { isSafeNativeChatProgressEventType } from "../safe-native-chat-progress.js";
+import { notifyChatNativeProgress } from "../chat-native-progress-notifications.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
@@ -6,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -289,6 +292,9 @@ export class NativeRunCoordinatorStore {
         throw new Error("native_event_source_gap");
       }
 
+      if (isSafeNativeChatProgressEventType(event.eventType)) {
+        await notifyChatNativeProgress(tx, { companyId: this.#binding.companyId, issueId: this.#binding.issueId });
+      }
       const cursor = run.nextEventSeq;
       const [inserted] = await tx
         .insert(heartbeatRunEvents)
@@ -339,6 +345,11 @@ export class NativeRunCoordinatorStore {
     });
 
     return this.#db.transaction(async (tx) => {
+      // Match task -> run lock ordering before the result's task foreign-key
+      // check; a concurrent task mutation may also need this run row.
+      await tx.select({ id: issues.id }).from(issues)
+        .where(and(eq(issues.id, this.#binding.issueId), eq(issues.companyId, this.#binding.companyId)))
+        .for("key share");
       const [run] = await tx
         .select()
         .from(heartbeatRuns)
@@ -405,6 +416,8 @@ export class NativeRunCoordinatorStore {
           set: {
             phase: "workspace_finalizing",
             resultId: inserted.id,
+            recoveryState: null,
+            recoveryRequestId: null,
             failureCode: null,
             failureDetail: null,
             nextAttemptAt: null,

@@ -139,6 +139,8 @@ export interface HostServices {
 
   /** Provides `events.emit` and `events.subscribe`. */
   events: {
+    listLifecycle(params: WorkerToHostMethods["events.listLifecycle"][0]): Promise<WorkerToHostMethods["events.listLifecycle"][1]>;
+    acknowledgeLifecycle(params: WorkerToHostMethods["events.acknowledgeLifecycle"][0]): Promise<void>;
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
@@ -200,6 +202,8 @@ export interface HostServices {
   projects: {
     list(params: WorkerToHostMethods["projects.list"][0]): Promise<WorkerToHostMethods["projects.list"][1]>;
     get(params: WorkerToHostMethods["projects.get"][0]): Promise<WorkerToHostMethods["projects.get"][1]>;
+    resolveGitCredential(params: WorkerToHostMethods["projects.resolveGitCredential"][0], context: WorkerHostCallContext): Promise<string | null>;
+    getInstanceSecrets(params: WorkerToHostMethods["projects.getInstanceSecrets"][0]): Promise<WorkerToHostMethods["projects.getInstanceSecrets"][1]>;
     listWorkspaces(params: WorkerToHostMethods["projects.listWorkspaces"][0]): Promise<WorkerToHostMethods["projects.listWorkspaces"][1]>;
     getPrimaryWorkspace(params: WorkerToHostMethods["projects.getPrimaryWorkspace"][0]): Promise<WorkerToHostMethods["projects.getPrimaryWorkspace"][1]>;
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
@@ -271,6 +275,8 @@ export interface HostServices {
   /** Provides `agents.list`, `agents.get`, `agents.pause`, `agents.resume`, `agents.invoke`. */
   agents: {
     list(params: WorkerToHostMethods["agents.list"][0]): Promise<WorkerToHostMethods["agents.list"][1]>;
+    getRuntimeIdentity?(params: WorkerToHostMethods["agents.getRuntimeIdentity"][0]): Promise<WorkerToHostMethods["agents.getRuntimeIdentity"][1]>;
+    getRuntime?(params: WorkerToHostMethods["agents.getRuntime"][0]): Promise<WorkerToHostMethods["agents.getRuntime"][1]>;
     get(params: WorkerToHostMethods["agents.get"][0]): Promise<WorkerToHostMethods["agents.get"][1]>;
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
@@ -405,6 +411,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Events
   "events.emit": "events.emit",
   "events.subscribe": "events.subscribe",
+  "events.listLifecycle": "events.subscribe",
+  "events.acknowledgeLifecycle": "events.subscribe",
 
   // HTTP
   "http.fetch": "http.outbound",
@@ -435,6 +443,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Projects
   "projects.list": "projects.read",
   "projects.get": "projects.read",
+  "projects.getInstanceSecrets": "projects.instance-secrets",
+  "projects.resolveGitCredential": "projects.git-credentials",
   "projects.listWorkspaces": "project.workspaces.read",
   "projects.getPrimaryWorkspace": "project.workspaces.read",
   "projects.getWorkspaceForIssue": "project.workspaces.read",
@@ -487,6 +497,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   // Agents
   "agents.list": "agents.read",
   "agents.get": "agents.read",
+  "agents.getRuntime": "agents.lifecycle.manage",
+  "agents.getRuntimeIdentity": "agents.lifecycle.manage",
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
@@ -762,6 +774,8 @@ export function createHostClientHandlers(
     }),
 
     // Events
+    "events.listLifecycle": gated("events.listLifecycle", async (params) => services.events.listLifecycle(params)),
+    "events.acknowledgeLifecycle": gated("events.acknowledgeLifecycle", async (params) => services.events.acknowledgeLifecycle(params)),
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
     }),
@@ -821,6 +835,18 @@ export function createHostClientHandlers(
     // Projects
     "projects.list": gated("projects.list", async (params) => {
       return services.projects.list(params);
+    }),
+    "projects.resolveGitCredential": gated("projects.resolveGitCredential", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.resolveGitCredential", params, context);
+      const scope = context?.invocationScope?.projectGit;
+      if (!scope || scope.projectId !== params.projectId || (scope.workspaceId && scope.workspaceId !== params.workspaceId)) {
+        throw new Error("Git credentials require a matching host project operation");
+      }
+      return services.projects.resolveGitCredential({ ...params, companyId }, context!);
+    }),
+    "projects.getInstanceSecrets": gated("projects.getInstanceSecrets", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("projects.getInstanceSecrets", params, context);
+      return services.projects.getInstanceSecrets({ ...params, companyId });
     }),
     "projects.get": gated("projects.get", async (params) => {
       return services.projects.get(params);
@@ -972,6 +998,14 @@ export function createHostClientHandlers(
     // Agents
     "agents.list": gated("agents.list", async (params) => {
       return services.agents.list(params);
+    }),
+    "agents.getRuntimeIdentity": gated("agents.getRuntimeIdentity", async (params) => {
+      if (!services.agents.getRuntimeIdentity) throw new Error("Agent runtime identity is unavailable");
+      return services.agents.getRuntimeIdentity(params);
+    }),
+    "agents.getRuntime": gated("agents.getRuntime", async (params) => {
+      if (!services.agents.getRuntime) throw new Error("Agent runtime state is unavailable");
+      return services.agents.getRuntime(params);
     }),
     "agents.get": gated("agents.get", async (params) => {
       return services.agents.get(params);

@@ -30,14 +30,16 @@ import {
   listAuthorizedChatAttachments,
   resolveExternalChatResponseWaitAuthorization,
 } from "../services/native-runtime/chat-attachment-reuse.js";
+import { decideIssueReviewPathRecovery } from "../services/recovery/review-path-recovery.js";
 import { resolveCurrentWakeCommentsBinding } from "../services/native-runtime/current-wake-comments.js";
 
-describe("reviewed external-chat execution binding", () => {
+describe.each(["slack", "discord"] as const)("reviewed %s execution binding", (provider) => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID(),
     agentId = randomUUID(),
     issueId = randomUUID(),
+    otherIssueId = randomUUID(),
     runId = randomUUID();
   const endpointId = randomUUID(),
     resourceId = randomUUID(),
@@ -49,7 +51,7 @@ describe("reviewed external-chat execution binding", () => {
     userId = "reviewed-chat-user";
   const context = {
     issueId,
-    source: "chat:discord",
+    source: `chat:${provider}`,
     wakeReason: "External chat message received",
     wakeCommentIds: [commentId],
     commentId,
@@ -93,6 +95,15 @@ describe("reviewed external-chat execution binding", () => {
         workMode: "standard",
         assigneeAgentId: agentId,
       });
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      title: "Unrelated conversation",
+      issueNumber: 2,
+      identifier: "RCB-2",
+      status: "in_review",
+      assigneeAgentId: agentId,
+    });
     await db
       .insert(heartbeatRuns)
       .values({
@@ -132,7 +143,7 @@ describe("reviewed external-chat execution binding", () => {
       .values({
         id: applicationId,
         companyId,
-        applicationKey: `chat:discord:${endpointId}`,
+        applicationKey: `chat:${provider}:${endpointId}`,
         name: "Discord",
         type: "chat",
         status: "active",
@@ -144,7 +155,7 @@ describe("reviewed external-chat execution binding", () => {
         companyId,
         applicationId,
         name: "Discord",
-        uid: `chat-discord-${endpointId}`,
+        uid: `chat-${provider}-${endpointId}`,
         connectionPurpose: "channel",
         transport: "chat_sdk",
         status: "active",
@@ -156,7 +167,7 @@ describe("reviewed external-chat execution binding", () => {
         id: endpointId,
         companyId,
         connectionId,
-        provider: "discord",
+        provider,
         publicId: randomUUID(),
         assignedAgentId: agentId,
         status: "active",
@@ -193,7 +204,7 @@ describe("reviewed external-chat execution binding", () => {
       .values({
         id: principalId,
         companyId,
-        provider: "discord",
+        provider,
         providerAccountId: "guild-1",
         externalId: "user-1",
         kind: "user",
@@ -296,12 +307,90 @@ describe("reviewed external-chat execution binding", () => {
     expect(wake).toMatchObject({
       checkedOutByHarness: false,
       externalChatExecutionBound: true,
-      externalChatProvider: "discord",
+      externalChatProvider: provider,
     });
     const prompt = renderPaperclipWakePrompt(wake);
     expect(prompt).toContain("not a checkout, approval");
     expect(prompt).toContain("task remains in review");
     expect(prompt).not.toContain("checked out the issue for this run");
+  });
+
+  async function withReviewRecovery(
+    check: (recovery: Record<string, unknown>) => Promise<void>,
+  ) {
+    const decision = decideIssueReviewPathRecovery({
+      issueId,
+      sourceRunId: randomUUID(),
+      assigneeAgentId: agentId,
+      contextSnapshot: {
+        ...context,
+        paperclipHarnessCheckedOut: true,
+        paperclipExternalChatExecutionBound: true,
+      },
+      reviewAttention: { state: "stalled", paths: [], reason: "Review path consumed" },
+      existingWake: false,
+    });
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    await db.update(heartbeatRuns)
+      .set({ contextSnapshot: decision.contextSnapshot })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      await check(decision.contextSnapshot);
+    } finally {
+      await db.update(heartbeatRuns)
+        .set({ contextSnapshot: context })
+        .where(eq(heartbeatRuns.id, runId));
+    }
+  }
+
+  it("reauthorizes a review recovery from its retained message batch without approving the task", async () => {
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    await withReviewRecovery(async (recovery) => {
+      expect(recovery).not.toHaveProperty("paperclipHarnessCheckedOut");
+      expect(recovery).not.toHaveProperty("paperclipExternalChatExecutionBound");
+      await expect(attest(recovery)).resolves.toBe(true);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toEqual(before);
+      expect((await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("pending");
+    });
+  });
+
+  it("denies recovery after access revocation or a changed company, task, or message binding", async () => {
+    await withReviewRecovery(async (recovery) => {
+      await expect(attest(recovery)).resolves.toBe(true);
+      await expect(attestReviewedExternalChatRun({
+        db, ...binding, companyId: randomUUID(), contextSnapshot: recovery,
+      })).resolves.toBe(false);
+      await expect(attestReviewedExternalChatRun({
+        db, ...binding, issueId: otherIssueId, contextSnapshot: recovery,
+      })).resolves.toBe(false);
+      await expect(attest({ ...recovery, wakeCommentIds: [randomUUID()] })).resolves.toBe(false);
+      await db.update(companyMemberships).set({ status: "suspended" })
+        .where(eq(companyMemberships.principalId, userId));
+      try {
+        await expect(attest(recovery)).resolves.toBe(false);
+      } finally {
+        await db.update(companyMemberships).set({ status: "active" })
+          .where(eq(companyMemberships.principalId, userId));
+      }
+      await db.update(chatEndpointResources).set({ enabled: false })
+        .where(eq(chatEndpointResources.id, resourceId));
+      try {
+        await expect(attest(recovery)).resolves.toBe(false);
+      } finally {
+        await db.update(chatEndpointResources).set({ enabled: true })
+          .where(eq(chatEndpointResources.id, resourceId));
+      }
+      await db.update(chatConversations).set({ issueId: otherIssueId })
+        .where(eq(chatConversations.id, conversationId));
+      try {
+        await expect(attest(recovery)).resolves.toBe(false);
+      } finally {
+        await db.update(chatConversations).set({ issueId })
+          .where(eq(chatConversations.id, conversationId));
+      }
+    });
   });
 
   it("does not trust a supplied marker, owner mismatch, different wake batch, or wrong provider", async () => {
@@ -338,7 +427,7 @@ describe("reviewed external-chat execution binding", () => {
     } finally {
       await db
         .update(chatEndpoints)
-        .set({ provider: "discord" })
+        .set({ provider })
         .where(eq(chatEndpoints.id, endpointId));
     }
   });
@@ -493,7 +582,7 @@ describe("reviewed external-chat execution binding", () => {
       await expect(
         resolveCurrentWakeCommentsBinding(db, binding),
       ).resolves.toMatchObject({
-        provider: "discord",
+        provider,
         commentIds: [commentId],
       });
       await db

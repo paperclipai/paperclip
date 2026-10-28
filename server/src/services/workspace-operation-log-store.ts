@@ -61,10 +61,13 @@ function createLocalFileWorkspaceOperationLogStore(basePath: string): WorkspaceO
     if (!stat) throw notFound("Workspace operation log not found");
 
     const start = Math.max(0, Math.min(offset, stat.size));
-    const end = Math.max(start, Math.min(start + limitBytes - 1, stat.size - 1));
+    // No lower clamp to `start`: when the reader is fully caught up
+    // (offset === size) that clamp made end === start and produced a
+    // 1-byte-past-EOF range instead of an empty read.
+    const end = Math.min(start + limitBytes - 1, stat.size - 1);
 
     if (start > end) {
-      return { content: "", nextOffset: start };
+      return { content: "", nextOffset: start < stat.size ? start : undefined };
     }
 
     const chunks: Buffer[] = [];

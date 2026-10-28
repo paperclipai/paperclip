@@ -18,9 +18,21 @@ function storybookDestination({ branch, sha, runId, runAttempt, bucket, baseUrl 
   const branchKey = `${label}-${digest}`;
   const prefix = `storybook/branches/${branchKey}`;
   const buildPrefix = `${prefix}/builds/${runId}-${runAttempt}`;
+  // Use one reversible path segment: slashes and special characters become
+  // ~HH UTF-8 bytes, so feature/foo and feature-foo never share a bookmark.
+  let bookmarkKey = [...Buffer.from(branch)].map((byte) =>
+    /[A-Za-z0-9_-]/.test(String.fromCharCode(byte))
+      ? String.fromCharCode(byte) : `~${byte.toString(16).toUpperCase().padStart(2, '0')}`).join('');
+  // Reserve the existing hashed directories, including all immutable builds.
+  bookmarkKey = bookmarkKey.replace(/-([a-f0-9]{16})$/, '~2D$1');
+  // Keep arbitrarily long ref names within S3's object-key limit. ~long cannot
+  // occur in the reversible encoding, whose escapes contain only hex digits.
+  if (bookmarkKey.length > 900) bookmarkKey = `${bookmarkKey.slice(0, 800)}~long-${digest}`;
+  const bookmarkPrefix = `storybook/branches/${bookmarkKey}`;
   return {
-    branch, sha, bucket, branchKey, prefix, buildPrefix,
-    url: `${base.origin}/${prefix}/index.html`,
+    branch, sha, bucket, branchKey, prefix, buildPrefix, bookmarkPrefix,
+    url: `${base.origin}/${bookmarkPrefix}/`,
+    legacyUrl: `${base.origin}/${prefix}/index.html`,
     buildUrl: `${base.origin}/${buildPrefix}/index.html`,
   };
 }

@@ -1,6 +1,9 @@
 import path from "node:path";
 import { defineConfig } from "@playwright/test";
-import { runnerE2EWebServerCommand } from "./web-server-command.js";
+import {
+  runnerE2EWebServerCommand,
+  runnerE2EWebServerGracefulShutdown,
+} from "./web-server-command.js";
 
 function required(name: string) {
   const value = process.env[name]?.trim();
@@ -42,7 +45,7 @@ const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export default defineConfig({
   testDir: ".",
-  testMatch: "runner.spec.ts",
+  testMatch: process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_STARTUP_ONLY === "1" ? "installed-startup.spec.ts" : "runner.spec.ts",
   timeout: Number(process.env.PAPERCLIP_RUNNER_E2E_TEST_TIMEOUT_MS ?? 600_000),
   expect: { timeout: 30_000 },
   fullyParallel: false,
@@ -58,20 +61,22 @@ export default defineConfig({
     headless: true,
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-    screenshot: "only-on-failure",
-    trace: "retain-on-failure",
+    screenshot: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "only-on-failure",
+    trace: process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
     // A developer-supplied system Chromium keeps the local smoke loop
     // installation-free; CI's managed browser retains failure video as usual.
-    video: chromiumExecutable ? "off" : "retain-on-failure",
+    video: chromiumExecutable || process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP === "1" ? "off" : "retain-on-failure",
   },
   webServer: {
     // Do not put an env object here: Playwright serializes webServer config in
     // blob reports. The wrapper inherits the test process and strips provider
     // keys before spawning the real Paperclip process.
     command: runnerE2EWebServerCommand(repositoryRoot),
+    gracefulShutdown: runnerE2EWebServerGracefulShutdown,
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
-    timeout: 180_000,
+    // Fresh databases apply the complete migration history before health is ready.
+    timeout: 300_000,
     stdout: "pipe",
     stderr: "pipe",
   },

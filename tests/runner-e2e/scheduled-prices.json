@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "verifiedAt": "2026-10-20T00:00:00Z",
+  "expiresAt": "2026-11-19T00:00:00Z",
+  "models": [
+    {
+      "provider": "openai",
+      "maximumInputTokens": 1050000,
+      "maximumOutputTokens": 16384,
+      "timeoutMs": 180000,
+      "price": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "version": "openai-standard-2026-10-20",
+        "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+        "inputUsdPerMillion": "4",
+        "cachedReadUsdPerMillion": "0.4",
+        "outputUsdPerMillion": "20",
+        "cacheWrite30mUsdPerMillion": "5",
+        "cacheWrite12hUsdPerMillion": "10",
+        "longContext": {
+          "aboveInputTokens": 272000,
+          "rates": {
+            "inputUsdPerMillion": "8",
+            "cachedReadUsdPerMillion": "0.8",
+            "outputUsdPerMillion": "30",
+            "cacheWrite30mUsdPerMillion": "10",
+            "cacheWrite12hUsdPerMillion": "20"
+          }
+        }
+      }
+    },
+    {
+      "provider": "anthropic",
+      "maximumInputTokens": 1000000,
+      "maximumOutputTokens": 16384,
+      "timeoutMs": 180000,
+      "price": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "version": "anthropic-standard-2026-10-20",
+        "sourceUrl": "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+        "inputUsdPerMillion": "2",
+        "cachedReadUsdPerMillion": "0.2",
+        "outputUsdPerMillion": "10",
+        "cacheWrite5mUsdPerMillion": "2.5",
+        "cacheWrite1hUsdPerMillion": "4"
+      }
+    }
+  ]
+}

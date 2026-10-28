@@ -23,6 +23,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { IssuePostCommitAction } from "./issues.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -70,6 +71,7 @@ type RestoreTreeStatusResult = TreeStatusUpdateResult & {
 };
 
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+export const ISSUE_TREE_RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 const ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
 const DEFAULT_RELEASE_POLICY: IssueTreeHoldReleasePolicy = { strategy: "manual" };
 const MAX_PAUSE_HOLD_ANCESTOR_DEPTH = 100;
@@ -324,13 +326,21 @@ function issueSkipReason(input: {
   return null;
 }
 
-function buildAffectedAgents(issuesToPreview: IssueTreePreviewIssue[]): IssueTreePreviewAgent[] {
+function canWakeOnResume(issue: IssueTreePreviewIssue): boolean {
+  return !!issue.assigneeAgentId && ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status);
+}
+
+function buildAffectedAgents(
+  issuesToPreview: IssueTreePreviewIssue[],
+  mode: IssueTreeControlMode,
+): IssueTreePreviewAgent[] {
   const byAgentId = new Map<string, IssueTreePreviewAgent>();
   for (const issue of issuesToPreview) {
     if (issue.skipped) continue;
+    if (mode === "resume" && !canWakeOnResume(issue)) continue;
     const agentIds = new Set<string>();
     if (issue.assigneeAgentId) agentIds.add(issue.assigneeAgentId);
-    if (issue.activeRun) agentIds.add(issue.activeRun.agentId);
+    if (mode !== "resume" && issue.activeRun) agentIds.add(issue.activeRun.agentId);
     for (const agentId of agentIds) {
       const current = byAgentId.get(agentId) ?? { agentId, issueCount: 0, activeRunCount: 0 };
       current.issueCount += 1;
@@ -385,6 +395,17 @@ function buildWarnings(input: {
       code: "no_active_pause_holds",
       message: "No active pause holds were found in this subtree.",
     });
+  }
+
+  if (input.mode === "resume") {
+    const idleIssueIds = affectedIssues.filter((issue) => !canWakeOnResume(issue)).map((issue) => issue.id);
+    if (idleIssueIds.length > 0) {
+      warnings.push({
+        code: "resume_tasks_remain_idle",
+        message: "Blocked, backlog, and unassigned tasks will be unpaused but will not start.",
+        issueIds: idleIssueIds.sort(),
+      });
+    }
   }
 
   if (input.mode === "restore") {
@@ -675,7 +696,7 @@ export function issueTreeControlService(db: Db) {
     const activeRuns = activeRunRows
       .map(toPreviewRun)
       .sort((a, b) => a.issueId.localeCompare(b.issueId) || a.id.localeCompare(b.id));
-    const affectedAgents = buildAffectedAgents(issuesToPreview);
+    const affectedAgents = buildAffectedAgents(issuesToPreview, input.mode);
 
     return {
       companyId,
@@ -714,6 +735,12 @@ export function issueTreeControlService(db: Db) {
     preview: IssueTreeControlPreview;
     resumedPauseHoldIds?: string[];
   }> {
+    if (input.mode === "cancel") {
+      const [conversation] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, rootIssueId), eq(issues.companyId, companyId), sql`${issues.conversationAgentId} is not null`,
+      ));
+      if (conversation) throw unprocessable("Stop the active reply instead of cancelling the persistent conversation");
+    }
     const holdReleasePolicy = normalizeReleasePolicy(input.releasePolicy);
     const holdPreview = await preview(companyId, rootIssueId, {
       mode: input.mode,
@@ -971,6 +998,7 @@ export function issueTreeControlService(db: Db) {
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;
+        for (const issueId of issueIdsForStatus) await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
         const rows = await tx
           .update(issues)
           .set({

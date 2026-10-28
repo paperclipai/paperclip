@@ -34,6 +34,8 @@ export interface AcpTargetDescriptor {
 }
 
 export interface AdapterInfo {
+  supportedRunners?: import("@paperclipai/shared").AgentRunner[];
+  defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -63,7 +65,14 @@ export interface AdapterInstallResult {
 
 export const adaptersApi = {
   /** List all registered adapters (built-in + external). */
-  list: () => api.get<AdapterInfo[]>("/adapters"),
+  list: (context?: { companyId: string; environmentId?: string | null }) => {
+    const query = new URLSearchParams();
+    if (context) {
+      query.set("companyId", context.companyId);
+      if (context.environmentId) query.set("environmentId", context.environmentId);
+    }
+    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`);
+  },
 
   /** Install an external adapter from npm or a local path. */
   install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>

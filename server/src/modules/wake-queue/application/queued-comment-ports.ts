@@ -61,6 +61,8 @@ export type QueuedCommentRunRow = {
   id: string;
   status: string;
   runtimeMode: string | null;
+  runtimeModeResolvedAt?: Date | null;
+  runnerProfileJson?: Record<string, unknown> | null;
   contextSnapshot: Record<string, unknown>;
 };
 

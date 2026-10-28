@@ -152,6 +152,7 @@ export type {
   PluginWidgetProps,
   PluginDetailTabProps,
   PluginSidebarProps,
+  PluginOrganizationSwitcherProps,
   PluginRouteSidebarProps,
   PluginProjectSidebarItemProps,
   PluginCommentAnnotationProps,

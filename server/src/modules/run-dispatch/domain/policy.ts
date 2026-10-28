@@ -5,11 +5,12 @@
 // then packs the result into a facts object. This file only branches on
 // that facts object; it never queries a database or reads the clock.
 
-/** The retry reason a run carries, reduced to the three kinds a gate cares about. */
+/** The retry reason a run carries, reduced to the kinds a gate cares about. */
 export type RetryReasonKind =
   | "max_turn_continuation"
   | "disposition_repair"
   | "native_safe_replacement"
+  | "ai_connection_wait"
   | "other";
 
 export type BudgetBlockFacts = {
@@ -57,10 +58,12 @@ export type ScheduledRetryGateErrorCode =
   | "issue_terminal_status"
   | "issue_not_in_progress"
   | "issue_execution_lock_changed"
+  | "issue_blocked"
   | "issue_review_participant_changed"
   | "issue_paused"
   | "issue_dependencies_blocked"
-  | "issue_disposition_repair_superseded";
+  | "issue_disposition_repair_superseded"
+  | "issue_waiting_for_response";
 
 export type GateDecision =
   | { allowed: true }
@@ -100,15 +103,20 @@ export type ScheduledRetryFacts = {
 
   /** Present only when retryReasonKind is "disposition_repair". */
   dispositionRepair: DispositionRepairFacts | null;
+  /** A conversation retry must wait for unresolved questions and approvals. */
+  pendingResponse?: "interaction" | "approval" | null;
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "issue_waiting_for_response"
   | "execution_reconciliation_required"
+  | "issue_dependencies_blocked"
   | "issue_not_found"
   | "issue_assignee_changed"
   | "issue_terminal_status"
   | "issue_not_in_progress"
   | "issue_execution_lock_changed"
+  | "issue_blocked"
   | "issue_review_participant_changed"
   | "issue_continuation_waiting_on_review";
 
@@ -122,6 +130,9 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  pendingResponse?: "interaction" | "approval" | null;
+  /** Rechecked for automatic native replacements immediately before dispatch. */
+  dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
   runAgentId: string;
   issueId: string;
@@ -142,6 +153,8 @@ export type QueuedRunFacts = {
 
   resumeIntent: boolean;
   wakeCommentIdPresent: boolean;
+  /** Verified from current company-scoped parent/child state immediately before dispatch. */
+  isCompletedOnboardingHandoffWake?: boolean;
 
   /** True when the run's wake or retry reason asks for a continuation the parked-summary check must inspect. */
   continuationParkApplies: boolean;
@@ -350,6 +363,12 @@ export function decideScheduledRetryGate(
     };
   }
 
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { allowed: false, issueId: facts.issueId, errorCode: "issue_blocked",
+      reason: "Scheduled replacement suppressed because the task was blocked after recovery",
+      details: { issueId: facts.issueId } };
+  }
+
   if (facts.retryReasonKind === "native_safe_replacement" &&
       [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
     return { allowed: false, issueId: facts.issueId, errorCode: "issue_execution_lock_changed",
@@ -389,7 +408,10 @@ export function decideScheduledRetryGate(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: requiresInProgress && facts.enforceIssueExecutionLock,
+    requiresExecutionLock:
+      (requiresInProgress ||
+        (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry)) &&
+      facts.enforceIssueExecutionLock,
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
@@ -397,7 +419,7 @@ export function decideScheduledRetryGate(
     return {
       allowed: false,
       reason:
-        "Scheduled max-turn continuation suppressed because the issue execution lock belongs to a different run",
+        "Scheduled retry suppressed because the issue execution lock belongs to a different run",
       errorCode: "issue_execution_lock_changed",
       issueId: facts.issueId,
       details: {
@@ -456,6 +478,16 @@ export function decideScheduledRetryGate(
     };
   }
 
+  if (facts.pendingResponse) {
+    return {
+      allowed: false,
+      reason: "Conversation retry is waiting for a response to a pending question or approval",
+      errorCode: "issue_waiting_for_response",
+      issueId: facts.issueId,
+      details: { waitingFor: facts.pendingResponse },
+    };
+  }
+
   return { allowed: true };
 }
 
@@ -480,7 +512,7 @@ export function decideQueuedRunStaleness(
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: !(facts.isConnectionContinuation && facts.issueStatus === "in_review"),
+      requiresInProgress: facts.issueStatus !== "in_review",
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {
@@ -514,6 +546,12 @@ export function decideQueuedRunStaleness(
         },
       };
     }
+  }
+
+  if (facts.pendingResponse) {
+    return { stale: true, errorCode: "issue_waiting_for_response",
+      reason: "Cancelled because the continuation is still waiting for an authorized response",
+      details: { issueId: facts.issueId, pendingResponse: facts.pendingResponse } };
   }
 
   if (facts.continuationParkApplies && facts.continuationParksExecutor) {
@@ -556,6 +594,20 @@ export function decideQueuedRunStaleness(
     };
   }
 
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+    return { stale: true, errorCode: "issue_dependencies_blocked",
+      reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
+      details: { issueId: facts.issueId,
+        unresolvedBlockerIssueIds: facts.dependenciesBlocked.unresolvedBlockerIssueIds,
+        unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount } };
+  }
+
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+    return { stale: true, errorCode: "issue_blocked",
+      reason: "Cancelled because the task was blocked before replacement dispatch",
+      details: { issueId: facts.issueId } };
+  }
+
   if (facts.retryReasonKind === "native_safe_replacement" &&
       [facts.issueExecutionRunId, facts.issueCheckoutRunId].some(id => id != null && id !== facts.runId)) {
     return { stale: true, errorCode: "issue_execution_lock_changed",
@@ -567,7 +619,10 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent,
+    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent || (
+      facts.isCompletedOnboardingHandoffWake === true &&
+      facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"
+    ),
   });
   if (statusOutcome === "terminal") {
     return {
@@ -591,7 +646,9 @@ export function decideQueuedRunStaleness(
   }
 
   const lockOutcome = decideExecutionLock({
-    requiresExecutionLock: requiresInProgress,
+    // A server-recorded non-assignee wake never held the task execution lock.
+    requiresExecutionLock: requiresInProgress ||
+      (facts.retryReasonKind === "ai_connection_wait" && !facts.isNonAssigneeWorkspaceBusyRetry),
     runId: facts.runId,
     issueExecutionRunId: facts.issueExecutionRunId,
   });
@@ -600,7 +657,7 @@ export function decideQueuedRunStaleness(
       stale: true,
       errorCode: "issue_execution_lock_changed",
       reason:
-        "Cancelled because max-turn continuation no longer owns the issue execution lock before the queued run could start",
+        "Cancelled because the retry no longer owns the issue execution lock before the queued run could start",
       details: {
         issueId: facts.issueId,
         expectedExecutionRunId: facts.runId,

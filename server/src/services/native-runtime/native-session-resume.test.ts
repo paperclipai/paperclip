@@ -32,10 +32,11 @@ import {
 } from "@paperclipai/paperclip-runner";
 import {
   getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
+  startEmbeddedPostgresTestDatabase as startEmbeddedDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import {
   canonicalNativeRuntimeContextDigest,
+  buildNativeModelEnvelope,
   defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parseNativeExecutionInput,
@@ -71,6 +72,20 @@ import {
   selectNativeSessionResumeRun,
 } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
+
+async function startEmbeddedPostgresTestDatabase(prefix: string) {
+  const externalUrl = externalTestDatabaseUrl;
+  if (!externalUrl) return startEmbeddedDatabase(prefix);
+  const { closeRegisteredClients } = await import("@paperclipai/db");
+  return { connectionString: externalUrl, cleanup: async () => {
+    const db = createDb(externalUrl);
+    try { await db.execute(sql`TRUNCATE TABLE companies CASCADE`); }
+    finally { await closeRegisteredClients(externalUrl); }
+  } };
+}
 
 const companyId = "10000000-0000-4000-8000-000000000001";
 const issueId = "20000000-0000-4000-8000-000000000002";
@@ -79,211 +94,13 @@ const previousRunId = "40000000-0000-4000-8000-000000000004";
 const currentRunId = "50000000-0000-4000-8000-000000000005";
 const normalizedSessionId = "60000000-0000-4000-8000-000000000006";
 
-const CONDITIONAL_READER_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v1",
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-      ],
-    }),
-  )
-  .digest("hex")}`;
 
-const PRE_CHAT_ATTACHMENT_REUSE_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v2",
-      executionTargetKind: "local",
-      advertisementPolicy: {
-        readCurrentWakeComments: "always_advertised_binding_gated.v1",
-        registerDeliverable: "local_workspace_only.v1",
-      },
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-      ],
-    }),
-  )
-  .digest("hex")}`;
 
-const PRE_CHAT_ATTACHMENT_READ_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v3",
-      executionTargetKind: "local",
-      advertisementPolicy: {
-        readCurrentWakeComments: "always_advertised_binding_gated.v1",
-        historicalChatAttachments:
-          "always_advertised_conversation_binding_gated.v1",
-        registerDeliverable: "local_workspace_only.v1",
-      },
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-        {
-          name: "list_chat_attachments",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "reuse_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-      ],
-    }),
-  )
-  .digest("hex")}`;
 
-const PRE_STRUCTURED_HUMAN_INPUT_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v4",
-      executionTargetKind: "local",
-      advertisementPolicy: {
-        readCurrentWakeComments: "always_advertised_binding_gated.v1",
-        historicalChatAttachments:
-          "always_advertised_conversation_binding_gated.v1",
-        registerDeliverable: "local_workspace_only.v1",
-        readChatAttachment: "always_advertised_run_scope_local_staging.v1",
-      },
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-        {
-          name: "list_chat_attachments",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "reuse_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "read_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-read.v1",
-          version: 1,
-        },
-      ],
-    }),
-  )
-  .digest("hex")}`;
 
-const PRE_RESPONSE_WAKE_YIELD_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v5",
-      executionTargetKind: "local",
-      advertisementPolicy: {
-        readCurrentWakeComments: "always_advertised_binding_gated.v1",
-        historicalChatAttachments:
-          "always_advertised_conversation_binding_gated.v1",
-        registerDeliverable: "local_workspace_only.v1",
-        readChatAttachment: "always_advertised_run_scope_local_staging.v1",
-        structuredHumanInput:
-          "always_advertised_run_issue_agent_binding_gated.v1",
-      },
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-        {
-          name: "list_chat_attachments",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "reuse_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "read_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-read.v1",
-          version: 1,
-        },
-        { name: "request_human_input", version: 1 },
-      ],
-    }),
-  )
-  .digest("hex")}`;
 
-const PRE_EXPLICIT_CHAT_ATTACHMENT_GUIDANCE_TOOL_CONTRACT_FINGERPRINT = `sha256:${createHash(
-  "sha256",
-)
-  .update(
-    JSON.stringify({
-      schema: "paperclip.native-tool-contract.v7",
-      executionTargetKind: "local",
-      advertisementPolicy: {
-        readCurrentWakeComments: "always_advertised_binding_gated.v1",
-        historicalChatAttachments:
-          "always_advertised_conversation_binding_gated.v1",
-        registerDeliverable: "local_workspace_only.v1",
-        readChatAttachment: "always_advertised_run_scope_local_staging.v1",
-        structuredHumanInput:
-          "always_advertised_run_issue_agent_binding_gated.v1",
-        semanticCompletion: "finish_response_wake_concrete_object.v2",
-      },
-      tools: [
-        { name: "register_deliverable", version: 1 },
-        {
-          name: "read_current_wake_comments",
-          semanticContract: "paperclip.server-current-wake-comments.v1",
-          version: 1,
-        },
-        {
-          name: "list_chat_attachments",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "reuse_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-reuse.v1",
-          version: 1,
-        },
-        {
-          name: "read_chat_attachment",
-          semanticContract: "paperclip.server-chat-attachment-read.v1",
-          version: 1,
-        },
-        { name: "request_human_input", version: 1 },
-      ],
-    }),
-  )
-  .digest("hex")}`;
+
+
 
 function execution(
   runId: string,
@@ -410,14 +227,65 @@ function previousRun(overrides: Record<string, unknown> = {}) {
   };
 }
 
+describe("capability-gated connection tool refresh", () => {
+  it("retains the exact provider session for an MCP-only change when the harness supports it", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.mcp.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const rebound = rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true });
+    expect(rebound).toMatchObject({ sessionId: "provider-thread-123", providerSessionId: "provider-thread-123", identity: { runId: currentRunId }, providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, refreshTools: true, toolRefreshOnResume: false })).toBeNull();
+  });
+
+  it.each(["add", "edit", "remove"])("replaces sessions when connection instructions %s, even with live tool refresh", (change) => {
+    const block = (text: string) => ({ text, digest: createHash("sha256").update(text).digest("hex") });
+    const previous = execution(previousRunId);
+    const current = execution(currentRunId);
+    if (change !== "add") previous.runtimeContext.connectionInstructions = block("Prior connection instructions.");
+    if (change !== "remove") current.runtimeContext.connectionInstructions = block("Current connection instructions.");
+    previous.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(previous.runtimeContext);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    const prior = previousRun({ nativeExecutionInput: previous });
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.runtimeContext = previous.runtimeContext;
+    expect(rebindNativeSessionCheckpoint({ previousRun: prior, currentExecution: current })).not.toBeNull();
+  });
+
+  it("preserves instruction and identity fences even during a supported refresh", () => {
+    const current = execution(currentRunId);
+    current.runtimeContext.instructions.bundle.digest = "b".repeat(64);
+    current.runtimeContext.aggregateDigest = canonicalNativeRuntimeContextDigest(current.runtimeContext);
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+    current.runtimeContext = nativeRuntimeContextFixture();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).not.toBeNull();
+    current.binding.agentId = randomUUID();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun(), currentExecution: current, toolRefreshOnResume: true, refreshTools: true })).toBeNull();
+  });
+
+  it("rebuilds the bootstrap when refresh requires a fresh session", () => {
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = execution(currentRunId);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: previousRun(), normalizedSessionId, refreshTools: true, toolRefreshOnResume: false, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
 it("wires exact-session recovery and guarded selected identity into heartbeat persistence", () => {
   const source = readFileSync(
-    new URL("../heartbeat.ts", import.meta.url),
+    new URL("../heartbeat/runtime-selection.ts", import.meta.url),
     "utf8",
   );
-  expect(source).toContain("await findNativeSessionResumeRun(db,");
+  expect(source).toContain("findNativeSessionResumeRun(db,");
   expect(source).toContain(
-    "await prepareNativeSessionBootstrapPersistence(tx,",
+    "prepareNativeSessionBootstrapPersistence(tx,",
   );
   expect(source).toContain("nativeSessionId: persistedNativeSessionId,");
   expect(source).toContain("lockedProfile.sessionCheckpoint != null");
@@ -429,12 +297,13 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
 });
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
+const databaseSupported = Boolean(externalTestDatabaseUrl) || embeddedSupport.supported;
 const recoveryFakeCodex = resolve(
   import.meta.dirname,
   "../../../../packages/paperclip-runner/test/fixtures/fake-final-burst-codex-app-server.mjs",
 );
 
-(embeddedSupport.supported && existsSync(defaultCapabilityRunnerdBinary())
+(databaseSupported && existsSync(defaultCapabilityRunnerdBinary())
   ? it
   : it.skip)(
   "keeps actual normalized driver events separate from raw maintenance receipts",
@@ -503,11 +372,10 @@ const recoveryFakeCodex = resolve(
       bundle = createCapabilityRunnerdCodexTransport({
         stateDirectory: root,
         sourceCodexHome: home,
-        codexCommand: resolve(
-          import.meta.dirname,
-          "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server",
-        ),
-        codexArgs: ["--state-file", join(scratch, "fake.json"), "--hold-turn"],
+        // The packaged runnerd does not imply local Rust test binaries exist.
+        // Reuse the credential-free provider fixture available in every checkout.
+        codexCommand: process.execPath,
+        codexArgs: [recoveryFakeCodex, join(scratch, "fake.json"), "16"],
         prpIdentity: {
           runId,
           runnerInstanceId,
@@ -667,7 +535,7 @@ const recoveryFakeCodex = resolve(
   30_000,
 );
 
-(embeddedSupport.supported &&
+(databaseSupported &&
   existsSync(defaultCapabilityRunnerdBinary()) &&
   existsSync(recoveryFakeCodex)
   ? it
@@ -686,11 +554,22 @@ const recoveryFakeCodex = resolve(
     const previousStateBase = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     const server = createServer();
     let firstSession: NativeSession | undefined;
+    const ownedSessions = new Set<NativeSession>();
+    const ownedSpawns: Array<{ pid: number; processGroupId: number | null; startedAt: string }> = [];
+    const onSpawn = async (meta: typeof ownedSpawns[number]) => { ownedSpawns.push(meta); };
+    let executionCloseCompleted = false;
     const runnerDiagnostics: string[] = [];
     const onRunnerLog = async (_stream: "stdout" | "stderr", chunk: string) => {
       runnerDiagnostics.push(chunk.slice(-4_096));
       if (runnerDiagnostics.length > 32) runnerDiagnostics.shift();
     };
+    // The production resolver prefers installed Codex over PATH. Explicitly
+    // bind this disposable fixture so it can never invoke a real provider.
+    const codexCommandResolver = await vi.importActual<{ resolveCodexCommand: () => string }>(
+      "../../../../packages/paperclip-runner/src/drivers/codex/codex-command.js",
+    );
+    const resolveFixtureCodex = vi.spyOn(codexCommandResolver, "resolveCodexCommand")
+      .mockReturnValue(join(bin, "codex"));
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
     try {
       await Promise.all(
@@ -812,6 +691,7 @@ const recoveryFakeCodex = resolve(
         runnerInstanceId,
         runnerEnvironment: environment,
         onLog: onRunnerLog,
+        onSpawn,
       });
       firstSession = await firstBackend.openSession({
         identity: {
@@ -823,6 +703,7 @@ const recoveryFakeCodex = resolve(
         },
         workingDirectory: workspace,
       });
+      ownedSessions.add(firstSession);
       const checkpoint = await firstSession.snapshot();
       expect(checkpoint.identity).toEqual({
         companyId,
@@ -961,6 +842,7 @@ const recoveryFakeCodex = resolve(
         runnerInstanceId,
         runnerEnvironment: environment,
         onLog: onRunnerLog,
+        onSpawn,
       });
       let continuity: Record<string, unknown> | undefined;
       const controlPlaneInstanceId = randomUUID();
@@ -983,10 +865,21 @@ const recoveryFakeCodex = resolve(
           runnerInstanceId,
           controlPlaneInstanceId,
           timeoutMs: 20_000,
+          // This disposable real-daemon fixture must join full retirement before
+          // removing its controller routes and durable state. The production
+          // default deliberately permits asynchronous cleanup after a result.
+          requireSessionCloseBeforeReturn: true,
+          onSession(value) { if (value) ownedSessions.add(value); },
+          async onSessionClosed() { executionCloseCompleted = true; },
           controlPlane: port,
           async onContinuityBreak(value) {
             continuity = value;
           },
+        }).then((result) => {
+          if (result.terminal.runTerminalState !== "succeeded") {
+            throw new Error(`Disposable recovery fixture failed: ${JSON.stringify(result)}`);
+          }
+          return result;
         }).catch(async (error: unknown) => {
           const eventRows = await db
             .select({
@@ -1016,9 +909,18 @@ const recoveryFakeCodex = resolve(
         terminal: { runTerminalState: "succeeded" },
         normalizedSessionId,
       });
+      expect(executionCloseCompleted).toBe(true);
+      expect(ownedSpawns.length).toBeGreaterThanOrEqual(2);
+      for (const { pid } of ownedSpawns) {
+        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+      }
+      console.info("Recovery fixture retired owned daemons", ownedSpawns);
       expect(continuity).toMatchObject({
-        reason: expect.stringContaining(
-          "run.attach requires a settled Codex provider session",
+        // The daemon can reject the damaged retained input during startup,
+        // before attach gets a chance to reject the unsettled provider session.
+        // Both refusal paths must preserve the exact archived evidence below.
+        reason: expect.stringMatching(
+          /run\.attach requires a settled Codex provider session|semantic tool input content digest does not match its transmitted input/,
         ),
         previousDriverSessionId: checkpoint.sessionId,
       });
@@ -1150,9 +1052,14 @@ const recoveryFakeCodex = resolve(
         .where(eq(issues.id, issueId));
       expect(task).toEqual({ id: issueId, assigneeAgentId: agentId });
     } finally {
-      await firstSession
-        ?.close({ reason: "Recovery fixture cleanup" })
-        .catch(() => undefined);
+      // onSession(null) quarantines the runtime owner before close finishes;
+      // keep every published handle so an assertion/error cannot lose cleanup.
+      if (firstSession) ownedSessions.add(firstSession);
+      const closed = await Promise.allSettled([...ownedSessions].map((session) =>
+        Promise.resolve().then(() => session.close({ reason: "Recovery fixture cleanup" })),
+      ));
+      const closeFailures = closed.filter((result) => result.status === "rejected");
+      resolveFixtureCodex.mockRestore();
       runnerPrpWebSocketInternals.resetForTests();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
@@ -1160,13 +1067,17 @@ const recoveryFakeCodex = resolve(
         delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
       else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateBase;
       await database.cleanup();
+      if (closeFailures.length) {
+        // Retain exact fixture state if owned retirement cannot be proven.
+        throw new AggregateError(closeFailures.map((result) => result.reason), "Recovery fixture session cleanup failed");
+      }
       await rm(scratch, { recursive: true, force: true });
     }
   },
   60_000,
 );
 
-(embeddedSupport.supported ? describe : describe.skip)(
+(databaseSupported ? describe : describe.skip)(
   "native session recovery database orchestration",
   () => {
     it("uses scoped latest checkpoints, preserves progress barriers, and guards bootstrap persistence after the row lock", async () => {
@@ -1753,6 +1664,35 @@ describe("rebindNativeSessionCheckpoint", () => {
     },
   );
 
+  it.each([
+    ["paperclip.native-execution-input.v4", "paperclip.native-execution-input.v5"],
+    ["paperclip.native-execution-input.v5", "paperclip.native-execution-input.v4"],
+  ] as const)("retains a recoverable %s session when the constructor defaults to %s", (priorSchema, currentSchema) => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    profile.nativeExecutionInput = { ...execution(previousRunId), schema: priorSchema };
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.goal = { status: "paused", objective: "Preserve the existing durable work" };
+    const before = structuredClone(prior);
+    const result = buildNativeExecutionWithCheckpoint({
+      previousRun: prior,
+      normalizedSessionId,
+      buildExecution: ({ normalizedSessionId: sessionId, resumedSession }) => parseNativeExecutionInput({
+        ...execution(currentRunId), schema: currentSchema,
+        session: { ...execution(currentRunId).session, normalizedSessionId: sessionId },
+        continuationPrompt: resumedSession ? "New direction only; do not replay completed actions" : null,
+      }),
+    });
+    expect(result.execution.schema).toBe(priorSchema);
+    expect(result.normalizedSessionId).toBe(normalizedSessionId);
+    expect(result.checkpoint).toMatchObject({
+      providerSessionId: "provider-thread-123",
+      providerRecoveryPolicy: "same_session_only",
+      goal: { status: "paused", objective: "Preserve the existing durable work" },
+    });
+    expect(prior).toEqual(before);
+  });
+
   it("keeps a valid checkpoint and does not rebuild the resumed task", () => {
     const calls: boolean[] = [];
     const result = buildNativeExecutionWithCheckpoint({
@@ -1803,11 +1743,42 @@ describe("rebindNativeSessionCheckpoint", () => {
   });
 
   it.each([
+    { contract: "conditional current-wake reader", retainedFingerprint: "sha256:fe7a2e17ca825228ea2f51f23acdc82db65c91da5ec6add330fefa39b65e1c85" },
+    { contract: "same-conversation attachment reuse", retainedFingerprint: "sha256:2b84f2105c2cea10e0e5f37cf4a6ba9bf7fec90d8c8c19c655a0e21d3a8dab5f" },
+    { contract: "historical file inspection", retainedFingerprint: "sha256:9b558a575dfa4e3dfaf97b7139b47d1676ab3e0307953ec85f2af0b3f443567c" },
+    { contract: "structured human questions", retainedFingerprint: "sha256:1c3cd7e3223f6ed28e1c44a0ba3c961dd4c0c52e52c9c1100a4e41a83384259c" },
+    { contract: "response-wake completion yield", retainedFingerprint: "sha256:09887bbf1f6a3674fcf529d872fe2853cc1d6554376019dd1a9b8d607d7eb7fb" },
+    { contract: "explicit chat-attachment invocation guidance", retainedFingerprint: "sha256:d797c8bc1baef8407a8c80f2c4b28da63b2a4258a47cf52ee9b1fca45535f5e7" },
     {
       contract: "completion descriptions",
       // Deployed v8 / finish_response_wake_concrete_object.v2 local catalog.
       retainedFingerprint:
         "sha256:5b7b302db36f7ed6686f9ea1ba70bbf79ebd7fabf86953b548d966a2bc38b648",
+    },
+    {
+      contract: "native completion tool guidance",
+      // Deployed v13 local catalog before canonical finish/block descriptions.
+      retainedFingerprint:
+        "sha256:68a51d34e091c55ee5d0d2b563153454dd727d72db16e6a27c358d342ae489c9",
+    },
+    {
+      contract: "GitHub working-comment tools",
+      // Deployed v14 threads retain the catalog without update_comment.
+      retainedFingerprint:
+        "sha256:134a7dbd526179aff57f91c261bb653e83db51c20492efab5c26a5ce618792c8",
+    },
+    {
+      contract: "GitHub instruction skill selection",
+      // Deployed v15 remote threads omitted configured skills from native turns.
+      retainedFingerprint:
+        "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
+    },
+    {
+      contract: "regressed conditional run-scoped readers",
+      // Deployed v17 threads were opened without read_current_wake_comments
+      // and read_chat_attachment on ordinary turns; resume cannot add them.
+      retainedFingerprint:
+        "sha256:dc495475fb6a4bd034c6dbb2bbe0cf52e7ffc1635838889dc5f7d7251273f119",
     },
     {
       contract: "task-bound human-input description",
@@ -1817,7 +1788,13 @@ describe("rebindNativeSessionCheckpoint", () => {
     },
   ])(
     "refreshes retained $contract without changing the Paperclip task or prior history",
-    ({ retainedFingerprint }) => {
+    ({ contract, retainedFingerprint }) => {
+      if (contract === "explicit chat-attachment invocation guidance") {
+        expect(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION.description).toContain("Call with {}");
+        expect(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION.description).toContain("1 through 50");
+        expect(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION.description).toContain("All four arguments are required");
+        expect(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION.description).toContain("same key unchanged on every retry");
+      }
       expect(NATIVE_TOOL_CONTRACT_FINGERPRINT).not.toBe(retainedFingerprint);
       const prior = previousRun({
         nativeToolContractFingerprint: retainedFingerprint,
@@ -1868,34 +1845,23 @@ describe("rebindNativeSessionCheckpoint", () => {
     },
   );
 
-  it("rotates a provider thread created while the current-wake reader was conditionally advertised", () => {
-    expect(CONDITIONAL_READER_TOOL_CONTRACT_FINGERPRINT).not.toBe(
-      NATIVE_TOOL_CONTRACT_FINGERPRINT,
-    );
-    expect(
-      rebindNativeSessionCheckpoint({
-        previousRun: previousRun({
-          nativeToolContractFingerprint:
-            CONDITIONAL_READER_TOOL_CONTRACT_FINGERPRINT,
-        }),
-        currentExecution: execution(currentRunId),
-      }),
-    ).toBeNull();
-  });
 
-  it("rotates a provider thread that predates same-conversation attachment reuse", () => {
-    expect(PRE_CHAT_ATTACHMENT_REUSE_TOOL_CONTRACT_FINGERPRINT).not.toBe(
-      NATIVE_TOOL_CONTRACT_FINGERPRINT,
-    );
-    expect(
-      rebindNativeSessionCheckpoint({
-        previousRun: previousRun({
-          nativeToolContractFingerprint:
-            PRE_CHAT_ATTACHMENT_REUSE_TOOL_CONTRACT_FINGERPRINT,
-        }),
-        currentExecution: execution(currentRunId),
-      }),
-    ).toBeNull();
+
+  it.each(["local", "remote"] as const)("refreshes only OpenCode's former direct MCP catalog on %s", target => {
+    const legacy = nativeToolContractFingerprintForTarget(target);
+    expect(nativeToolContractFingerprintForTarget(target, "codex")).toBe(legacy);
+    expect(nativeToolContractFingerprintForTarget(target, "acpx")).toBe(legacy);
+    const current = nativeToolContractFingerprintForTarget(target, "opencode");
+    expect(current).not.toBe(legacy);
+    const shortenedCatalog = target === "local"
+      ? "sha256:2ae35faccbb63cfe009d94170ef1ef13f0d57e120af6160540598a3ec72001d7"
+      : "sha256:ee5285ca5118b8468c0afd1df4ef9c05d85b0934e882bccd0b193dc8722dbb7a";
+    expect(current).not.toBe(shortenedCatalog);
+    const currentExecution = { ...execution(currentRunId), provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", permissionMode: "allow" }, session: { ...execution(currentRunId).session, driverKind: "opencode_server" } } as NativeExecutionInput;
+    const previousExecution = { ...execution(previousRunId), provider: currentExecution.provider, session: currentExecution.session };
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: shortenedCatalog, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: legacy, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: current, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).not.toBeNull();
   });
 
   it("binds the provider tool catalog to the local or remote execution target", () => {
@@ -1917,79 +1883,23 @@ describe("rebindNativeSessionCheckpoint", () => {
         executionTargetKind: "remote",
       }),
     ).not.toBeNull();
-  });
-
-  it("rotates provider threads whose retained catalog cannot inspect historical files", () => {
-    expect(PRE_CHAT_ATTACHMENT_READ_TOOL_CONTRACT_FINGERPRINT).not.toBe(
-      NATIVE_TOOL_CONTRACT_FINGERPRINT,
-    );
+    // Deployed v17 remote threads were opened without the run-scoped readers.
     expect(
       rebindNativeSessionCheckpoint({
         previousRun: previousRun({
           nativeToolContractFingerprint:
-            PRE_CHAT_ATTACHMENT_READ_TOOL_CONTRACT_FINGERPRINT,
+            "sha256:96dde421aab01f847468d1a8f12863d32dfdb3038a9aca61e1e6bdc81022d5a1",
         }),
         currentExecution: execution(currentRunId),
+        executionTargetKind: "remote",
       }),
     ).toBeNull();
   });
 
-  it("rotates direct provider threads whose retained catalog cannot ask structured questions", () => {
-    expect(PRE_STRUCTURED_HUMAN_INPUT_TOOL_CONTRACT_FINGERPRINT).not.toBe(
-      NATIVE_TOOL_CONTRACT_FINGERPRINT,
-    );
-    expect(
-      rebindNativeSessionCheckpoint({
-        previousRun: previousRun({
-          nativeToolContractFingerprint:
-            PRE_STRUCTURED_HUMAN_INPUT_TOOL_CONTRACT_FINGERPRINT,
-        }),
-        currentExecution: execution(currentRunId),
-      }),
-    ).toBeNull();
-  });
 
-  it("rotates direct provider threads whose retained completion tool cannot yield for a response", () => {
-    expect(PRE_RESPONSE_WAKE_YIELD_TOOL_CONTRACT_FINGERPRINT).not.toBe(
-      NATIVE_TOOL_CONTRACT_FINGERPRINT,
-    );
-    expect(
-      rebindNativeSessionCheckpoint({
-        previousRun: previousRun({
-          nativeToolContractFingerprint:
-            PRE_RESPONSE_WAKE_YIELD_TOOL_CONTRACT_FINGERPRINT,
-        }),
-        currentExecution: execution(currentRunId),
-      }),
-    ).toBeNull();
-  });
 
-  it("rotates provider threads whose retained attachment tools lack explicit invocation guidance", () => {
-    expect(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION.description).toContain(
-      "Call with {}",
-    );
-    expect(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION.description).toContain(
-      "1 through 50",
-    );
-    expect(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION.description).toContain(
-      "All four arguments are required",
-    );
-    expect(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION.description).toContain(
-      "same key unchanged on every retry",
-    );
-    expect(
-      PRE_EXPLICIT_CHAT_ATTACHMENT_GUIDANCE_TOOL_CONTRACT_FINGERPRINT,
-    ).not.toBe(NATIVE_TOOL_CONTRACT_FINGERPRINT);
-    expect(
-      rebindNativeSessionCheckpoint({
-        previousRun: previousRun({
-          nativeToolContractFingerprint:
-            PRE_EXPLICIT_CHAT_ATTACHMENT_GUIDANCE_TOOL_CONTRACT_FINGERPRINT,
-        }),
-        currentExecution: execution(currentRunId),
-      }),
-    ).toBeNull();
-  });
+
+
 
   it("permits legacy retry rebinding only before the replacement acquired authority", () => {
     const source = {
@@ -2039,10 +1949,17 @@ describe("rebindNativeSessionCheckpoint", () => {
   });
 
   it("retains provider identity but clears prior turn and event state", () => {
+    const prior = previousRun();
+    const profile = prior.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
-      previousRun: previousRun(),
+      previousRun: prior,
       currentExecution: execution(currentRunId),
     });
+    expect(rebound?.governedWait).toBeUndefined();
+    expect(prior).toEqual(before);
     expect(rebound).toMatchObject({
       sessionId: "provider-thread-123",
       providerSessionId: "provider-thread-123",
@@ -2286,6 +2203,66 @@ describe("rebindNativeSessionCheckpoint", () => {
 });
 
 describe("buildNativeExecutionInput wake projection", () => {
+  it.each(["slack", "github"])("uses compact %s input only after provider resume, preserving fresh bootstrap fallback", (externalChatProvider) => {
+    const base = execution(currentRunId);
+    const issue = { id: issueId, identifier: "DOT-2", title: "Old greeting", description: null, workMode: "standard" };
+    const message = { id: "wake", body: "NEW_SLACK_MESSAGE", authorType: "user", authorId: "board", sourceTrust: "user", createdByRunId: null };
+    const input = buildNativeExecutionInput({
+      companyId, runId: currentRunId, agentId, issue,
+      taskPrompt: "FULL_BOOTSTRAP_WITH_FILE_AND_AUTHORIZATION_INSTRUCTIONS",
+      resumedSession: true,
+      previousTurn: { runId: previousRunId, task: issue },
+      wakePayload: {
+        reason: "External chat message received", issue,
+        externalChatProvider, checkedOutByHarness: true,
+        comments: [{ ...message, author: { type: "user", id: "board" } }], commentIds: [message.id], latestCommentId: message.id,
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        executionContinuation: { version: 1, objective: message.body, messages: [message], resumeDelta: { baseRunId: previousRunId, messages: [message] } },
+      },
+      workspace: { id: currentRunId, ...base.workspace }, normalizedSessionId,
+      provider: "codex", completionContract: base.completionContract,
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(input.continuationPrompt).toContain(message.body);
+    expect(input.continuationPrompt).not.toContain("FULL_BOOTSTRAP");
+    expect(input.task.prompt).toContain("FULL_BOOTSTRAP");
+    expect(input.task.prompt).toContain(message.body);
+  });
+
+  it.each(["github", null])("restores GitHub configuration on fresh fallback and sends changes on %s resume", (externalChatProvider) => {
+    const base = execution(currentRunId);
+    const issue = { id: issueId, identifier: "REVIEW-1", title: "PR #1", description: null, workMode: "standard" };
+    const config = { key: "a".repeat(64), instructions: "STABLE_REVIEW_POLICY" };
+    const message = { id: "new-push", body: "Review new head abc123", authorType: "user", authorId: "board", createdByRunId: null };
+    const args = {
+      companyId, runId: currentRunId, agentId, issue, taskPrompt: "Canonical task",
+      resumedSession: true, previousTurn: { runId: previousRunId, task: issue, githubReviewConfigurationKeys: [config.key] },
+      wakePayload: { reason: externalChatProvider ? "External chat message received" : "issue_commented", issue, externalChatProvider, checkedOutByHarness: true,
+        githubReviewConfigurations: [config],
+        comments: [{ ...message, author: { type: "user", id: "board" } }], commentIds: [message.id], latestCommentId: message.id,
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        executionContinuation: { version: 1, objective: message.body, messages: [{ ...message, id: "old", body: "OLD_REQUEST" }, message],
+          resumeDelta: { baseRunId: previousRunId, messages: [message] } },
+      },
+      workspace: { id: currentRunId, ...base.workspace }, normalizedSessionId,
+      provider: "codex" as const, completionContract: base.completionContract, runtimeContext: nativeRuntimeContextFixture(),
+    };
+    const prepared = buildNativeExecutionInput(args);
+    const resumed = JSON.stringify(buildNativeModelEnvelope(prepared, { resumedSession: true }));
+    expect(resumed).toContain("paperclip.native-continuation.v1");
+    expect(resumed).toContain(message.body);
+    expect(resumed).not.toContain(config.instructions);
+    expect(resumed).not.toContain("OLD_REQUEST");
+    const fresh = JSON.stringify(buildNativeModelEnvelope(prepared));
+    expect(fresh.split(config.instructions)).toHaveLength(2);
+    expect(fresh).toContain("OLD_REQUEST");
+    const changed = buildNativeExecutionInput({ ...args, previousTurn: { ...args.previousTurn, githubReviewConfigurationKeys: [] } });
+    expect(JSON.stringify(buildNativeModelEnvelope(changed, { resumedSession: true })).split(config.instructions)).toHaveLength(2);
+    const reset = buildNativeExecutionInput({ ...args, resumedSession: false });
+    expect(reset.continuationPrompt).toBeUndefined();
+    expect(JSON.stringify(buildNativeModelEnvelope(reset))).toContain(config.instructions);
+  });
+
   it("uses a neutral turn title for authenticated external-chat follow-ups", () => {
     const staleRootTitle = "Reply with exactly STALE-ROOT-MARKER";
     const input = buildNativeExecutionInput({
@@ -2486,15 +2463,15 @@ describe("buildNativeExecutionInput wake projection", () => {
     });
 
     expect(codex).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "codex", approvalPolicy: "on-request" },
     });
     expect(opencode).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "opencode", permissionMode: "ask" },
     });
     expect(acpx).toMatchObject({
-      schema: "paperclip.native-execution-input.v4",
+      schema: "paperclip.native-execution-input.v5",
       provider: { kind: "acpx", permissionMode: "deny-all" },
     });
     expect(claudeManaged).toMatchObject({
@@ -2517,13 +2494,13 @@ describe("buildNativeExecutionInput wake projection", () => {
       },
     });
     expect(defaultOpenCode).toMatchObject({
-      provider: { kind: "opencode", permissionMode: "ask" },
+      provider: { kind: "opencode", permissionMode: "allow" },
     });
     expect(defaultAcpx).toMatchObject({
       provider: {
         kind: "acpx",
         agent: "codex",
-        permissionMode: "approve-reads",
+        permissionMode: "approve-all",
       },
     });
     expect(
@@ -2533,7 +2510,7 @@ describe("buildNativeExecutionInput wake projection", () => {
     );
   });
 
-  it("places child completion summaries in the closed provider prompt", () => {
+  it.each([false, true])("projects wake context with the appropriate execution contract (conversation=%s)", (conversationMode) => {
     const input = buildNativeExecutionInput({
       companyId,
       runId: currentRunId,
@@ -2569,6 +2546,7 @@ describe("buildNativeExecutionInput wake projection", () => {
         checkedOutByHarness: true,
       },
       resumedSession: true,
+      conversationMode,
       agentId,
       workspace: {
         id: currentRunId,
@@ -2595,7 +2573,10 @@ describe("buildNativeExecutionInput wake projection", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     });
 
-    expect(input.task.prompt).toContain("## Paperclip Resume Delta");
+    expect(input.task.prompt).not.toContain("Execution contract:");
+    expect(input.task.prompt).not.toContain("Use child issues");
+    // Full bootstrap stays available if provider recovery fails after admission.
+    expect(input.task.prompt).toContain("## Paperclip Wake Payload");
     expect(input.task.prompt).toContain("reason: issue_children_completed");
     expect(input.task.prompt).toContain("DOT-147 Build utility (done)");
     expect(input.task.prompt).toContain(

@@ -4,14 +4,31 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   readTaskSidePanelState,
   taskPanelDocumentTab,
+  taskPanelPluginTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
+  taskPanelSkillTab,
   taskPanelSubtasksTab,
   writeTaskSidePanelState,
+  shouldSuppressTaskPanelUntilPlan,
+  openSkillPanelState,
 } from "./task-side-panel-state";
 
 describe("task side-panel persistence", () => {
   beforeEach(() => window.localStorage.clear());
+
+  it("round-trips a plugin panel identity", () => {
+    const entityId = "33333333-3333-4333-8333-333333333333";
+    const panel = { entityId, slot: { pluginKey: "example.live-view", id: "screen", displayName: "Live view" } };
+    const id = `plugin:example.live-view:screen:${entityId}`;
+    writeTaskSidePanelState("user-1", "company-1", "task-1", {
+      state: { tabs: [taskPanelPluginTab(panel)], activeTabId: id },
+      launcherOpen: false, userInteracted: true, autoPlanHandled: true, updatedAt: 1,
+    });
+    expect(readTaskSidePanelState("user-1", "company-1", "task-1", true)?.state).toMatchObject({
+      tabs: [{ payload: { kind: "plugin-panel", pluginKey: "example.live-view", slotId: "screen", entityId } }], activeTabId: id,
+    });
+  });
 
   it("round-trips an intentionally empty task state", () => {
     writeTaskSidePanelState("user-1", "company-1", "task-1", {
@@ -25,6 +42,28 @@ describe("task side-panel persistence", () => {
       state: { tabs: [], activeTabId: null },
       userInteracted: true,
     });
+  });
+
+  it("persists and restores a skill tab", () => {
+    writeTaskSidePanelState("user-1", "company-1", "task-skill", {
+      state: { tabs: [taskPanelPropertiesTab(), taskPanelSkillTab("skill-1", "Release helper")], activeTabId: "skill:skill-1" },
+      launcherOpen: false,
+      userInteracted: true,
+      autoPlanHandled: false,
+      updatedAt: 1,
+    });
+    expect(readTaskSidePanelState("user-1", "company-1", "task-skill", true)?.state).toMatchObject({
+      activeTabId: "skill:skill-1",
+      tabs: [{ id: "properties" }, { id: "skill:skill-1", payload: { kind: "skill", skillId: "skill-1" } }],
+    });
+  });
+
+  it("keeps an onboarding panel open after skill acknowledgement", () => {
+    const before = { panelBeforePlanOverrideIssueId: null };
+    const opened = openSkillPanelState(before, { id: "skill-1", name: "Release helper" }, "task-1", true);
+    expect(opened.panelBeforePlanOverrideIssueId).toBe("task-1");
+    const acknowledged = { ...opened, skill: null };
+    expect(shouldSuppressTaskPanelUntilPlan({ deferredPlanAvailable: false, panelBeforePlanOverride: acknowledged.panelBeforePlanOverrideIssueId === "task-1" })).toBe(false);
   });
 
   it("isolates account and company state", () => {

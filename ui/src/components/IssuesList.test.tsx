@@ -13,6 +13,7 @@ import {
   issueAgeSeparatorLabel,
 } from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
 
 const companyState = vi.hoisted(() => ({
@@ -24,6 +25,8 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const mockIssuesApi = vi.hoisted(() => ({
+  get: vi.fn(),
+  listAll: vi.fn(),
   list: vi.fn(),
   listLabels: vi.fn(),
 }));
@@ -222,7 +225,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     assigneeUserId: null,
     responsibleUserId: null,
     createdByAgentId: null,
-    createdByUserId: null,
+    createdByUserId: "person",
     issueNumber: 1,
     requestDepth: 0,
     billingCode: null,
@@ -354,6 +357,7 @@ describe("IssuesList", () => {
     mockInstanceSettingsApi.getExperimental.mockReset();
     mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
+    mockIssuesApi.listAll.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
     mockAccessApi.listMembers.mockResolvedValue({ members: [], access: {} });
@@ -373,6 +377,33 @@ describe("IssuesList", () => {
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
+    const first = createIssue({ id: "child-one", parentId: "parent-one", title: "First nested task" });
+    const second = createIssue({ id: "child-two", parentId: "parent-two", title: "Second nested task" });
+    let resolveAncestors: (rows: Issue[]) => void = () => undefined;
+    mockIssuesApi.list.mockImplementation((_company, filters) => filters.ids && filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { resolveAncestors = resolve; }) : Promise.resolve([]));
+    const view = (rows: Issue[]) => <IssuesList issues={rows} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-issues" enableAgentCreatedVisibilityFilter rowPresentation="task"
+      onUpdateIssue={() => undefined} />;
+    const { root, queryClient } = renderWithQueryClient(view([first]), container);
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one"], projection: "index" }), expect.anything()));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    const parent = createIssue({ id: "parent-one", title: "First parent" });
+    await act(() => resolveAncestors([parent]));
+    await waitForAssertion(() => expect(container.textContent).toContain("First nested task"));
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>{view([first, second])}</TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one", "parent-two"], projection: "index" }), expect.anything()));
+    expect(container.textContent).toContain("First parent");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => resolveAncestors([parent, createIssue({ id: "parent-two", title: "Second parent" })]));
+    await waitForAssertion(() => expect(container.textContent).toContain("Second nested task"));
+    act(() => root.unmount());
+    queryClient.clear();
   });
 
   it("uses the master list and legacy persistence when Streamlined UI is off", async () => {
@@ -620,6 +651,29 @@ describe("IssuesList", () => {
     });
   });
 
+  it("shows a retryable external-status filter error instead of a false empty task list", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new Error("Status lookup unavailable"));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[createIssue({ id: "issue-failed", title: "Matching task after retry" })]}
+      agents={[]} projects={[]} viewStateKey="paperclip:test-issues" rowPresentation="task"
+      onUpdateIssue={() => undefined}
+    />, container);
+    await waitForAssertion(() => expect(container.textContent).toContain("Unable to filter tasks by external status"));
+    expect(container.textContent).not.toContain("No tasks match");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {
+      "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] },
+    } });
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry external statuses")!.click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Matching task after retry"));
+    expect(container.textContent).not.toContain("Unable to filter tasks by external status");
+    expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("renders server search results instead of filtering the full issue list locally", async () => {
     const localIssue = createIssue({ id: "issue-local", identifier: "PAP-1", title: "Local issue" });
     const serverIssue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });
@@ -641,6 +695,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         limit: 200,
       }, { signal: expect.any(AbortSignal) });
@@ -675,6 +730,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         parentId: "parent-1",
         limit: 200,
@@ -1354,7 +1410,7 @@ describe("IssuesList", () => {
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
-        enableRoutineVisibilityFilter
+        enableAgentCreatedVisibilityFilter
         onUpdateIssue={() => undefined}
       />,
       container,
@@ -1365,11 +1421,13 @@ describe("IssuesList", () => {
         status: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
+        includeAgentCreatedTasks: false,
       }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "done",
         limit: 200,
         includeRoutineExecutions: true,
+        includeAgentCreatedTasks: false,
       }), { signal: expect.any(AbortSignal) });
       expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
         issues: expect.arrayContaining([
@@ -1559,6 +1617,48 @@ describe("IssuesList", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it.each([true, false])("retains loaded context while revealing a large automated tree (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const parent = createIssue({ id: "human-root", createdByUserId: "person", originKind: "manual" });
+    const children = Array.from({ length: 250 }, (_, index) => createIssue({
+      id: `automated-child-${index}`, title: `Automated child ${index}`,
+      parentId: parent.id, createdByUserId: null, createdByAgentId: "agent", originKind: "manual",
+    }));
+    let holdNextRead = false;
+    let releaseRead: (() => void) | undefined;
+    mockIssuesApi.list.mockImplementation(async (_companyId, filters) => {
+      if (!filters.parentIds?.includes(parent.id)) return [];
+      const rows = children.slice(filters.offset ?? 0, (filters.offset ?? 0) + filters.limit);
+      if (holdNextRead) {
+        holdNextRead = false;
+        return new Promise<Issue[]>((resolve) => { releaseRead = () => resolve(rows); });
+      }
+      return rows;
+    });
+    const { root } = renderWithQueryClient(
+      <IssuesList issues={[parent]} agents={[]} projects={[]} viewStateKey="paperclip:test-tree"
+        enableAgentCreatedVisibilityFilter onUpdateIssue={() => undefined} />,
+      container,
+    );
+    await waitForAssertion(() => expect(container.querySelectorAll("[data-testid='issue-row']")).toHaveLength(100));
+    holdNextRead = true;
+    act(() => {
+      setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
+      window.dispatchEvent(new Event("scroll"));
+    });
+    await flushAnimationFrame();
+    await waitForAssertion(() => {
+      expect(releaseRead).toBeDefined();
+      expect(container.querySelectorAll("[data-testid='issue-row']").length).toBeGreaterThanOrEqual(100);
+    });
+    await act(async () => releaseRead!());
+    await waitForAssertion(() => {
+      expect(container.querySelectorAll("[data-testid='issue-row']")).toHaveLength(251);
+      expect(container.textContent).toContain("Automated child 249");
+    }, 60);
+    act(() => root.unmount());
   });
 
   it("keeps rendering local issue batches while the user stays near the bottom", async () => {
@@ -1928,6 +2028,56 @@ describe("IssuesList", () => {
     });
   });
 
+  it("ignores a saved workspace filter when the page address has no workspace query", async () => {
+    localStorage.setItem(
+      taskCollectionPreferencesStorageKey({
+        companyId: "company-1",
+        collectionKey: "paperclip:test-issues",
+      }),
+      JSON.stringify({
+        version: 1,
+        companyId: "company-1",
+        collectionKey: "paperclip:test-issues",
+        viewState: {
+          workspaces: ["workspace-alpha"],
+        },
+        columns: ["id"],
+      }),
+    );
+    const alphaIssue = createIssue({
+      id: "issue-alpha",
+      identifier: "PAP-40",
+      title: "Alpha issue",
+      executionWorkspaceId: "workspace-alpha",
+    });
+    const betaIssue = createIssue({
+      id: "issue-beta",
+      identifier: "PAP-41",
+      title: "Beta issue",
+      executionWorkspaceId: "workspace-beta",
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[alphaIssue, betaIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Alpha issue");
+      expect(container.textContent).toContain("Beta issue");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("applies an initial workspace filter from the issues URL state", async () => {
     const alphaIssue = createIssue({
       id: "issue-alpha",
@@ -1964,11 +2114,17 @@ describe("IssuesList", () => {
     });
   });
 
-  it("shows routine-backed issues by default and hides them when the routine filter is toggled off", async () => {
+  it.each([true, false])("keeps visibility controls and fetching preferences synchronized (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    function PreferenceProbe() {
+      const included = useShowAgentCreatedTasks("company-1", "paperclip:test-issues");
+      return <span data-testid="creation-preference">{String(included)}</span>;
+    }
     const manualIssue = createIssue({
       id: "issue-manual",
       identifier: "PAP-10",
       title: "Manual issue",
+      createdByUserId: "person",
       originKind: "manual",
     });
     const routineIssue = createIssue({
@@ -1979,20 +2135,20 @@ describe("IssuesList", () => {
     });
 
     const { root } = renderWithQueryClient(
-      <IssuesList
+      <><PreferenceProbe /><IssuesList
         issues={[manualIssue, routineIssue]}
         agents={[]}
         projects={[]}
         viewStateKey="paperclip:test-issues"
-        enableRoutineVisibilityFilter
+        enableAgentCreatedVisibilityFilter
         onUpdateIssue={() => undefined}
-      />,
+      /></>,
       container,
     );
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Manual issue");
-      expect(container.textContent).toContain("Routine issue");
+      expect(container.textContent).not.toContain("Routine issue");
     });
 
     await act(async () => {
@@ -2005,26 +2161,38 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("Hide routine runs"),
+        (label) => label.textContent?.includes("show agent-created tasks"),
       );
       expect(toggle).not.toBeUndefined();
     });
 
     await act(async () => {
       const toggle = Array.from(document.body.querySelectorAll("label")).find(
-        (label) => label.textContent?.includes("Hide routine runs"),
+        (label) => label.textContent?.includes("show agent-created tasks"),
       );
       toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
 
     await waitForAssertion(() => {
+      expect(container.textContent).toContain("Routine issue");
+      expect(container.querySelector("[data-testid='creation-preference']")?.textContent).toBe("true");
+    });
+    const preferenceKey = taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "paperclip:test-issues" });
+    const envelope = JSON.parse(localStorage.getItem(preferenceKey)!);
+    await act(async () => {
+      localStorage.setItem(preferenceKey, JSON.stringify({ ...envelope, viewState: { ...envelope.viewState, showAgentCreatedTasks: false } }));
+      window.dispatchEvent(new StorageEvent("storage", { key: preferenceKey }));
+    });
+    await waitForAssertion(() => {
       expect(container.textContent).not.toContain("Routine issue");
+      expect(container.querySelector("[data-testid='creation-preference']")?.textContent).toBe("false");
+      const label = Array.from(document.body.querySelectorAll("label")).find((element) => element.textContent?.includes("show agent-created tasks"));
+      const checkbox = label?.querySelector("[role='checkbox'], input[type='checkbox']");
+      expect(checkbox).not.toBeNull();
+      expect(checkbox instanceof HTMLInputElement ? checkbox.checked : checkbox?.getAttribute("aria-checked") === "true").toBe(false);
     });
-
-    act(() => {
-      root.unmount();
-    });
+    act(() => root.unmount());
   });
 
   it("blurs the search input on Enter without clearing the query", async () => {

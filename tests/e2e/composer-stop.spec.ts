@@ -205,6 +205,9 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
                         "-e",
                         "console.log('stop fixture ready'); setInterval(() => console.log('working'), 200);",
                       ],
+                      // The child only runs this script; server-only fixture
+                      // loaders must not follow NODE_OPTIONS into the adapter.
+                      env: { NODE_OPTIONS: "" },
                       graceSec: 1,
                     }
                   : { provider: "codex", model: "gpt-5.1-codex-mini" },
@@ -275,16 +278,16 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         await request.get(`/api/issues/${parent.id}/comments`),
       );
       expect(JSON.stringify(comments)).toContain("Please check mobile too.");
-      const queue = await json(
-        await request.get(`/api/issues/${parent.id}/queued-comments`),
-      );
-      expect(JSON.stringify(queue.entries)).toContain(
-        "Please check mobile too.",
-      );
+      await expect.poll(async () => {
+        const queue = await json(
+          await request.get(`/api/issues/${parent.id}/queued-comments`),
+        );
+        return JSON.stringify(queue.entries);
+      }).toContain("Please check mobile too.");
 
       let dispatchedAt = 0;
       page.on("request", (req) => {
-        if (req.method() === "POST" && req.url().endsWith("/tree-holds"))
+        if (req.method() === "POST" && req.url().endsWith(`/heartbeat-runs/${parentRun.id}/cancel`))
           dispatchedAt = Date.now();
       });
       const clickedAt = Date.now();
@@ -293,16 +296,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(
         page.getByRole("button", { name: "Dismiss notification" }),
       ).toHaveCount(0);
-      for (const run of [parentRun, childRun]) {
-        await expect
-          .poll(
-            async () =>
-              (await json(await request.get(`/api/heartbeat-runs/${run.id}`)))
-                .status,
-            { timeout: 35_000 },
-          )
-          .toBe("cancelled");
-      }
+      await expect.poll(async () =>
+        (await json(await request.get(`/api/heartbeat-runs/${parentRun.id}`))).status,
+        { timeout: 35_000 },
+      ).toBe("cancelled");
       const stoppedAt = Date.now();
       expect(dispatchedAt - clickedAt).toBeLessThan(2000);
       expect(dispatchedAt).toBeGreaterThan(0);
@@ -313,7 +310,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
           .toBe(false);
         await expect
           .poll(() => processAlive(childRun.processPid), { timeout: 3000 })
-          .toBe(false);
+          .toBe(true);
       } else {
         const finalRun = await json(
           await request.get(`/api/heartbeat-runs/${parentRun.id}`),
@@ -332,6 +329,20 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         }),
         contentType: "application/json",
       });
+      expect(
+        (await json(await request.get(`/api/issues/${parent.id}/tree-control/state`))).activePauseHold,
+      ).toBeNull();
+      expect((await json(await request.get(`/api/heartbeat-runs/${childRun.id}`))).status).toBe("running");
+      await expect(editor).toBeVisible();
+      await expect(page.getByText("Subtree is paused.", { exact: true })).toHaveCount(0);
+      // Pausing future work is a separate, explicit subtree action.
+      await menu(page, "Pause subtree");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect.poll(async () => (await json(await request.get(`/api/heartbeat-runs/${childRun.id}`))).status,
+        { timeout: 35_000 }).toBe("cancelled");
+      if (adapter === "process") {
+        await expect.poll(() => processAlive(childRun.processPid), { timeout: 3000 }).toBe(false);
+      }
       expect(
         (
           await json(
@@ -369,22 +380,42 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         ).toEqual([]);
       }
       await menu(page, "Resume subtree");
-      await page.getByRole("dialog").getByRole("checkbox").check();
+      const resumeWake = page.getByRole("dialog").getByRole("checkbox");
+      if (adapter === "process") {
+        // Stopped legacy work is blocked pending reconciliation. Removing the
+        // pause must not promise or request a wake through that recovery gate.
+        await expect(resumeWake).toHaveAccessibleName("Wake affected agents (0)");
+        await expect(resumeWake).toBeDisabled();
+        await expect(resumeWake).not.toBeChecked();
+      } else {
+        await resumeWake.check();
+      }
       await page
         .getByRole("dialog")
         .getByRole("button", { name: "Resume subtree", exact: true })
         .click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      // The recovery policy parks these stopped tasks. Releasing the hold must
-      // leave them parked, even with Wake agents selected; no implicit replay.
-      expect(await json(await request.get(`/api/issues/${parent.id}/live-runs`))).toEqual([]);
-      expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
-      await reconcileDemoExecution(request, parent.id, parentRun.id);
-      await reconcileDemoExecution(request, child.id, childRun.id);
+      if (adapter === "process") {
+        // Legacy processes lack runner stop/action proof, so releasing the hold
+        // preserves their recovery gate until the fixture reconciles them.
+        expect(await json(await request.get(`/api/issues/${parent.id}/live-runs`))).toEqual([]);
+        expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
+        await reconcileDemoExecution(request, parent.id, parentRun.id);
+        await reconcileDemoExecution(request, child.id, childRun.id);
+      }
+      // A verified stopped native runner can honor the explicitly selected
+      // Wake agents option without another manual reconciliation step.
       const resumedParentRun = await running(request, parent.id, adapter);
       const resumedChildRun = await running(request, child.id, adapter);
       expect(resumedParentRun.id).not.toBe(parentRun.id);
       expect(resumedChildRun.id).not.toBe(childRun.id);
+      if (adapter === "paperclip_runner") {
+        await expect.poll(async () => {
+          const calls = await readFile(process.env.PAPERCLIP_STOP_CODEX_LOG!, "utf8");
+          return calls.split("turn/start").length - 1;
+        }, { timeout: 30_000 }).toBeGreaterThanOrEqual(5);
+        await page.screenshot({ path: testInfo.outputPath("native-resumed.png"), fullPage: true });
+      }
       await menu(page, "Pause subtree");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(

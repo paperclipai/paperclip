@@ -1,4 +1,5 @@
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
+import type { Issue, IssueStatus, IssueLockedStub } from "@paperclipai/shared";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IssueRow } from "@/components/IssueRow";
@@ -13,16 +14,16 @@ export interface TaskDetailRelationItem {
   id: string;
   identifier?: string | null;
   title: string;
-  status?: IssueStatus | null;
+  status?: string | null;
 }
 
-function RelationNavigationList({
+export function RelationNavigationList({
   items,
   emptyMessage,
   ariaLabel,
   issueLinkState,
 }: {
-  items: TaskDetailRelationItem[];
+  items: (TaskDetailRelationItem | IssueLockedStub)[];
   emptyMessage: string;
   ariaLabel: string;
   issueLinkState?: unknown;
@@ -34,6 +35,9 @@ function RelationNavigationList({
   return (
     <ul className="flex flex-col gap-0.5" aria-label={ariaLabel}>
       {items.map((item) => {
+        if (isLockedIssueStub(item)) {
+          return <li key={item.id} className="px-2 py-2"><LockedIssueChip identifier={item.identifier} /></li>;
+        }
         const pathId = item.identifier ?? item.id;
         return (
           <li key={item.id}>
@@ -86,7 +90,7 @@ export function resolveTaskDetailSubtaskState(items: Issue[]) {
   };
 }
 
-function SharedSubtaskList({
+export function TaskDetailTaskList({
   items,
   ariaLabel,
   issueLinkState,
@@ -166,7 +170,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-next-action-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction.status === "blocked" ? "Blocked subtask" : "Next action"}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={[nextAction]}
             ariaLabel="Next subtask action"
             issueLinkState={issueLinkState}
@@ -185,7 +189,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-other-subtasks-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction ? "Other subtasks" : "Subtasks"}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={remainingItems}
             ariaLabel={nextAction ? "Other subtasks" : "Subtasks"}
             issueLinkState={issueLinkState}

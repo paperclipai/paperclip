@@ -55,6 +55,8 @@ export function authRoutes(db: Db) {
       // handler, so no second authorization check runs here. This field
       // carries the front-end DSN only; it never carries the backend DSN.
       sentryDsn: resolveSentryDsns().frontend,
+      // Match the server SDK's runtime environment, including in reused images.
+      sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
     }));
   });
 

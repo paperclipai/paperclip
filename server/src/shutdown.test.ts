@@ -5,6 +5,7 @@ import {
   coordinateHeartbeatSchedulerShutdown,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
+  finishServiceShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
 } from "./shutdown.js";
 
@@ -166,6 +167,73 @@ describe("finalizeServerShutdown", () => {
     expect(log.error).toHaveBeenCalledWith(
       expect.objectContaining({ err: closeError, signal: "SIGTERM" }),
       "Database client shutdown failed",
+    );
+  });
+
+  it("waits for pending run-failure reports before the database stop and the Sentry flush", async () => {
+    const order: string[] = [];
+    const release = deferred();
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      order.push("runFailureReports:start");
+      await release.promise;
+      order.push("runFailureReports:settled");
+    });
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+    });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
+
+    const finalize = finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry,
+      log: stubLogger(),
+    });
+
+    await vi.waitFor(() => expect(drainPendingRunFailureReports).toHaveBeenCalledOnce());
+    expect(closeDatabase).not.toHaveBeenCalled();
+    expect(shutdownSentry).not.toHaveBeenCalled();
+
+    release.resolve();
+    await finalize;
+
+    expect(order).toEqual([
+      "runFailureReports:start",
+      "runFailureReports:settled",
+      "database:close",
+      "sentry:flush",
+    ]);
+  });
+
+  it("logs a failed run-failure report drain and still stops the database and exits", async () => {
+    const drainError = new Error("drain failed");
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      throw drainError;
+    });
+    const closeDatabase = vi.fn(async () => undefined);
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry: vi.fn(async () => undefined),
+      log,
+    });
+
+    expect(closeDatabase).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: drainError, signal: "SIGTERM" }),
+      "run-failure report drain failed",
     );
   });
 
@@ -454,5 +522,28 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       preparationError,
       waitedForSchedulerIdle: true,
     });
+  });
+});
+
+describe("service shutdown failure isolation", () => {
+  it("awaits remaining cleanup before reporting a scheduler failure", async () => {
+    const failure = new Error("plugin result could not be saved");
+    const gate = deferred();
+    const cleanup = vi.fn(() => gate.promise);
+    let finished = false;
+    const stopping = finishServiceShutdown(async () => { throw failure; }, cleanup)
+      .then(() => { finished = true; return undefined; }, error => { finished = true; return error; });
+    try {
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+      expect(finished).toBe(false);
+    } finally { gate.resolve(); }
+    expect(await stopping).toBe(failure);
+  });
+  it("reports both failures after attempting cleanup", async () => {
+    const stopFailure = new Error("scheduler failure"), cleanupFailure = new Error("worker failure");
+    const cleanup = vi.fn(async () => { throw cleanupFailure; });
+    await expect(finishServiceShutdown(async () => { throw stopFailure; }, cleanup))
+      .rejects.toMatchObject({ errors: [stopFailure, cleanupFailure] });
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });

@@ -26,7 +26,7 @@ use super::{
 
 const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
-const WELCOME_TIMEOUT: Duration = Duration::from_secs(2);
+const WELCOME_TIMEOUT: Duration = CONNECT_TOTAL_TIMEOUT;
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -189,11 +189,7 @@ impl RunnerTransportEndpoint {
                     "runner_ingress_bind_conflict: listener path is required",
                 )
             })?;
-            if authority != "0.0.0.0:43127" {
-                return Err(DurableRunnerError::invalid(
-                    "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
-                ));
-            }
+            validate_listener_authority(authority)?;
             let path = format!("/{path}");
             validate_listener_path(&path)?;
             if path != format!("/api/runner/v1/connect/{run_id}") {
@@ -203,7 +199,7 @@ impl RunnerTransportEndpoint {
             }
             let listener = TcpListener::bind(authority).map_err(|error| {
                 DurableRunnerError::invalid(format!(
-                    "runner_ingress_bind_conflict: failed to bind fixed listener: {error}"
+                    "runner_ingress_bind_conflict: failed to bind listener: {error}"
                 ))
             })?;
             listener.set_nonblocking(true).map_err(|error| {
@@ -223,15 +219,21 @@ impl RunnerTransportEndpoint {
     /// `EADDRINUSE`, which would terminate an otherwise healthy warm runner.
     pub(crate) fn rotate(&mut self, input: &str, run_id: &str) -> Result<(), DurableRunnerError> {
         if let Some(remainder) = input.strip_prefix("listen://") {
-            if let Self::Listen { path, .. } = self {
+            if let Self::Listen { listener, path } = self {
                 let (authority, next_path) = remainder.split_once('/').ok_or_else(|| {
                     DurableRunnerError::invalid(
                         "runner_ingress_bind_conflict: listener path is required",
                     )
                 })?;
-                if authority != "0.0.0.0:43127" {
+                let address = validate_listener_authority(authority)?;
+                if listener.local_addr().map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "runner listener address unavailable: {error}"
+                    ))
+                })? != address
+                {
                     return Err(DurableRunnerError::invalid(
-                        "runner_ingress_bind_conflict: listener must bind 0.0.0.0:43127",
+                        "runner_ingress_bind_conflict: warm attachment cannot change listener address",
                     ));
                 }
                 let next_path = format!("/{next_path}");
@@ -380,6 +382,20 @@ impl RunnerTransportEndpoint {
             }
         }
     }
+}
+
+fn validate_listener_authority(authority: &str) -> Result<SocketAddr, DurableRunnerError> {
+    let address: SocketAddr = authority.parse().map_err(|_| {
+        DurableRunnerError::invalid(
+            "runner listener address must be 0.0.0.0 with a port in 1..=65535",
+        )
+    })?;
+    if !address.is_ipv4() || !address.ip().is_unspecified() || address.port() == 0 {
+        return Err(DurableRunnerError::invalid(
+            "runner listener address must be 0.0.0.0 with a port in 1..=65535",
+        ));
+    }
+    Ok(address)
 }
 
 fn validate_listener_path(path: &str) -> Result<(), DurableRunnerError> {
@@ -710,6 +726,7 @@ pub(crate) struct LeaseCredential {
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) revocation_epoch: u64,
     token: Secret,
+    pub(crate) renewal_requested: bool,
 }
 
 impl LeaseCredential {
@@ -734,6 +751,7 @@ pub(crate) struct Welcome {
     pub(crate) acked_source_seq: Option<u64>,
     pub(crate) pending_commands: Vec<Command>,
     pub(crate) warm_transition_version: Option<u64>,
+    pub(crate) lease_renewal_version: Option<u64>,
     pub(crate) warm_transition: Option<Value>,
     pub(crate) warm_transition_phase: Option<String>,
 }
@@ -996,6 +1014,7 @@ impl AuthenticatedTransport {
                     "protocolMin": PROTOCOL_MIN_VERSION,
                     "protocolMax": PROTOCOL_VERSION,
                     "warmTransitionVersion": 1,
+                    "recoveryCursorVersion": 1,
                     "runnerInstanceId": state.runner_instance_id,
                     "environmentLeaseId": state.environment_lease_id,
                     "runId": state.run_id,
@@ -1088,8 +1107,9 @@ impl AuthenticatedTransport {
                 max_frame_bytes: config.max_frame_bytes,
             };
             // Ticket validation and lease persistence happen before the server
-            // emits welcome. Keep that work bounded without assuming a loaded
-            // control-plane event loop can always respond within 250 ms.
+            // emits welcome. Give that durable admission the connection setup
+            // budget; a two-second wait can discard a consumed ticket under
+            // controller load. The execution/reconnect deadline still wins.
             let welcome_deadline = bounded_operation_deadline(connect_deadline, WELCOME_TIMEOUT)?;
             let welcome_timeout = welcome_deadline.saturating_duration_since(Instant::now());
             if welcome_timeout.is_zero() {
@@ -1181,6 +1201,10 @@ struct AuthChallenge {
     warm_transition_version: Option<u64>,
     #[serde(default)]
     warm_transition_id: Option<String>,
+    #[serde(default)]
+    recovery_cursor_version: Option<u64>,
+    #[serde(default)]
+    recovery_acked_source_seq: Option<u64>,
 }
 
 fn validate_challenge(
@@ -1256,10 +1280,22 @@ fn validate_challenge(
             "warm transition capability or receipt was not authenticated",
         ));
     }
+    if (challenge.recovery_cursor_version.is_some()
+        || challenge.recovery_acked_source_seq.is_some())
+        && (challenge.recovery_cursor_version != Some(1)
+            || challenge.recovery_acked_source_seq != Some(state.acked_source_seq))
+    {
+        return Err(DurableRunnerError::invalid(
+            "recovery cursor does not match the runner's durable acknowledgement",
+        ));
+    }
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
-                && challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                && (challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                    || (lease.renewal_requested
+                        && state.warm_transition.is_none()
+                        && challenge.credential_expires_at_unix_ms > lease.expires_at_unix_ms))
                 && challenge.revocation_epoch == lease.revocation_epoch => {}
         None if challenge.credential_lease_id.is_none() => {}
         _ => {
@@ -1296,6 +1332,12 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
     }
     if let Some(id) = &challenge.warm_transition_id {
         body["warmTransitionId"] = json!(id);
+    }
+    if let Some(version) = challenge.recovery_cursor_version {
+        body["recoveryCursorVersion"] = json!(version);
+    }
+    if let Some(cursor) = challenge.recovery_acked_source_seq {
+        body["recoveryAckedSourceSeq"] = json!(cursor);
     }
     canonical_json(&body).into_bytes()
 }
@@ -1369,7 +1411,10 @@ fn validate_welcome(
         .ok_or_else(|| DurableRunnerError::invalid("welcome revocation epoch is required"))?;
     if let Some(expected) = expected_lease {
         if connection_lease_id != expected.lease_id
-            || expires_at_unix_ms != expected.expires_at_unix_ms
+            || (expires_at_unix_ms != expected.expires_at_unix_ms
+                && !(expected.renewal_requested
+                    && state.warm_transition.is_none()
+                    && expires_at_unix_ms > expected.expires_at_unix_ms))
             || revocation_epoch != expected.revocation_epoch
         {
             return Err(DurableRunnerError::invalid(
@@ -1385,6 +1430,7 @@ fn validate_welcome(
                 expires_at_unix_ms,
                 revocation_epoch,
                 token: Secret::new(token),
+                renewal_requested: false,
             })
         }
         None | Some(Value::Null) if credential_kind == "lease" => None,
@@ -1422,6 +1468,9 @@ fn validate_welcome(
         acked_source_seq: payload.get("ackedSourceSeq").and_then(Value::as_u64),
         pending_commands,
         warm_transition_version: payload.get("warmTransitionVersion").and_then(Value::as_u64),
+        lease_renewal_version: payload
+            .get("connectionLeaseRenewalVersion")
+            .and_then(Value::as_u64),
         warm_transition: payload.get("warmTransition").cloned(),
         warm_transition_phase: payload
             .get("warmTransitionPhase")
@@ -1777,6 +1826,8 @@ mod tests {
             server_proof: String::new(),
             warm_transition_version: None,
             warm_transition_id: None,
+            recovery_cursor_version: Some(1),
+            recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
         let signing = challenge_signing_bytes(&challenge);
         challenge.server_proof = hex_encode(&hmac_domain(
@@ -1809,6 +1860,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "recoveryCursorVersion": challenge.recovery_cursor_version,
+                    "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },
             }),
             config.max_frame_bytes,
@@ -2036,6 +2089,66 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("deadline elapsed"));
+    }
+
+    #[test]
+    fn listener_accepts_distinct_ports_and_retains_port_on_warm_attachment() {
+        let mut endpoints = [0, 1].map(|_| {
+            for _ in 0..10 {
+                let reservation = TcpListener::bind("0.0.0.0:0").unwrap();
+                let port = reservation.local_addr().unwrap().port();
+                drop(reservation);
+                match RunnerTransportEndpoint::new(
+                    &format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1"),
+                    "run_1",
+                ) {
+                    Ok(endpoint) => return endpoint,
+                    Err(error) => match TcpListener::bind(("0.0.0.0", port)) {
+                        Err(bind_error) if bind_error.kind() == std::io::ErrorKind::AddrInUse => {
+                            continue;
+                        }
+                        _ => panic!("{error}"),
+                    },
+                }
+            }
+            panic!("could not acquire an available Runner port");
+        });
+        let ports = endpoints.each_ref().map(|endpoint| match endpoint {
+            RunnerTransportEndpoint::Listen { listener, .. } => {
+                listener.local_addr().unwrap().port()
+            }
+            _ => panic!("expected listener"),
+        });
+        endpoints[0]
+            .rotate(
+                &format!("listen://0.0.0.0:{}/api/runner/v1/connect/run_2", ports[0]),
+                "run_2",
+            )
+            .unwrap();
+        assert!(endpoints[0]
+            .rotate(
+                &format!("listen://0.0.0.0:{}/api/runner/v1/connect/run_3", ports[1]),
+                "run_3"
+            )
+            .is_err());
+        if let RunnerTransportEndpoint::Listen { listener, path } = &endpoints[0] {
+            assert_eq!(listener.local_addr().unwrap().port(), ports[0]);
+            assert_eq!(path, "/api/runner/v1/connect/run_2");
+        } else {
+            panic!("expected listener");
+        }
+        for authority in [
+            "0.0.0.0:0",
+            "0.0.0.0:65536",
+            "127.0.0.1:43000",
+            "[::]:43000",
+            "example.test:43000",
+        ] {
+            assert!(
+                validate_listener_authority(authority).is_err(),
+                "{authority}"
+            );
+        }
     }
 
     #[test]
@@ -2271,6 +2384,115 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_welcome_waits_for_bounded_controller_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut config = config(port);
+        config.max_runtime = Duration::from_secs(10);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server_state = state.clone();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            let expires = current_unix_ms().unwrap() + 60_000;
+            let mut secure = server_authenticate(
+                &mut socket,
+                &server_config,
+                &server_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: expires,
+                    revocation_epoch: 0,
+                },
+            );
+            // The authority has the client proof. Durable admission and lease
+            // persistence may take longer than the old two-second welcome wait.
+            thread::sleep(Duration::from_secs(3));
+            send_secure(
+                &mut socket,
+                &mut secure,
+                &server_config,
+                &welcome(
+                    &server_state,
+                    "connection_1",
+                    Some("lease-secret"),
+                    expires,
+                    0,
+                    vec![],
+                ),
+            );
+        });
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let result = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            Instant::now() + config.max_runtime,
+        );
+        server.join().unwrap();
+        let (transport, greeting) = result.unwrap().unwrap();
+        assert_eq!(greeting.lease.unwrap().expose().unwrap(), "lease-secret");
+        assert_eq!(
+            transport.socket.read_timeout().unwrap(),
+            Some(RUNTIME_READ_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn bootstrap_welcome_retains_the_shorter_lifecycle_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let config = config(port);
+        let state = test_state(&config);
+        let server_config = config.clone();
+        let server_state = state.clone();
+        let (release, held) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            server_authenticate(
+                &mut socket,
+                &server_config,
+                &server_state,
+                ServerCredential {
+                    token: "bootstrap-secret",
+                    kind: "bootstrap",
+                    lease_id: None,
+                    expires_at_unix_ms: current_unix_ms().unwrap() + 60_000,
+                    revocation_epoch: 0,
+                },
+            );
+            held.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
+        let endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id).unwrap();
+        let ticket = BootstrapTicket::new("bootstrap-secret".to_owned()).unwrap();
+        let started = Instant::now();
+        let result = AuthenticatedTransport::connect(
+            &endpoint,
+            &config,
+            &state,
+            Some(&ticket),
+            None,
+            started + Duration::from_secs(1),
+        );
+        release.send(()).unwrap();
+        server.join().unwrap();
+        let failure = match result {
+            Err(error) => error,
+            Ok(_) => panic!("welcome authenticated after the lifecycle deadline"),
+        };
+        assert!(failure.bootstrap_maybe_consumed);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(failure.error.to_string().contains("deadline elapsed"));
+    }
+
+    #[test]
     fn authenticates_bootstrap_and_receives_bound_lease() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2307,6 +2529,8 @@ mod tests {
                 server_proof: String::new(),
                 warm_transition_version: None,
                 warm_transition_id: None,
+                recovery_cursor_version: None,
+                recovery_acked_source_seq: None,
             };
             let signing = challenge_signing_bytes(&challenge);
             challenge.server_proof = hex_encode(&hmac_domain(
@@ -2411,6 +2635,15 @@ mod tests {
 
     #[test]
     fn reconnect_replays_unacked_events_and_not_command_effects() {
+        reconnect_without_reexecuting(false);
+    }
+
+    #[test]
+    fn lost_renewal_reply_reconnects_without_restarting_the_provider() {
+        reconnect_without_reexecuting(true);
+    }
+
+    fn reconnect_without_reexecuting(renewal_reply_lost: bool) {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
             shutdown_calls: Arc<AtomicUsize>,
@@ -2448,13 +2681,14 @@ mod tests {
         let mut config = config(port);
         config.max_runtime = Duration::from_secs(5);
         let directory = std::env::temp_dir().join(format!(
-            "paperclip-runner-reconnect-fault-{}",
+            "paperclip-runner-reconnect-fault-{}-{renewal_reply_lost}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&directory);
         config.state_dir = directory.clone();
         let state = test_state(&config);
-        let expires = current_unix_ms().unwrap() + 60_000;
+        let mut expires =
+            current_unix_ms().unwrap() + if renewal_reply_lost { 2_000 } else { 60_000 };
         let open_command = json!({
             "schema": "paperclip.prp.command.v1",
             "commandId": "command_open",
@@ -2489,23 +2723,32 @@ mod tests {
                     revocation_epoch: 0,
                 },
             );
-            send_secure(
-                &mut first,
-                &mut first_secure,
-                &server_config,
-                &welcome(
-                    &server_state,
-                    "connection_1",
-                    Some("lease-secret"),
-                    expires,
-                    0,
-                    vec![server_open.clone()],
-                ),
+            let mut greeting = welcome(
+                &server_state,
+                "connection_1",
+                Some("lease-secret"),
+                expires,
+                0,
+                vec![server_open.clone()],
             );
+            if renewal_reply_lost {
+                greeting["payload"]["connectionLeaseRenewalVersion"] = json!(1);
+            }
+            send_secure(&mut first, &mut first_secure, &server_config, &greeting);
             let first_result = receive_secure(&mut first, &mut first_secure, &server_config);
             let first_event = receive_secure(&mut first, &mut first_secure, &server_config);
             assert_eq!(first_result["kind"], "command_result");
             assert_eq!(first_event["kind"], "event");
+            if renewal_reply_lost {
+                let renewal = receive_secure(&mut first, &mut first_secure, &server_config);
+                assert_eq!(renewal["kind"], "lease_renew");
+                assert_eq!(
+                    renewal["payload"]["connectionLeaseExpiresAtUnixMs"],
+                    json!(expires)
+                );
+                // Commit a new expiry but lose the reply before the runner sees it.
+                expires = current_unix_ms().unwrap() + 60_000;
+            }
             drop(first);
 
             let (second_stream, _) = listener.accept().unwrap();

@@ -591,6 +591,8 @@ export function RevokeGrantDialog({
   pending,
   isOwnIdentity,
   credentialPolicy,
+  description,
+  children,
   onCancel,
   onConfirm,
 }: {
@@ -599,6 +601,8 @@ export function RevokeGrantDialog({
   pending: boolean;
   isOwnIdentity: boolean;
   credentialPolicy: ToolConnectionCredentialPolicy;
+  description?: string;
+  children?: ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -621,8 +625,9 @@ export function RevokeGrantDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{body}</AlertDialogDescription>
+          <AlertDialogDescription>{description ?? body}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending} autoFocus>
             Cancel

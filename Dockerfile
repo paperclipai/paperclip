@@ -48,8 +48,14 @@ COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-w
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
 COPY scripts/link-plugin-dev-sdk.mjs scripts/
+COPY packages/paperclip-runner/scripts/install-copilot-assets.mjs packages/paperclip-runner/scripts/materialize-copilot-binary.mjs packages/paperclip-runner/scripts/copilot-inner-distribution.mjs packages/paperclip-runner/scripts/
+COPY packages/paperclip-runner/src/drivers/acpx/copilot-installation.ts packages/paperclip-runner/src/drivers/acpx/
+COPY server/scripts/install-copilot-assets.mjs server/scripts/
+COPY server/src/services/copilot-connection-probe.ts server/src/services/
 
-RUN pnpm install --frozen-lockfile
+# CI owns repository lock updates. Resolve manifest changes in the image's
+# private build tree, then install from that exact generated lock.
+RUN pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile && pnpm install --frozen-lockfile
 
 FROM base AS rust-toolchain
 WORKDIR /app
@@ -88,7 +94,27 @@ RUN set -eux; \
 COPY packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
 RUN cd /tmp/runner-toolchain && rustup show
 
-FROM rust-toolchain AS runner-build
+# Pin the recipe generator and its dependency lockfile. It is a build-only tool
+# and uses the same package-owned compiler as both native build stages.
+FROM rust-toolchain AS rust-chef
+RUN cd /tmp/runner-toolchain && cargo install cargo-chef --version 0.1.73 --locked
+
+FROM rust-chef AS runner-plan
+WORKDIR /app/packages/paperclip-runner
+COPY packages/paperclip-runner/rust-toolchain.toml ./
+COPY packages/paperclip-runner/runner ./runner
+RUN cd runner && cargo chef prepare --recipe-path /tmp/runner-recipe.json
+
+FROM rust-chef AS runner-deps
+WORKDIR /app/packages/paperclip-runner/runner
+COPY packages/paperclip-runner/rust-toolchain.toml ../
+# The recipe changes only when dependency manifests, the lockfile, or target
+# metadata change. Source edits can reuse this compiled dependency layer.
+COPY --from=runner-plan /tmp/runner-recipe.json /tmp/runner-recipe.json
+RUN cargo chef cook --release --locked --package paperclip-runner-core --bin paperclip-runnerd --recipe-path /tmp/runner-recipe.json \
+  && find . -mindepth 1 -maxdepth 1 ! -name target -exec rm -rf {} +
+
+FROM runner-deps AS runner-build
 WORKDIR /app/packages/paperclip-runner
 # Rust embeds protocol schemas and fixtures with include_str!. Keep those
 # alongside the complete Cargo workspace so every compile-time input keys
@@ -108,20 +134,40 @@ COPY --from=deps /app /app
 COPY . .
 RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
   && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
+# Both the browser bundle and server stamp need the source commit. Declare it
+# after the stable dependency layers, before either application build.
+ARG PAPERCLIP_BUILD_COMMIT=""
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
 # commit into dist/build-info.json. The build context has no .git, so the
 # script reads PAPERCLIP_BUILD_COMMIT instead. Docker exposes an ARG to the
-# next RUN as an environment variable, so declare it here — in the build
-# stage — before the server build. The production stage below declares the
+# next RUN as an environment variable. The production stage below declares the
 # same ARG again for the runtime fallback; an ARG goes out of scope at the
 # end of its stage. Empty for local `docker build`, which then writes no stamp.
-ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
+RUN pnpm --filter @paperclipai/server build:runtime \
+  && test -f server/dist-runtime/index.mjs || (echo "ERROR: server runtime bundle missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
+
+# Remote OpenCode and ACPX runs require a controller-owned provider pack to
+# verify the sandbox installation or stage matching assets. Ship it in the
+# standard image so downstream Cloud compositions inherit the same artifacts.
+# Grok's native executable stays an external sandbox prerequisite; this pack
+# contains only its launcher.
+FROM build AS runner-provider-pack
+# Unstamped local builds remain usable, but cannot qualify a remote pack.
+# Never invent a source revision to make an unqualified pack look verified.
+RUN mkdir -p /provider-pack /provider-pack-transport \
+  && if [ -n "${PAPERCLIP_BUILD_COMMIT}" ]; then \
+    PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_BUILD_COMMIT}" node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
+      && node scripts/create-provider-pack-archive.mjs /provider-pack \
+      && mv /provider-pack.archives /provider-pack.archive.json /provider-pack-transport/; \
+  else \
+    echo "Skipping remote provider pack: supply a full PAPERCLIP_BUILD_COMMIT to enable remote OpenCode/ACPX execution"; \
+  fi
 
 FROM base AS production
 ARG USER_UID=1000
@@ -147,6 +193,18 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY --chown=node:node --from=build /app /app
+
+COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
+COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
+# Managed deployments can remap node's UID at startup. This immutable pack
+# contains public code and integrity metadata, never credentials; it must remain
+# readable afterward.
+# Keep it root-owned and verify access as an unrelated unprivileged UID.
+RUN chmod -R a+rX /opt/paperclip-runner/provider-pack \
+  && if [ -f /opt/paperclip-runner/provider-pack/provider-pack.json ]; then \
+    gosu 65534:65534 node -e 'const fs = require("node:fs"); const path = require("node:path"); const root = "/opt/paperclip-runner/provider-pack"; const manifest = JSON.parse(fs.readFileSync(path.join(root, "provider-pack.json"), "utf8")); for (const artifact of Object.values(manifest.payload.artifacts)) fs.readFileSync(path.join(root, artifact.path)); fs.accessSync(path.join(root, manifest.payload.artifacts.nodeCommand.path), fs.constants.X_OK);'; \
+  fi
+ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pack
 
 # Declare per-build metadata after the stable RUN layers. Docker includes
 # in-scope ARG values in a RUN's environment even when its command does not
@@ -181,8 +239,8 @@ EXPOSE 3100
 # cgroup pid limit is exhausted and *every* fork() in the container fails.
 # tini reaps adopted orphans and forwards signals, so the exec chain below and
 # graceful shutdown are unchanged. Mirrors docker/agent-runtime/Dockerfile.base.
-ENTRYPOINT ["/usr/bin/tini", "--", "docker-entrypoint.sh"]
-CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+ENTRYPOINT ["/usr/bin/tini", "-s", "--", "docker-entrypoint.sh"]
+CMD ["node", "server/dist-runtime/index.mjs"]
 
 # Cloud image variant (build with `--target cloud`): the production image
 # plus built bundled sandbox-provider plugins. Managed instances receive a
@@ -192,8 +250,8 @@ CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/di
 # dist/ to exist in the image — the default image ships only their source,
 # so auto-install logs "bundle not present" and skips. The plugins are
 # built in this separate target so the default (self-hosted) image stays
-# lean; CI pins the default build to `--target production`, which is
-# byte-identical to before this stage existed.
+# lean; CI pins the default build to `--target production`. Both targets
+# inherit the build-owned remote provider pack from the standard image.
 #
 # The sandbox providers are intentionally excluded from the pnpm workspace
 # (see pnpm-workspace.yaml), so each installs standalone exactly as its

@@ -16,13 +16,16 @@ describe("migrationRefusalError", () => {
     expect(error.message).toContain("Refusing to start");
   });
 
-  it("keeps pending migrations on a migrated database as a plain, always-reported error", () => {
+  it("classifies pending migrations on a migrated database as a supervised-transient refusal", () => {
+    // Managed fleet rolls deliver the new app image before the migration
+    // runner, so a briefly-behind schema is the routine mid-upgrade phase
+    // under a supervisor — suppressed there, still reported self-hosted.
     const error = migrationRefusalError(
       { appliedMigrations: ["0000_init.sql"], tableCount: 41 },
       message,
     );
-    expect(error).toBeInstanceOf(Error);
-    expect(error).not.toBeInstanceOf(StartupRefusalError);
+    expect(error).toBeInstanceOf(StartupRefusalError);
+    expect((error as StartupRefusalError).kind).toBe("schema-migration-pending");
   });
 
   it("treats an empty journal beside existing tables as drift, not a fresh database", () => {

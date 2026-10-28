@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -36,6 +36,7 @@ import {
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
+import { nativeSha256 } from "./canonical.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -336,6 +337,59 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       ok: false,
       error: { code: "task_ownership_denied", retryable: false },
       resultReceipt: { phase: "result" },
+    });
+  });
+
+  it("persists NUL-containing command output without changing replay identity", async () => {
+    const seed = await seedNativeRun();
+    const nativeStore = store(seed);
+    const output = "transforming (6) ../\u0000virtual:/@storybook/builder-vite/storybook-stories.js";
+    const payload = {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "storybook-build",
+      transport: "process",
+      operation: "execute",
+      status: "completed",
+      output,
+      outputBytes: Buffer.byteLength(output),
+      outputTruncated: false,
+      outputDigest: `sha256:${createHash("sha256").update(output).digest("hex")}`,
+      exitCode: 0,
+    };
+    const event: PrpEvent = {
+      ...runnerEvent(seed),
+      eventType: "tool.execution.completed",
+      payload,
+    };
+
+    // The provider's valid JSON cannot be inserted directly into PostgreSQL JSONB.
+    await expect(db.execute(sql`select ${JSON.stringify(event)}::jsonb`))
+      .rejects.toMatchObject({ cause: { code: "22P05" } });
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "committed",
+      cursor: 1,
+    });
+    const [row] = await db.select().from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, seed.runId));
+    expect(row.payload).toEqual({ prpEvent: event });
+    expect(row.sourcePayloadSha256).toBe(`sha256:${nativeSha256(row.payload?.prpEvent)}`);
+
+    // Existing SQL selectors still see the event's ordinary routing fields.
+    const [projection] = await db.select({
+      sourceKind: sql<string>`${heartbeatRunEvents.payload}->'prpEvent'->>'sourceKind'`,
+    }).from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, seed.runId));
+    expect(projection.sourceKind).toBe("runner");
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "duplicate",
+      cursor: 1,
+    });
+    await expect(nativeStore.appendEvent({
+      ...event,
+      payload: { ...payload, output: output.replaceAll("\u0000", "\\u0000") },
+    })).rejects.toBeInstanceOf(NativeSessionProtocolIntegrityError);
+    await expect(nativeStore.appendEvent(runnerEvent(seed, 2))).resolves.toMatchObject({
+      disposition: "committed",
+      cursor: 2,
     });
   });
 

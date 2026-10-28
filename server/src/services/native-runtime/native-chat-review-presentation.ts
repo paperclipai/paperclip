@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   agents,
@@ -191,13 +192,12 @@ async function reviewPresentationEvidence(
     typeof target.revisionId !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       target.revisionId,
-    ) ||
-    gate.idempotencyKey !== `native-review:${target.revisionId}`
+    )
   )
     return null;
   const [origin, competingInteraction, competingApproval] = await Promise.all([
     db
-      .select({ id: statusDecisions.id })
+      .select({ id: statusDecisions.id, decisionJson: statusDecisions.decisionJson })
       .from(statusDecisions)
       .innerJoin(
         statusDecisionEffects,
@@ -256,6 +256,14 @@ async function reviewPresentationEvidence(
       .then((rows) => rows[0]),
   ]);
   if (!origin || competingInteraction || competingApproval) return null;
+  const reviewEffects = Array.isArray(origin.decisionJson.effects) ? origin.decisionJson.effects : [];
+  const matchesReviewRequest = reviewEffects.some((value) => {
+    const effect = record(value);
+    const requestKey = typeof effect.requestKey === "string" ? effect.requestKey : null;
+    return effect.kind === "bind_reviewer"
+      && gate.idempotencyKey === `native-review:${origin.id}${requestKey ? `:${requestKey}` : ""}`;
+  });
+  if (!matchesReviewRequest) return null;
   if (await hasChatRunOwnedProviderInteraction(db, input)) return null;
   return {
     schema: SCHEMA,
@@ -566,20 +574,28 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     assessmentId: input.assessmentId,
     externalChatReviewPresentation: { ...proof, decisionId: input.decisionId },
   };
+  const runOwner = and(
+    eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.nativeIssueId, input.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  );
+  const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`;
+  const [run] = await db.select({
+    needsUpdate: sql<boolean>`${projectedResult} is distinct from ${heartbeatRuns.resultJson}`,
+  }).from(heartbeatRuns).where(runOwner).for("update");
+  if (!run) return false;
+  // A valid existing projection still permits the caller to materialize its
+  // response. Replaying recovery must not rewrite it or signal another scan.
+  if (!run.needsUpdate) return true;
+  await notifyChatRunMilestones(db, input);
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`,
+      resultJson: projectedResult,
       updatedAt: new Date(),
     })
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.nativeIssueId, input.issueId),
-        eq(heartbeatRuns.runtimeMode, "native"),
-      ),
-    )
+    .where(runOwner)
     .returning({ id: heartbeatRuns.id });
   return Boolean(updated);
 }

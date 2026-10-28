@@ -78,8 +78,10 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+const mockInboxBadge = vi.hoisted(() => ({ inbox: 0, failedRuns: 0 }));
+
 vi.mock("../hooks/useInboxBadge", () => ({
-  useInboxBadge: () => ({ inbox: 0, failedRuns: 0 }),
+  useInboxBadge: () => mockInboxBadge,
 }));
 
 vi.mock("@/plugins/slots", () => ({
@@ -113,6 +115,9 @@ vi.mock("./SidebarProjects", () => ({
 vi.mock("./SidebarStarredProjects", () => ({
   SidebarStarredProjects: () => <div data-testid="sidebar-starred-projects" />,
 }));
+
+// Stubbed so the "no agent names in the primary nav" assertion would catch a
+// regression that mounts the old per-agent chat rows alongside the Chat rail.
 
 vi.mock("./SidebarRecentTasks", () => ({
   SidebarRecentTasks: () => <div data-testid="sidebar-recent-tasks">Recent Tasks</div>,
@@ -158,6 +163,8 @@ describe("Sidebar", () => {
     mockSidebar.collapsed = false;
     mockSidebar.collapseLocked = false;
     mockSidebar.peeking = false;
+    mockInboxBadge.inbox = 0;
+    mockInboxBadge.failedRuns = 0;
   });
 
   afterEach(() => {
@@ -173,8 +180,7 @@ describe("Sidebar", () => {
     const sidebar = container.querySelector("aside");
     expect(sidebar?.classList).not.toContain("border-r");
     expect(sidebar?.classList).not.toContain("border-border");
-    expect(sidebar?.classList).toContain("bg-border/50");
-    expect(sidebar?.classList).toContain("dark:bg-muted");
+    expect(sidebar?.classList).toContain("primary-sidebar-surface");
 
     flushSync(() => {
       root.unmount();
@@ -261,6 +267,11 @@ describe("Sidebar", () => {
     expect(navLabels).toContain("Projects");
     expect(navLabels).toContain("Agents");
     expect(container.textContent).not.toContain("Organization");
+    expect(container.textContent).not.toContain("Workspaces");
+    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
+    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Conference Room");
+    expect(container.textContent).not.toContain("Pipelines");
 
     flushSync(() => {
       root.unmount();
@@ -346,14 +357,115 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Workspaces link while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+  it("keeps the Inbox row, Workspaces and no chat surfaces while both PAP-670 flags are off", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    expect(container.textContent).not.toContain("Workspaces");
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/inbox")).toBe(true);
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(true);
 
     flushSync(() => {
       root.unmount();
+    });
+  });
+
+  describe("with Agent Chat on (PAP-670)", () => {
+    it("leads the Work group with a single Chat row and keeps agent names out of the primary nav", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true });
+      const root = await renderSidebar();
+
+      const chatLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/chats");
+      expect(chatLink?.textContent).toContain("Chat");
+
+      const workSection = chatLink?.closest("div")?.parentElement?.parentElement;
+      const workText = workSection?.textContent ?? "";
+      expect(workText.indexOf("Chat")).toBeLessThan(workText.indexOf("Tasks"));
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("needs nothing else: the Inbox row stays while Combined Inbox + Task List is off", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true });
+      const root = await renderSidebar();
+
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(true);
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/inbox")).toBe(true);
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("does not render Workspaces anywhere in the nav, even with isolated workspaces on", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true, enableIsolatedWorkspaces: true });
+      const root = await renderSidebar();
+
+      expect(container.textContent).not.toContain("Workspaces");
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(false);
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("keeps Chat in the top group in the legacy shell, which has no Work-group Chat row", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true, enableStreamlinedUi: false });
+      const root = await renderSidebar();
+
+      const chatLinks = [...container.querySelectorAll("a")].filter((anchor) => anchor.getAttribute("href") === "/chats");
+      expect(chatLinks).toHaveLength(1);
+      expect(chatLinks[0]?.closest("[class*=\"group/sidebar-section\"]")).toBeNull();
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+  });
+
+  describe("with Combined Inbox + Task List on (PAP-670)", () => {
+    it("keeps the Inbox row in the legacy shell, which has no merged Tasks page", async () => {
+      mockInboxBadge.inbox = 7;
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true, enableStreamlinedUi: false });
+      const root = await renderSidebar();
+
+      const inboxLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/inbox");
+      expect(inboxLink?.textContent).toContain("7");
+      const tasksLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/issues");
+      expect(tasksLink?.textContent).not.toContain("7");
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("drops the Inbox row and moves its unread badge onto Tasks", async () => {
+      mockInboxBadge.inbox = 7;
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true });
+      const root = await renderSidebar();
+
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/inbox")).toBe(false);
+
+      const tasksLink = [...container.querySelectorAll("a")].find((anchor) => anchor.getAttribute("href") === "/issues");
+      expect(tasksLink?.textContent).toContain("Tasks");
+      expect(tasksLink?.textContent).toContain("7");
+
+      flushSync(() => {
+        root.unmount();
+      });
+    });
+
+    it("adds no chat surfaces while Agent Chat is off", async () => {
+      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true, enableAgentChat: false });
+      const root = await renderSidebar();
+
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+
+      flushSync(() => {
+        root.unmount();
+      });
     });
   });
 
@@ -431,18 +543,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("reserves the Goals nav slot while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("shows the Goals nav item when the experimental setting is enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -507,31 +607,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Conference Room");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("hides the Pipelines nav item when pipelines are disabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enablePipelines: false,
-    });
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("always shows Connectors in the Org section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = await renderSidebar();
@@ -552,26 +627,15 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+  it("ignores the retired Pipelines flag in old settings responses", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: true,
     });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
-    expect(link?.getAttribute("href")).toBe("/pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
     expect(container.textContent).not.toContain("Pipelines");
+    expect(container.querySelector('a[href="/pipelines"]')).toBeNull();
 
     flushSync(() => {
       root.unmount();

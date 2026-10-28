@@ -1,3 +1,6 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import {
   issues,
@@ -9,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { assertIssueThreadInteractionResolverAudience } from "./issue-thread-interaction-resolution.js";
+import { emitConnectionInvoked } from "./connector-telemetry.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   logActivity,
@@ -113,7 +117,7 @@ export async function commitToolActionReview(
       !invocation ||
       invocation.issueId !== current.issueId ||
       (current.requestedByAgentId &&
-        invocation.agentId !== current.requestedByAgentId)
+        (invocation.actorType === "agent" ? invocation.actorId : invocation.agentId) !== current.requestedByAgentId)
     )
       throw conflict("Tool invocation context does not match");
     if (current.expiresAt && current.expiresAt <= new Date())
@@ -138,6 +142,8 @@ export async function commitToolActionReview(
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
+    if (interaction && issue) await notifyChatRunMilestones(tx, interaction);
+    await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
@@ -205,6 +211,7 @@ export async function commitToolActionReview(
               : { version: 1, outcome: "rejected", reason: input.reason },
         })
         .where(eq(issueThreadInteractions.id, interaction.id));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolAction);
       await tx
         .insert(toolActionDeliveries)
         .values({
@@ -237,6 +244,11 @@ export async function commitToolActionReview(
     }
     return updated;
   });
+  // A rejection writes the invocation's terminal `denied` status inside the
+  // transaction above; emit only after that commit. Approvals stay in-flight
+  // and reach their terminal status in the gateway execution paths.
+  if (input.decision === "rejected")
+    void emitConnectionInvoked(db, source.invocationId);
   for (const publication of publications) publishActivity(publication);
   return result;
 }

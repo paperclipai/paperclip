@@ -29,6 +29,32 @@ describe("issuesApi.list", () => {
     mockApi.patch.mockResolvedValue({});
   });
 
+  it.each([null, "stopped-run"])("dispatches a stopped queue using its current revision (%s)", async (target) => {
+    mockApi.get.mockResolvedValueOnce({ queueId: "queue-1", targetRunId: null, revision: "revision-2" });
+    await issuesApi.interruptLatestQueuedComments("issue-1", target);
+    expect(mockApi.post).toHaveBeenCalledWith("/issues/issue-1/queued-comments/interrupt", {
+      queueId: "queue-1", targetRunId: null, revision: "revision-2",
+    });
+  });
+
+  it.each([
+    { queueId: null, targetRunId: null, revision: "empty" },
+    { queueId: "queue-1", targetRunId: "new-run", revision: "changed" },
+  ])("rejects a changed or empty queue before interruption", async queue => {
+    mockApi.get.mockResolvedValueOnce(queue);
+    await expect(issuesApi.interruptLatestQueuedComments("issue-1", "old-run")).rejects.toThrow("queued messages changed");
+    expect(mockApi.post).not.toHaveBeenCalled();
+  });
+
+  it("fetches all pages of tasks created from the source without filtering parentage", async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({ id: `task-${index}` }));
+    mockApi.get.mockResolvedValueOnce(firstPage).mockResolvedValueOnce([{ id: "last-task" }]);
+    const result = await issuesApi.listAll("company-1", { createdFromIssueId: "source-1" });
+    expect(result).toHaveLength(501);
+    expect(mockApi.get).toHaveBeenNthCalledWith(1, "/companies/company-1/issues?createdFromIssueId=source-1&limit=500&sortField=id&sortDir=asc");
+    expect(mockApi.get).toHaveBeenNthCalledWith(2, "/companies/company-1/issues?createdFromIssueId=source-1&limit=500&sortField=id&sortDir=asc&afterId=task-499");
+  });
+
   it("passes parentId through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", {
       parentId: "issue-parent-1",

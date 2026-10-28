@@ -1,11 +1,11 @@
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
@@ -119,6 +119,8 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
+        "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
         "harnessDriverVersion": 1,
         "prp": {
@@ -128,6 +130,89 @@ fn build_metadata() -> serde_json::Value {
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
     })
+}
+
+// The publisher seals image installations. Check only path metadata at startup;
+// no directory walk or provider executable runs here. Writable aliases are not trusted.
+fn protected_pack_path(path: &Path) -> bool {
+    #[cfg(unix)]
+    return fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.uid() == 0
+            && metadata.permissions().mode() & 0o022 == 0
+            && !metadata.file_type().is_symlink()
+            && rustix::fs::access(path, rustix::fs::Access::WRITE_OK).is_err()
+    });
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+fn provider_pack_inventory(root: &Path) -> serde_json::Value {
+    let read = || -> io::Result<serde_json::Value> {
+        let resolved = fs::canonicalize(root)?;
+        let manifest_path = resolved.join("provider-pack.json");
+        if root != resolved
+            || !resolved.ancestors().all(protected_pack_path)
+            || !protected_pack_path(&manifest_path)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "writable pack installation",
+            ));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        options.custom_flags(
+            (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32,
+        );
+        let file = options.open(&manifest_path)?;
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pack manifest is not a file",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(65_537).read_to_end(&mut bytes)?;
+        if bytes.len() > 65_536 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pack manifest too large",
+            ));
+        }
+        Ok(serde_json::from_slice(&bytes)?)
+    };
+    match read() {
+        Ok(manifest) => json!({"root": root, "manifest": manifest, "immutable": true}),
+        Err(_) => json!({"root": root, "manifest": null, "immutable": false}),
+    }
+}
+
+fn metadata_with_provider_packs(args: &[String]) -> Result<serde_json::Value, LocalRunnerError> {
+    let mut metadata = build_metadata();
+    let mut packs = Vec::new();
+    let mut options = args[1..].chunks_exact(2);
+    for pair in &mut options {
+        if pair[0] != "--provider-pack-root"
+            || packs.len() >= 3
+            || !Path::new(&pair[1]).is_absolute()
+        {
+            return Err(LocalRunnerError::invalid(
+                "invalid provider pack metadata request",
+            ));
+        }
+        packs.push(provider_pack_inventory(Path::new(&pair[1])));
+    }
+    if !options.remainder().is_empty() {
+        return Err(LocalRunnerError::invalid(
+            "missing provider pack metadata root",
+        ));
+    }
+    metadata["providerPacks"] = json!(packs);
+    Ok(metadata)
 }
 
 fn value(args: &[String], name: &str) -> Result<String, LocalRunnerError> {
@@ -260,6 +345,42 @@ fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, Loc
     })
 }
 
+fn durable_connect_url(args: &[String], run_id: &str) -> Result<String, LocalRunnerError> {
+    let has_connect = args.iter().any(|argument| argument == "--connect-url");
+    let has_listener = ["--listen-address", "--listen-port", "--listen-path"]
+        .iter()
+        .any(|name| args.iter().any(|argument| argument == name));
+    match (has_connect, has_listener) {
+        (true, false) => value(args, "--connect-url"),
+        (false, true) => {
+            let address = value(args, "--listen-address")?;
+            let port = optional_u64(args, "--listen-port")?.unwrap_or(43127);
+            if !(1..=u16::MAX as u64).contains(&port) {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener port must be in 1..=65535",
+                ));
+            }
+            let path = value(args, "--listen-path")?;
+            if address != "0.0.0.0" {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener requires --listen-address 0.0.0.0",
+                ));
+            }
+            if path != format!("/api/runner/v1/connect/{run_id}") {
+                return Err(LocalRunnerError::invalid(
+                    "runner listener path must exactly match the configured run",
+                ));
+            }
+            Ok(format!("listen://{address}:{port}{path}"))
+        }
+        _ => {
+            return Err(LocalRunnerError::invalid(
+                "durable runner requires exactly one connect URL or complete listener group",
+            ))
+        }
+    }
+}
+
 fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
@@ -273,34 +394,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     };
     let state_dir = PathBuf::from(value(args, "--state-dir")?);
     let run_id = value(args, "--run-id")?;
-    let has_connect = args.iter().any(|argument| argument == "--connect-url");
-    let has_listener = ["--listen-address", "--listen-port", "--listen-path"]
-        .iter()
-        .any(|name| args.iter().any(|argument| argument == name));
-    let connect_url = match (has_connect, has_listener) {
-        (true, false) => value(args, "--connect-url")?,
-        (false, true) => {
-            let address = value(args, "--listen-address")?;
-            let port = value(args, "--listen-port")?;
-            let path = value(args, "--listen-path")?;
-            if address != "0.0.0.0" || port != "43127" {
-                return Err(LocalRunnerError::invalid(
-                    "runner listener requires --listen-address 0.0.0.0 and --listen-port 43127",
-                ));
-            }
-            if path != format!("/api/runner/v1/connect/{run_id}") {
-                return Err(LocalRunnerError::invalid(
-                    "runner listener path must exactly match the configured run",
-                ));
-            }
-            format!("listen://{address}:{port}{path}")
-        }
-        _ => {
-            return Err(LocalRunnerError::invalid(
-                "durable runner requires exactly one connect URL or complete listener group",
-            ))
-        }
-    };
+    let connect_url = durable_connect_url(args, &run_id)?;
     let ca_bundle_path = args
         .iter()
         .any(|argument| argument == "--ca-bundle-path")
@@ -330,7 +424,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
-        max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
+        max_runtime: duration("--max-runtime-ms", 0)?,
     };
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
@@ -338,8 +432,14 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
-    if args == ["--build-metadata"] {
-        println!("{}", build_metadata());
+    if args.first().map(String::as_str) == Some("--stdio-mcp")
+        && (args.len() == 2 || (args.len() == 3 && args[2] == "--content-images"))
+    {
+        return paperclip_runner_core::stdio_mcp::run_proxy(Path::new(&args[1]), args.len() == 3)
+            .map_err(|e| LocalRunnerError::invalid(e.to_string()));
+    }
+    if args.first().map(String::as_str) == Some("--build-metadata") {
+        println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
     }
     if args.iter().any(|argument| argument == "--connect-url")
@@ -394,13 +494,120 @@ mod tests {
     use super::*;
 
     #[test]
+    fn listener_port_is_configurable_and_defaults_to_43127() {
+        let base: Vec<String> = [
+            "--listen-address",
+            "0.0.0.0",
+            "--listen-path",
+            "/api/runner/v1/connect/run_1",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(
+            durable_connect_url(&base, "run_1").unwrap(),
+            "listen://0.0.0.0:43127/api/runner/v1/connect/run_1"
+        );
+        for port in ["43000", "43999", "65535"] {
+            let mut args = base.clone();
+            args.extend(["--listen-port".to_owned(), port.to_owned()]);
+            assert_eq!(
+                durable_connect_url(&args, "run_1").unwrap(),
+                format!("listen://0.0.0.0:{port}/api/runner/v1/connect/run_1")
+            );
+        }
+        for port in ["0", "65536", "-1", "invalid", ""] {
+            let mut args = base.clone();
+            args.extend(["--listen-port".to_owned(), port.to_owned()]);
+            assert!(durable_connect_url(&args, "run_1").is_err());
+        }
+        assert!(durable_connect_url(&base, "another_run").is_err());
+        let mut mixed = base.clone();
+        mixed.extend([
+            "--connect-url".to_owned(),
+            "wss://example.test/connect".to_owned(),
+        ]);
+        assert!(durable_connect_url(&mixed, "run_1").is_err());
+    }
+
+    #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
+            metadata["externalProviderCapabilities"],
+            json!(["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"])
+        );
+        assert_eq!(
+            metadata["durableSessionCapabilities"],
+            json!(["unlimited_runtime", "connection_lease_renewal"])
+        );
+        assert_eq!(
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])
+        );
+    }
+
+    #[test]
+    fn pack_inventory_rejects_task_owned_roots_and_writable_aliases() {
+        let directory =
+            std::env::temp_dir().join(format!("pack-inventory-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("provider-pack.json"), "{}").unwrap();
+        let args = vec![
+            "--build-metadata".to_owned(),
+            "--provider-pack-root".to_owned(),
+            directory.to_string_lossy().into_owned(),
+        ];
+        let metadata = metadata_with_provider_packs(&args).unwrap();
+        assert_eq!(metadata["providerPacks"][0]["immutable"], false);
+        assert_eq!(
+            metadata["providerPacks"][0]["manifest"],
+            serde_json::Value::Null
+        );
+        #[cfg(unix)]
+        {
+            let alias = directory.join("alias");
+            std::os::unix::fs::symlink("/usr", &alias).unwrap();
+            assert_eq!(provider_pack_inventory(&alias)["immutable"], false);
+            assert!(!protected_pack_path(&alias));
+            assert!(!protected_pack_path(&directory));
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pack_metadata_requests_are_bounded_and_missing_packs_do_not_hide_runner_metadata() {
+        for options in [
+            vec!["--provider-pack-root"],
+            vec!["--other", "/opt"],
+            vec!["--provider-pack-root", "relative"],
+            vec![
+                "--provider-pack-root",
+                "/a",
+                "--provider-pack-root",
+                "/b",
+                "--provider-pack-root",
+                "/c",
+                "--provider-pack-root",
+                "/d",
+            ],
+        ] {
+            let mut args = vec!["--build-metadata".to_owned()];
+            args.extend(options.into_iter().map(str::to_owned));
+            assert!(metadata_with_provider_packs(&args).is_err());
+        }
+        let metadata = metadata_with_provider_packs(&[
+            "--build-metadata".to_owned(),
+            "--provider-pack-root".to_owned(),
+            "/missing-provider-pack".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(metadata["binaryContractVersion"], 2);
+        assert_eq!(
+            metadata["providerPacks"][0]["manifest"],
+            serde_json::Value::Null
         );
     }
 

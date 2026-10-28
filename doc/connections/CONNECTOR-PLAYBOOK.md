@@ -3,18 +3,45 @@
 Audience: agents and engineers researching, implementing, testing, reviewing,
 and shipping Paperclip app connections.
 
-Status: canonical end-to-end authoring guide for Apps v2 catalog connections.
+Status: canonical end-to-end authoring guide for Apps v2 tool connections and
+chat channel connectors.
+
+Experimental voice connections use the same company-scoped channel endpoints,
+vault, task bindings, delivery ledger and publications, with `transport: voice`
+and an explicit runtime rather than Chat SDK. Do not expose voice transport as
+an MCP tool connection. Speko's browser implementation and its remaining phone
+qualification gate are documented in the [native voice report](../plans/2026-10-09-speko-pr-qualification.md)
+and [E2E runbook](../plans/2026-09-11-speko-voice-e2e-runbook.md). The optional
+Company Phone Agent is a catalog template; selecting it must remain optional.
+For connector artwork, follow [Connector icons](./CONNECTOR-ICONS.md): fixed gray Paperclip frames, authentic vendor artwork, explicit theme variants, optical fit and exact provenance. Brand-library additions do not activate connectors. Use the shared registry/resolver and branding generator; do not introduce per-screen logos or outer-surface overrides.
 
 This runbook is the repeatable, agent-executable procedure for adding a vendor
-to the Apps catalog as data, not as a plugin. It follows the accepted
-connections framework in [PAP-13211](/PAP/issues/PAP-13211), the first-30
-rollout matrix in [PAP-2432](/PAP/issues/PAP-2432), and the production
-validation scope in [PAP-12373](/PAP/issues/PAP-12373).
+to the Apps catalog as data, not as a plugin. The architecture, reuse-path
+classification, credential boundaries, and production validation requirements
+are specified below so contributors can implement a connector without access
+to an internal issue tracker.
 
-Use it when Paperclip acts on an external system through a governed connection: a stored credential, a capability catalog, access profiles and policy rules, and audit. Inbound integrations, such as an external client acting on Paperclip, use gateway or webhook guidance instead.
+Inline task connection cards must use the same provider setup controller and
+fields as Apps: URL guidance, authentication options, validation, and recovery.
+Keep dialogs bounded to the form width on wide screens and scrollable on narrow
+screens. A task request locks agent access to its requester and returns to the
+card after completion; reusing an account must preserve its existing access.
+OAuth popups need a normal sign-in link fallback, and callback messages must be
+verified against durable server state before accepting the request.
 
-**A catalog entry is a convenience layer, not a prerequisite.** Since
-[PAP-17087](/PAP/issues/PAP-17087), an operator can connect any
+For chat and email setup, account linking, and ongoing configuration, also follow
+[Chat connector UX](./CHAT-CONNECTOR-UX.md). It covers step navigation, footer
+layout, credential instructions, provider handoffs, identity linking, optional
+message tests, and management pages, with examples for other providers.
+
+Use the tool-connection workflow when Paperclip acts on an external system
+through a governed credential and capability catalog. For conversations with
+agents in Slack or another messaging provider, also follow
+[Chat channel connectors](#chat-channel-connectors), including inbound messages,
+questions, responses, and delivery. Other inbound integrations, such as an
+external API client acting on Paperclip, use gateway or webhook guidance.
+
+**A catalog entry is a convenience layer, not a prerequisite.** An operator can connect any
 standards-compliant remote HTTP MCP server from **Connect your own MCP server**
 or **Paste a config** with no Paperclip code change at all — including servers
 that need browser sign-in. Those two routes are the documented baseline; see
@@ -33,7 +60,138 @@ remote MCP methods may opt in to [Vercel Connect](./VERCEL-CONNECT.md), where
 durable provider credentials remain in the operator's Vercel account and
 Paperclip resolves short-lived tokens at invocation time. Before writing a
 connector, read [Identity vs. connections](./README.md#identity-vs-connections)
-for the P1/P2/P3 boundary and the D7 standing rule.
+for background. The boundary is mandatory: sign-in authenticates a person;
+a resource connection authorizes external work; Login with Paperclip issues
+first-party identity tokens to registered clients. Sign-in tokens are never
+reused as resource tokens, and `id.paperclip.ing` never stores resource tokens
+or hosts a connections hub. Keep company-scoped connection credentials and
+agent access under the instance's connection governance.
+
+AI provider credentials use the same vault, applications, grants, installations,
+and delegation model with `connectionPurpose: ai` and `transport: runtime_auth`.
+They authenticate provider execution and never enter MCP discovery or tool/channel
+execution. Extend the provider's existing catalog entry with typed AI methods;
+reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
+for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
+## Provider app attribution
+
+When a provider supports application attribution, credit Paperclip for requests
+that Paperclip manages. Research the provider's current attribution contract
+alongside authentication. A harness may identify itself by default; setting an
+API key or model alone does not replace that identity.
+
+For OpenRouter, use the shared policy in
+`packages/shared/src/openrouter-attribution.ts`:
+
+```http
+HTTP-Referer: https://paperclip.ing
+X-OpenRouter-Title: Paperclip
+X-Title: Paperclip
+X-OpenRouter-Categories: cloud-agent,programming-app
+```
+
+The URL is the app identity. Keep it stable across companies, deployments,
+personal keys, and shared keys. Send only public product identity; never put a
+company name, user identifier, task, credential, or instance URL in these fields.
+Preserve authentication, routing headers, and explicit visibility preferences.
+Replace conflicting attribution names case-insensitively. Do not rely on header
+casing or send two different identities under the legacy and current title names.
+See [OpenRouter app attribution](https://openrouter.ai/docs/app-attribution).
+
+Apply this policy to the actual provider endpoint, including a custom connection
+that points to `https://openrouter.ai` or its documented
+[regional endpoints](https://openrouter.ai/docs/guides/features/in-region-routing),
+`https://eu.openrouter.ai` and `https://us.openrouter.ai`. Do not infer OpenRouter from a model name,
+URL substring, or a provider label whose endpoint was changed. A private gateway
+must implement forwarding or attribution itself; Paperclip cannot establish the
+identity of an upstream request it does not control.
+
+Managed AI connections project attribution into Codex provider `http_headers`,
+Claude `ANTHROPIC_CUSTOM_HEADERS`, OpenCode provider `options.headers`, and Hermes
+`model.default_headers`. Native Runner also regenerates Codex headers after its
+config allowlist, preserves Claude headers across environment isolation, sets
+OpenCode proxy headers at the upstream boundary, and attributes Pi's default and
+custom OpenRouter providers in `models.json`. Explicit legacy provider configs
+for Codex, OpenCode, and Pi use the same policy. Legacy Pi also loads a temporary
+extension at execution time, including on remote targets. It applies attribution
+after credential and model-header resolution on Pi 0.74 and at provider dispatch
+on Pi 1.0. This covers bare `OPENROUTER_API_KEY` setups and existing Pi home
+configurations without replacing the home, credentials, settings, or model catalog.
+The extension checks each request's endpoint, including custom aliases and regional
+hosts; a provider named `openrouter` that points elsewhere retains its headers.
+These paths must preserve model
+overrides, helper-model requests, retries, and recovery. The standalone Runner
+keeps its dependency-free copy of the policy under a parity test.
+
+For each new or changed provider path, verify:
+
+- Actual outgoing headers from the supported, pinned harness or SDK. Config
+  snapshots alone do not prove precedence over a harness's own defaults.
+- Custom aliases, conflicting mixed-case attribution, and model-level overrides.
+- An unrelated provider and a repointed built-in provider retain their settings.
+- The credential and unrelated headers survive; secrets never enter test logs.
+- A small live request succeeds and its provider-side record carries the expected
+  app identity, when the provider exposes that record. Keep this evidence separate
+  from public leaderboard visibility, which depends on the provider's processing
+  and ranking rules.
+
+Record coverage limits explicitly. An externally managed agent, an unmanaged
+harness configuration, or a gateway that replaces headers requires separate
+qualification; do not claim that generating Paperclip's configuration covers it.
+
+## Read/write defaults and credential ownership
+
+New tool connections request the provider-documented permissions needed for their
+supported read **and write** actions. Prefer an available write/draft capability
+before a managed read-only method. Read-only capability choices and provider
+read-only switches belong under **Advanced**. Preserve an explicit method on
+resume/reconnect. Keep the Access → Connect flow and manage action restrictions
+on Permissions; changing OAuth configuration never changes existing consent or
+turns an Off/Ask-first action into Allowed.
+
+Every tool method must have a review in
+[`tool-method-permission-reviews.json`](./tool-method-permission-reviews.json).
+It records requested scopes, supported actions, provider restrictions, official
+evidence, and live-proof status. The ingestion script uses its explicit scope
+lists as `scopesHint`; the catalog regression rejects missing reviews, drift,
+and undocumented omitted OAuth scopes. An omission requires a provider-default
+exception explaining how consent/registration grants access. Never automatically
+request all scopes advertised by an authorization server. See the
+[permission audit](./CONNECTOR-PERMISSION-AUDIT.md) for review findings and limits.
+API-key fields must explain required provider permissions; Paperclip cannot
+increase an already-issued key's permissions. Reconnect with fresh consent/key
+when access is insufficient. A provider's explicit `insufficient_scope` response
+becomes an actionable `oauth_insufficient_scope` error; provider response text
+and credentials are not echoed.
+
+All invocation credential writes use `writeConnectionCredential` (setup,
+replacement, reconnect, OAuth completion and rotation). A personal grant requires
+a **user-scoped** secret owned by its subject and a user-secret definition and
+declaration for the connection. Organization/dedicated-agent credentials use
+company secrets and bindings. OAuth **client-registration** secrets remain
+company-owned and are resolved separately from action credentials. Declaration
+paths are canonical (`credentials.authorization`, `headers.X-Api-Key`,
+`remote.url`, `oauth.access_token`), never double-prefixed. Health, discovery,
+board tests, invocation, and version tracking must use the selected grant's
+refs and the same ownership checks. A personal resolver must not fall back to a
+company credential. Ownership mismatch is `grant_credential_invalid` and tells
+the owner to reconnect.
+
+Existing personal connections with company-scoped invocation credentials require
+their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
+a user-owned credential and updates the grant and declarations while preserving
+the connection identity and action policies. Credential ownership is never
+automatically reassigned at startup. Health, discovery and invocation reject an
+invalid ownership layout with an actionable reconnect error.
+
+Verification must assert stored ownership and declarations, then execute a read
+and a write through a real run-scoped gateway. Cover generic and curated URL
+credentials, bearer/custom headers, shared identities, public endpoints, rotation,
+removal, failed-setup cleanup, owner reconnect of legacy credentials, another user,
+and another company. Fixture-backed MCP calls prove Paperclip behavior; they do
+not prove provider consent or account entitlements. Record account-bound live
+read/write proof separately and never describe metadata discovery as live proof.
 
 ## Contents
 
@@ -42,6 +200,11 @@ for the P1/P2/P3 boundary and the D7 standing rule.
 - [Secret storage and lifecycle](#secret-storage-and-lifecycle)
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
+- [Connection UX and user journeys](#connection-ux-and-user-journeys)
+- [Optional agent instructions](#optional-agent-instructions)
+- [Chat channel connectors](#chat-channel-connectors)
+- [Chat and email connector UX](./CHAT-CONNECTOR-UX.md)
+- [Production validation evidence](#step-9-align-with-production-validation)
 - [AppDefinition field reference](#appdefinition-field-reference)
 - [Troubleshooting](#troubleshooting-and-failure-classification)
 - [Definition of done](#definition-of-done)
@@ -60,10 +223,295 @@ A complete connector proposal produces:
 - Credential secret refs into `company_secrets`; never raw env values.
 - Action catalog metadata with risk classes, schemas, resource filters, and quarantine defaults.
 - Default profile and policy behavior for read, write, and destructive actions.
-- A smoke checklist aligned to [PAP-12373](/PAP/issues/PAP-12373): connect,
+- A smoke checklist following [production validation](#step-9-align-with-production-validation): connect,
   discover catalog, allowed read call, correctly governed write call,
   denied/quarantined call when the method declares one, revoke, and audit
   evidence.
+
+## Chat channel connectors
+
+A tool connection gives an agent actions it can call. A chat channel connector
+makes Slack, Teams, Discord, Telegram, email, or another conversation surface a
+place where a person can conduct work with an agent. It must carry questions,
+decisions, follow-ups, and results through the conversation. Authentication,
+tool discovery, and a successful outbound message alone do not qualify it.
+A provider can offer both kinds of connection; do not assume that its tool
+connection also implements its conversation channel.
+
+Reuse company-scoped endpoints, verified identity links, task/conversation
+bindings, durable interactions, publication queues, and response-delivery receipts.
+Keep provider payloads, UI limits, and callback protocols in their platform module;
+follow [chat channel platform boundaries](../../rules/chat-channel-platform-boundaries.mdc).
+Setup and account linking follow [Chat connector UX](./CHAT-CONNECTOR-UX.md).
+
+### Cover every user-question form
+
+For a new channel, build a capability matrix from the current shared interaction
+kinds, payload validators, and runtime/composer question entry points. For a new
+or changed form, update that matrix for every supported channel. Start with
+`ISSUE_THREAD_INTERACTION_KINDS` in `packages/shared/src/constants.ts` and the
+question contracts in `packages/shared/src/types/issue.ts` and
+`packages/shared/src/validators/issue.ts`; do not treat this list as frozen.
+
+| Request family | Required coverage |
+| --- | --- |
+| `ask_user_questions` and runtime/composer input questions | Free text, single-select, multi-select, multiple questions, custom answers, and editable starting text. Include legacy payloads and canonical `paperclip.question_set.v1` forms. |
+| `request_confirmation` | The decision, supporting context, and accept/reject outcome. |
+| `request_checkbox_confirmation` | The options, selection constraints, and exact submitted selection. |
+| `request_item_verdicts` | Each item, its evidence/context, and individual decisions. |
+| `suggest_tasks` | The proposed tasks and the decision for each proposal. |
+| `connection_intent` | The requested connection/access, why it is needed, and the authorized setup or review path. |
+| Approval or runtime permission requests outside the interaction kinds | An explicit route to the existing authorized approval surface; a chat response must not create new approval authority. |
+
+### Question experience inventory
+
+The request-family table describes contracts; it is not a sufficient UX test
+inventory. Enumerate these eleven experiences separately because the same
+`ask_user_questions` kind can require very different controls. These IDs are
+shared with the [channel question coverage index](./CHAT-QUESTION-COVERAGE.md).
+Add rows when the contracts gain an experience this inventory does not cover.
+
+| ID | Experience | Preferred interaction when the provider supports it |
+| --- | --- | --- |
+| Q01 | Free text | Native text entry with the full prompt, useful context, editable starting text, and multiline support where needed. |
+| Q02 | Short, closed single choice | Direct labeled buttons. Preserve option descriptions and recommendations; do not require a modal just to choose one item. |
+| Q03 | Long option single-select | An inline searchable picker where available; preserve complete labels and the selected value. |
+| Q04 | Multiple selection | Checkboxes or a multi-select with an explicit submit action and visible selection bounds. Selecting one item must not prematurely submit the form. |
+| Q05 | Choice plus custom answer | The appropriate choice controls plus an explicit **Other…** text-entry path. Test both a listed answer and a custom answer. |
+| Q06 | Validated text | Text entry with the expected format/example, field-level errors, and a retained editable draft after invalid input. Cover the contract's pattern, length, and numeric constraints. |
+| Q07 | Ordinary confirmation | Clear accept/reject controls with the decision and context visible. Governed actions and required reasons must retain their canonical review requirements. |
+| Q08 | Checklist confirmation | Labeled selections, descriptions, editable defaults, selection bounds, explicit save, and rejection where supported by the contract. |
+| Q09 | Per-item verdicts | A decision for each item, its evidence/context, conditional reasons, and submission using the canonical atomic or partial-resolution semantics. |
+| Q10 | Suggested tasks | Direct creation for one proposal; selection and **Create selected** for several; dismissal and a review/edit handoff. Show links to the actual created tasks afterward. |
+| Q11 | Connection request | Explain the requested access and purpose. Provide a usable link to the exact authenticated review and a native decline when supported. A link click must never grant access. |
+
+The inventory is a minimum, not eleven happy-path fixtures standing in for all
+behavior. Record applicable variants under each ID:
+
+- Runtime input, composer cards, legacy payloads, and canonical question sets;
+  multiple questions, mixed forms, and repeated labels such as Yes/No in
+  different questions.
+- Required/optional inputs, empty answers, editable defaults, descriptions,
+  recommendations, Unicode, long labels/context, and custom-answer combinations.
+- Every control-selection threshold: just below, at, and above the provider's
+  button, option, text, block, and modal limits. Test a fallback form through its
+  response and continuation, not only the fallback card. Provider limits differ;
+  research the current official documentation and installed SDK.
+- Accepted/rejected/dismissed outcomes, cancelled editing, expired or superseded
+  requests, duplicate callbacks, revoked access, and recovery after publication
+  or finalization failure. Cover document/attachment review and governed
+  permissions separately wherever they affect the question's meaning.
+
+### Choose and record the best available response path
+
+Keep a per-provider matrix linked from the
+[channel question coverage index](./CHAT-QUESTION-COVERAGE.md). For every ID and
+applicable variant, record native controls, a structured reply flow, or an exact
+Paperclip handoff; the provider capability/limit supporting that choice; the
+canonical answer mapping; and the evidence and remaining gaps. Generic adapter
+flags such as `cards` or `modals` are discovery hints, not per-form qualification.
+A provider lacking a native control still needs a usable response path. Mark
+**not applicable** only when the underlying workflow cannot occur, with a reason.
+Do not use it to hide an unimplemented renderer or unavailable test account.
+
+Use the richest practical interaction that preserves meaning, authorization,
+and accessibility. A functional browser fallback is not the best experience
+when a supported native control removes unnecessary work. A richer-looking
+control is also wrong if it drops options, changes validation, or implies new
+authority. Explain unavoidable handoffs before the click and preserve the
+originating conversation through resolution. Do not force all providers to
+Slack's controls or to the least capable provider's interface.
+
+**Every applicable form needs a usable path from the originating conversation.**
+Prefer native controls or a reply flow when the channel can preserve the form's
+meaning, validation, and authorization. Otherwise publish an explicit link to
+the exact Paperclip question or review surface. A fallback is supported behavior;
+silently omitting the request is a defect. Record which path each row uses.
+
+- Show the actual question and relevant context, including descriptions, help,
+  option labels/details, recommendations, and required/optional status. A title
+  such as “Identify the failed runner change” plus **Respond** is insufficient
+  when the payload contains a more specific question.
+- Prefer direct buttons for a few closed choices, a searchable selector for a
+  longer list, and a checklist with an explicit submit action for multiple choices.
+  Use a native modal for free text, custom answers, and per-item verdicts with
+  reasons. Show errors next to the relevant input without discarding the draft.
+  Task suggestions must support selecting which tasks to create and dismissing
+  them. Connection requests may offer a native decline; granting access stays
+  on the authenticated review surface. Keep the saved labels, answers, verdicts,
+  and reasons readable after the controls disappear.
+- Preserve text, numeric, pattern, length, and selection validation. Starting
+  text is editable draft content, never an implicit answer. Preserve repeated
+  choices within separate questions. If native controls cannot do this, use the
+  explicit Paperclip handoff rather than dropping fields or changing semantics.
+- Respect provider message, block, option, and modal limits. For oversized forms,
+  show a useful question/context excerpt, state that the full request is in
+  Paperclip, and provide its link. Do not silently truncate a decision or label
+  a partial form as complete.
+- Apply the existing safe external-text projection and audience rules to prompts,
+  help, drafts, links, and results. Keep secrets and restricted content on the
+  authorized Paperclip surface; explain the handoff without exposing that content.
+- Bind a response to the persisted question, conversation, and verified actor.
+  Recheck current access, resolver audience, target freshness, and endpoint
+  authority. Use the same authoritative resolution service as Paperclip. A
+  channel callback or ordinary reply cannot bypass a governed action's approval.
+- Persist the answer once and use the existing continuation policy and delivery
+  receipts. Duplicate clicks, provider retries, and recovery must not create
+  duplicate decisions or continuations. Preserve task and conversation context.
+  A Paperclip fallback response must retain its authenticated Board receipt;
+  never fabricate a provider callback. Follow each review kind's existing wake
+  or delivery receipt when routing its later result back to the conversation.
+  A settled card alone does not prove that the resumed task delivered its result.
+- Reflect accepted, rejected, expired, and superseded outcomes in the original
+  channel card or an explicit follow-up. Honor the canonical meaning of dismissal
+  or deferral; it is not an answer or permission to resume. Include automatic
+  reconciliation and recovery paths, so resolved requests do not remain actionable.
+
+Apply this contract when adding a channel and whenever a question, card, composer,
+or runtime bridge gains a new form or field. A working Paperclip card does not
+establish channel support. The
+[interaction-authoring skill](../../.agents/skills/create-issue-interaction-ui/SKILL.md)
+must include channel publication, response, and settlement in the same change.
+
+### Verify and grade each experience
+
+Declare the inventory and finish line before implementation. For each affected
+format: implement the best supported interaction, exercise it end to end in the
+actual provider, capture evidence, inspect that evidence yourself, and repair
+any remaining UX gap. Do not wait for the requester to ask separately for real
+provider testing, screenshots, or a judgment about quality.
+
+Start locally with the smallest failing case and exercise the installed SDK,
+serialized provider payloads, authenticated inbound responses, persisted answers,
+and the existing continuation path. Work through one format at a time, using
+focused regressions before the next real-provider attempt. An authorized local
+candidate connected to a dedicated test bot/channel can provide this proof
+before staging deployment. Keep provider webhook ingress, internal API access,
+and human-facing board URLs separate. Use only the necessary authorized callback
+or preview exposure; restore provider configuration and remove temporary access
+at the end. Infrastructure failures remain named blockers, not product passes.
+
+For a new channel, qualify every applicable matrix row. For a behavior change,
+repeat affected rows and shared paths, including native and Paperclip-fallback
+journeys:
+
+request → visible question/context → response → persisted resolution → intended
+continuation → settled card and result in the originating conversation.
+
+Record independent judgments for each row:
+
+| Judgment | Pass standard |
+| --- | --- |
+| Functional result | The exact answer/decision is saved, authorization is preserved, the canonical continuation policy runs without duplicate work, and the intended result is accessible in the originating conversation. |
+| Good experience (✓/✕) | The person can understand the question, answer it, recover from an error, and read the saved outcome without guessing. Inspect unanswered, answering, and settled states. |
+| Best feasible experience (✓/✕) | The chosen controls use the provider's available capabilities well. There is no avoidable modal, browser hop, lost context, or unnecessary interaction. Any handoff has a concrete capability, validation, or authorization reason. |
+
+Use **not run** for missing evidence and explain it; it is not a check mark.
+A native modal is appropriate for substantial text or a multi-item review but
+can be needless friction for a simple choice. A settled “Answered” badge that
+hides the saved choice or text fails the experience check. Publish only the
+safe, authorized answer projection, and make its audience clear at entry;
+sensitive review content may require a clearly explained authenticated handoff.
+
+### Retain inspectable per-format evidence
+
+Produce an HTML gallery or equivalent browsable report with one section per
+format and variant. Capture actual provider screens, not reconstructed cards:
+
+- **Unanswered:** the full question/context and available controls.
+- **Answering:** the open picker/modal or selected values; include invalid input
+  and the preserved draft for validation cases. For a one-click button, the
+  before/after pair is sufficient.
+- **Answered:** the settled card with the permitted saved answer, labels,
+  decisions, and reasons, plus the resumed result or review receipt.
+- **Handoffs and artifacts:** actually click review and created-result links,
+  confirm the correct authenticated destination, and inspect the resulting
+  task/artifact. A valid-looking URL or successful API response is insufficient.
+
+Inspect each captured state yourself. Put functional status, both UX grades,
+a short rationale, and any repair/retest next to the evidence. These are author
+acceptance artifacts for channel qualification, not a blanket screenshot
+request for unrelated UI PRs. Keep material failed attempts and their causes
+alongside successful retries; a retry must not erase the failure history.
+
+Correlate screenshots with the canonical saved response, answer actor/authority,
+continuation count, publication/delivery receipts, and actual created artifacts.
+A visually settled multi-select can still fail continuation authorization; a
+review link can navigate correctly while also firing an erroneous answer
+callback. Test these complete paths. Deterministic coverage must also include
+repeated callbacks, stale requests, revoked membership/identity/access, mixed
+forms, and provider-limit fallback boundaries.
+
+Record the candidate revision, dirty-tree fingerprint if applicable, date,
+provider/adapter configuration, source entry point, test conversation, and
+reproduction steps without secrets. State whether the agent was a deterministic
+protocol fixture or a live model. Keep local simulations, real-provider
+acceptance, live-model behavior, and deployed verification separate. Storybook,
+substituted HTTP, a green run badge, or an agent's success claim cannot establish
+real-channel acceptance. Proof for one channel, one client surface, or eleven
+core cases does not qualify every provider or boundary variant.
+
+Link accessible redacted evidence from the provider record and PR; retain the
+requirements and conclusions in the repository even if a temporary preview
+expires. Update the [coverage index](./CHAT-QUESTION-COVERAGE.md) with precise
+scope and gaps. When later changes affect rendering, authorization, or delivery,
+rerun the affected cases on that candidate; do not relabel old screenshots as
+current proof. A format is complete only when its applicable functional and
+experience checks pass. Report provider limitations and outstanding acceptance
+explicitly; missing evidence leaves the affected qualification pending.
+
+## Optional agent instructions
+
+Some connections need standing guidance: tools tell an agent what it *can* do,
+while a short paragraph explains when it should use them. Memory is the first
+use case. See [Connection instructions](CONNECTION-INSTRUCTIONS.md) for the
+generic catalog metadata, saved settings, API, runtime, and integration contracts.
+**Design explorations → Connections → Agent instructions** in Storybook uses
+production components with mocked APIs.
+
+When adding a template:
+
+- Show the section only when the connector explicitly provides a nonempty
+  instruction template. Use **Agent instructions** and the checkbox
+  **Tell agents to use {provider}**, with the exact paragraph visible. No template
+  means no instructions UI, including no blank editor.
+  Keep setup in the existing flow and its single footer; add no required test or
+  extra wizard step. Use the current shared access defaults/disclosure.
+- Use a reviewed, versioned provider-specific suggestion. Explain when to recall,
+  when to save, the allowed context, and what to do if a call fails. Prefer one
+  short paragraph over a full skill or a pasted tool catalog. Avoid unsupported
+  promises about hooks, automatic transcript capture, or private memory.
+- Default provided instructions on for every participating connector. Let users
+  edit, **Reset to default** after changes, or disable guidance while retaining
+  tools. Show a compact amber notice when off. Reconnect and catalog refresh
+  preserve explicit opt-outs and custom text. Omit suggestion attribution badges
+  and routine lifecycle/storage helper copy.
+- Edit in an optional **Agent instructions** section of the existing **Permissions**
+  page, between agent access and Actions. Use the actual connection page shell,
+  credential form, and footers in review stories; include a baseline story for
+  comparison rather than constructing parallel page chrome. Show recipients
+  from current assignments and a read-only, source-linked copy on the agent.
+  Keep action controls and tests in the existing **Permissions** screen.
+- Resolve runtime guidance with the same company, agent, task, responsible-user,
+  and grant checks used for tools. Compose a revisioned block alongside agent
+  instructions; never permanently edit AGENTS.md or shared harness home files.
+  Verify fresh and resumed turns, removal, revoked access, and unsupported adapters.
+- Keep required provider settings, such as Honcho workspace, expanded near the
+  top of setup and configuration, above instructions. Put validation beside the
+  field and block completion while required values are missing. Memory stays an
+  ordinary connection; do not add a default-memory chooser or agent preference.
+  Keep provider binding identifiers separate from editable prose. Agent IDs,
+  tags, and query filters alone are not access-control boundaries. Any promised
+  isolation needs server enforcement across all relevant tool paths.
+- Treat MCP initialization instructions as external provider content. Review
+  them as template source; do not silently inject arbitrary remote text or let
+  a provider update overwrite an operator's instructions. Guidance never grants
+  additional tool permissions.
+- Prove both delivery and behavior: deterministic assignment/resume checks, then
+  a bounded save → **fresh session** recall with synthetic data through the real
+  run gateway. Record exact model/template/catalog versions, tool receipts,
+  costs, ingestion timeout, and cleanup. Discovery and a model's “saved” reply
+  do not prove memory works. See the linked plan for the minimal matrix.
 
 ## Use This Document As The Checklist
 
@@ -76,10 +524,10 @@ The shortest valid implementation usually changes these files:
 
 ```text
 scripts/ingest-app-definitions.mjs                # human-authored definition source
-packages/shared/src/app-definitions/<slug>.json  # generated definition
+packages/shared/src/app-definitions/<slug>.json  # definition with app-owned instruction template
 packages/shared/src/app-definitions.generated.ts # generated registry
 ui/public/brands/apps/<slug>.svg                  # official, sanitized mark
-ui/public/brands/apps/manifest.json               # branding provenance
+ui/public/brands/apps/manifest.json               # runtime branding paths
 packages/shared/src/app-definitions.test.ts       # manifest/provider assertions
 ```
 
@@ -138,6 +586,14 @@ These axes produce combinations such as:
 transport is a REST API. Most current API-key catalog entries authenticate a
 remote MCP server.
 
+Anthropic accounts use the `runtime_auth` AI connection methods. Its obsolete
+`api-key` REST tool method is no longer offered. Existing unsupported REST tool
+connections fail health and catalog checks with HTTP 422 and
+`tool_connection_transport_unsupported`; they never use local stdio templates
+or report a successful MCP probe. Add the provider through its supported account
+flow, then remove the obsolete connection. This does not transfer credentials
+or grants automatically.
+
 For `mcp_remote`, header credentials and secret-bearing generated URLs have the
 complete generic runtime path. The schema also names `query`, `body_json`, and
 `env` key placements for specialized transports, but accepting a value in the
@@ -172,6 +628,15 @@ For a curated method, `ownershipModes` is an allowlist. A method containing
 only `customer` must not silently fall through to generic DCR. A method
 containing `dcr` permits the automatic CIMD/DCR tiers. Deployment-preconfigured
 credentials still take precedence when present.
+
+A reviewed remote OAuth method may set `oauthClientRegistration: "dcr"` when
+live provider evidence shows that its advertised CIMD route fails while DCR
+works. Airtable uses this compatibility option. It requires `dcr` in
+`ownershipModes`; a deployment-preconfigured client still wins, and a missing
+registration endpoint fails with `oauth_dcr_not_supported`. Existing CIMD
+bindings are re-registered through DCR when the method changes. Other methods
+keep the normal resolution order. This option does not relax issuer, resource,
+redirect URI, PKCE, or registration-response validation.
 
 ### Credential source is not OAuth client ownership
 
@@ -208,6 +673,16 @@ Paperclip gateway capability. At invocation time the gateway rechecks company,
 connection, grant, catalog, profile, policy, and run state; resolves the needed
 secret version; projects only the reviewed headers/arguments; calls the
 provider; and writes redacted audit evidence.
+
+For a reviewed remote MCP method that accepts discovery before initialization
+but requires an initialized session for calls, set
+`defaults.mcpSessionRequired: true`. Tavily uses this compatibility preference.
+Setup persists it for new connections; discovery and execution also resolve the
+curated method default for retained connections without the config flag. The
+existing session cache stays scoped to the connection, grant, actor, endpoint,
+and effective credential headers. Other methods retain their existing discovery fallback
+and direct-call behavior. Initialize before dispatch; never retry `tools/call`
+automatically after a provider error, since the first call may have mutated data.
 
 ## Secret Storage And Lifecycle
 
@@ -289,6 +764,17 @@ IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
 policy the operator has applied.
 
+Saving a connection's installation list grants its app profile only to newly
+added targets. Targets that remain installed keep their existing profile
+assignments. If an operator removes an app profile from an installed agent or
+company, a later installation-list save must preserve that removal. This also
+applies when the list is unchanged or another agent is removed. Removing and
+then reinstalling a target is a new installation and uses the current setup
+defaults.
+Every non-empty installation-list save also removes legacy connection-wide
+include entries from the managed app profile. Keep this cleanup when no targets
+are added, so the selected action entries remain authoritative.
+
 If a destructive provider cannot be safe with those defaults, add a narrowly
 reviewed provider policy with tests. Do not hide a dangerous tool by
 misclassifying it as read, and do not silently change global defaults in a
@@ -308,7 +794,16 @@ This is the implementation sequence an autonomous coding agent should follow.
    task. Do not reset, rewrite, or format unrelated files.
 4. Decide whether the request is research-only, definition-only, or a new
    runtime capability. A store card is not evidence of runtime support.
-5. Write acceptance criteria before editing. At minimum: actionable store card,
+5. Apply [Module boundaries](../../rules/module-boundaries.mdc) before extending
+   shared code. Identify what the existing connection system already supports
+   and which requested features need a new platform capability. Keep new
+   connector-specific protocol behavior in
+   `server/src/services/connectors/<provider>/`; catalog definitions, branding,
+   and registration belong in their established locations. Shared gateway,
+   OAuth, and runtime code should use domain contracts, without interpreting
+   provider tool names or response formats. Separate ordinary MCP calls from
+   optional helpers such as local-file publishing when assessing the footprint.
+6. Write acceptance criteria before editing. At minimum: actionable store card,
    setup completes, credentials are vaulted, tools list, one safe read runs,
    refresh/reconnect works, revoke blocks use, and no secret appears in API or
    logs.
@@ -409,6 +904,35 @@ Avoid separate methods for:
 The default setup screen should ask only for information required to make the
 connection work or enforce a real tenant boundary. Follow these rules:
 
+- Do not ask for a Paperclip **Connection name** during setup. Derive the display
+  name from the provider and observed account/workspace identity. A provider-required
+  app/bot name is a separate configuration requirement, not a connection label.
+- Use the traditional Gmail/Google Docs setup structure: a compact horizontal
+  progress header and **Access → Connect**, without a numbered sidebar,
+  tool-permissions step or optional Test step. Authentication and successfully
+  reading the tool catalog are enough to complete setup. Do not require a sample
+  action or add an empty-catalog onboarding detour. Reuse the existing access screen:
+  “Which humans can use this credential?” and “Which agents can use this connection?”
+- After setup, use the regular connection **Permissions** screen: reuse its
+  canonical searchable Actions list, Read/Write filters, Off / Ask first / Allowed
+  controls and per-action Test dialog. Do not build a parallel permissions list or
+  provider-specific testing page. Discovery errors stay inline on Connect; an empty
+  returned catalog belongs to the ordinary saved-connection state.
+- The per-action Test dialog shows structured MCP results as readable fields,
+  tables, or cards when possible. It keeps the full raw response available for
+  diagnosis and opens it by default when the result cannot be rendered safely.
+- Enable every discovered tool automatically. Put later Allowed / Ask first / Off
+  controls in management, separate from connection access. Reconnect and refresh
+  retain existing restrictions; new tools are Allowed under the existing access rules.
+- Show browser sign-in/pending/return only for a real OAuth handoff supported by
+  the chosen authentication. Zapier's pasted MCP URL or bearer token requires no
+  Paperclip sign-in window. Advanced token/header setups need no invented OAuth step.
+- On an OAuth failure or cancellation, explain the outcome on the return screen
+  and offer a retry of the same saved connection. Do not silently return to a blank
+  setup form or display untrusted provider error text from the callback URL.
+- Resuming a saved connection retains its credential identity. Show that identity
+  as fixed in Access, and start OAuth with the credential policy returned by the
+  server. Do not offer personal/shared choices that the server will ignore.
 - Put optional narrowing in fields marked `advanced: true`.
 - Give hidden fields a `defaultValue`; never create a hidden required field the
   server cannot fill.
@@ -425,6 +949,150 @@ connection work or enforce a real tenant boundary. Follow these rules:
   label is not enforcement. The provider, gateway, wrapper, or managed header/
   query projection must enforce the boundary.
 
+#### Connector-provided skills and tools
+
+Connectors may contribute bundled skills with optional native tools. Keep provider-specific
+instructions out of the universal Paperclip skill and provider-specific tools
+out of the universal runner catalog. Use the trusted connector contribution
+registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
+consumer. This registry describes bundled server implementations, not executable
+code or skill URLs supplied by a credential or external message.
+
+Optional connector instructions must not be placed in the universal `skills/`
+directory, which adapters can enumerate for every agent. A trusted contribution
+can provide `skillMarkdown` from its connector module; the server then materializes
+`SKILL.md` only for authorized assignments. Browser Use Cloud uses this path with
+the app key and skill name `browser-use-cloud`, leaving generic browser skill
+names available to other integrations.
+
+For each contribution, declare its connector key, bundled skill, namespaced tool
+definitions, resource-assignment resolver, and execution handler. Use names such
+as `agentmail_send` rather than extending core tools with provider-specific
+branches. Existing MCP connectors continue to use their normal MCP tool catalog;
+they do not need a duplicate native wrapper just to supply a skill.
+
+For a gated catalog connector, declare `experimentalFeatureKey` in its
+`AppDefinition`. Shared availability checks resolve the saved application key
+and evaluate that feature before setup, discovery, and execution. Keep the
+feature's settings visibility separate from this enforcement. Do not add
+provider-name checks to the gateway or setup screens.
+
+**Resolve eligibility from current assignments and access.** An AgentMail account
+credential alone does not give an agent email capabilities. An active inbox
+assigned to that agent does, provided both the inbox connection and saved
+credential access remain authorized. AgentMail is available by default and does
+not depend on the experimental chat-connector flag. Other connectors must define an equally concrete assignment rule. Keep every
+lookup company-scoped. Revoked grants, disabled connections, removed assignments,
+and any applicable experimental gates must remove the contribution. Fail closed on lookup errors.
+
+**Install skills transparently through the existing runtime skill path.** Merge
+system-managed contributions with the agent's chosen skills for each run, without
+writing them into its saved skill preferences. Deduplicate multiple resources
+from the same connector into one skill. Include only authorized resource context,
+never provider secrets; treat resource values as data. Supply the short skill
+description for discovery and keep detailed instructions in the skill. The same
+resolved set must reach local CLI adapters, sandbox adapters, and native runners.
+Adapters with isolated skill delivery receive the bundle. Adapters that install
+into shared user directories receive the same assigned skill in the run prompt,
+including resumed turns, without writing connector files into that directory.
+Manual skill-sync operations must also exclude automatic connector bundles.
+The agent Skills page should identify automatic contributions and explain that
+assignment controls them; they are not independently enabled/disabled there.
+
+**Bind tools to the same resolved skill assignment.** Native sessions advertise
+only contributions present in their pinned runtime skill bundle. Include skill
+content, resource assignments, and tool revisions in session compatibility so a
+changed assignment cannot reuse stale declarations. Revalidate live assignment,
+company/task/run authority, and configured action policy on every execution.
+Removing a tool from discovery alone is not revocation enforcement. Retained
+provider sessions and previously issued calls must fail after access is revoked.
+
+**Avoid shared runtime contamination.** Do not install assignment-specific skills
+into a company-wide or user-wide runtime home. Use immutable skill bundles and
+scoped runtime directories. Codex CLI connector runs use a separate home per
+agent and connector-skill revision, seeded from the selected model credential
+home. Disconnecting returns to a runtime without those skills; another agent must
+never inherit them. Preserve explicit model identity and normal session recovery.
+
+Required tests cover no assignment, credential access without a resource,
+authorized assignment, multiple resources with one skill, cross-company access,
+revocation during a retained run, disabled flags/connections, and reassignment.
+Verify skill installation and removal in both CLI/sandbox and native execution,
+including tool discovery, runtime cache changes, and absence of provider secrets.
+Exercise an actual connector operation through the contributed tool, not just
+its declaration. Record which runtime paths were tested live versus deterministically.
+
+#### Connection UX and user journeys
+
+For chat and email onboarding or management screens, apply
+[Chat connector UX](./CHAT-CONNECTOR-UX.md) alongside this section. Keep the
+provider's actual capabilities and the distinction between resource setup,
+personal identity linking, and company membership explicit. The chat wizard may
+choose its agent before app creation; a separate agent-resource assignment
+wizard, described below, applies when that assignment is an independent action.
+
+Design the whole journey, from finding the app to doing useful work with an
+agent. A successful credential exchange is only one step. Describe who the
+user is, where they start, what they want to accomplish, and where they will
+see the result. Walk through first use, returning use, and recovery from a
+failed action. For messaging connections, cover both agent-initiated work and
+incoming messages that start or continue work.
+
+**Separate connecting from assigning an agent a resource.** First configure
+who can use the connection and authenticate with the provider. If the feature
+also assigns a resource to a specific agent, offer a second wizard from the
+connection's Permissions view after the connection is saved. Give its entry
+point a prominent, concrete action name. For example, AgentMail uses “Give an
+agent an email address,” followed by Agent → Email address → Review. Reuse the
+saved credential; do not ask for the API key again. Use the existing numbered
+step pattern, sensible defaults, Back and Cancel, and a clear completion state.
+Do not add a second wizard when there is no separate assignment to configure.
+
+Let the operator search eligible company agents, including agents not yet on
+the connection's allowed list. When assigning a resource also grants connection
+access, make that consequence clear and persist the grant through the existing
+access machinery. Respect the operator's authority to grant access, and show
+the selected agent's avatar and name.
+
+**Use the minimum text needed to make the next action clear.** Prefer familiar
+controls and precise labels over explanatory paragraphs. Remove repeated
+headings, redundant access summaries, implementation details, and reassurance
+that does not help the user decide or act. Keep necessary warnings, meaningful
+consequences, and actionable errors. Put optional expert settings under a
+collapsed disclosure through **Change**. Link to provider-owned administration, such as
+AgentMail allowlists, rather than rebuilding it in Paperclip.
+
+**Keep ongoing interactions in Paperclip tasks.** Connections are where users
+set up access and configuration; tasks are where they work with agents. Design
+what happens after setup: how an agent invokes the connection, where incoming
+work lands, how follow-ups stay associated with that work, and how users see
+success or recover from failure. Avoid introducing a separate mailbox or
+provider dashboard as the primary interaction surface.
+
+Use rich cards in the task feed when they make external activity easier to
+understand. An email card, for example, can show the sender, recipients, body,
+attachments, and delivery state. Keep external activity distinguishable from
+internal discussion; a task comment or agent progress update must not imply
+that an external action occurred. Reuse existing task-feed components and
+preserve one visible record per external event.
+
+**Keep setup to one screen.** The connect screen collects only what proves who
+the user is: a provider sign-in, a key, or an endpoint. It states the default
+access in one line, with **Change** for other choices, and does not add an
+access step. Pick the ranked default method instead of asking. Put scope,
+capability, and per-action choices on the Permissions tab after the connection.
+`connectionSetupStateForMethod` in `packages/shared` classifies each method as
+`instant`, `authorize`, `paste`, or `register`; the gallery verb comes from it.
+
+**Make interactive Storybooks for setup and actual use.** Include the catalog
+card, the connect screen and its credential states, any agent-resource wizard, and the task
+journeys after setup. Provide a clickable walkthrough plus focused stories for
+important steps, loading, errors, and recovery. Use realistic fixtures and
+clearly label simulated actions. Reuse production components as implementation
+lands, and replace obsolete stories so the examples describe the current
+experience. Storybooks support design review and deterministic interaction
+tests; they do not replace a real-provider browser test.
+
 ### Phase 4: Add official branding before exposing the app
 
 Every store-visible provider needs an official local mark. A letter tile is
@@ -439,21 +1107,30 @@ only a runtime image-failure fallback.
    external executable content, or unsafe references.
 5. Save assets under `ui/public/brands/apps/`. Add a `-dark` variant only when
    the normal mark loses contrast in dark mode.
-6. Add the provider to `ui/public/brands/apps/manifest.json` with slug, local
-   asset, optional dark asset, official source URL, exact upstream asset URL,
-   asset type, visibility, and dark-variant requirement.
+6. Add the provider to `ui/public/brands/apps/manifest.json` with slug, name,
+   local asset, optional dark asset, visibility, and optional aliases. Keep source
+   URLs and verification notes in the review record, outside the public manifest.
 7. Let the ingestion script derive `branding.logoUrl` and `darkLogoUrl` from the
-   provenance manifest.
+   runtime manifest.
 
 The manifest test decodes PNG headers, requires at least 128 by 128 pixels,
 sanity-checks SVG markup, verifies files exist, and requires store-visible
-definitions and visible provenance entries to match exactly.
+definitions and visible manifest entries to match exactly.
 
 ### Phase 5: Author the definition at the durable source
 
-The checked-in provider JSON files are generated. Do not edit one and stop.
+Transport/auth fields in the checked-in provider JSON files are generated. Do
+not edit those fields and stop. Optional `agentInstructions: { id, version, text }`
+templates are authored directly in each app's JSON definition, alongside its
+supporting `docsUrl`. Ingestion validates and preserves that field; edit or
+remove it there, and increment its version when changing the default. There is
+no central instruction-template registry. See
+[Connection instructions](./CONNECTION-INSTRUCTIONS.md) for the runtime contract.
 
-1. Add or update the provider in `scripts/ingest-app-definitions.mjs`.
+1. Add or update the provider in `scripts/ingest-app-definitions.mjs` or its
+   reviewed source inputs at `scripts/app-definition-overrides/<slug>.json`.
+   Overrides use the complete AppDefinition shape and pass through the same
+   branding, permission-review, instruction-template, and validation pipeline.
 2. Update `packages/shared/src/self-serve-mcp-research.json` when it belongs to
    that program.
 3. Add branding provenance and assets first; generation fails closed when
@@ -689,7 +1366,12 @@ At minimum, add or update tests in these layers:
   declared.
 - Finish setup resumes the exact draft using `resumeConnectionId`.
 - Optional customer OAuth details stay folded when automatic OAuth exists.
-- Setup success leads to the connection's Test page.
+- Successful authentication and tool discovery finish setup and lead to the
+  connection's regular Permissions screen. Testing is available there through each
+  action's Test button; it is never an onboarding step. Follow the
+  [connection UX guidance](#connection-ux-and-user-journeys).
+- Interactive Storybooks cover setup and ongoing task interactions, including
+  relevant failure states; the walkthrough matches the implemented journey.
 - Missing images fall back at runtime, while manifest acceptance still fails
   missing branding.
 
@@ -876,8 +1558,12 @@ unrelated worktree change, or temporary evidence file is staged.
 
 ### Phase 12: Prepare and submit the pull request
 
-1. Keep commits scoped. A typical split is definition/branding, generic runtime
-   capability, and tests/docs. Do not split generated output from its source.
+1. Recheck [Module boundaries](../../rules/module-boundaries.mdc). Explain each
+   substantive shared change in the PR: the missing capability, why the existing
+   contract is insufficient, affected consumers, and behavior with the connector
+   absent or disabled. Separate substantial platform capabilities into reviewable
+   slices with explicit dependencies when appropriate. Keep tests and docs with
+   their behavior and generated output with its source.
 2. Do not commit `pnpm-lock.yaml`; GitHub Actions owns it in this repository.
 3. Read `.github/PULL_REQUEST_TEMPLATE.md` immediately before writing the PR
    body.
@@ -1020,6 +1706,11 @@ A catalog connection is ready only when every applicable item is true:
 - [ ] Official docs and live metadata agree on the endpoint and auth flow.
 - [ ] Self-serve/provider-approval classification is documented.
 - [ ] Every exposed method has completed the full live lifecycle.
+- [ ] Chat channels have an indexed per-format capability/qualification matrix,
+      a justified best-available response path, and inspected real-provider
+      evidence for affected conversation loops. Functional, answering, and
+      settled-state UX checks pass; remaining gaps are explicit under
+      [Chat channel connectors](#chat-channel-connectors).
 - [ ] The default path asks only for required configuration.
 - [ ] Optional own-OAuth and expert fields are folded under Advanced.
 - [ ] Scopes are explicit and contained; caller widening is rejected.
@@ -1061,15 +1752,30 @@ A plugin may bundle one or more catalog entries, but it must still create normal
 
 ### Step 2: Classify The Reuse Path
 
-Classify the vendor before writing metadata. Use the [PAP-2432](/PAP/issues/PAP-2432) matrix terms so rollout planning, security review, and QA can compare providers consistently.
+Classify the vendor before writing metadata. Use these definitions so rollout
+planning, security review, and QA can compare providers consistently. The
+examples are starting points; confirm current provider capabilities in Phase 1.
 
-| Reuse path | Use when | Typical transport | Examples from the matrix |
+| Reuse path | Use when | Typical transport | Examples |
 | --- | --- | --- | --- |
 | MCP-direct | The vendor exposes an official or stable MCP server whose tools map cleanly to Paperclip grants. | `mcp_remote`; `local_stdio` only for approved trusted templates. | Linear, Notion, Sentry, Vercel, Exa, Apify, Context7. |
 | OpenAPI-shim | The vendor has a documented REST/OpenAPI surface but no stable MCP server, and a generated/thin shim can expose safe actions. | Shim service or approved template that presents an MCP-compatible catalog to Paperclip. | Datadog, Apollo, QuickBooks, Ramp/Brex, Zendesk. |
 | Vendor-deep-wrapper | The vendor boundary depends on app-installation tokens, event validation, rich domain semantics, resource grants, or high-risk writes. | Vendor-specific wrapper behind the same connection model. | GitHub, Slack, Google Workspace writes, Atlassian, Microsoft 365, Cloudflare, Figma, Stripe, Salesforce, HubSpot, Intercom, PagerDuty. |
 
-Record the classification in the proposal along with the transport and the reason a lighter path is or is not enough.
+Record the classification in the proposal along with the transport and the
+reason a lighter path is or is not enough. For each method, also record auth
+mode, credential owner, required resource filters, initial actions, webhook or
+sync requirements, and security tier. A provider name alone is not a sufficient
+classification: a read-only method and a method that sends messages or changes
+infrastructure can have different risks.
+
+Use the shipped definition and `recommendedDefaultsForApp` for runtime behavior.
+Risk tiers describe exposure; they do not replace action policies. S1 covers
+low-risk reads; S2 covers business data and narrow writes; S3 covers broad
+content or operational access; S4 covers payments, external sends, production
+changes, deletion, or tenant administration. High-impact methods need explicit
+security review and negative access tests. Prove the transport and governance
+path with narrow actions before expanding to broader capabilities.
 
 ### Step 3: Pick Auth And Credential Ownership
 
@@ -1213,6 +1919,11 @@ connection actually enables it.
 
 The wizard path comes from auth mode and transport:
 
+These paths describe authentication and provisioning. Apply the
+[connection UX guidance](#connection-ux-and-user-journeys) to the user-facing
+sequence: choose access before authentication, then configure any per-agent
+resource through a separate wizard on the saved connection.
+
 | Auth mode | Operator path | Stored result |
 | --- | --- | --- |
 | OAuth | Gallery card -> Connect -> vendor consent -> callback -> configure filters -> health/catalog -> access defaults. | OAuth token material in `company_secrets`; connection metadata redacted. |
@@ -1229,10 +1940,15 @@ The operator should see Apps, Connections, and Review language. Keep protocol la
 Request only the documented scope set the reviewed connection needs; never
 adopt every scope returned by discovery. Operators should not have to predict
 every future tool during setup. Keep the default view to the minimum inputs
-needed for a working connection, fold optional expert controls under one
-collapsed **Advanced** disclosure, and enforce execution afterward through
+needed for a working connection, fold optional expert controls under the
+**Change** link beside the access summary, and enforce execution afterward through
 Paperclip's resource boundaries, risk classification, tier defaults, optional
 quarantine, and audit.
+
+When a provider supplies its MCP endpoint, keep that URL out of the initial
+form. Composio exposes it through **Reuse an existing session** for operators
+with a custom session URL; resumed custom endpoints and URL validation errors
+keep the field visible. Preserve the endpoint when its disclosure is closed.
 
 ### Step 8: Apply Governance Defaults
 
@@ -1260,20 +1976,60 @@ Recommended defaults for a new catalog entry:
 
 ### Step 9: Align With Production Validation
 
-[PAP-12373](/PAP/issues/PAP-12373) owns real-vendor gallery smoke evidence and connector validation. Do not duplicate that issue's screenshot/evidence matrix in this playbook. A connector proposal should instead state exactly how it will be validated there:
+Validate every exposed provider/method combination against a real account in
+an isolated, production-like instance. Deterministic tests and Storybook cover
+Paperclip behavior; they do not prove provider consent, credential scope, live
+delivery, or revocation. Use the following evidence matrix directly in the
+connector proposal or PR. No separate private validation issue is required.
 
-- Connect succeeds against the real vendor using production-like OAuth/app/key setup.
-- Catalog discovery produces the expected actions and the declared changed-tool
-  behavior.
-- An allowed read call succeeds through the gateway.
-- A write call is Allowed by the new-connection default unless an explicit
-  provider or operator policy narrows it.
-- A blocked/quarantined action, when declared, cannot be listed or invoked by
-  an agent.
-- Revocation removes tools and blocks execution immediately.
-- Activity/audit rows prove actor, run/issue context, resource id, decision, reason code, and outcome.
+| Scenario | Required result | Evidence to retain |
+| --- | --- | --- |
+| Setup and consent | The gallery entry opens the correct method; prerequisites, provider handoff, credentials, and back/resume work. | Redacted setup/review screenshots; method, deployment mode, date, commit, and outcome. |
+| Authentication | The selected OAuth/app/key path succeeds and resolves the intended account/resource. | Redacted auth result, scopes, callback origin/path, credential-source and client-ownership mode; no secret values. |
+| Catalog and configuration | Discovery returns the reviewed actions; resource filters and selected access persist. | Tool names/count, schema hashes, risk/default-policy review, and saved filter names. |
+| Allowed execution | A narrow read succeeds through the gateway; writes follow the effective policy. | Tool, actor, decision, redacted result, and correlated call/audit record. Use a disposable resource for an authorized live write; otherwise mark write execution untested. |
+| Denied execution | Ungranted actors, another company, disallowed resources, revoked connections, and declared blocked/quarantined actions cannot execute. | Expected denial and reason code, with the automated or live test that exercised the boundary. Cover listing where the policy requires tools to be hidden. |
+| Runtime delivery | An actual agent/run-scoped gateway call succeeds when runtime logic changes. Chat/email also routes an incoming message and its reply to the same task. | Redacted task/conversation and call correlation; identify live versus simulated events. |
+| Chat questions and decisions | Every applicable question experience has the best feasible controls or a justified handoff, saves the answer, and delivers the intended continuation result. | [Indexed per-format qualification](./CHAT-QUESTION-COVERAGE.md), actual unanswered/answering/answered captures, separate functional and UX grades, saved-response/delivery evidence, and retained failures. |
+| Refresh and recovery | Catalog refresh, token refresh/reconnect, and recoverable failures preserve the correct identity and policy. | Before/after outcome, redacted error code, and successful retry; no duplicated connection. |
+| Revoke and reconnect | Revocation blocks subsequent execution; supported reconnect reuses the intended identity/history. | Removal or denial evidence followed by reconnect result. |
+| Activity and secret handling | Activity explains what occurred and why; stored responses, logs, and artifacts contain no credential values. | Actor, run/issue context, resource, decision, reason code, outcome, plus redaction-check result. |
 
-If a gallery card cannot pass this path against a real vendor, de-list it or mark it unavailable until the missing auth, transport, or governance dependency is fixed.
+Chat task links must use the server-resolved public board origin, including the
+current claimed Cloud origin. Supply the exact task URL in fresh and resumed
+agent context. The native `get_task_context` and `search_tasks` tools also return
+a nullable `url` on task records. Keep webhook ingress and internal API addresses separate from
+human-facing task links. If no safe public URL is configured, say so instead of
+constructing a link. Keep the external-publication URL filter in place.
+
+When checking chat response speed, measure queue time, runner preparation,
+provider turn time, checkpoint/finalization, and provider publication separately.
+Check session-reset reasons before attributing slow follow-ups to the model.
+Temporary managed-credential homes must not change the session fingerprint;
+account, credential, model, permission, and user-configured environment changes
+must retain their existing invalidation behavior.
+
+For chat/email, also verify the applicable UX states in
+[Chat connector UX](./CHAT-CONNECTOR-UX.md#apply-and-verify): new connections deny
+unlinked people by default; linking requires ownership confirmation; nonmembers
+request access before receiving authority; an optional message test never
+becomes an unexplained completion gate. Show verification based on observed
+traffic, and distinguish optional, unobserved callbacks from real failures.
+
+Record **pass**, **fail**, **not run**, or **not applicable** for each scenario,
+with a reason for the last two. Include the environment, method key, commit,
+reproduction steps, expected/actual result, and links to redacted evidence that
+reviewers can access. Put the requirements and conclusions in the PR or a
+repository document; an internal tracker or expiring artifact link must not be
+the only place they exist. Do not publish credentials, OAuth codes, session
+cookies, private tenant content, personal account details, or secret-bearing URLs.
+
+Use Phase 9's lifecycle to collect the evidence. A consent restriction, unavailable
+account, or missing provider feature is a named validation gap, not a passing
+result. If a gallery card cannot complete its required path against a real
+provider, keep it unavailable until the missing auth, transport, or governance
+dependency is fixed. Re-run affected scenarios after a material change rather
+than citing evidence from an older implementation.
 
 ## MCP-Direct Connections (Hosted MCP + OAuth)
 
@@ -1304,27 +2060,31 @@ The broker implements this in `discoverOAuthEndpoints`
 unconditional. `oauthEndpointsForConnection` resolves endpoints in this
 order:
 
-1. If the manifest's method `defaults` ship a **complete** pair
-   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used
-   unconditionally. `discoverOAuthEndpoints` never runs in this case, so
-   endpoints stored on the connection's own OAuth config and 401 challenge
-   hints are **not consulted at all**.
-2. Otherwise, for `mcp_remote` connections, the broker calls
+1. A method's `defaults.discoveryUrl` is authoritative. The broker resolves
+   that document before cached endpoints, including when a saved connection
+   resumes or reconnects. It must describe the MCP resource or its authorization
+   server, not a separate web/API OAuth service. Failure stops setup.
+2. A complete manifest pair (`authorizationEndpoint` and `tokenEndpoint`)
+   replaces discovery when the method does not support dynamic registration,
+   or when the connection uses an operator-entered client. A method that can
+   register automatically still discovers its MCP authorization server.
+3. Otherwise, for `mcp_remote` connections, the broker calls
    `discoverOAuthEndpoints`, which first checks endpoints already stored on
    the connection's own OAuth config (falling back field-by-field to the 401
    challenge hints); a complete stored/hinted pair is used as-is — no
    `.well-known` fetch.
-3. Only when neither of the above yields a complete pair does the broker run
+4. Only when none of the above yields a complete pair does the broker run
    the RFC 9728 → RFC 8414 discovery chain above.
 
-Consequence: complete manifest endpoint hints are **authoritative, not
-hints** — they override even endpoints that an earlier discovery persisted
-on the connection, and if they go stale the broker keeps using them. For
-discovery-capable vendors, ship only `serverUrl` in `defaults` (as
-`notion.json` does) so the broker discovers fresh endpoints at connect
-time; add explicit `authorizationEndpoint`/`tokenEndpoint` only for vendors
-that do not publish RFC 9728/8414 metadata, and then own keeping them
-current.
+For discovery-capable vendors, prefer `serverUrl` alone (as `notion.json`
+does), or pin the reviewed protected-resource document when the provider
+requires an exact path. Keep explicit metadata and endpoint URLs current.
+When changing discovery precedence, test each affected catalog method against
+its actual metadata shape. Cover both new setup and a saved registration.
+A metadata preflight that finds registration somewhere in its search is not
+proof that sign-in selects that issuer. Sentry's web/API and MCP hosts both
+serve valid metadata, but only its MCP issuer supports automatic registration;
+see [Sentry](./SENTRY.md).
 
 ### Dynamic client registration (RFC 7591)
 
@@ -1333,10 +2093,16 @@ supports public clients (`token_endpoint_auth_method: "none"` plus PKCE S256)
 need **no pre-provisioned OAuth app at all**. At first connect the broker
 registers a client on the fly and stores it on the connection:
 
-- Registration request: `client_name` `Paperclip (<instance host>)`,
+- Registration request: `client_name` `Paperclip <sanitized instance host>`,
   `redirect_uris` = the instance's own callback, `grant_types`
   `["authorization_code", "refresh_token"]`, `response_types` `["code"]`,
   `token_endpoint_auth_method` `"none"`.
+- Authorization servers may validate `client_name` more narrowly than the
+  human-readable RFC field suggests. Paperclip replaces punctuation in the
+  callback host with hyphens (for example, `localhost:3105` becomes
+  `localhost-3105`), preserving a recognizable instance label while meeting
+  Calendly's documented rule that names contain only alphanumeric characters,
+  hyphens, and spaces ([Calendly MCP DCR requirements](https://developer.calendly.com/docs/mcp/calendly-mcp-server)).
 - The issued `client_id` is persisted in the connection's OAuth config and any
   issued `client_secret` becomes a `company_secrets` ref. The registered
   client is **reused** for every later authorize/refresh on that connection —
@@ -1348,8 +2114,7 @@ registers a client on the fly and stores it on the connection:
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 
-Since [PAP-17087](/PAP/issues/PAP-17087), DCR is **one of four** registration
-tiers, and `ownershipModes` gates only the *curated* path. The broker resolves a
+DCR is **one of four** registration tiers, and `ownershipModes` gates only the *curated* path. The broker resolves a
 client in this order: a deployment-preconfigured client, then a Client ID
 Metadata Document when the authorization server advertises one (requires a public
 HTTPS `PAPERCLIP_PUBLIC_URL`), then DCR, then client credentials the operator
@@ -1367,8 +2132,8 @@ not be auto-registered, and the broker will not fall through to the generic
 registration path for it.
 
 **DCR needs neither Paperclip ID nor Paperclip Connect.** DCR is always
-instance-local (ratified in the PAP-14828 connector-service spec, section 10
-item 8.4: "DCR is always instance-local; the service has no DCR involvement").
+instance-local: the hosted connector service does not register DCR clients
+or hold their credentials.
 Each instance registers its own public client with the vendor and uses its own
 `/api/tools/oauth/callback` redirect. **Cloud-hosted and self-hosted instances
 use the SAME path** — the only per-instance difference is the hostname inside
@@ -1395,7 +2160,7 @@ axes; a private HTTPS host can be fine even when plain HTTP is not.
 ### Documentation standards for every connection doc
 
 Every connection doc — playbook appendix, proposal, or user-facing doc —
-must include all three of the following (they are part of the template below):
+must include all of the following (they are part of the template below):
 
 1. **Service involvement statement.** Say explicitly whether Paperclip ID or
    Paperclip Connect participates in the flow. For RFC 7591 DCR providers the
@@ -1426,7 +2191,7 @@ Copy this section into a connector proposal or implementation issue.
 - App key:
 - App name:
 - Owner:
-- First-30 classification: MCP-direct / OpenAPI-shim / vendor-deep-wrapper
+- Reuse classification: MCP-direct / OpenAPI-shim / vendor-deep-wrapper
 - Reason for classification:
 - Security tier: S1 / S2 / S3 / S4
 - Plugin needed? No / Yes, because:
@@ -1517,7 +2282,9 @@ Copy this section into a connector proposal or implementation issue.
 
 ## Validation Hook
 
-- Real-vendor smoke issue:
+- Environment, method key, date, and tested commit:
+- Reproduction steps and accessible redacted evidence:
+- Per-scenario result (pass / fail / not run / not applicable, with reasons):
 - Connect evidence:
 - Catalog evidence:
 - Allowed read:
@@ -1529,14 +2296,17 @@ Copy this section into a connector proposal or implementation issue.
 
 ## Appendix: Linear Dry Run
 
-This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/PAP-2432) Batch A providers.
+This dry run applies the template to Linear as an example of a hosted MCP
+connection with scoped business-data reads and narrow issue writes.
 
 ### Vendor
 
 - App key: `linear`
 - App name: Linear
-- First-30 classification: MCP-direct with a thin GraphQL/resource-filter wrapper if the hosted MCP server cannot enforce all filters itself.
-- Reason for classification: Linear has a hosted MCP endpoint shape in the current gallery, and the first-30 matrix calls Linear a direct MCP/GraphQL thin-wrapper provider.
+- Reuse classification: MCP-direct with a thin GraphQL/resource-filter wrapper if the hosted MCP server cannot enforce all filters itself.
+- Reason for classification: Linear exposes a hosted MCP endpoint; a thin
+  GraphQL/resource-filter wrapper is needed only for restrictions the hosted
+  server and gateway cannot already enforce.
 - Security tier: S2, because it exposes product planning data and narrow issue mutations but not payments, tenant admin, or production infrastructure.
 - Plugin needed: No. The default gallery card, OAuth connect, resource filters, action catalog, profiles, policies, and audit cover the required UX. A plugin would only be warranted later for custom Linear dashboards or background sync workers.
 
@@ -1628,7 +2398,8 @@ before accepting it as an S2 Allowed action.
 
 ### Validation Hook
 
-Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The smoke pass should prove:
+Record Linear's evidence using the production validation matrix above. The
+smoke pass should prove:
 
 - OAuth connect succeeds with a customer-created Linear OAuth app (or an
   explicitly reviewed external credential source) and the instance callback
@@ -1642,26 +2413,28 @@ Linear's real-vendor evidence belongs in [PAP-12373](/PAP/issues/PAP-12373). The
 - Audit rows include company, connection, run/issue, agent/user actor, tool, decision, reason code, and outcome.
 ### AppDefinition catalog authoring
 
-Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. FIRST-30 remains authoritative for `riskTier` and `requiredResourceFilters`; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
+Connector proposals now target the versioned `AppDefinition` contract in `packages/shared/src/types/app-definition.ts`. Seed data is one JSON file per provider under `packages/shared/src/app-definitions/`; regenerate Wave 1 with `pnpm connections:ingest-app-definitions`. The generator parses all 99 captured templates, validates required placeholders, OAuth ownership modes, and API-key placement, and produces deterministic output for review. Review `riskTier` and `requiredResourceFilters` against the method capabilities and resource boundaries described above; managed ownership modes stay data-visible but runtime-hidden until availability is injected.
 
 ## Appendix: Notion Dry Run (MCP-Direct With DCR)
 
-This dry run applies the template to Notion, the first MCP-direct connector to
-ship with RFC 7591 dynamic client registration (PAP-16637; server
-implementation PAP-16649, PR #11009). Unlike the Linear appendix, every
-endpoint and constraint below comes from a live request log, not vendor docs
-alone.
+This dry run applies the template to Notion using RFC 7591 dynamic client
+registration. The request sequence and redirect probes below preserve the
+recorded August 6–7, 2026 live observations in this document. Treat provider
+endpoints, token lifetimes, tool availability, and plan restrictions as a dated
+snapshot; recheck them against official documentation and live validation for
+a new implementation.
 
 ### Vendor
 
 - App key: `notion`
 - App name: Notion
-- First-30 classification: MCP-direct. Notion ships an official hosted MCP
+- Reuse classification: MCP-direct. Notion ships an official hosted MCP
   server; its ~20 `notion-*` tools map directly to Paperclip grants.
 - Reason for classification: no shim or wrapper needed — the hosted server
   speaks Streamable HTTP, which `server/src/services/mcp-http.ts` already
-  handles. The FIRST-30 matrix's "thin wrapper for block/database policy" is
-  explicitly deferred; v1 enforcement is gateway policy plus filters-as-config.
+  handles. A separate block/database-policy wrapper is deferred; v1
+  enforcement is gateway policy plus filters-as-config. Verify each advertised
+  restriction at the actual enforcement boundary before claiming support.
 - Security tier: S3 — workspace content read/write, but no payments, tenant
   admin, or production infrastructure.
 - Plugin needed: No. Gallery card, OAuth connect, filters, catalog, profiles,
@@ -1695,8 +2468,13 @@ alone.
 
 ### Connection Flow (mandatory)
 
-Paperclip ID / Paperclip Connect involvement: **none — DCR is instance-local**
-(PAP-14828 spec section 10 item 8.4); **cloud-hosted and self-hosted use the
+The UI examples use `ACME` as a sample company prefix. Replace it and any
+`paperclip.example.com` origin with your own company prefix and instance origin.
+These are example addresses, not a shared test deployment.
+
+Paperclip ID / Paperclip Connect involvement: **none — DCR is instance-local**.
+The instance registers the client, exchanges and refreshes tokens, and stores
+credential references in its own vault. **Cloud-hosted and self-hosted use the
 same path**. The only per-instance difference is the hostname in the redirect
 URI.
 
@@ -1720,7 +2498,7 @@ Redirect constraints (probed): `https-or-loopback-http`.
 sequenceDiagram
     autonumber
     actor U as User's browser
-    participant UI as Paperclip UI<br/>/PAP/apps/connect?source=notion
+    participant UI as Paperclip UI<br/>/ACME/apps/connect?source=notion
     participant S as Paperclip instance server<br/>(cloud or self-hosted — same path)
     participant M as mcp.notion.com<br/>(MCP server + OAuth AS)
     participant N as Notion web<br/>(app.notion.com, notion.com)
@@ -1751,7 +2529,7 @@ sequenceDiagram
     Note over S,M: Later: agent runs reach notion-* tools via the managed MCP gateway.<br/>Server refreshes ahead of use — each refresh ROTATES the refresh token.
 ```
 
-### Dry-Run Request Log (PAP-16649, 2026-08-06/07)
+### Dry-Run Request Log (2026-08-06/07)
 
 The verified request sequence for a first connect:
 
@@ -1794,11 +2572,10 @@ plain-HTTP non-loopback origins.
 - Instance prerequisites: the instance base URL must be HTTPS on any host or
   loopback HTTP (Notion's redirect-URI rule). A plain-HTTP non-loopback origin
   gets "This provider requires an HTTPS or loopback origin. Configure TLS
-  before connecting." — add TLS first (e.g. a tailscale cert, as
-  paperclip-dev did). Apps is a standard product surface and `/apps/*` routes
-  are always available. The connecting user must be allowed to install
+  before connecting." — configure a valid TLS certificate first. Apps is a
+  standard product surface and `/apps/*` routes are always available. The connecting user must be allowed to install
   integrations in their Notion workspace.
-- How to verify: visit `/PAP/apps/connect?source=notion`, complete the Notion
+- How to verify: visit `/ACME/apps/connect?source=notion`, complete the Notion
   consent flow, and land on the wizard's actions step listing `notion-*`
   tools. Then confirm an agent run sees Notion tools through the runtime MCP
   gateway and that a write call such as `notion-create-pages` follows the
@@ -1807,12 +2584,13 @@ plain-HTTP non-loopback origins.
 
 ### Resource Filters
 
-- Required filters: workspace, page, database (per FIRST-30).
+- Required filters: workspace, page, database.
 - Optional filters: object type, database/data-source scope.
 - Write-enabling filters: workspace plus page/database scope for
   create/update.
-- Enforced by: gateway policy plus filters-as-config in v1; the FIRST-30
-  "thin wrapper for block/database policy" is explicitly deferred. Notion-side
+- Enforced by: gateway policy plus filters-as-config in v1; a separate
+  block/database-policy wrapper is deferred. A saved filter is not proof of
+  enforcement: test an out-of-scope request through the gateway. Notion-side
   scoping also applies — the consent step lets the user share only selected
   pages/databases with the integration.
 
@@ -1845,10 +2623,30 @@ The shipped `packages/shared/src/app-definitions/notion.json` (regenerate via
 
 ### Actions
 
-Notion's hosted server exposes ~20 `notion-*` tools. Representative risk
-classes below; the full catalog review with per-tool defaults is PAP-16652
-(P4). Changed-action quarantine applies only when the connection explicitly
-enables `quarantineNewEntries`.
+The recorded Notion catalog exposed about 20 `notion-*` tools. The table below
+is representative, not an exhaustive allowlist. On each implementation or
+catalog change, enumerate the actual tools and complete the following review
+for every tool before enabling it:
+
+1. Record its stable name, input/output schema hash, and read/write/destructive
+   classification based on what it does, not its name or provider annotation alone.
+2. Map workspace, page, and database selectors to the actual enforcement
+   boundary. Prove an out-of-scope call is denied; do not promise a filter that
+   the gateway or provider cannot enforce.
+3. Record profile visibility and the effective policy. The current S3 default
+   allows active actions; any narrower provider/operator policy needs its own
+   explicit rule and test. Keep permanently blocked tools disabled.
+4. Specify argument/result redaction and the expected actor, resource, decision,
+   reason, and outcome audit fields. Test an ungranted actor and revoked connection.
+5. Identify plan-gated tools and unavailable capabilities. Catalog discovery
+   alone does not prove a listed tool can execute for the connected account.
+6. Record how newly discovered or schema-changed tools are treated. Changed-action
+   quarantine applies only when the connection enables `quarantineNewEntries`;
+   test that behavior rather than relying on a manifest declaration.
+
+Keep the completed inventory with the connector's accessible review evidence.
+A new delete/archive/bulk tool requires a fresh risk review; it must not inherit
+a read classification from these examples.
 
 | Tool | Risk | Default status | Filters | Approval default | Audit fields | Negative case |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1864,7 +2662,7 @@ method S4 or add a reviewed narrow policy and tests before enabling it.
 
 ### Wizard Path
 
-1. Operator opens `/PAP/apps/connect?source=notion` (or the Notion gallery
+1. Operator opens `/ACME/apps/connect?source=notion` (or the Notion gallery
    card → Connect). The deep link POSTs connect immediately and redirects the
    browser to `auth.startUrl`.
 2. Operator completes Notion consent (workspace picker → approve).
@@ -1895,10 +2693,10 @@ the TLS guidance error above — the operator never reaches Notion.
 
 ### Validation Hook
 
-End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
+Collect end-to-end evidence using the production validation matrix above:
 
 - Zero-setup OAuth connect succeeds on
-  `https://paperclip-dev.tail29c1aa.ts.net/PAP/apps/connect?source=notion`
+  `https://paperclip.example.com/ACME/apps/connect?source=notion`
   with no pre-provisioned OAuth env vars (proves DCR).
 - Catalog discovery lists the expected `notion-*` tools and applies the
   connection's declared changed-tool behavior.
@@ -1908,3 +2706,212 @@ End-to-end evidence belongs to PAP-16654 (P6) and the PAP-12373 matrix:
 - Revocation removes Notion tools and blocks execution.
 - Audit rows prove actor, run/issue context, connection, tool, decision,
   reason code, and outcome.
+
+## Reviewed REST browser connection
+
+[Browser Use Cloud](./BROWSER-USE.md) uses the v4 REST API through the same
+connection grants, catalog, policies, approvals and audit gateway. Its
+`provider_rest` execution path is limited to the reviewed Browser Use adapter;
+adding `rest_api` to a catalog entry does not enable arbitrary HTTP execution.
+The task Browser panel is a human-only credential viewer, separate from agent
+tool results. Follow that guide for lifecycle, profile scope, cost accounting,
+cleanup and the required live acceptance pass.
+
+## Slack task tools
+
+For Slack bot tool contributions, use [Slack task tools](SLACK-TASK-TOOLS.md). It
+documents verified task authority, read/write boundaries, per-user search grants,
+method/scope contracts, delivery and current runtime limitations. Keep bot tools
+separate from the user-authorized Slack MCP connection.
+
+### Agent discovery through MCP aggregators
+
+`connections_search` owns the next-step guidance. Its `instruction` is authored by
+Paperclip, never copied from provider tool descriptions. Core agent guidance only
+needs to call search, follow that instruction, and respect saved user choices.
+
+Exact built-in matches (including reviewed aliases) take precedence over external
+routes. An explicit query such as “HubSpot through Arcade” keeps the named
+provider and returns instructions to pass its app slug as `targetService` with the
+direct provider request only when a persisted message from the responsible human
+proves that choice. An agent-supplied query alone does not count. Unclear or missing
+message evidence falls back to a question naming that provider and None; alternatives
+remain a provider-choice question. New human consent must postdate any saved decline
+or different choice. Native administrative restrictions still cannot be bypassed. A
+missing built-in match can return eligible
+Composio, Arcade, Executor, and Zapier routes in that order. Search itself makes no
+provider requests and starts no authorization.
+
+Maintain the reviewed support snapshot in
+`packages/shared/src/connection-routing.ts`. Add a service only after checking its
+official provider catalog; update only that app/provider claim’s verification date
+and the service aliases. Do not refresh other claims’ dates without checking them. A catalog
+listing establishes possible support, not the user's gateway configuration or
+account authorization. Executor requires evidence from the authorized workspace's
+indexed tools. Search must not read another user's private catalog. Unknown
+services return an unverified result rather than an invented route.
+
+For fallback, pass the returned `providerQuestion` unchanged to
+`ask_user_questions`. The question names the external services and includes None.
+After the human answers, pass the selected `via:provider:app` service and the saved
+question's `selectionInteractionId` to `connection_request`. The server validates
+the task, requesting agent, responsible user, disclosure, answer, and current route
+eligibility. A pending question is reused. A decline remains effective across
+continuations; `retryProviderChoice` is only for an explicit user request to
+reconsider and still requires a new human answer before setup.
+
+Reuse the existing provider connection where eligible. New setup retains the app
+name as “Connect HubSpot through Arcade,” with the usual Access → Connect flow.
+Successful provider setup returns a provider-specific continuation `instruction`:
+the agent must verify the requested app and complete any app authorization before
+claiming it works. Do not create child connections or broaden existing grants.
+
+The `Apps / Connections / Provider choice` Storybooks use simulated support and
+in-memory provider responses. The `provider-native`, `provider-decline`, and
+`provider-second` Product E2E cases exercise native preference, persisted choice,
+restart recovery, and an independently observed gateway read. They do not prove
+compatibility with the real external providers.
+
+### Public aggregator apps in Connectors
+
+The Connectors catalog combines native definitions with the public Composio and
+Arcade app snapshots in `packages/shared/src/aggregator-app-catalog.ts`. Native
+definitions always take precedence, including definitions temporarily hidden or
+unavailable on the instance. Each remaining app has one card with its provider
+logos; Connect opens a provider picker when multiple providers support the app.
+An app with one provider goes directly to setup or its saved gateway flow.
+Search covers names, aliases, providers,
+and saved accounts. The uninstalled catalog uses pages of 50 entries; matching
+installed connectors remain above every page. Listing an upstream app never
+creates a Paperclip connection or marks that app authorized.
+Provider filters include native cards only when they contain accounts managed
+by that provider. A matching public catalog entry alone does not include a
+native card; its native onboarding remains in Paperclip and All.
+
+Composio app setup offers a dropdown of connected Composio accounts and an option
+to connect a new one. The board calls `COMPOSIO_MANAGE_CONNECTIONS` directly to
+check the requested toolkit and generate its hosted authorization link. This
+creates no task and starts no agent run. An already active app skips new link
+creation. After the human signs in, completion checks the toolkit's ACTIVE
+account status again. New gateways default to all humans and all agents; app
+setup preserves the selected gateway's saved access and tool policies without
+adding agent-specific grants. Access remains gateway-wide, not app-level
+isolation. Saved credentials are resolved for the acting human and authorization
+URLs stay outside audit/result storage. A failed or uncertain add is never
+retried automatically; the user can explicitly request a new link.
+
+Composio is authoritative for app accounts and authorization. Paperclip stores
+only account observations in `tool_connection_app_snapshots`: IDs, aliases,
+statuses, default flags, check times, and failure times. Observations are scoped
+to company, saved gateway, viewing human, and credential identity, including
+secret versions. Credential replacement or rotation hides the old inventory.
+Discovery and app setup never create agent grants or change saved policies.
+
+Apps starts a background check of the entire supported public Composio catalog,
+independent of search and pagination. `POST /tool-connections/:id/composio/apps/sync`
+returns cached observations and sync progress; `{force:true}` requests a refresh.
+`tool_connection_app_syncs` holds a per-credential lease and progress. Repeated
+visits and concurrent tabs share the lease. Checks use explicit `action:list`,
+batches of 32, a four-minute deadline, and five-minute freshness. Known accounts
+are checked first. Polling updates account rows while browsing stays usable.
+Manual **Refresh Composio** belongs in the saved Composio account's kebab menu;
+it checks that account only. Do not add a catalog-wide refresh button.
+Composio gateway setup finishes on its Permissions page. That page lists detected
+apps in a bounded, scrollable list and starts a refresh on first load. Its
+**Refresh Composio** button shows catalog-check progress and refreshes only that
+gateway. The same connected-app list and refresh controls serve Arcade and
+Executor gateways when discovery is available. Executor remains available as a
+connection, but its catalog filter chip is temporarily hidden.
+A complete empty list removes an observed account; EXPIRED accounts show Needs
+sign-in. Failed or incomplete evidence retains the last accounts, visibly
+unverified, and offers retry. Interrupted jobs can be restarted after the lease
+expires. A late response cannot replace a newer check or a changed credential.
+
+The saved Connect MCP OAuth credential supports listing accounts by toolkit;
+it is not a consumer user API key or a developer project API key. This discovery
+covers the supported public catalog, including toolkit variants. It does not
+claim complete enumeration of custom apps outside that catalog. A future
+identity-bound inventory endpoint should replace this scan when available.
+Never forward an MCP OAuth token to an unrelated REST inventory endpoint.
+
+Imported accounts appear above the paginated catalog with their actual source:
+**Via “saved connection name”**, rather than attributing upstream authorization
+to the gateway creator. Already connected Composio accounts remain visible even
+when Paperclip has a native connector; native Connect offers still take
+precedence. Imported account menus offer only **Open in Composio**. Access
+controls remain on the saved gateway and apply to all apps on that connection.
+The Manage dialog displays provider observations
+and links to Composio; it does not offer local rename or upstream removal.
+Use `https://dashboard.composio.dev/~/org/connect/apps` for Connect app management.
+The organization placeholder resolves to the signed-in user's For You area.
+The bare dashboard opens Platform developer projects, which have a separate
+account inventory and are the wrong destination for saved Connect MCP accounts.
+Remove connection remains available on the saved gateway itself. Its confirmation
+states that removing it from Paperclip does not delete accounts in Composio.
+
+Targeted Composio app setup URLs reuse the saved-account chooser when an active
+gateway exists. Explicit `new=1`, resume, and reconnect keep their own gateway
+setup flow. Existing ACTIVE app accounts are checked without creating another
+hosted link or a task. New app authorization remains a direct hosted sign-in
+handoff, followed by a fresh account check.
+
+Arcade still offers an agent task draft to verify the requested app and obtain
+any provider authorization link. It requires the app's tools in the selected
+gateway, a catalog refresh, and any tool authorization. New gateway setup retains
+the app name through `targetToolkit`; it creates only the provider gateway.
+Composio then returns to direct app setup; Arcade opens the task draft.
+Setup entry points preselect an assignable agent: prefer an agent named
+**Default agent**, then organizational rank and leadership roles, then creation
+date. If there is no named default, use the same rank and age ordering on the
+remaining agents. The user can change the selection before continuing.
+The board's Create Task action creates a new task even when an open task has the
+same title. A request key protects retries of the same submitted draft, and the
+success confirmation links to the created task.
+Connection setup drafts opt into the dialog's `navigateOnCreate` option, taking
+the operator to the created task after submission. Other callers stay on their
+current page by default; the option does not add a visible control.
+The task asks the assigned agent to perform setup directly without hiring or
+delegating, and to provide a browser link and wait when human authorization is
+needed. Before provider calls, it checks access for the task's current assignee.
+Missing access uses `connection_request` with the saved `connectionId` and exact
+indexed `toolNames`, producing an embedded card with the requesting agent's
+avatar and a **Grant access** action. The addressed human connection manager
+approves the frozen tool set; acceptance adds agent-scoped access and resumes
+the task. Composio setup asks for Search Tools as Allowed and Manage Connections
+as Ask first. Writes and unknown-risk tools retain per-call approval. Changed or
+quarantined tools require a new request. Existing policies, identity selection,
+and other agents' access are preserved. The task never grants itself permissions
+or requests access for every agent.
+The connection's Permissions page lists additional agent access separately
+and lets the connection manager remove it without changing the default action
+permissions. Removing that grant also disables its Ask-first tools.
+A successful agent run or a local gateway fixture does not prove that
+the underlying app is authorized; verify against the real provider gateway.
+OAuth recovery exposes a validated native sign-in link on both page and dialog
+hosts. A blocked window or navigation retains the existing connection and OAuth
+session so the link can continue sign-in without creating another gateway.
+
+Composio reuses `composio-search-catalog.json`. Arcade's snapshot records its
+official logo and evidence URLs, excluding hidden and coming-soon entries. To
+review and refresh only Arcade's claims, run:
+
+```sh
+node scripts/update-arcade-app-catalog.mjs --verified-at YYYY-MM-DD
+```
+
+Use the date of the public catalog review. The script preserves the prior file
+if the source structure or entries fail validation. `--input <saved-html>` allows
+reproducing the snapshot from the same official catalog response. Neither public
+snapshot proves a user's gateway configuration or app authorization.
+
+### Managed aggregator account inventory
+
+Composio, Arcade, and Executor observations share the existing app snapshot/sync tables and the manager-only `/api/tool-connections/:connectionId/aggregator/apps` list, `/sync`, and `/refresh` endpoints. Legacy Composio endpoints remain supported. These rows are observations, never executable connections or authorization grants. Company, gateway, viewing human, and effective credential version define the cache; fully successful enumeration reconciles removal, while partial failure retains stale observations.
+
+Arcade discovery paginates its [admin account list](https://github.com/ArcadeAI/arcade-go/blob/main/adminuserconnection.go) and [tool requirements](https://github.com/ArcadeAI/arcade-go/blob/main/tool.go), filters to the configured user and exposed gateway tools, and stores only allowlisted account metadata. An existing project key plus `Arcade-User-ID` can be reused. Otherwise optional manager-only sync setup stores a separate user-owned vault key for discovery; it is excluded from gateway invocation credentials and tool access grants. OAuth gateway tokens are not substituted for project keys.
+
+Executor reads its [MCP integration inventory](https://github.com/UsefulSoftwareCo/executor/blob/main/packages/hosts/mcp/src/tool-server.ts) or uses fixed, read-only `connections.list` and `integrations.list` calls in code mode. Its pure `connections.createHandoff` URL builder can supply the upstream console destination. No arbitrary generated code or provider REST endpoint is used. Unknown integrations remain separate, without guessed branding. Last-health `healthy` is connected, `expired` needs sign-in, and unverified or degraded health never earns a green check. Missing inventory support is visible as discovery unavailable. Managers can set a trusted HTTPS console URL for gateways that do not expose a destination, preserving workspace and self-hosted paths.
+
+Apps groups native and imported accounts under canonical app cards, preserving all upstream account identities. Native onboarding wins over aggregator connect offers. Imported account menus only open their upstream provider; deletion and per-app authorization stay upstream. Parent gateway menus own refresh and optional discovery setup. Paperclip policies continue to govern invocation through the gateway.
+
+Acceptance fixtures: `server/src/__tests__/aggregator-app-discovery.test.ts`, `server/src/__tests__/aggregator-app-sync.test.ts`, `ui/src/pages/apps/Browse.test.tsx`, and the production-page/full-stack test drive at `tests/aggregator-accounts/test-drive.ts`. The expected stories and evidence are recorded in `doc/plans/2026-10-05-managed-aggregator-account-user-stories.md`. Fixture runs do not replace live provider proof when working credentials are available.

@@ -26,7 +26,7 @@ export function buildHoneycombRunQueryUrl(runIdHash: string): string {
     breakdowns: ["trace.trace_id"],
     filters: [
       { column: "service.name", op: "=", value: "paperclip" },
-      { column: "name", op: "=", value: "task.run" },
+      { column: "name", op: "in", value: ["task.run", "task.provider_session", "task.execution_attempt"] },
       { column: HONEYCOMB_RUN_HASH_ATTRIBUTE, op: "=", value: runIdHash },
     ],
     filter_combination: "AND",

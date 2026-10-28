@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { queryKeys } from "./lib/queryKeys";
 import appSource from "./App.tsx?raw";
 
 const mockHealthApi = vi.hoisted(() => ({
@@ -19,6 +20,11 @@ const mockAuthApi = vi.hoisted(() => ({
 const mockAccessApi = vi.hoisted(() => ({
   getCurrentBoardAccess: vi.fn(),
   claimBootstrapAdmin: vi.fn(),
+}));
+const beginCloudSignInMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/cloud-sign-in", () => ({
+  beginCloudSignIn: (url: string) => beginCloudSignInMock(url),
+  clearCloudSignInAttempt: vi.fn(),
 }));
 
 vi.mock("./api/health", () => ({
@@ -57,16 +63,16 @@ async function waitForText(container: HTMLElement, text: string) {
   await vi.waitFor(() => expect(container.textContent).toContain(text));
 }
 
-function renderGate(container: HTMLElement) {
+function renderGate(container: HTMLElement, allowMembershipRequest = false, client?: QueryClient) {
   const root = createRoot(container);
-  const queryClient = new QueryClient({
+  const queryClient = client ?? new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   flushSync(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <CloudAccessGate />
+        <CloudAccessGate allowMembershipRequest={allowMembershipRequest} />
       </QueryClientProvider>,
     );
   });
@@ -100,6 +106,43 @@ describe("CloudAccessGate", () => {
     vi.clearAllMocks();
   });
 
+  it("renews a missing Cloud instance session without opening local auth", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my-staging.paperclip.app", stackSlug: "team" } });
+    mockAuthApi.getSession.mockResolvedValue(null);
+    beginCloudSignInMock.mockReturnValue(true);
+    const root = renderGate(container);
+    await vi.waitFor(() => expect(beginCloudSignInMock).toHaveBeenCalledTimes(1));
+    expect(beginCloudSignInMock).toHaveBeenCalledWith("https://my-staging.paperclip.app/v1/stacks/team/entry-redirect?returnTo=%2Finstance%2Fsettings%2Fgeneral");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("does not mistake a session service failure for a signed-out user", async () => {
+    mockAuthApi.getSession.mockRejectedValue(new Error("Session service unavailable"));
+    const root = renderGate(container);
+    await waitForText(container, "Unable to load Paperclip");
+    expect(container.querySelector("button")?.textContent).toBe("Try again");
+    expect(container.textContent).not.toContain("Outlet content");
+    expect(container.textContent).not.toContain("Navigate:/auth");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
+  });
+
+  it.each([undefined, { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my.paperclip.app", stackSlug: "team" }])(
+    "does not require a session in local trusted mode, including with Cloud metadata %j", async (cloud) => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "local_trusted", cloud });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await client.fetchQuery({
+      queryKey: queryKeys.auth.session,
+      queryFn: () => Promise.reject(new Error("Session service unavailable")),
+    }).catch(() => {});
+    const root = renderGate(container, false, client);
+    await waitForText(container, "Outlet content");
+    expect(beginCloudSignInMock).not.toHaveBeenCalled();
+    unmountRoot(root);
+  });
+
   it("shows a no-access message for signed-in users without org access", async () => {
     mockAuthApi.getSession.mockResolvedValue({
       session: { id: "session-1", userId: "user-1" },
@@ -120,6 +163,41 @@ describe("CloudAccessGate", () => {
     expect(container.textContent).toContain("No organization access");
     expect(container.textContent).not.toContain("Outlet content");
 
+    unmountRoot(root);
+  });
+
+  it("admits signed-in nonmembers only for the private invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ isInstanceAdmin: false, companyIds: [] });
+    const root = renderGate(container, true);
+    await waitForText(container, "Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still requires sign-in for the invitation landing page", async () => {
+    mockAuthApi.getSession.mockResolvedValue(null);
+    const root = renderGate(container, true);
+    await waitForText(container, "Navigate:/auth?next=");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("still blocks invitation pages while cloud bootstrap is pending", async () => {
+    mockHealthApi.get.mockResolvedValue({ deploymentMode: "authenticated", deploymentExposure: "public", bootstrapStatus: "bootstrap_pending" });
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    const root = renderGate(container, true);
+    await waitForText(container, "This Paperclip is waiting on its first admin");
+    expect(container.textContent).not.toContain("Outlet content");
+    unmountRoot(root);
+  });
+
+  it("keeps invitation pages closed when cloud access checks fail", async () => {
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "invitee" } });
+    mockAccessApi.getCurrentBoardAccess.mockRejectedValueOnce(new Error("Access check unavailable"));
+    const root = renderGate(container, true);
+    await waitForText(container, "Unable to load Paperclip");
+    expect(container.querySelector("button")?.textContent).toBe("Try again");
+    expect(container.textContent).not.toContain("Outlet content");
     unmountRoot(root);
   });
 

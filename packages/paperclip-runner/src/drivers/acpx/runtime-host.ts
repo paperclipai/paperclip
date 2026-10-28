@@ -1,10 +1,35 @@
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
+import { composeCopilotSystemInstructions } from "./copilot-profile.js";
+import { resolveClaudeEffort } from "./claude-effort.js";
+import { resolveGrokEffort } from "./grok-effort.js";
+import { piProviderConfiguration } from "./pi-provider-config.js";
+import { withAcpxTurnCancellation } from "./turn-cancellation.js";
+import { resolveAcpxProviderMode } from "./provider-mode.js";
+import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
+import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { dirname, join } from "node:path";
+import { bindAcpxAgentFiles } from "./agent-files-binding.js";
+import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
+import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
+import { stageManagedGrokCredential } from "./grok-credentials.js";
+import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
+import { prepareStdioMcpBindings } from "../stdio-mcp.js";
+import { nativeMcpLaunchBinding } from "../native-mcp.js";
+
 import type {
   AcpElicitationHandler,
+  AcpRuntimeOptions,
   AcpRuntimeEvent,
   AcpRuntimeTurnResult,
 } from "acpx/runtime";
 
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
+import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
+import {
+  materializeNativeRuntimeSkills,
+  releaseMaterializedNativeRuntimeSkills,
+} from "../runtime-context-materializer.js";
 import {
   startRunnerToolBridge,
   type RunnerToolBridge,
@@ -16,10 +41,10 @@ import {
   type AcpxProviderLifetimeLease,
 } from "./codex-credentials.js";
 import {
-  verifyQualifiedAcpxInstallation,
   type VerifiedAcpxCommandLease,
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import {
   requireVerifiedAcpxModel,
   type AcpxModelStatus,
@@ -39,7 +64,9 @@ import {
 } from "./recovery-identity.js";
 import {
   prepareAcpxRuntimeSandbox,
+  refreshCopilotSystemInstructions,
   type AcpxRuntimeSandbox,
+  type AcpxProviderRuntimePolicy,
 } from "./runtime-sandbox.js";
 import type { AcpxExpectedSessionIdentity } from "./sidecar-protocol.js";
 
@@ -61,6 +88,11 @@ const ACPX_ADMISSION_CLEANUP_RETRY_DELAY_MS = 10;
 const ACPX_ADMISSION_CLEANUP_RESCHEDULE_MS = 1_000;
 
 export interface AcpxRuntimePortIdentity {
+  mode?: string;
+  piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   acpxRecordId: string;
   backendSessionId: string;
   agentSessionId: string;
@@ -70,6 +102,11 @@ export interface AcpxRuntimeGoalCapability {
   version: number;
   controlMethod: string;
   actions: Array<"set" | "pause" | "resume" | "clear">;
+}
+
+export interface AcpxRuntimeSteeringCapability {
+  steering: boolean;
+  queuedFollowUp: boolean;
 }
 
 export interface AcpxRuntimeGoalSnapshot {
@@ -89,6 +126,9 @@ export interface AcpxRuntimeTurnInput {
   requestId: string;
   signal?: AbortSignal;
   onElicitation?: AcpElicitationHandler;
+  onPermissionRequest?: AcpRuntimeOptions["onPermissionRequest"];
+  onExtensionRequest?: AcpRuntimeOptions["onExtensionRequest"];
+  onExtensionNotification?: AcpRuntimeOptions["onExtensionNotification"];
 }
 
 export interface AcpxRuntimeTurn {
@@ -105,6 +145,9 @@ export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
   setModel?(model: string): Promise<void>;
+  steeringCapability?(): AcpxRuntimeSteeringCapability | null;
+  steerActiveTurn?(text: string, requestId: string): Promise<void>;
+  queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   controlGoal?(
@@ -116,12 +159,23 @@ export interface AcpxRuntimePort {
 }
 
 export interface AcpxRuntimePortOpenOptions {
+  /** A durable identity was admitted; restored native mode must already match. */
+  restoringSession?: boolean;
+  /** Ephemeral provider extension metadata; mandatory ACP caps remain host-owned. */
+  clientCapabilities?: Record<string, unknown>;
   command: VerifiedAcpxCommandLease;
+  /** Replace a consumed launch snapshot after an ephemeral control session. */
+  refreshConsumedCommand?: () => Promise<void>;
   profile: QualifiedAcpxProfile;
   cwd: string;
   stateDirectory: string;
   providerSessionKey: string;
   permissionMode: NativeAcpxPermissionMode;
+  mode?: string;
+  piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   permissionPolicy: ReturnType<typeof acpxRuntimePermissionPolicy>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** Kernel credential-home quorum inherited by the provider sentinel. */
@@ -142,18 +196,17 @@ export interface AcpxRuntimePortOpenOptions {
   retainFailedAdmissionCleanup(cleanup: Promise<void>): void;
 }
 
-export interface AcpxMcpServerBinding {
-  name: string;
-  url: string;
-  bearerToken: string;
-  runnerOwned: boolean;
-}
+export type AcpxMcpServerBinding = {
+  name: string; url: string; bearerToken: string; runnerOwned: boolean;
+} | {
+  name: string; command: string; args: string[]; env: Record<string, string>; runnerOwned: false;
+};
 
-export type AcpxSemanticToolSession = Omit<RunnerToolBridgeOptions, "secret">;
+export type AcpxSemanticToolSession = Omit<RunnerToolBridgeOptions, "secret" | "preloadClaudeTaskTools">;
 
 export interface AcpxRetainedCleanupFailure {
   resource:
-    "credential" | "provider_lifetime" | "command" | "runtime" | "tool_bridge";
+    "credential" | "provider_lifetime" | "command" | "runtime" | "tool_bridge" | "skills";
   attempt: number;
   error: unknown;
 }
@@ -185,13 +238,23 @@ export interface AcpxRuntimeHostDependencies {
 }
 
 export interface OpenAcpxRuntimeHostOptions {
+  /** Explicit task execution policy; never inferred from auto-approval. Required for Pi. */
+  providerPolicy?: AcpxProviderRuntimePolicy;
+  /** Never persisted as session options or recovery identity. */
+  clientCapabilities?: Record<string, unknown>;
   runtimeDirectory: string;
   normalizedSessionId: string;
   workingDirectory: string;
   agent: QualifiedAcpxAgent;
   model: string;
   permissionMode: NativeAcpxPermissionMode;
+  mode?: string;
+  piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   systemInstructions?: string;
+  runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
   expectedIdentity?: AcpxExpectedSessionIdentity;
@@ -200,6 +263,7 @@ export interface OpenAcpxRuntimeHostOptions {
   /** Abort admission without admitting resources that resolve afterward. */
   signal?: AbortSignal;
   semanticTools?: AcpxSemanticToolSession;
+  assignedMcpTransport?: "prp";
   onGoalUpdate?: (goal: AcpxRuntimeGoalSnapshot | null) => void;
 }
 
@@ -243,7 +307,10 @@ export class AcpxRuntimeHost {
   readonly #credential: AcpxProviderLifetimeLease | null;
   readonly #command: VerifiedAcpxCommandLease;
   readonly #toolBridge: RunnerToolBridge | null;
+  readonly #claudeSkillNames: readonly string[];
+  readonly #assertAgentFilesHeld: (() => void) | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
+  #activeTurnInterruption: AcpxRuntimeTurn["cancel"] | null = null;
   #closingStarted = false;
   #closePromise: Promise<void> | null = null;
   #closed = false;
@@ -256,6 +323,8 @@ export class AcpxRuntimeHost {
     credential: AcpxProviderLifetimeLease | null;
     command: VerifiedAcpxCommandLease;
     toolBridge: RunnerToolBridge | null;
+    claudeSkillNames: readonly string[];
+    assertAgentFilesHeld?: () => void;
   }) {
     this.#runtime = input.runtime;
     this.#binding = input.binding;
@@ -264,6 +333,8 @@ export class AcpxRuntimeHost {
     this.#credential = input.credential;
     this.#command = input.command;
     this.#toolBridge = input.toolBridge;
+    this.#claudeSkillNames = [...input.claudeSkillNames];
+    this.#assertAgentFilesHeld = input.assertAgentFilesHeld;
   }
 
   static async open(
@@ -271,10 +342,26 @@ export class AcpxRuntimeHost {
     dependencies: AcpxRuntimeHostDependencies,
   ): Promise<AcpxRuntimeHost> {
     options.signal?.throwIfAborted();
-    if (options.agent === "pi") {
-      throw new Error(
-        "ACPX pi is unavailable until its runtime has descriptor-confined verified launch",
-      );
+    if (options.agent === "pi" && typeof options.providerPolicy?.readOnly !== "boolean") {
+      throw new Error("Pi admission requires an explicit task execution policy");
+    }
+    const preconfigured = usesPreconfiguredHome(options.environment);
+    if (preconfigured && options.permissionMode !== "approve-all") {
+      throw new Error("preconfigured home currently requires ACPX approve-all; local permission rules still apply");
+    }
+    // shortcut: qualify a read-only provider launch before enabling preconfigured ACPX planning.
+    if (preconfigured && options.providerPolicy?.readOnly) {
+      throw new Error("preconfigured ACPX read-only execution is not supported; use isolated mode or native Codex");
+    }
+    // shortcut: qualify session permissions that deny Runner state before enabling this provider.
+    if (preconfigured && options.agent === "codex") throw new Error("preconfigured ACPX Codex cannot protect Runner state; use native Codex or isolated mode");
+    const nativeMcp = preconfigured ? null : nativeMcpLaunchBinding(options.environment);
+    if (nativeMcp?.name === "paperclip") {
+      throw new Error("assigned native MCP name conflicts with the task bridge");
+    }
+    if (!preconfigured && options.runtimeContext?.mcp.bindingId && !nativeMcp
+      && !(options.assignedMcpTransport === "prp" && options.semanticTools)) {
+      throw new Error("assigned native MCP launch binding is unavailable");
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
     const binding = await runAbortableAdmissionStage(
@@ -286,10 +373,19 @@ export class AcpxRuntimeHost {
           workingDirectory: options.workingDirectory,
           profile,
           requestedModel: options.model,
+          ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest } : {}),
           permissionMode: options.permissionMode,
+          mode: resolveAcpxProviderMode(options.agent, options.mode),
+          piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
+          claudeEffort: resolveClaudeEffort(options.agent, options.claudeEffort),
+          grokEffort: resolveGrokEffort(options.agent, options.grokEffort),
+          grokDisableWebSearch: resolveGrokDisableWebSearch(options.agent, options.grokDisableWebSearch),
+          ...(preconfigured ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
+          ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
+            ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
@@ -306,14 +402,15 @@ export class AcpxRuntimeHost {
     const installation = await runAbortableAdmissionStage(
       options.signal,
       () =>
-        (dependencies.verifyInstallation ?? verifyQualifiedAcpxInstallation)(
+        (dependencies.verifyInstallation ?? verifyAcpxProfileInstallation)(
           profile,
         ),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
+    let admissionSucceeded = false;
     let command: VerifiedAcpxCommandLease | null = null;
     let credential: AcpxProviderLifetimeLease | null = null;
     let toolBridge: RunnerToolBridge | null = null;
@@ -355,6 +452,7 @@ export class AcpxRuntimeHost {
       retainedRejectedRuntimeAdmissions.add(retained);
       retainRuntimeHostCleanup(ownedCleanup);
     };
+    let admissionStage: keyof typeof ACPX_ADMISSION_CODES = "sandbox";
     try {
       const sandbox = await runAbortableAdmissionStage(
         options.signal,
@@ -363,10 +461,22 @@ export class AcpxRuntimeHost {
             binding,
             agent: options.agent,
             environment: options.environment,
+            tools: options.semanticTools?.tools,
+            ...(options.providerPolicy === undefined ? {} : { providerPolicy: {
+              ...options.providerPolicy,
+              systemInstructions: boundedInstructions(options.systemInstructions),
+              protectedPaths: [
+                ...(options.providerPolicy.protectedPaths ?? []),
+                ...(installation.agentServerPackageJsonPath === null
+                  ? []
+                  : [dirname(installation.agentServerPackageJsonPath)]),
+              ],
+            } }),
           }),
         dependencies.retainAdmissionCleanup,
       );
-      if (options.agent === "codex") {
+      admissionStage = "credential";
+      if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
           acquire: () =>
@@ -380,12 +490,19 @@ export class AcpxRuntimeHost {
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
         });
+      } else if (options.agent === "grok") {
+        credential = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => stageManagedGrokCredential({ agentHomeDirectory: sandbox.agentHomeDirectory, environment: options.environment, retainRefresh: () => admissionSucceeded }),
+          resource: "credential", releaseLate: (lease) => lease.close(),
+          reportFailure: (failure) => dependencies.reportRetainedCleanupFailure(failure),
+        });
       } else {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
           acquire: () =>
             acquireAcpxProviderLifetimeLease({
-              agentHomeDirectory: sandbox.agentHomeDirectory,
+              agentHomeDirectory: preconfigured ? sandbox.root : sandbox.agentHomeDirectory,
             }),
           resource: "provider_lifetime",
           releaseLate: (lateLifetime) => lateLifetime.close(),
@@ -393,18 +510,108 @@ export class AcpxRuntimeHost {
             dependencies.reportRetainedCleanupFailure(failure),
         });
       }
+      options.signal?.throwIfAborted();
+      admissionStage = "configuration";
+      const configurationLifetime = credential;
+      await runAbortableAdmissionStage(
+        options.signal,
+        async () => { await sandbox.initializeOwnedConfiguration?.(); },
+        cleanup => {
+          pendingRuntimeOwnsCredential = true;
+          const retained = cleanup.then(() => cleanupAbortedRuntimeAdmission(
+            null, configurationLifetime, "ACPX owned configuration cancelled",
+          ));
+          retainRuntimeHostCleanup(retained);
+          dependencies.retainAdmissionCleanup?.(retained);
+        },
+      );
+      options.signal?.throwIfAborted();
+      admissionStage = "credential";
+      assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      admissionStage = "configuration";
+      let launchEnvironment = sandbox.launchEnvironment;
+      // This copy is registered by the authenticated controller for its company,
+      // agent and run. Environment/config values cannot widen the grant. Each
+      // resumed process receives the newly registered copy; collection already
+      // requires verified provider shutdown in the native executor.
+      const agentFiles = ["cursor", "copilot", "pi"].includes(options.agent)
+        ? bindAcpxAgentFiles(options.runtimeContext, [sandbox.root,
+          ...(installation.agentServerPackageJsonPath === null ? [] : [dirname(installation.agentServerPackageJsonPath)]),
+        ]) : null;
+      if (agentFiles) {
+        launchEnvironment = Object.freeze({ ...launchEnvironment, AGENT_HOME: agentFiles.root,
+          ...(options.agent === "pi" ? { PAPERCLIP_PI_AGENT_HOME: agentFiles.root } : {}),
+        });
+      }
+      if (options.agent === "copilot") {
+        // A rejected contender must never overwrite an active provider's text.
+        // Do not race this write against cancellation: retain the lifetime lease
+        // until the atomic refresh settles, then honor an intervening abort.
+        options.signal?.throwIfAborted();
+        await refreshCopilotSystemInstructions(
+          sandbox,
+          composeCopilotSystemInstructions(boundedInstructions(options.systemInstructions)),
+        );
+        options.signal?.throwIfAborted();
+      }
+      admissionStage = "skills";
+      if (options.agent === "pi") {
+        const skills = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => createAcpxRuntimeSkillLease(options.runtimeContext ?? null),
+          resource: "skills", releaseLate: value => value.close(),
+          reportFailure: dependencies.reportRetainedCleanupFailure,
+        });
+        const providerLifetime = credential;
+        credential = {
+          lifetimeFenceCandidates: providerLifetime.lifetimeFenceCandidates,
+          lifetimeFenceFds: providerLifetime.lifetimeFenceFds,
+          activateLifetimeOwner: pid => providerLifetime.activateLifetimeOwner(pid),
+          async close() {
+            // Only release assigned files after the provider lifetime quorum closes.
+            await providerLifetime.close();
+            await skills.close();
+          },
+        };
+        launchEnvironment = Object.freeze({ ...launchEnvironment,
+          PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
+        });
+      }
+      if (!preconfigured && (options.agent === "claude" || options.agent === "grok")) {
+        // The lifetime lease proves the previous provider has stopped. Refresh
+        // the assigned snapshot before every launch, including durable resume;
+        // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.
+        const skillsHome = join(sandbox.agentHomeDirectory, "skills");
+        await releaseMaterializedNativeRuntimeSkills(skillsHome);
+        await materializeNativeRuntimeSkills(
+          options.runtimeContext ?? null,
+          skillsHome,
+        );
+        options.signal?.throwIfAborted();
+      }
+      admissionStage = "command";
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () => installation.openCommand(),
+        acquire: () => installation.openCommand({ signal: options.signal }),
         resource: "command",
         releaseLate: (lateCommand) => lateCommand.close(),
         reportFailure: (failure) =>
           dependencies.reportRetainedCleanupFailure(failure),
       });
+      const commandOwner = createAcpxCommandLeaseOwner(
+        command,
+        signal => installation.openCommand({ signal }),
+      );
+      command = commandOwner.command;
+      admissionStage = "tool_bridge";
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
-            acquire: () => startRunnerToolBridge(options.semanticTools!),
+            acquire: () => startRunnerToolBridge({
+              ...options.semanticTools!,
+              preserveToolNames: options.assignedMcpTransport === "prp",
+              preloadClaudeTaskTools: options.agent === "claude",
+            }),
             resource: "tool_bridge",
             releaseLate: (lateToolBridge) => lateToolBridge.close(),
             reportFailure: (failure) =>
@@ -415,39 +622,50 @@ export class AcpxRuntimeHost {
       if (admittedLifetime === null) {
         throw new Error("ACPX provider lifetime lease is unavailable");
       }
+      admissionStage = "runtime";
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
-        acquire: () => {
+        acquire: async () => {
           options.assertWorkspaceHeld?.();
+          agentFiles?.assertHeld();
+          await assertAcpxProfileWorkspace(options.agent, binding.workspacePath);
           return dependencies.openRuntime({
+            ...(options.clientCapabilities === undefined ? {} : {
+              clientCapabilities: structuredClone(options.clientCapabilities),
+            }),
             command: command!,
+            refreshConsumedCommand: commandOwner.refreshConsumedCommand,
             profile,
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,
             providerSessionKey: binding.profileSessionKey,
+            restoringSession: options.expectedIdentity !== undefined,
             permissionMode: binding.permissionMode,
+            mode: binding.mode,
+            piThinkingLevel: binding.piThinkingLevel,
+            claudeEffort: binding.claudeEffort,
+            grokEffort: binding.grokEffort, grokDisableWebSearch: binding.grokDisableWebSearch,
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
-            launchEnvironment: sandbox.launchEnvironment,
+            launchEnvironment,
             credentialFenceFds: admittedLifetime.lifetimeFenceFds,
             activateCredentialFenceOwner:
               admittedLifetime.activateLifetimeOwner.bind(admittedLifetime),
             systemInstructions: boundedInstructions(options.systemInstructions),
-            ...(options.assertWorkspaceHeld === undefined
+            ...(options.assertWorkspaceHeld === undefined && !agentFiles
               ? {}
-              : { assertWorkspaceHeld: options.assertWorkspaceHeld }),
+              : { assertWorkspaceHeld: () => { options.assertWorkspaceHeld?.(); agentFiles?.assertHeld(); } }),
             ...(options.signal === undefined ? {} : { signal: options.signal }),
-            mcpServers: toolBridge
-              ? [
-                  {
-                    name: "paperclip",
-                    url: toolBridge.url,
-                    bearerToken: toolBridge.secret,
-                    runnerOwned: true,
-                  },
-                ]
-              : [],
+            mcpServers: [
+              ...(options.providerPolicy?.readOnly ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
+              ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
+                bearerToken: toolBridge.secret, runnerOwned: true }] : []),
+              // This is Paperclip's authenticated gateway, not a direct upstream
+              // binding. Its existing grants and approval checks remain authoritative.
+              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
+                bearerToken: nativeMcp.token, runnerOwned: true }] : []),
+            ],
             ...(options.onGoalUpdate === undefined
               ? {}
               : { onGoalUpdate: options.onGoalUpdate }),
@@ -475,6 +693,7 @@ export class AcpxRuntimeHost {
           });
         },
       });
+      admissionStage = "identity";
       const runtimeIdentity = await runAbortableAdmissionStage(
         options.signal,
         () =>
@@ -485,6 +704,14 @@ export class AcpxRuntimeHost {
           ),
         dependencies.retainAdmissionCleanup,
       );
+      if (runtimeIdentity.mode !== binding.mode) {
+        throw new Error("ACPX runtime Provider mode does not match the admitted session configuration");
+      }
+      if (runtimeIdentity.piThinkingLevel !== binding.piThinkingLevel) {
+        throw new Error("ACPX runtime Pi thinking level conflicts with session binding");
+      }
+      if (runtimeIdentity.claudeEffort !== binding.claudeEffort) throw new Error("ACPX runtime Claude effort conflicts with session binding");
+      if (runtimeIdentity.grokEffort !== binding.grokEffort || runtimeIdentity.grokDisableWebSearch !== binding.grokDisableWebSearch) throw new Error("ACPX runtime Grok effort conflicts with session binding");
       const observedIdentity: AcpxExpectedSessionIdentity = {
         kind: "acpx",
         normalizedSessionId: binding.normalizedSessionId,
@@ -502,6 +729,7 @@ export class AcpxRuntimeHost {
         verifyExpectedAcpxIdentity(options.expectedIdentity, binding, identity);
       }
       options.signal?.throwIfAborted();
+      admissionSucceeded = true;
       return new AcpxRuntimeHost({
         runtime,
         binding,
@@ -510,8 +738,14 @@ export class AcpxRuntimeHost {
         credential,
         command,
         toolBridge,
+        assertAgentFilesHeld: agentFiles?.assertHeld,
+        claudeSkillNames: options.agent === "claude"
+          ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
+          : [],
       });
     } catch (error) {
+      error = classifyAcpxProfileError(options.agent, error) ?? error;
+      recordAcpxAdmissionFailure(error, admissionStage);
       const cleanup = cleanupRuntimeResources(
         runtime,
         toolBridge,
@@ -584,6 +818,36 @@ export class AcpxRuntimeHost {
     return this.#runtime.goalCapability?.() ?? null;
   }
 
+  steeringCapability(): AcpxRuntimeSteeringCapability | null {
+    return this.#runtime.steeringCapability?.() ?? null;
+  }
+
+  async steerActiveTurn(text: string, turnId?: string): Promise<void> {
+    const turn = this.#activeTurn;
+    if (this.#closed || this.#closingStarted || !turn || (turnId !== undefined && turn.requestId !== turnId)) {
+      throw new Error("ACPX steering does not own an active turn");
+    }
+    if (!this.steeringCapability()?.steering || !this.#runtime.steerActiveTurn) {
+      throw new Error("ACPX active steering is unavailable");
+    }
+    await turn.promptStarted;
+    if (this.#activeTurn !== turn || this.#closingStarted) throw new Error("ACPX steering turn expired");
+    await this.#runtime.steerActiveTurn(boundedTurnText(text), turn.requestId);
+  }
+
+  async queueFollowUp(text: string, turnId?: string): Promise<void> {
+    const turn = this.#activeTurn;
+    if (this.#closed || this.#closingStarted || !turn || (turnId !== undefined && turn.requestId !== turnId)) {
+      throw new Error("ACPX follow-up does not own an active turn");
+    }
+    if (!this.steeringCapability()?.queuedFollowUp || !this.#runtime.queueFollowUp) {
+      throw new Error("ACPX queued follow-up is unavailable");
+    }
+    await turn.promptStarted;
+    if (this.#activeTurn !== turn || this.#closingStarted) throw new Error("ACPX follow-up turn expired");
+    await this.#runtime.queueFollowUp(boundedTurnText(text), turn.requestId);
+  }
+
   goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
     return this.#runtime.goalSnapshot?.() ?? null;
   }
@@ -599,6 +863,7 @@ export class AcpxRuntimeHost {
   }
 
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {
+    this.#assertAgentFilesHeld?.();
     if (this.#closed || this.#closingStarted) {
       throw new Error("ACPX runtime host is closing");
     }
@@ -606,34 +871,46 @@ export class AcpxRuntimeHost {
       throw new Error("ACPX runtime host already has an active turn");
     }
     const requestId = boundedRequestId(input.requestId);
-    const text = boundedTurnText(input.text);
+    // Bound caller input before adding the provider's assigned-skill command.
+    // The command is internal framing; it must not consume the envelope's
+    // allowance or cause an otherwise valid envelope to be truncated/rejected.
+    const text = claudeNativeSkillPrompt(
+      boundedTurnText(input.text), this.#claudeSkillNames,
+    );
     const turn = this.#runtime.startTurn({
       text,
       requestId,
       ...(input.signal ? { signal: input.signal } : {}),
       ...(input.onElicitation ? { onElicitation: input.onElicitation } : {}),
+      ...(input.onPermissionRequest ? { onPermissionRequest: input.onPermissionRequest } : {}),
+      ...(input.onExtensionRequest ? { onExtensionRequest: input.onExtensionRequest } : {}),
+      ...(input.onExtensionNotification ? { onExtensionNotification: input.onExtensionNotification } : {}),
     });
     this.#activeTurn = turn;
-    void turn.result
+    const managed = withAcpxTurnCancellation(turn, reason => this.close({ reason }), ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS);
+    this.#activeTurnInterruption = managed.cancel;
+    void managed.result
       .finally(() => {
         // Once shutdown owns this turn, retain its cancellation handle until
         // runtime cleanup succeeds. The result may settle while cleanup is
         // failing, and a later close must still be able to retry cancellation.
         if (this.#activeTurn === turn && !this.#closingStarted) {
           this.#activeTurn = null;
+          this.#activeTurnInterruption = null;
         }
       })
       .catch(() => undefined);
-    return turn;
+    return managed;
+  }
+
+  isClosed(): boolean {
+    return this.#closed;
   }
 
   async interruptActiveTurn(reason: string): Promise<void> {
     const turn = this.#activeTurn;
     if (!turn) throw new Error("ACPX runtime host has no active turn");
-    const cancellationError = await boundedCancellation(
-      turn.cancel({ reason: boundedReason(reason) }),
-    );
-    if (cancellationError) throw cancellationError;
+    await this.#activeTurnInterruption!({ reason: boundedReason(reason) });
   }
 
   async close(input: { reason: string }): Promise<void> {
@@ -1031,11 +1308,9 @@ async function cleanupRuntimeResources(
       return error;
     }
   };
-  // The command lease owns only the already-consumed verified launch
-  // snapshot, so it can be released as shutdown starts. The credential is
-  // different: a provider whose exact runtime close is pending or failed may
-  // still read or rewrite its home. Retain both the staged bytes and the
-  // exclusive home lease until that exact close succeeds.
+  // The runtime must retire before its command snapshot can be removed.
+  // Keep both the snapshot and credential while the provider is still alive;
+  // failed cleanup remains owned and can be retried after process retirement.
   const runtimeOutcome = runtime
     ? settle(() => runtime.close({ reason }))
     : Promise.resolve(null);
@@ -1045,9 +1320,10 @@ async function cleanupRuntimeResources(
     await runtimeOutcome;
     return toolBridge === null ? null : await settle(() => toolBridge.close());
   })();
-  const commandOutcome = command
-    ? settle(() => command.close())
-    : Promise.resolve(null);
+  const commandOutcome = (async (): Promise<unknown | null> => {
+    await runtimeOutcome;
+    return command === null ? null : await settle(() => command.close());
+  })();
   const credentialOutcome = (async (): Promise<unknown | null> => {
     const runtimeError = await runtimeOutcome;
     if (runtimeError !== null || credential === null) return null;

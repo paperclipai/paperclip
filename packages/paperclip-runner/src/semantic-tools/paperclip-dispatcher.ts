@@ -27,6 +27,7 @@ import {
 } from "./receipts.js";
 import {
   inspectPaperclipSemanticValue,
+  isPaperclipSemanticValueWithinBounds,
   redactPaperclipSemanticValue,
 } from "./redaction.js";
 import type {
@@ -187,29 +188,14 @@ export class PaperclipSemanticDispatcher {
       );
     }
 
-    const inputSafety = inspectPaperclipSemanticValue(call.input);
-    if (!inputSafety.withinBounds) {
+    // The harness owns credential policy; admission only enforces bounds.
+    if (!isPaperclipSemanticValueWithinBounds(call.input)) {
       decision = deniedDecision(
         decision,
         "input_invalid",
         "Tool input exceeds safe bounds.",
       );
       return this.#denial(call, "input_invalid", descriptor, context, decision);
-    }
-    if (inputSafety.containsProtectedData) {
-      decision = deniedDecision(
-        decision,
-        "protected_data_denied",
-        "Protected data is not accepted by semantic actions.",
-      );
-      return this.#denial(
-        call,
-        "protected_data_denied",
-        descriptor,
-        context,
-        decision,
-        true,
-      );
     }
     const inputValidator = this.#inputValidators.get(descriptor.operationId);
     const idempotencyKey = stringProperty(call.input, "idempotencyKey");

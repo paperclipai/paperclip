@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -33,9 +33,9 @@ fn send(value: Value) -> io::Result<()> {
     stdout.flush()
 }
 
-fn send_split_event_burst(state: &FakeState) -> io::Result<()> {
+fn send_split_event_burst(state: &FakeState, count: usize) -> io::Result<()> {
     let turn_id = state.active_turn_id.as_deref().unwrap_or("provider-turn-1");
-    for index in 0..96 {
+    for index in 0..count {
         send(json!({
             "method": "item/agentMessage/delta",
             "params": {
@@ -607,6 +607,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .any(|value| value == "--require-existing-resume-state")
         && !state_path.exists();
     let call_log = argument(&args, "--call-log").map(PathBuf::from);
+    let request_log = argument(&args, "--request-log").map(PathBuf::from);
     if args.iter().any(|value| value == "--record-process-start") {
         log_call(call_log.as_deref(), "process-start")?;
     }
@@ -618,6 +619,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let emit_runtime_elicitation = args.iter().any(|value| value == "--runtime-elicitation");
     let emit_structured_activity = args.iter().any(|value| value == "--structured-activity");
     let emit_split_event_burst = args.iter().any(|value| value == "--split-event-burst");
+    let split_event_prefix_count = argument(&args, "--split-event-prefix-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(96);
+    if !(1..=4096).contains(&split_event_prefix_count) {
+        return Err("split event prefix count must be between 1 and 4096".into());
+    }
     let split_event_suffix_count = argument(&args, "--split-event-suffix-count")
         .map(|value| value.parse::<usize>())
         .transpose()?
@@ -643,11 +651,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_codex_home_auth = args
         .iter()
         .any(|value| value == "--require-codex-home-auth");
+    if args
+        .iter()
+        .any(|value| value == "--require-otel-environment")
+    {
+        for (name, expected) in [
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "authorization=Bearer%20logs-fixture",
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "authorization=Bearer%20traces-fixture",
+            ),
+        ] {
+            assert_eq!(std::env::var(name).as_deref(), Ok(expected));
+        }
+        assert!(std::env::var_os("OTEL_EXPORTER_OTLP_HEADERS").is_none());
+        assert!(std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_none());
+    }
     let durable_turn_ids = args.iter().any(|value| value == "--durable-turn-ids");
+    let hold_first_durable_turn = args
+        .iter()
+        .any(|value| value == "--hold-first-durable-turn");
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
+    let terminal_result = argument(&args, "--terminal-result-file")
+        .map(|path| -> Result<Value, Box<dyn std::error::Error>> {
+            Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+        })
+        .transpose()?;
     let replay_completed_tool_call = args
         .iter()
         .any(|value| value == "--replay-completed-tool-call");
@@ -671,6 +706,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--finish-turn-with-pending-tool");
     let require_dynamic_tool = args.iter().any(|value| value == "--require-dynamic-tool");
+    let repair_assigned_discovery = args
+        .iter()
+        .any(|value| value == "--repair-assigned-discovery");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -684,6 +722,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--linger-after-turn-start");
     let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
+    let held_output_count = argument(&args, "--held-output-count")
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(64);
+    if !(1..=4096).contains(&held_output_count) {
+        return Err("--held-output-count must be between 1 and 4096".into());
+    }
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
         .iter()
@@ -839,9 +884,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut delayed_interrupt_terminal_scheduled = false;
     let mut answered_questions = 0u8;
     let mut replayed_completed_tool_calls = 0_u64;
+    let mut rejected_helper_requests = 0_u8;
 
     for line in io::stdin().lock().lines() {
         let message: Value = serde_json::from_str(&line?)?;
+        if message.get("method").is_none()
+            && message
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("helper-request-"))
+        {
+            if message.pointer("/result/success") != Some(&json!(false))
+                && message.get("error").is_none()
+            {
+                return Err("helper request was granted root authority".into());
+            }
+            rejected_helper_requests += 1;
+            log_call(call_log.as_deref(), "helper-request:rejected")?;
+            if rejected_helper_requests == 3 {
+                send(
+                    json!({"id":"tool-request-1", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"root-after-helper", "tool":"get_task_context", "arguments":{}
+                    }}),
+                )?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message
                 .get("id")
@@ -896,6 +965,64 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 split_event_suffix_count,
                 split_event_suffix_lifecycle.as_deref(),
                 send,
+            )?;
+            continue;
+        }
+        if repair_assigned_discovery
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("discovery-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("discovery response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("discovery rejection omitted guidance")?;
+                if !hint.contains("Correct the arguments and retry")
+                    || !hint.contains("/properties/query/type")
+                    || hint.contains("PRIVATE_QUERY")
+                {
+                    return Err("discovery rejection lacks safe repair guidance".into());
+                }
+                log_call(call_log.as_deref(), "discovery:repair-guidance")?;
+                send(
+                    json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                        "arguments":{"query":"github"}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result != json!({"tools":[{"name":"app_github_read_pull_request"}]})
+                {
+                    return Err("corrected discovery did not return assigned tools".into());
+                }
+                log_call(call_log.as_deref(), "discovery:success")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
+            continue;
+        }
+        if message.get("method").is_none()
+            && message.get("id") == Some(&json!("terminal-result-request"))
+        {
+            let success = message.pointer("/result/success") == Some(&json!(true));
+            log_call(
+                call_log.as_deref(),
+                if success {
+                    "terminal-result:accepted"
+                } else {
+                    "terminal-result:rejected"
+                },
+            )?;
+            finish_turn(
+                &state_path,
+                &mut state,
+                if success { "completed" } else { "failed" },
             )?;
             continue;
         }
@@ -966,6 +1093,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         log_call(call_log.as_deref(), method)?;
+        log_call(request_log.as_deref(), &serde_json::to_string(&message)?)?;
+        if require_skill_instructions
+            && matches!(method, "thread/start" | "thread/resume")
+            && message.pointer("/params/config/skills.include_instructions") != Some(&json!(true))
+        {
+            return Err("thread request omitted skills.include_instructions=true".into());
+        }
         let id = message.get("id").cloned();
         match method {
             "initialize" => {
@@ -992,6 +1126,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "initialized" => {}
             "thread/start" => {
+                if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -1034,7 +1171,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
+                    "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"},
+                        "model": argument(&args, "--returned-model").map(Value::String).unwrap_or_else(|| message.pointer("/params/model").filter(|model| model.is_string()).cloned().unwrap_or(json!("gpt-test")))}
                 }))?;
                 if agent_created_goal {
                     send(json!({
@@ -1140,6 +1278,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if descendant_notifications
+                    && message.pointer("/params/threadId").and_then(Value::as_str)
+                        == Some("descendant-1")
+                {
+                    send(json!({"id": id, "result": {"thread": {
+                        "id": "descendant-1", "parentThreadId": state.thread_id
+                    }}}))?;
+                    continue;
+                }
                 if args
                     .iter()
                     .any(|arg| arg == "--require-lightweight-history")
@@ -1182,7 +1329,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
             }
@@ -1300,6 +1447,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .checked_add(1)
                         .ok_or("fake provider turn sequence exhausted")?;
                 }
+                let hold_turn = hold_turn || (hold_first_durable_turn && state.next_turn == 1);
                 if reject_second_turn_start && turn_start_count == 2 {
                     send(json!({
                         "method": "warning",
@@ -1430,11 +1578,66 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if args.iter().any(|value| value == "--account-notifications") {
+                    send(json!({"method":"account/updated", "params":{
+                        "authMode":"chatgpt", "planType":"pro"
+                    }}))?;
+                    send(json!({"method":"account/login/completed", "params":{
+                        "loginId":"fixture-login", "success":true, "error":null
+                    }}))?;
+                }
+                if args.iter().any(|value| value == "--helper-tool-requests") {
+                    if !args.iter().any(|value| value == "--foreign-helper-tool") {
+                        send(json!({"method":"item/completed", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "item":{"id":"spawn-helper", "type":"collabAgentToolCall",
+                                "tool":"spawnAgent", "status":"completed",
+                                "senderThreadId":state.thread_id, "receiverThreadIds":["helper-thread"]}
+                        }}))?;
+                    }
+                    for (index, tool) in ["get_task_context", "paperclip_finish"].iter().enumerate()
+                    {
+                        send(
+                            json!({"id":format!("helper-request-{index}"), "method":"item/tool/call", "params":{
+                                "threadId":"helper-thread", "turnId":"helper-turn",
+                                "callId":format!("helper-call-{index}"), "tool":tool, "arguments":{}
+                            }}),
+                        )?;
+                    }
+                    send(
+                        json!({"id":"helper-request-question", "method":"item/tool/requestUserInput", "params":{
+                            "threadId":"helper-thread", "turnId":"helper-turn", "itemId":"helper-question",
+                            "questions":[]
+                        }}),
+                    )?;
+                    continue;
+                }
                 if descendant_notifications {
-                    for index in 0..300 {
+                    // Real Codex announces a child's MCP startup before its
+                    // thread/started notification establishes parent lineage.
+                    send(json!({"method":"mcpServer/startupStatus/updated","params":{
+                        "threadId":"descendant-0", "name":"paperclip", "status":"starting", "error":null
+                    }}))?;
+                    // Codex can announce a helper through the root's spawn receipt
+                    // before emitting any thread/started notification for that helper.
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "spawn-first-child", "type": "collabAgentToolCall",
+                            "tool": "spawnAgent", "status": "completed",
+                            "senderThreadId": state.thread_id,
+                            "receiverThreadIds": ["descendant-0"]}
+                    }}))?;
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-0", "turnId": "first-child-turn"
+                    }}))?;
+                    // A helper turn may arrive before either spawn completion or thread/started.
+                    send(json!({"method": "turn/started", "params": {
+                        "threadId": "descendant-1", "turnId": "second-child-turn"
+                    }}))?;
+                    for index in 2..300 {
                         send(json!({"method": "thread/started", "params": {"thread": {
                             "id": format!("descendant-{index}"),
-                            "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                            "parentThreadId": state.thread_id
                         }}}))?;
                     }
                     send(json!({"method": "turn/completed", "params": {
@@ -1444,7 +1647,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if args.iter().any(|value| value == "--descendant-overflow") {
                     send(json!({"method": "thread/started", "params": {"thread": {
                         "id": "descendant-overflow",
-                        "source": {"subAgent": {"thread_spawn": {"parent_thread_id": state.thread_id}}}
+                        "parentThreadId": state.thread_id
                     }}}))?;
                 }
                 if fail_after_second_turn_start && turn_start_count == 2 {
@@ -1545,6 +1748,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }))?;
                 } else if exit_after_turn_start {
                     return Ok(());
+                } else if repair_assigned_discovery {
+                    send(
+                        json!({"id":"discovery-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"assigned-discovery", "tool":"paperclip_search_assigned_tools",
+                            "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
+                        }}),
+                    )?;
+                } else if let Some(result) = &terminal_result {
+                    send(json!({
+                        "id": "terminal-result-request", "method": "item/tool/call",
+                        "params": { "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "callId": "terminal-result-call", "tool": "paperclip_finish", "arguments": result }
+                    }))?;
                 } else if emit_tool_call {
                     send(json!({
                         "id": "tool-request-1",
@@ -1573,7 +1790,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send_structured_activity(&state)?;
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
-                    send_split_event_burst(&state)?;
+                    send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
+                    if let Some(release_file) = argument(&args, "--held-output-release-file") {
+                        let deadline = Instant::now() + Duration::from_secs(60);
+                        while !Path::new(&release_file).exists() {
+                            if Instant::now() >= deadline {
+                                return Err("held output was not released within 60 seconds".into());
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    for index in 0..held_output_count {
+                        send(json!({"method": "item/agentMessage/delta", "params": {
+                            "threadId": state.thread_id, "turnId": provider_turn_id,
+                            "itemId": "held-output", "delta": format!("still computing {index} ")
+                        }}))?;
+                    }
                 } else if emit_question {
                     send_question(&state)?;
                 } else if !hold_turn {
@@ -1599,6 +1832,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if emit_post_completion_passive_statuses {
                         for notification in [
+                            json!({
+                                "method": "thread/tokenUsage/updated",
+                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
+                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                        "last": {"inputTokens": 20, "outputTokens": 2}}}
+                            }),
                             json!({
                                 "method": "remoteControl/status/changed",
                                 "params": {"status": "disabled", "environmentId": null}

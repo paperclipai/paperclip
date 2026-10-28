@@ -32,6 +32,33 @@ import { setExpensiveWorkspaceGitExecutor } from "./git-workspace-sync.js";
 describe("remote managed runtime", () => {
   const cleanupDirs: string[] = [];
 
+  it("stages all files over SSH without Git or cache exclusions and restores the same baseline", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-plain-"));
+    cleanupDirs.push(root);
+    await mkdir(path.join(root, "node_modules"));
+    await writeFile(path.join(root, ".gitignore"), "node_modules/\n");
+    await writeFile(path.join(root, "node_modules", "personal.bin"), Buffer.from([0, 255, 1]));
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app",
+        privateKey: "PRIVATE KEY", knownHosts: "KNOWN HOSTS", strictHostKeyChecking: true },
+      runId: "plain", adapterKey: "test", workspaceLocalDir: root,
+      workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
+    });
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      localDir: root, remoteDir: prepared.workspaceRemoteDir, workspaceFileMode: "all", workspaceExclude: ["explicitly-excluded"],
+    }));
+    await prepared.restoreWorkspace();
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledWith(expect.objectContaining({
+      restoreGitHistory: false, baselineSnapshot: expect.objectContaining({
+        exclude: [".paperclip-runtime", "explicitly-excluded"],
+        entries: expect.any(Map),
+      }),
+    }));
+    const args = vi.mocked(restoreWorkspaceFromSshExecution).mock.calls[0] as unknown as [{ baselineSnapshot: { entries: Map<string, unknown> } }];
+    expect(args[0].baselineSnapshot.entries.has("node_modules/personal.bin")).toBe(true);
+  });
+
+
   afterEach(async () => {
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {

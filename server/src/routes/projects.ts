@@ -1,14 +1,30 @@
+import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
+import { skillAccessRequestContext } from "../services/skill-access.js";
+import { createHash } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import { activityLog } from "@paperclipai/db";
+import { projectToolContext } from "../services/project-tool-context.js";
+import { museExternalAgents, withExternalExecutionAdmission } from "../modules/external-agents/index.js";
+import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { persistActivity, publishActivity } from "../services/activity-log.js";
 import { z } from "zod";
-import { resolveProjectRepositorySelection } from "../services/project-repositories.js";
+import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, instanceUserRoles, projectAccessMembers } from "@paperclipai/db";
+import { inArray } from "drizzle-orm";
 import {
+  addProjectAccessMemberSchema,
   createProjectSchema,
+  projectDiscoverySchema,
+  type ProjectDiscoveryPage,
   createProjectWorkspaceSchema,
+  deriveProjectUrlKey,
   findWorkspaceCommandDefinition,
   isUuidLike,
   matchWorkspaceRuntimeServiceToCommand,
+  normalizeProjectUrlKey,
   updateProjectSchema,
   updateProjectWorkspaceSchema,
   workspaceRuntimeControlTargetSchema,
@@ -21,6 +37,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -45,12 +62,20 @@ const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 
 export function projectRoutes(db: Db) {
   const router = Router();
+  router.use(skillAccessRequestContext);
   const svc = projectService(db);
 
+  async function repositoryViewer(req: Request) {
+    if (req.actor.type === "board") return { userId: req.actor.userId ?? null, localTrusted: req.actor.source === "local_implicit" };
+    const context = await projectToolContext(db, req.actor);
+    if (!context.userId) throw forbidden("Repository access requires a responsible user");
+    return context;
+  }
+
   async function selectedRepositories(req: Request, companyId: string, ids: string[], existing: import("@paperclipai/shared").ProjectWorkspace[] = []) {
-    assertBoard(req);
+    const viewer = await repositoryViewer(req);
     if (!ids.length) return [];
-    const available = await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit");
+    const available = await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted);
     return resolveProjectRepositorySelection(ids, available.repositories, existing);
   }
   const access = accessService(db);
@@ -123,11 +148,17 @@ export function projectRoutes(db: Db) {
     if (isUuidLike(rawId)) return rawId;
     const companyId = await resolveCompanyIdForProjectReference(req);
     if (!companyId) return rawId;
-    const resolved = await svc.resolveByReference(companyId, rawId);
-    if (resolved.ambiguous) {
+    const urlKey = normalizeProjectUrlKey(rawId);
+    if (!urlKey) return rawId;
+    const visibleProjects = await filterProjectsForActor(
+      req,
+      await svc.list(companyId, { includeArchived: true }),
+    );
+    const matches = visibleProjects.filter((project) => deriveProjectUrlKey(project.name, project.id) === urlKey);
+    if (matches.length > 1) {
       throw conflict("Project shortname is ambiguous in this company. Use the project ID.");
     }
-    return resolved.project?.id ?? rawId;
+    return matches[0]?.id ?? rawId;
   }
 
   async function assertProjectReadAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
@@ -137,8 +168,95 @@ export function projectRoutes(db: Db) {
       resource: { type: "project", companyId: project.companyId, projectId: project.id },
     });
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Project is outside this actor's authorization boundary" });
+    res.status(404).json({ error: "Project not found" });
     return false;
+  }
+
+  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
+    const assigneeAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
+    const decision = await access.decide({ actor: req.actor, action: "project:write_workspace",
+      resource: { type: "issue", companyId: project.companyId, projectId: project.id, assigneeAgentId },
+      scope: { projectId: project.id, assigneeAgentId } });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: decision.explanation });
+    return false;
+  }
+
+  async function assertCanManageProjectPrivacy(req: Request, res: Response, project: {
+    companyId: string; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null;
+  }) {
+    const actor = req.actor;
+    if (actor.type === "board" && actor.userId) {
+      if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
+      if (actor.userId === project.privacyOwnerUserId || actor.userId === project.personalOwnerUserId) return true;
+      const instanceAdmin = actor.source !== "cloud_tenant" && await db.select({ id: instanceUserRoles.id }).from(instanceUserRoles)
+        .where(and(eq(instanceUserRoles.userId, actor.userId), eq(instanceUserRoles.role, "instance_admin"))).limit(1).then(rows => rows.length > 0);
+      if (instanceAdmin) return true;
+      const membership = await db.select({ role: companyMemberships.membershipRole }).from(companyMemberships)
+        .where(and(eq(companyMemberships.companyId, project.companyId), eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, actor.userId), eq(companyMemberships.status, "active"))).limit(1);
+      if (["owner", "admin"].includes(membership[0]?.role ?? "")) return true;
+    }
+    res.status(403).json({ error: "Only the project privacy owner or an administrator can change project access" });
+    return false;
+  }
+
+  async function addActorAsPrivateProjectPrincipal(req: Request, project: { id: string; companyId: string; privacyOwnerUserId?: string | null; personalOwnerUserId?: string | null }, dbOrTx: Db = db) {
+    const ownerUserId = project.privacyOwnerUserId ?? project.personalOwnerUserId;
+    if (ownerUserId) await ensureProjectAccessMember(dbOrTx, {
+      companyId: project.companyId, projectId: project.id, subjectType: "user", subjectId: ownerUserId,
+    });
+    if (req.actor.type === "board" && req.actor.userId) {
+      await ensureProjectAccessMember(dbOrTx, {
+        companyId: project.companyId,
+        projectId: project.id,
+        subjectType: "user",
+        subjectId: req.actor.userId,
+      });
+      return;
+    }
+    if (req.actor.type === "agent" && req.actor.agentId) {
+      if (req.actor.onBehalfOfUserId) {
+        await ensureProjectAccessMember(dbOrTx, {
+          companyId: project.companyId,
+          projectId: project.id,
+          subjectType: "user",
+          subjectId: req.actor.onBehalfOfUserId,
+        });
+      }
+      await ensureProjectAccessMember(dbOrTx, {
+        companyId: project.companyId,
+        projectId: project.id,
+        subjectType: "agent",
+        subjectId: req.actor.agentId,
+      });
+    }
+  }
+
+  async function enrichProjectAccessMembers(rows: Array<typeof projectAccessMembers.$inferSelect>) {
+    const agentIds = rows.filter((row) => row.subjectType === "agent").map((row) => row.subjectId);
+    const userIds = rows.filter((row) => row.subjectType === "user").map((row) => row.subjectId);
+    const [agentRows, userRows] = await Promise.all([
+      agentIds.length === 0
+        ? Promise.resolve([])
+        : db.select({ id: agents.id, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)),
+      userIds.length === 0
+        ? Promise.resolve([])
+        : db.select({ id: authUsers.id, name: authUsers.name, email: authUsers.email, image: authUsers.image })
+            .from(authUsers)
+            .where(inArray(authUsers.id, userIds)),
+    ]);
+    const agentsById = new Map(agentRows.map((row) => [row.id, row]));
+    const usersById = new Map(userRows.map((row) => [row.id, row]));
+    return rows.map((row) => {
+      const agent = row.subjectType === "agent" ? agentsById.get(row.subjectId) : null;
+      const user = row.subjectType === "user" ? usersById.get(row.subjectId) : null;
+      return {
+        ...row,
+        subjectDisplayName: agent?.name ?? user?.name ?? user?.email ?? null,
+        subjectAvatarUrl: user?.image ?? null,
+      };
+    });
   }
 
   async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
@@ -173,16 +291,34 @@ export function projectRoutes(db: Db) {
   });
 
   router.get("/companies/:companyId/project-repositories", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await toolAccessService(db).listProjectRepositories(companyId, req.actor.userId ?? null, req.actor.source === "local_implicit"));
+    const viewer = await repositoryViewer(req);
+    res.json(await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted));
+  });
+
+  router.get("/projects/:id/git-authorization", async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).read(project.companyId, project.id, req.actor.userId));
+  });
+
+  router.put("/projects/:id/git-authorization", validate(z.object({ grantId: z.string().uuid().nullable() }).strict()), async (req, res) => {
+    assertBoard(req);
+    const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
+    if (!req.actor.userId) throw forbidden("A signed-in user is required");
+    res.json(await projectGitAuthorizationService(db).set(project.companyId, project.id, req.actor.userId, req.body.grantId));
   });
 
   router.put("/projects/:id/repositories", validate(z.object({ repositoryIds: z.array(z.string().regex(/^\d+$/)) })), async (req, res) => {
     assertBoard(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
+    if (!(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
     const repositories = await selectedRepositories(req, project.companyId, req.body.repositoryIds, project.workspaces);
     const updated = await svc.replaceRepositories(project.id, repositories);
     const actor = getActorInfo(req);
@@ -198,6 +334,26 @@ export function projectRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const includeArchived = req.query.includeArchived === "true";
+    if (req.query.view === "summary") {
+      const page = projectDiscoverySchema.extend({ limit: z.coerce.number().int().min(1).max(50).default(50) }).parse({
+        limit: req.query.limit, cursor: req.query.cursor,
+      });
+      const candidateIds = await access.projectDiscoveryCandidateIds(req.actor, companyId);
+      const visible: ProjectDiscoveryPage["projects"] = [];
+      let cursor = page.cursor;
+      // Scan bounded projections; authorization runs before selecting the public
+      // page/cursor so denied projects neither fill pages nor leak their IDs.
+      while (visible.length <= page.limit) {
+        const batch = await svc.listSummaries(companyId, { limit: 51, cursor, includeArchived, candidateIds });
+        const allowed = await filterProjectsForActor(req, batch.map(project => ({ ...project, companyId })));
+        visible.push(...allowed.map(({ companyId: _companyId, ...project }) => project));
+        if (batch.length < 51) break;
+        cursor = batch.at(-1)!.id;
+      }
+      const selected = visible.slice(0, page.limit);
+      res.json({ projects: selected, nextCursor: visible.length > page.limit ? selected.at(-1)!.id : null } satisfies ProjectDiscoveryPage);
+      return;
+    }
     const result = await svc.list(companyId, { includeArchived });
     res.json(await filterProjectsForActor(req, result));
   });
@@ -214,6 +370,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);
     res.json(summary);
   });
@@ -226,7 +383,12 @@ export function projectRoutes(db: Db) {
       repositoryIds?: string[];
     };
 
-    const { workspace, repositoryIds, ...projectData } = req.body as CreateProjectPayload;
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
+    if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
+    projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
+    const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
+      ? await projectToolContext(db, req.actor, true) : null;
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -246,55 +408,106 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
-    if (workspace && repositoryIds) throw unprocessable("Use either workspace or repositoryIds when creating a project");
+    if (workspace && (repositoryIds || repositoryUrls)) throw unprocessable("Use either workspace or repositoryIds/repositoryUrls when creating a project");
+    const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
-    const project = repositories ? await svc.createWithRepositories(companyId, projectData, repositories) : await svc.create(companyId, projectData);
-    if (project.env) {
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        companyId,
-        { targetType: "project", targetId: project.id },
-        project.env,
-      );
-    }
-    let createdWorkspaceId: string | null = null;
-    if (workspace) {
-      const createdWorkspace = await svc.createWorkspace(project.id, workspace);
-      if (!createdWorkspace) {
-        await svc.remove(project.id);
-        res.status(422).json({ error: "Invalid project workspace payload" });
-        return;
-      }
-      createdWorkspaceId = createdWorkspace.id;
-    }
-    const hydratedProject = workspace ? await svc.getById(project.id) : project;
-
     const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      action: "project.created",
-      entityType: "project",
-      entityId: project.id,
-      details: {
-        name: project.name,
-        workspaceId: createdWorkspaceId,
-        envKeys: project.env ? Object.keys(project.env).sort() : [],
-      },
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
+    const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
+    const result = await db.transaction(async (tx) => {
+      if (receiptKey) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${receiptKey}, 0))`);
+      }
+      const museActor = runContext && req.actor.type === "agent" && req.actor.authorizingUserId ? req.actor : null;
+      if (museActor) {
+        const { companyId: actorCompanyId, agentId, runId, authorizingUserId } = museActor;
+        if (!actorCompanyId || !agentId || !runId) throw forbidden("Muse native tool authority is unavailable");
+        // The receipt lock can wait too. Keep current authority behind every
+        // admission wait and ahead of both receipt replay and project creation.
+        await withExternalExecutionAdmission(tx, actorCompanyId, agentId, runId, async () => {
+          const current = await projectToolContext(tx as unknown as Db, museActor, true, "Project", { includeExecutionInput: true });
+          try {
+            const execution = parseNativeExecutionInput(current.run.runnerProfileJson?.nativeExecutionInput);
+            const broker = museExternalAgents(db);
+            if (current.run.runtimeMode !== "native" || execution.schema !== "paperclip.native-execution-input.v8"
+              || execution.binding.companyId !== actorCompanyId || execution.binding.agentId !== agentId
+              || execution.binding.runId !== runId || execution.binding.issueId !== current.issue.id
+              || await broker.authorizingUserIdForBinding(execution.provider.binding) !== authorizingUserId) {
+              throw new Error("Muse internal tool authority mismatch");
+            }
+            await broker.assertRunAuthority(execution, tx as unknown as Db);
+          } catch {
+            throw forbidden("Muse native tool authority is unavailable");
+          }
+        });
+      }
+      if (receiptOnly && runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
+      if (receiptKey) {
+        const [prior] = await tx.select().from(activityLog).where(and(
+          eq(activityLog.companyId, companyId), eq(activityLog.action, "project.created"),
+          sql`${activityLog.details}->>'idempotencyKey' = ${receiptKey}`,
+        ));
+        if (prior) {
+          if (prior.details?.fingerprint !== fingerprint) throw conflict("Project idempotency key was used with different inputs");
+          const project = await projectService(tx as unknown as Db).getById(prior.entityId);
+          if (!project) throw conflict("Previously created project is no longer available");
+          return { project, publication: null, duplicate: true };
+        }
+      }
+      if (receiptOnly) return null;
+      if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
+      const service = projectService(tx as unknown as Db);
+      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+      const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
+      const registeredUrls: typeof urlRepositories = [];
+      for (const repo of urlRepositories) {
+        if (attachedUrls.has(repo.url.toLowerCase())) continue;
+        attachedUrls.add(repo.url.toLowerCase());
+        await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url });
+        registeredUrls.push(repo);
+      }
+      const createdWorkspace = workspace ? await service.createWorkspace(project.id, workspace) : null;
+      if (workspace && !createdWorkspace) throw unprocessable("Invalid project workspace payload");
+      const hydrated = await service.getById(project.id);
+      const activity = await persistActivity(tx as unknown as Db, {
+        companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
+        runId: actor.runId, issueId: runContext?.issue.id,
+        action: "project.created", entityType: "project", entityId: project.id,
+        details: {
+          name: project.name, description: project.description, icon: project.icon,
+          sourceIssueId: runContext?.issue.id ?? null,
+          repositories: [...(repositories ?? []).map(repo => ({ id: repo.id, name: repo.fullName, url: repo.url })), ...registeredUrls.map(repo => ({ id: repo.url, name: repo.fullName, url: repo.url })),
+            ...(createdWorkspace?.repoUrl ? [{ id: createdWorkspace.id, name: createdWorkspace.name, url: createdWorkspace.repoUrl }] : []),
+          ],
+          workspaceId: createdWorkspace?.id ?? null,
+          envKeys: project.env ? Object.keys(project.env).sort() : [],
+          ...(receiptKey ? { idempotencyKey: receiptKey, fingerprint } : {}),
+        },
+      });
+      return { project: hydrated ?? project, publication: activity.publication, duplicate: false };
     });
+    if (!result) { res.status(204).end(); return; }
+    if (result.publication) publishActivity(result.publication);
+    if (result.project.env) await secretsSvc.syncEnvBindingsForTarget?.(companyId, { targetType: "project", targetId: result.project.id }, result.project.env);
+    if (result.duplicate) { res.status(200).json(result.project); return; }
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackProjectCreated(telemetryClient);
     }
-    res.status(201).json(hydratedProject ?? project);
+    res.status(result.duplicate ? 200 : 201).json(result.project);
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
+    if (body.visibility !== undefined) {
+      if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
+    }
+    if (body.visibility === "private") await addActorAsPrivateProjectPrincipal(req, existing);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
@@ -346,10 +559,101 @@ export function projectRoutes(db: Db) {
     res.json(project);
   });
 
+  router.get("/projects/:id/access-members", async (req, res) => {
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    const rows = await db
+      .select()
+      .from(projectAccessMembers)
+      .where(and(eq(projectAccessMembers.companyId, project.companyId), eq(projectAccessMembers.projectId, project.id)));
+    res.json(await enrichProjectAccessMembers(rows));
+  });
+
+  router.post("/projects/:id/access-members", validate(addProjectAccessMemberSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!(await assertCanManageProjectPrivacy(req, res, project))) return;
+    const subjectType = req.body.subjectType as "user" | "agent";
+    const subjectId = req.body.subjectId as string;
+    const subjectExists = subjectType === "agent"
+      ? await db.select({ id: agents.id }).from(agents)
+          .where(and(eq(agents.id, subjectId), eq(agents.companyId, project.companyId)))
+          .then((rows) => rows.length > 0)
+      : await db.select({ id: companyMemberships.id }).from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, subjectId),
+            eq(companyMemberships.companyId, project.companyId),
+            eq(companyMemberships.status, "active"),
+          ))
+          .then((rows) => rows.length > 0);
+    if (!subjectExists) {
+      res.status(422).json({ error: "Project access member must belong to this company" });
+      return;
+    }
+    await ensureProjectAccessMember(db, { companyId: project.companyId, projectId: project.id, subjectType, subjectId });
+    const rows = await db.select().from(projectAccessMembers).where(and(
+      eq(projectAccessMembers.projectId, project.id),
+      eq(projectAccessMembers.subjectType, subjectType),
+      eq(projectAccessMembers.subjectId, subjectId),
+    ));
+    const [member] = await enrichProjectAccessMembers(rows);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.access_member_added",
+      entityType: "project",
+      entityId: project.id,
+      details: { subjectType, subjectId },
+    });
+    res.status(201).json(member);
+  });
+
+  router.delete("/projects/:id/access-members/:memberId", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
+    if (!(await assertCanManageProjectPrivacy(req, res, project))) return;
+    const member = await db.select().from(projectAccessMembers).where(and(
+      eq(projectAccessMembers.id, req.params.memberId as string),
+      eq(projectAccessMembers.companyId, project.companyId),
+      eq(projectAccessMembers.projectId, project.id),
+    )).then((rows) => rows[0] ?? null);
+    if (!member) {
+      res.status(404).json({ error: "Project access member not found" });
+      return;
+    }
+    if (member.subjectType === "user" && [project.personalOwnerUserId, project.privacyOwnerUserId].includes(member.subjectId)) {
+      res.status(422).json({ error: "The project privacy owner cannot be removed" });
+      return;
+    }
+    await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, member.id));
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: project.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "project.access_member_removed",
+      entityType: "project",
+      entityId: project.id,
+      details: { subjectType: member.subjectType, subjectId: member.subjectId },
+    });
+    res.json(member);
+  });
+
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
@@ -358,6 +662,8 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -397,6 +703,8 @@ export function projectRoutes(db: Db) {
       const workspaceId = req.params.workspaceId as string;
       const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
       if (!existing) return;
+      if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
@@ -443,6 +751,7 @@ export function projectRoutes(db: Db) {
 
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project) return;
+    if (!(await assertProjectReadAllowed(req, res, project))) return;
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {
@@ -717,6 +1026,8 @@ export function projectRoutes(db: Db) {
     const workspaceId = req.params.workspaceId as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
+    if (!(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -745,6 +1056,7 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
+    if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

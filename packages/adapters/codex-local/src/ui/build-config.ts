@@ -5,6 +5,9 @@ import {
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
+  resolvePaperclipRunnerCursorMode,
+  resolvePaperclipRunnerPiThinkingLevel,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "../index.js";
@@ -73,6 +76,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
+  const configuredEffort = typeof v.thinkingEffort === "string"
+    ? v.thinkingEffort.trim()
+    : schemaValues.modelReasoningEffort || schemaValues.reasoningEffort || schemaValues.effort;
   for (const unsupportedKey of [
     "engine",
     "agentCommand",
@@ -95,6 +101,21 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
+  if (provider === "muse") {
+    return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true,
+      ...(typeof schemaValues.museBindingId === "string" ? { museBindingId: schemaValues.museBindingId } : {}) };
+  }
+  if (provider === "openai_dot") {
+    return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
+      ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
+  }
+  const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
+  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
+    throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
+  }
+  const acpxAgent = selectedAcpxProfile?.value ?? "claude";
+  const cursorMode = resolvePaperclipRunnerCursorMode(provider, acpxAgent, schemaValues.acpxSessionMode);
+  const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(provider, acpxAgent, schemaValues.piThinkingLevel);
 
   const schemaModel = typeof schemaValues.model === "string"
     ? schemaValues.model.trim()
@@ -102,6 +123,12 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const configuredModel = typeof config.model === "string"
     ? config.model.trim()
     : "";
+  if (provider === "acpx" && acpxAgent === "copilot" && (!configuredModel && !schemaModel || ["auto", "default"].includes((configuredModel || schemaModel).toLowerCase()))) {
+    throw new Error("Select an available Copilot model before saving.");
+  }
+  if (provider === "acpx" && ["cursor", "pi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
+    throw new Error(`${acpxAgent} requires an explicit provider model`);
+  }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"
     ? schemaValues.managedProfileId.trim()
     : "";
@@ -176,6 +203,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "codexPermissionMode",
     "opencodePermissionMode",
     "acpxPermissionMode",
+    "acpxSessionMode",
+    "piThinkingLevel",
     "managedProfileId",
     "managedAgentsRetentionAcknowledged",
     "maxSessionListCostUsd",
@@ -208,12 +237,20 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   ]) {
     delete schemaValues[normalizedKey];
   }
+  if (provider === "codex" || (provider === "acpx" && acpxAgent === "claude")) {
+    delete config.reasoningEffort;
+    delete config.effort;
+    delete schemaValues.reasoningEffort;
+    delete schemaValues.effort;
+  }
   return {
     ...config,
     ...schemaValues,
     provider,
     ...(provider === "codex"
-      ? { model: resolvePaperclipRunnerModel("codex", config.model) }
+      ? { model: resolvePaperclipRunnerModel("codex", config.model),
+          ...(v.search === false ? { search: false } : {}),
+          ...(configuredEffort ? { modelReasoningEffort: configuredEffort } : {}) }
       : {}),
     codexPermissionMode: "never",
     opencodePermissionMode: resolvePaperclipRunnerPermissionMode(
@@ -233,8 +270,11 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       : {}),
     ...(provider === "acpx"
       ? {
-          acpxAgent: "claude",
-          model: configuredModel || schemaModel || resolvePaperclipRunnerModel("acpx", undefined),
+          acpxAgent,
+          ...(acpxAgent === "claude" && configuredEffort ? { modelReasoningEffort: configuredEffort } : {}),
+          ...(cursorMode === undefined ? {} : { acpxSessionMode: cursorMode }),
+          ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
+          model: configuredModel || schemaModel || (acpxAgent === "grok" ? "grok-4.7" : resolvePaperclipRunnerModel("acpx", undefined)),
         }
       : {}),
     ...(provider === "claude_managed"

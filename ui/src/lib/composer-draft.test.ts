@@ -3,12 +3,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearDraft,
   loadDraft,
+  loadDraftRecoveryKey,
+  preserveDraftInTab,
   loadDraftAttachments,
   saveDraft,
   saveDraftAttachments,
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
+  settleDraftSubmission,
 } from "./composer-draft";
 
 describe("task draft upload receipts", () => {
@@ -22,6 +25,75 @@ describe("task draft upload receipts", () => {
     contentPath: `/api/attachments/${id}/content`,
   };
   beforeEach(() => localStorage.clear());
+  it("persists a tab recovery without touching shared text, receipts, or pending submission", () => {
+    sessionStorage.clear();
+    saveDraft(key, "Other tab text");
+    saveDraftAttachments(key, [receipt]);
+    saveDraftSubmission(key, { attemptId: id, reviewed: false });
+    const fork = preserveDraftInTab(key, "This tab text", [receipt]);
+    expect(fork.persisted).toBe(true);
+    expect(loadDraftRecoveryKey(key)).toBe(fork.key);
+    expect(loadDraft(fork.key)).toBe("This tab text");
+    expect(loadDraftAttachments(fork.key)).toEqual([receipt]);
+    expect(loadDraftSubmission(fork.key)).toBeNull();
+    expect(loadDraft(key)).toBe("Other tab text");
+    expect(loadDraftAttachments(key)).toEqual([receipt]);
+    expect(loadDraftSubmission(key)?.attemptId).toBe(id);
+    clearDraft(fork.key);
+    expect(loadDraft(fork.key)).toBe("");
+    expect(loadDraft(key)).toBe("Other tab text");
+    expect(loadDraftSubmission(key)?.attemptId).toBe(id);
+  });
+
+  it("retires a finished recovery but keeps or restores its mapping for unsent work", () => {
+    sessionStorage.clear();
+    saveDraft(key, "Shared draft stays available");
+    const fork = preserveDraftInTab(key, "Recovered message", []);
+    saveDraftSubmission(fork.key, { attemptId: id, reviewed: false });
+    expect(settleDraftSubmission(fork.key, id)).toBe(true);
+    expect(loadDraftRecoveryKey(key)).toBeNull();
+    expect(loadDraft(key)).toBe("Shared draft stays available");
+
+    saveDraft(fork.key, "Next recovered draft");
+    expect(loadDraftRecoveryKey(key)).toBe(fork.key);
+    saveDraftSubmission(fork.key, { attemptId: id, reviewed: false, nextDraftOffset: 0, submittedAttachmentIds: [] });
+    expect(settleDraftSubmission(fork.key, id)).toBe(true);
+    expect(loadDraftRecoveryKey(key)).toBe(fork.key);
+    expect(loadDraft(fork.key)).toBe("Next recovered draft");
+    clearDraft(fork.key);
+    expect(loadDraftRecoveryKey(key)).toBeNull();
+    saveDraftAttachments(fork.key, [receipt]);
+    expect(loadDraftRecoveryKey(key)).toBe(fork.key);
+    expect(loadDraftAttachments(fork.key)).toEqual([receipt]);
+  });
+
+  it("settles only submitted text and attachments while preserving the next draft", () => {
+    const nextId = "aaf8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const nextReceipt = { ...receipt, attachmentId: nextId, contentPath: `/api/attachments/${nextId}/content` };
+    saveDraft(key, "Sent\n\nNext");
+    saveDraftAttachments(key, [receipt]);
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, nextDraftOffset: 6, submittedAttachmentIds: [id] });
+    saveDraftAttachments(key, [receipt, nextReceipt], nextId);
+    expect(loadDraftAttachments(key)).toEqual([receipt]);
+    saveDraftAttachments(key, [receipt, nextReceipt], id);
+    expect(settleDraftSubmission(key, nextId)).toBe(false);
+    expect(settleDraftSubmission(key, id)).toBe(true);
+    expect(loadDraft(key)).toBe("Next");
+    expect(loadDraftAttachments(key)).toEqual([nextReceipt]);
+    expect(loadDraftSubmission(key)).toBeNull();
+  });
+  it("keeps chat drafts and pending submission fences within the current tab", () => {
+    sessionStorage.clear();
+    const chatKey = "paperclip:agent-chat-draft:company:user:agent";
+    saveDraft(chatKey, "My chat draft");
+    saveDraftSubmission(chatKey, { attemptId: id, reviewed: false });
+    expect(loadDraft(chatKey)).toBe("My chat draft");
+    expect(loadDraftSubmission(chatKey)?.attemptId).toBe(id);
+    expect(localStorage.getItem(chatKey)).toBeNull();
+    expect(localStorage.getItem(`${chatKey}:submission:v1`)).toBeNull();
+    sessionStorage.clear();
+    expect(loadDraftSubmission(chatKey)).toBeNull();
+  });
   it("retains a closed task-specific uncertainty marker and only settles the same attempt", () => {
     saveDraftSubmission(key, { attemptId: id, reviewed: false });
     expect(loadDraftSubmission(key)).toEqual({

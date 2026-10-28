@@ -12,6 +12,8 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 
 /** The primary issue a locked release resolves to, plus the finishing run the lock step already loaded. */
 export type LockedIssueExecution = {
+  /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
+  recoveryOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };
@@ -108,7 +110,7 @@ export type PromoteDeferredWakeInput = {
  */
 export interface WakeQueueTransaction {
   findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
-  findNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
+  findNextDeferredWake(input: { companyId: string; issueId: string; excludedWakeIds?: string[] }): Promise<DeferredWakeCandidate | null>;
   getQueuedCommentLiveness(input: {
     companyId: string;
     issueId: string;
@@ -156,7 +158,18 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     commentIds: string[];
   }): Promise<{ allSelfAuthored: boolean }>;
+  /** Proves all candidate comments only report completed child work in the finishing parent's own run. */
+  isCompletedDelegationMention(input: {
+    companyId: string;
+    issueId: string;
+    finishingRunId: string;
+    wakeAgentId: string;
+    commentIds: string[];
+  }): Promise<boolean>;
   reopenIssue(input: { companyId: string; issueId: string; runId: string }): Promise<IssueSnapshot | null>;
+  /** Verifies a Done onboarding parent's completion wake against its own completed children. */
+  isCompletedOnboardingHandoffWake(input: { companyId: string; issueId: string; agentId: string;
+    reason: string | null; contextSnapshot: Record<string, unknown> }): Promise<boolean>;
   /**
    * Atomically claims the wake for promotion, guarded on its current
    * `deferred_issue_execution` status. Call this before any other write in
@@ -222,7 +235,7 @@ export interface WakeQueueTransaction {
  */
 export interface IssueLockWriter {
   withIssueExecutionLock(
-    input: { companyId: string; runId: string; now: Date },
+    input: { companyId: string; runId: string; now: Date; resumeStrandedQueue?: boolean },
     fn: (
       locked: LockedIssueExecution,
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
@@ -394,6 +407,8 @@ export interface WakeAdmissionReader {
       companyId: string;
       agentId: string;
       issueId: string;
+      /** Matches only deferred wakes for this chat conversation or for no conversation. */
+      chatConversationId?: string | null;
       durableActor?: { type: string | null; id: string | null };
     },
   ): Promise<ExistingDeferredWake | null>;
@@ -426,6 +441,8 @@ export interface WakeAdmissionWriter {
       existingDeferredWakeId: string;
       mergedPayload: Record<string, unknown>;
       nextCoalescedCount: number;
+      /** A fresh manual click replaces the merged queue's execution requester. */
+      manualUserWakeActorId?: string;
       /** Persist each durable input's own receipt atomically with the merge. */
       coalescedReceipt?: CoalescedDeferredAdmissionReceipt;
     },

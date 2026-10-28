@@ -5,6 +5,18 @@ summary: Claude Code local adapter setup and configuration
 
 The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports session persistence, skills injection, and structured output parsing.
 
+## Quota waits
+
+Claude ACP runs that end with a typed provider-quota error retain the quota
+classification and any parsed reset time. Recovery waits until that time, or
+uses its existing one-hour quota backoff when no reset time is available.
+This includes the Claude bridge's typed “The Claude account has no available
+quota.” fallback, which carries no reset timestamp.
+The adapter inspects the terminal provider message in memory; the run result
+and run log retain only the generic failure message, recovery labels, and reset
+timestamp. Context, turn, rate, and configured budget limits are not treated as
+subscription quota exhaustion merely because ACP labels them `limit`.
+
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
@@ -24,6 +36,10 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+On the CLI engine, version and `--effort` capability probes have a bounded
+20-second budget when `timeoutSec` is zero or unset. A positive run timeout below
+20 seconds also limits these probes, with a minimum probe budget of one second.
 
 ## Default model
 

@@ -16,6 +16,17 @@
 // adds error monitoring only and starts no span or trace behavior of its
 // own.
 //
+// `serverName`: the initializer sets this to the host name of the process,
+// with `os.hostname()`. The `@sentry/node` client already falls back to the
+// same host name when the caller omits this option, so this line makes an
+// existing default explicit instead of changing captured event content. An
+// explicit value stays correct if a future SDK version changes its default.
+//
+// An operator can still send a different value in place of the host name.
+// When the environment variable `SENTRY_NAME` holds a non-empty string, the
+// initializer uses that value instead. This keeps the same order the
+// `@sentry/node` client itself uses when the caller omits `serverName`.
+//
 // Default-integration privacy note: `sendDefaultPii: false` filters values
 // by name, inside the `RequestData` integration only. Three other default
 // integrations copy raw values past that filter, so the initializer removes
@@ -44,8 +55,16 @@
 // never throws. This gate mirrors the OpenTelemetry gate in
 // `instrumentation.ts`.
 
+import os from "node:os";
+import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
+import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
+import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
+import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
+import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -59,9 +78,16 @@ if (legacyFallbackUsed) {
   );
 }
 
+/** Event-local context accepted by the optional Sentry package. */
+interface SentryCaptureContext {
+  tags: Record<string, string>;
+  contexts: Record<string, Record<string, unknown>>;
+  fingerprint: string[];
+}
+
 /** The subset of the `@sentry/node` client surface this gate calls. */
 interface SentryHandle {
-  captureException(error: unknown): string;
+  captureException(error: unknown, context?: SentryCaptureContext): string;
   close(timeout?: number): Promise<boolean>;
 }
 
@@ -82,13 +108,195 @@ export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.r
  * never opens (the backend DSN resolves to `null`), or when bootstrap
  * failed. Never throws — observability must not change control flow.
  */
-export function captureException(error: unknown): void {
+export function captureException(error: unknown, reference?: SentryRunReference): void {
   if (!sentryHandle) return;
   try {
-    sentryHandle.captureException(error);
+    const tags = reference ? {
+      run_id: reference.runId,
+      ...(reference.companyId ? { company_id: reference.companyId } : {}),
+      ...(reference.agentId ? { agent_id: reference.agentId } : {}),
+    } : {};
+    const storageFailure = storageFailureDiagnosticsFor(error);
+    if (error instanceof AdapterStopTimeoutError) {
+      // Event-local, fixed-shape context: no ambient scope or raw error fields.
+      const exception = new Error(error.message);
+      exception.stack = error.stack;
+      sentryHandle.captureException(exception, {
+        tags: { ...tags, error_code: "adapter_stop_unconfirmed" },
+        contexts: { adapter_stop: { ...error.diagnostics } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (error instanceof CloudPortfolioError) {
+      const exception = new Error(error.message);
+      exception.stack = error.stack;
+      sentryHandle.captureException(exception, {
+        tags: { ...tags, error_code: "cloud_portfolio_failure" },
+        contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (storageFailure) {
+      // The original error keeps its default grouping; only the normalized
+      // record is added, never the provider's request or response.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
+        contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (reference) {
+      sentryHandle.captureException(error, { tags, contexts: {}, fingerprint: ["{{ default }}"] });
+    } else {
+      sentryHandle.captureException(error);
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureException failed", err);
+  }
+}
+
+/** The run status values that mark a run as a genuine terminal failure. */
+export type RunFailureStatus = "failed" | "timed_out" | "cancelled";
+
+/**
+ * The diagnostic values `captureRunFailure` sends with a terminal-failure
+ * event. `errorCode` is `null` when the run holds no error code.
+ */
+export interface RunFailureEvent {
+  taskId: string | null;
+  companyId?: string;
+  agentId?: string;
+  /** The `heartbeat_runs` row id. */
+  runId: string;
+  /** The redacted error message. */
+  errorMessage: string;
+  /** The run's error code, or `null` when the run holds none. */
+  errorCode: string | null;
+  /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
+  agentAdapter: string;
+  /** The run status that triggered this report. */
+  runStatus: RunFailureStatus;
+  /** Bounded, redacted diagnostics selected by the run failure reporter. */
+  diagnostics?: RunFailureDiagnostics;
+  /** Recorded process exit evidence, when available. Validated before capture. */
+  exitCode?: number | null;
+  signal?: string | null;
+}
+
+function normalizeRunExitCode(value: unknown): number | null {
+  // Match the persisted PostgreSQL integer. Do not coerce adapter-supplied text.
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= -2147483648 &&
+    value <= 2147483647
+    ? value
+    : null;
+}
+
+function normalizeRunSignal(value: unknown): string | null {
+  if (value == null) return null;
+  // Only host signal constants may leave the process; arbitrary adapter text
+  // can contain output or credentials even when stored in the signal column.
+  return typeof value === "string" && Object.hasOwn(os.constants.signals, value)
+    ? value
+    : "unknown";
+}
+
+/**
+ * Report one terminal run failure to Sentry. A no-op before the gate opens
+ * or when the gate never opens. Never throws — observability must not
+ * change run control flow.
+ *
+ */
+export function captureRunFailure(event: RunFailureEvent): void {
+  if (!sentryHandle || readRunFailureReportingMode() === "off") return;
+  const handle = sentryHandle;
+  try {
+    const errorCode = event.errorCode ?? "unknown";
+    // Sentry's async scope isolation is absent when OTel setup is skipped.
+    // A withScope mutation can then persist into unrelated later captures.
+    // Pass these fields on this event only; do not mutate the ambient scope.
+    const diagnostics = event.diagnostics;
+    const rootCodeCandidate = diagnostics?.execution.originalFailureCode ??
+      diagnostics?.exceptions.at(-1)?.code;
+    const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
+      ? rootCodeCandidate : undefined;
+    const phase = diagnostics?.execution.failurePhase;
+    const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
+    const contexts: Record<string, Record<string, unknown>> = {};
+    if (event.companyId && event.agentId) {
+      const runPath = `/api/heartbeat-runs/${encodeURIComponent(event.runId)}`;
+      contexts.paperclip = {
+        schemaVersion: 1,
+        companyId: event.companyId,
+        agentId: event.agentId,
+        runPath,
+        eventsPath: `${runPath}/events`,
+        logPath: `${runPath}/log`,
+        ...(event.taskId ? { taskPath: `/api/issues/${encodeURIComponent(event.taskId)}` } : {}),
+      };
+      try {
+        const base = new URL(process.env.PAPERCLIP_PUBLIC_URL ?? "");
+        if ((base.protocol === "https:" || base.protocol === "http:") &&
+            !base.username && !base.password && !base.search && !base.hash && base.pathname === "/") {
+          contexts.paperclip.runUrl = new URL(runPath, base).href;
+          contexts.paperclip.eventsUrl = new URL(`${runPath}/events`, base).href;
+          contexts.paperclip.logUrl = new URL(`${runPath}/log`, base).href;
+        }
+      } catch {}
+    }
+    if (diagnostics) {
+      contexts.run_execution = { ...diagnostics.execution, truncatedFields: diagnostics.truncatedFields };
+      if (Object.keys(diagnostics.adapter).length) contexts.adapter_failure = diagnostics.adapter;
+      if (Object.keys(diagnostics.provider).length) contexts.provider_failure = diagnostics.provider;
+      diagnostics.exceptions.forEach(({ name, code, status, requestId }, index) => {
+        contexts[`run_exception_${index}`] = { name, code, status, requestId };
+      });
+    }
+    // Rebuild only sanitized exception fields. Passing a raw SDK Error can
+    // serialize its request/response, headers, or other enumerable properties.
+    let cause: Error | undefined;
+    for (const entry of [...(diagnostics?.exceptions ?? [])].reverse()) {
+      const error: Error = new Error(entry.message ?? event.errorMessage, cause ? { cause } : undefined);
+      error.name = entry.name ?? "Error";
+      error.stack = entry.stack;
+      cause = error;
+    }
+    const exception = cause ?? new Error(event.errorMessage);
+    if (!cause) {
+      // A saved adapter result is not a thrown Error. Do not pretend that the
+      // reporter's own stack is the failure location.
+      exception.stack = typeof diagnostics?.adapter.stackPreview === "string"
+        ? diagnostics.adapter.stackPreview : undefined;
+    }
+    handle.captureException(exception, {
+      tags: {
+        event_kind: "run_failure",
+        ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
+        ...(failurePhase ? { failure_phase: failurePhase } : {}),
+        run_id: event.runId,
+        ...(event.taskId ? { task_id: event.taskId } : {}),
+        ...(event.companyId ? { company_id: event.companyId } : {}),
+        ...(event.agentId ? { agent_id: event.agentId } : {}),
+        error_code: errorCode,
+        agent_adapter: event.agentAdapter,
+        run_status: event.runStatus,
+      },
+      contexts: {
+        ...contexts,
+        run_failure: {
+          taskId: event.taskId,
+          runId: event.runId,
+          errorMessage: event.errorMessage,
+          errorCode,
+          agentAdapter: event.agentAdapter,
+          exitCode: normalizeRunExitCode(event.exitCode),
+          signal: normalizeRunSignal(event.signal),
+        },
+      },
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[paperclip] Sentry captureRunFailure failed", err);
   }
 }
 
@@ -121,16 +329,19 @@ export function shutdownSentry(): Promise<void> {
  */
 interface SentryModuleLike {
   httpIntegration(options: { breadcrumbs: boolean }): { name: string };
-  onUnhandledRejectionIntegration(options: { mode: string }): { name: string };
+  onUnhandledRejectionIntegration(options: { mode: "strict" }): { name: string };
 }
 
 /** The `Sentry.init` options this gate builds. */
 export interface SentryInitOptions {
   dsn: string;
+  release?: string;
   skipOpenTelemetrySetup: boolean;
   tracesSampleRate: number;
   sendDefaultPii: boolean;
+  serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+  beforeSend: typeof addSentryRunLinks;
 }
 
 /**
@@ -145,9 +356,12 @@ export function buildSentryInitOptions(
 ): SentryInitOptions {
   return {
     dsn,
+    release: process.env.SENTRY_RELEASE?.trim() || readBuildCommit() || undefined,
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    beforeSend: addSentryRunLinks,
+    serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
         (integration) =>
@@ -197,7 +411,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
 
     sentryHandle = {
-      captureException: (error) => Sentry.captureException(error),
+      captureException: (...args) => Sentry.captureException(...args),
       close: (timeout) => Sentry.close(timeout),
     };
   } catch (err) {

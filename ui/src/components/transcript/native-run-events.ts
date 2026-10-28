@@ -1,5 +1,6 @@
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { TranscriptEntry } from "@/adapters";
+import { isRunLogOnlyProviderEvent } from "./run-log-only-events";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -149,7 +150,12 @@ function runtimeRequestEntry(input: {
   const requestId = text(request.requestId) ?? text(input.payload.requestId);
   if (!requestId) return null;
   const suffix = input.eventType.split(".").at(-1);
-  const rawStatus = text(request.status) ?? suffix;
+  // The lifecycle event is authoritative. ACP delivery receipts carry
+  // status:"delivered" in their payload, which must not reopen a resolved
+  // request as pending just because it is not a UI lifecycle status.
+  const rawStatus = suffix === "resolved" || suffix === "expired" || suffix === "cancelled"
+    ? suffix
+    : text(request.status) ?? suffix;
   const resolvedAction = text(request.action)
     ?? text(input.payload.action)
     ?? input.previous?.resolvedAction
@@ -580,7 +586,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
   const entries: TranscriptEntry[] = [];
   const startedToolIds = new Set<string>();
   const completedToolIds = new Set<string>();
-  let hasFinalAssistantMessage = false;
   let usageSummary: {
     ts: string;
     inputTokens: number;
@@ -595,7 +600,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     cachedTokens: number;
     costUsd: number;
   } | null = null;
-  let runResultFallback: { ts: string; text: string } | null = null;
   const seenSourceEventIds = new Set<string>();
   const orderedEvents = [...events]
     .sort((a, b) => a.seq - b.seq)
@@ -606,6 +610,24 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       if (seenSourceEventIds.has(sourceEventId)) return false;
       seenSourceEventIds.add(sourceEventId);
       return true;
+    }).flatMap((event) => {
+      const envelope = record(event.payload?.prpEvent);
+      const payload = record(envelope?.payload);
+      if (!envelope || envelope.eventType !== event.eventType
+        || !/^(item|turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType)
+        || !Array.isArray(payload?.outputTails)) return [event];
+      // Redaction can hold a possible key prefix until the item/turn ends.
+      // Project its settled tail as display-only deltas before the terminal.
+      const tails = payload.outputTails.flatMap((value, index): HeartbeatRunEvent[] => {
+        const tail = record(value);
+        const tailPayload = record(tail?.payload);
+        if (!tailPayload || typeof tailPayload.text !== "string") return [];
+        return [{ ...event, eventType: "item.delta", payload: { prpEvent: {
+          ...envelope, eventType: "item.delta", itemId: tail?.itemId,
+          sourceEventId: `${envelope.sourceEventId}:output-tail:${index}`, payload: tailPayload,
+        } } }];
+      });
+      return [...tails, event];
     });
   const hasAcceptedResult = orderedEvents.some(
     (event) => event.eventType === "run.result.accepted",
@@ -715,7 +737,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       // Before that point the deltas still provide the live streaming view.
       if (completedAgentMessageIds.has(itemId)) continue;
       const channel = itemIdentity.assistantChannel;
-      if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, delta: true, channel, itemId });
       continue;
     }
@@ -724,7 +745,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       const value = normalizedItemText(payload);
       if (!value) continue;
       const channel = itemIdentity.assistantChannel;
-      if (channel !== "progress") hasFinalAssistantMessage = true;
       entries.push({ kind: "assistant", ts, text: value, channel, ...(itemId ? { itemId } : {}) });
       continue;
     }
@@ -805,6 +825,7 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
     // Notices are provider diagnostics, not tool calls. Preserve their message
     // and category for the shared notice row instead of serializing an input blob.
     if (event.eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1") {
+      if (isRunLogOnlyProviderEvent(event.eventType, payload)) continue;
       entries.push({
         kind: "provider_activity",
         ts,
@@ -998,10 +1019,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         }
         hasRunResult = true;
       }
-      const summary = text(result.summary);
-      if (!hasFinalAssistantMessage && summary && !runResultFallback) {
-        runResultFallback = { ts, text: summary };
-      }
       continue;
     }
   }
@@ -1030,18 +1047,6 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
         sourceEventId: candidate.sourceEventId,
       };
     }
-  }
-
-  // A structured result can be proposed before its originating final item is
-  // durably completed. Delay the fallback until every event has been examined
-  // so the explicit assistant reply wins regardless of source ordering.
-  if (!hasFinalAssistantMessage && runResultFallback) {
-    entries.push({
-      kind: "assistant",
-      ts: runResultFallback.ts,
-      text: runResultFallback.text,
-      channel: "final",
-    });
   }
 
   if (usageSummary) {

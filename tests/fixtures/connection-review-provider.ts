@@ -3,8 +3,10 @@ import { listenOnFetchAllowedPort } from "../e2e/fetch-allowed-port.js";
 
 export async function startReviewProvider(
   successText = "Pages: Roadmap, Meeting notes",
+  bearerToken?: string,
+  tool?: { name: string; title: string; description: string },
 ) {
-  const captures: Array<{ method: string; toolName: string | null }> = [];
+  const captures: Array<{ method: string; toolName: string | null; authorized?: boolean }> = [];
   const server: Server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -15,10 +17,17 @@ export async function startReviewProvider(
       method?: string;
       params?: { name?: string; arguments?: { query?: string } };
     };
+    const authorized = !bearerToken || req.headers.authorization === `Bearer ${bearerToken}`;
     captures.push({
       method: String(payload.method ?? "<unknown>"),
       toolName: payload.params?.name ?? null,
+      ...(bearerToken ? { authorized } : {}),
     });
+    if (!authorized) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Service credential required" }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/json" });
     if (payload.method === "tools/list") {
       res.end(
@@ -28,10 +37,10 @@ export async function startReviewProvider(
           result: {
             tools: [
               {
-                name: "notion:list_pages",
-                title: "List fixture pages",
-                description:
-                  "Reads deterministic pages from the fake Notion provider.",
+                name: tool?.name ?? "notion:list_pages",
+                title: tool?.title ?? "List fixture pages",
+                description: tool?.description ?? "Reads deterministic pages from the fake Notion provider.",
+                annotations: { readOnlyHint: true },
                 inputSchema: {
                   type: "object",
                   properties: { query: { type: "string" } },

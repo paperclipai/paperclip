@@ -5,6 +5,7 @@ import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionC
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
+import { CircleHelp, ChevronRight } from "lucide-react";
 import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
@@ -18,6 +19,8 @@ type InteractionCardProps = Omit<
 export interface TaskChatInteractionCardProps extends InteractionCardProps {
   item: TaskChatInteractionItem;
   onReviewRequest?: (interactionId: string) => void;
+  showUnansweredQuestion?: boolean;
+  showPendingRequest?: boolean;
   planDocument?: IssueDocument | null;
   showPlanPreview?: boolean;
   presentation?: "timeline" | "takeover";
@@ -35,6 +38,8 @@ export interface TaskChatInteractionCardProps extends InteractionCardProps {
 export function TaskChatInteractionCard({
   item,
   onReviewRequest,
+  showUnansweredQuestion = false,
+  showPendingRequest = false,
   planDocument,
   showPlanPreview = true,
   presentation = "timeline",
@@ -42,6 +47,24 @@ export function TaskChatInteractionCard({
   ...cardProps
 }: TaskChatInteractionCardProps) {
   const interaction = item.interaction;
+  if (presentation === "timeline" && showUnansweredQuestion && !shouldHideInteractionCard(interaction) && interaction.kind === "ask_user_questions" && interaction.status === "pending") {
+    const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? "Question";
+    return (
+      <button
+        type="button"
+        id={`interaction-${interaction.id}`}
+        data-testid="task-chat-unanswered-question"
+        aria-label={`Answer question: ${prompt}`}
+        disabled={!onReviewRequest}
+        onClick={() => onReviewRequest?.(interaction.id)}
+        className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 flex-1"><span className="block text-xs">Unanswered question</span><span className="block truncate">{prompt}</span></span>
+        <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+      </button>
+    );
+  }
   if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
     const action = interaction.payload.toolAction;
     if (presentation === "takeover") {
@@ -58,6 +81,30 @@ export function TaskChatInteractionCard({
         ) : (
           <IssueThreadInteractionCard interaction={interaction} {...cardProps} />
         )}
+      </div>
+    );
+  }
+  if (presentation === "timeline" && showPendingRequest && interaction.status === "pending"
+    && interaction.kind !== "connection_intent" && interaction.kind !== "ask_user_questions"
+    && !shouldHideInteractionCard(interaction)) {
+    const label = interaction.title ?? (interaction.kind === "suggest_tasks" ? "Suggested tasks" : "Review request");
+    const showPlan = interaction.kind === "request_confirmation"
+      && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan"
+      && planDocument && showPlanPreview
+      && (planDocument.latestRevisionId
+        ? interaction.payload.target.revisionId === planDocument.latestRevisionId
+        : interaction.payload.target.revisionNumber === planDocument.latestRevisionNumber);
+    return (
+      <div className="w-full space-y-2">
+        {showPlan ? <TaskChatPlanPreviewCard source={{ kind: "saved", document: planDocument }} testId="plan-review-preview" /> : null}
+        <button type="button" id={`interaction-${interaction.id}`} data-testid="task-chat-pending-request"
+          aria-label={`Open request: ${label}`} disabled={!onReviewRequest}
+          onClick={() => onReviewRequest?.(interaction.id)}
+          className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1"><span className="block text-xs">{label}</span><span className="block truncate">{interaction.summary ?? ("prompt" in interaction.payload ? interaction.payload.prompt : null)}</span></span>
+          <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+        </button>
       </div>
     );
   }

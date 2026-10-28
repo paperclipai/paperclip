@@ -6,6 +6,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { TruncatedText } from "./TruncatedText";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -167,7 +168,7 @@ export function SidebarNavItem({
           )}
         </span>
       ) : null}
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</TruncatedText>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -182,7 +183,7 @@ export function SidebarNavItem({
         </Badge>
       )}
       {!rail && (hasLive || liveAccessory) && (
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
           {liveAccessory}
           {hasLive && (
             <>

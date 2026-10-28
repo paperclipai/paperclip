@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { MemoryRouter } from "@/lib/router";
 import { TaskChatLiveTail } from "./TaskChatLiveTail";
 import { transcriptToTaskChatItems } from "./transcript-adapter";
 import type { TaskChatItem } from "./task-chat-model";
@@ -30,9 +31,11 @@ describe("TaskChatLiveTail", () => {
   function render(items: TaskChatItem[], emptyMessage?: string) {
     flushSync(() =>
       root!.render(
-        <ThemeProvider>
-          <TaskChatLiveTail items={items} emptyMessage={emptyMessage} />
-        </ThemeProvider>,
+        <MemoryRouter>
+          <ThemeProvider>
+            <TaskChatLiveTail items={items} emptyMessage={emptyMessage} />
+          </ThemeProvider>
+        </MemoryRouter>,
       ),
     );
   }
@@ -41,7 +44,18 @@ describe("TaskChatLiveTail", () => {
     return transcriptToTaskChatItems(entries, { runId: "run-1", running });
   }
 
-  it("renders streamed reply markdown and tool cards from a live transcript", () => {
+  const toggle = () => container.querySelector<HTMLButtonElement>(
+    '[data-testid="task-chat-activity-phase-toggle"]',
+  )!;
+  const viewport = () => container.querySelector(
+    '[data-testid="task-chat-activity-viewport"]',
+  )!;
+  const expandFirstDetail = () => {
+    flushSync(() => toggle().click());
+    flushSync(() => container.querySelector<HTMLButtonElement>("li button")!.click());
+  };
+
+  it("renders streamed reply markdown with one compact activity, without old tool cards", () => {
     const items = parse([
       { kind: "assistant", ts: TS, text: "Looking into the failing test." },
       { kind: "tool_call", ts: TS, name: "Read", toolUseId: "t1", input: { file_path: "src/app.ts" } },
@@ -52,11 +66,11 @@ describe("TaskChatLiveTail", () => {
     expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent).toContain(
       "Looking into the failing test.",
     );
-    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
-    // Tool row renders with its name + mono target.
-    expect(container.textContent).toContain("Read");
-    expect(container.textContent).toContain("src/app.ts");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(viewport().textContent).toContain("Read a file");
+    expect(viewport().textContent).toContain("src/app.ts");
+    expect(container.querySelector('[data-testid="task-chat-tool-card"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-phase-child-rail"]')).toBeNull();
   });
 
   it("keeps tool diff bodies out of the activity feed", () => {
@@ -67,18 +81,15 @@ describe("TaskChatLiveTail", () => {
     ]);
     render(items);
 
-    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("const x = 1;");
     expect(container.textContent).not.toContain("+1 −1");
 
-    const tool = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-tool-card"] button');
-    expect(tool).not.toBeNull();
-    flushSync(() => tool?.click());
+    expandFirstDetail();
 
     expect(container.textContent).toContain("+1 −1");
     expect(container.textContent).not.toContain("const x = 1;");
-    expect(container.querySelector('[data-testid="task-chat-tool-change-summary"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-runner-activity-detail"]')).not.toBeNull();
   });
 
   it("drops the debug plumbing kinds RunTranscriptView surfaced", () => {
@@ -110,8 +121,8 @@ describe("TaskChatLiveTail", () => {
     expect(container.querySelector('[data-testid="task-chat-phase-interstitial"]')?.textContent).toContain(
       "Here is the real reply.",
     );
-    const phaseSummary = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-phase-summary"]');
-    expect(phaseSummary?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    flushSync(() => toggle().click());
     const text = container.textContent ?? "";
     expect(text).toContain("Here is the real reply.");
     expect(text).toContain("pnpm test");
@@ -130,49 +141,64 @@ describe("TaskChatLiveTail", () => {
     }
   });
 
-  it("renders provider-supplied reasoning in the live activity stream", () => {
-    const items = parse([
-      { kind: "thinking", ts: TS, text: "Provider reasoning summary" },
-      { kind: "assistant", ts: TS, text: "Visible answer." },
-    ]);
-    expect(items[0]).toMatchObject({ kind: "thinking", streaming: false });
-    render(items);
+  it("updates only the latest reasoning line in place, with full text available on expansion", () => {
+    const entries: TranscriptEntry[] = [
+      { kind: "thinking", ts: TS, itemId: "reasoning", text: "First line\nChecking" },
+    ];
+    render(parse(entries));
+    const row = viewport().querySelector("[data-activity-row]");
+    entries.push({ kind: "thinking", ts: TS, itemId: "reasoning", text: " the file", delta: true });
+    render(parse(entries));
 
-    expect(container.textContent).toContain("Visible answer.");
-    const reasoningPhase = container.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-phase-summary"]',
-    );
-    expect(reasoningPhase?.textContent).toContain("Reasoning");
-    expect(reasoningPhase?.getAttribute("aria-expanded")).toBe("true");
+    expect(viewport().querySelector("[data-activity-row]")).toBe(row);
+    expect(viewport().textContent).toContain("Checking the file");
+    expect(container.textContent).not.toContain("First line");
+    expect(container.querySelector(".runner-activity-roll-in")).toBeNull();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expandFirstDetail();
+    expect(container.textContent).toContain("First line");
+    expect(container.textContent).toContain("Checking the file");
+    expect(container.querySelector('[data-testid="task-chat-phase-child-rail"]')).toBeNull();
+  });
 
-    expect(container.textContent).toContain("Provider reasoning summary");
-    const thinking = container.querySelector('[data-testid="task-chat-thinking"]');
-    expect(thinking?.getAttribute("data-state")).toBe("settled");
-    expect(
-      thinking?.querySelector('[data-testid="task-chat-thinking-text"]')
-        ?.textContent,
-    ).toContain("Provider reasoning summary");
-    const phaseChildren = thinking?.closest(
-      '[data-testid="task-chat-phase-children"]',
+  it("rolls successive CLI commands and image calls through one row without accumulating history", () => {
+    const entries: TranscriptEntry[] = [
+      { kind: "assistant", ts: TS, text: "Checking the fix.", channel: "progress" },
+      { kind: "tool_call", ts: TS, name: "exec_command", toolUseId: "t1", input: { command: "git status" } },
+    ];
+    render(parse(entries));
+    const first = viewport().querySelector("[data-activity-row]");
+    entries.push({ kind: "tool_result", ts: TS, toolUseId: "t1", content: "clean", isError: false });
+    render(parse(entries));
+    expect(viewport().querySelector("[data-activity-row]")).toBe(first);
+    expect(viewport().textContent).toContain("Ran a command");
+    expect(container.querySelector(".runner-activity-roll-in")).toBeNull();
+
+    entries.push({ kind: "tool_call", ts: TS, name: "Bash", toolUseId: "t2", input: { command: "pnpm test" } });
+    render(parse(entries));
+    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Running a command");
+    const outgoing = container.querySelector(".runner-activity-roll-out")!;
+    expect(outgoing.getAttribute("aria-hidden")).toBe("true");
+    flushSync(() => outgoing.dispatchEvent(new Event("webkitAnimationEnd", { bubbles: true })));
+    expect(viewport().querySelectorAll("[data-activity-row]")).toHaveLength(1);
+    expect(container.textContent).not.toContain("git status");
+    expect(container.querySelector('[data-testid="task-chat-runner-activity-list"]')).toBeNull();
+
+    entries.push(
+      { kind: "tool_result", ts: TS, toolUseId: "t2", content: "passed", isError: false },
+      { kind: "tool_call", ts: TS, name: "image_generation", toolUseId: "t3", input: { file_path: "preview.png" } },
     );
-    expect(phaseChildren?.classList.contains("ml-2.5")).toBe(true);
-    expect(phaseChildren?.classList.contains("pl-6")).toBe(true);
-    expect(
-      phaseChildren?.querySelector('[data-testid="task-chat-phase-child-rail"]'),
-    ).not.toBeNull();
-    expect(thinking?.textContent).not.toContain("Reasoning");
-    expect(thinking?.querySelector(".shimmer-text")).toBeNull();
-    expect(
-      thinking
-        ?.querySelector('[data-testid="task-chat-thinking-icon"]')
-        ?.classList.contains("text-(--status-agent-running)"),
-    ).toBe(false);
-    expect(
-      thinking
-        ?.querySelector('[data-testid="task-chat-thinking-icon"]')
-        ?.classList.contains("text-muted-foreground/50"),
-    ).toBe(true);
-    expect(thinking?.querySelector(".task-chat-reasoning-markdown")).toBeNull();
+    render(parse(entries));
+    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Generating an image");
+    flushSync(() => toggle().click());
+    expect(container.querySelectorAll("li")).toHaveLength(3);
+    expect(container.textContent).toContain("git status");
+    expect(container.textContent).toContain("pnpm test");
+
+    entries.push({ kind: "tool_result", ts: TS, toolUseId: "t3", content: "created", isError: false });
+    render(parse(entries));
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(container.textContent).toContain("Generated an image");
   });
 
   it("bounds long tool targets and wraps the full value only when expanded", () => {
@@ -194,26 +220,21 @@ describe("TaskChatLiveTail", () => {
       .find((item) => item.kind === "tool")?.target;
     render(items);
 
-    const tool = container.querySelector<HTMLButtonElement>(
-      '[data-testid="task-chat-tool-card"] button',
-    );
-    const collapsedTarget = tool?.querySelector(
-      ".task-chat-collapsed-line-fade",
-    );
-    expect(tool?.classList.contains("overflow-hidden")).toBe(true);
-    expect(tool?.getAttribute("aria-expanded")).toBe("false");
+    const collapsedTarget = viewport().querySelector("[title]");
+    expect(collapsedTarget?.classList.contains("truncate")).toBe(true);
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(renderedTarget).toBeTruthy();
     expect(collapsedTarget?.textContent).toBe(renderedTarget);
 
-    flushSync(() => tool?.click());
+    expandFirstDetail();
 
     const expandedTarget = container.querySelector(
-      '[data-testid="task-chat-tool-target-detail"]',
+      '[data-testid="task-chat-runner-activity-detail"] p',
     );
-    expect(tool?.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
     expect(expandedTarget?.textContent).toBe(renderedTarget);
     expect(
-      expandedTarget?.classList.contains("task-chat-expanded-line-wrap"),
+      expandedTarget?.classList.contains("break-all"),
     ).toBe(true);
   });
 

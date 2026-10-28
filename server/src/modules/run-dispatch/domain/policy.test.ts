@@ -389,6 +389,16 @@ describe("decideQueuedRunStaleness", () => {
     });
   });
 
+  it("allows a resolved non-connection interaction to claim its review task", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      isResolvedInteractionContinuation: true,
+      isConnectionContinuation: false,
+      issueStatus: "in_review",
+      reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    }, NOW)).toEqual({ stale: false });
+  });
+
   it("does not cancel a parked continuation summary when the classifier says it does not park the executor", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
@@ -426,6 +436,28 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  describe("completed onboarding handoff report", () => {
+    const reportingFacts = (): QueuedRunFacts => ({
+      ...baseStalenessFacts(), issueStatus: "done", wakeReason: "issue_children_completed",
+      isCompletedOnboardingHandoffWake: true,
+    });
+
+    it("allows a verified child-completion report without reopening the parent", () => {
+      expect(decideQueuedRunStaleness(reportingFacts(), NOW)).toEqual({ stale: false });
+    });
+
+    it.each([
+      { overrides: { isCompletedOnboardingHandoffWake: false }, errorCode: "issue_terminal_status" },
+      { overrides: { wakeReason: "issue_assigned" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueStatus: "cancelled" }, errorCode: "issue_terminal_status" },
+      { overrides: { issueAssigneeAgentId: "agent-2" }, errorCode: "issue_assignee_changed" },
+      { overrides: { retryReasonKind: "max_turn_continuation" as const }, errorCode: "issue_not_in_progress" },
+    ])("preserves $errorCode guard with $overrides", ({ overrides, errorCode }) => {
+      expect(decideQueuedRunStaleness({ ...reportingFacts(), ...overrides }, NOW))
+        .toMatchObject({ stale: true, errorCode });
+    });
+  });
+
   it("allows a non-assignee workspace-busy retry to bypass the ownership check", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
@@ -446,6 +478,21 @@ describe("decideQueuedRunStaleness", () => {
 });
 
 describe("native replacement execution authority", () => {
+  it("rejects unresolved dependencies added after replacement promotion", () => {
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement",
+      dependenciesBlocked: { unresolvedBlockerIssueIds: ["blocker"], unresolvedBlockerCount: 1 } }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_dependencies_blocked" });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", dependenciesBlocked: null }, NOW))
+      .toEqual({ stale: false });
+  });
+
+  it("rejects a task blocked after safe replacement was scheduled", () => {
+    expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", issueStatus: "blocked" }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_blocked" });
+    expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", issueStatus: "blocked" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_blocked" });
+  });
+
   it.each([
     { issueExecutionRunId: "newer-run", issueCheckoutRunId: null },
     { issueExecutionRunId: null, issueCheckoutRunId: "newer-run" },
@@ -459,5 +506,25 @@ describe("native replacement execution authority", () => {
     const locks = { issueExecutionRunId: owner, issueCheckoutRunId: owner };
     expect(decideScheduledRetryGate({ ...baseGateFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ allowed: true });
     expect(decideQueuedRunStaleness({ ...baseStalenessFacts(), retryReasonKind: "native_safe_replacement", ...locks }, NOW)).toEqual({ stale: false });
+  });
+});
+
+
+describe("AI subscription wait ownership", () => {
+  it.each([null, "another-run"])("preserves assignee lock guards and admits only recorded non-assignee waits: %s", (issueExecutionRunId) => {
+    const gate = {
+      ...baseGateFacts(), retryReasonKind: "ai_connection_wait" as const,
+      enforceIssueExecutionLock: true, issueExecutionRunId,
+    };
+    const queued = { ...baseStalenessFacts(), retryReasonKind: "ai_connection_wait" as const, issueExecutionRunId };
+    expect(decideScheduledRetryGate(gate, NOW)).toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness(queued, NOW)).toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
+    const nonAssignee = { issueAssigneeAgentId: "another-agent", isNonAssigneeWorkspaceBusyRetry: true };
+    expect(decideScheduledRetryGate({ ...gate, ...nonAssignee }, NOW)).toEqual({ allowed: true });
+    expect(decideQueuedRunStaleness({ ...queued, ...nonAssignee }, NOW)).toEqual({ stale: false });
+    expect(decideScheduledRetryGate({ ...gate, ...nonAssignee, retryReasonKind: "max_turn_continuation" }, NOW))
+      .toMatchObject({ allowed: false, errorCode: "issue_execution_lock_changed" });
+    expect(decideQueuedRunStaleness({ ...queued, ...nonAssignee, retryReasonKind: "max_turn_continuation" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_execution_lock_changed" });
   });
 });

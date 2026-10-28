@@ -4,6 +4,7 @@ import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
   isCoTSegmentActive,
+  isRedundantAiRecoveryNotice,
   preserveReadableStreamingRetraction,
   stabilizeThreadMessages,
   type IssueChatComment,
@@ -1790,5 +1791,20 @@ describe("stabilizeThreadMessages", () => {
     );
 
     expect(secondStable.messages).toBe(firstStable.messages);
+  });
+});
+
+
+describe("AI recovery presentation", () => {
+  it.each(["pending", "accepted", "rejected", "expired"] as const)("replaces diagnostic notices with the same-run %s connection card", (status) => {
+    const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, status, sourceRunId: "failed-run", payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+    const notice = createComment({ authorType: "system", presentation: { kind: "system_notice", title: "AI connection needs attention", tone: "danger", detailsDefaultOpen: false }, metadata: { version: 1, sourceRunId: "failed-run", sections: [] } });
+    expect(isRedundantAiRecoveryNotice(notice, [interaction])).toBe(true);
+    expect(isRedundantAiRecoveryNotice(notice, [{ ...interaction, sourceRunId: "other-run" }])).toBe(false);
+    expect(isRedundantAiRecoveryNotice(notice, [])).toBe(false);
+    expect(isRedundantAiRecoveryNotice(notice, [{ ...interaction, payload: { ...interaction.payload, purpose: undefined } }])).toBe(false);
+    const messages = buildIssueChatMessages({ comments: [notice], interactions: [interaction], timelineEvents: [], linkedRuns: [], liveRuns: [] });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({ kind: "interaction" });
   });
 });

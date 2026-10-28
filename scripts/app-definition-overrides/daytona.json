@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "slug": "daytona",
+  "name": "Daytona",
+  "description": "Manage Daytona sandboxes, files, commands, Git, snapshots, volumes, and account resources.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/daytona.svg",
+    "darkLogoUrl": "/brands/apps/daytona-dark.svg"
+  },
+  "urlPatterns": [
+    "https://app.daytona.io/*"
+  ],
+  "methods": [
+    {
+      "key": "workspace-diagnostics",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Manage resources and run tools in your Daytona account.",
+      "defaults": {
+        "serverUrl": "https://app.daytona.io/api"
+      },
+      "guidanceMd": "Connect a Daytona organization API key. All published HTTP API and Toolbox actions are available; the key's provider permissions and your action policies control access. Sandbox IDs come directly from Daytona.",
+      "riskTier": "S4",
+      "label": "Connect Daytona",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Daytona API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter Daytona API key",
+          "secret": true,
+          "helperMd": "Create an organization key with the read, write, and delete permissions for the resources you intend to manage. Daytona toolbox access is available to every valid organization key, even without selected scopes. Some user or administration endpoints require provider user authentication and will reject an API key."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "organizationId",
+          "label": "Pin to organization ID",
+          "type": "text",
+          "advanced": true,
+          "helperMd": "Optional. Reject a key or sandbox from a different Daytona organization.",
+          "validation": {
+            "pattern": "^[a-fA-F0-9-]{36}$",
+            "maxLength": 36
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "organization",
+        "sandbox"
+      ],
+      "consoleLinks": {
+        "keys": "https://app.daytona.io/dashboard/keys",
+        "docs": "https://www.daytona.io/docs/en/api-keys/"
+      },
+      "warnings": [
+        "This connection can run commands, access sandbox files and secrets, create resources, and delete data. Select trusted agents and set action permissions before use. Your Daytona API key stays in the vault."
+      ]
+    }
+  ],
+  "docsUrl": "https://www.daytona.io/docs/en/sandboxes/"
+}

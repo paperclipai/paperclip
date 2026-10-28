@@ -1,13 +1,22 @@
+import { campaignTimingText, summarizeCampaignTiming, summarizeWorkerPhaseTiming, workerPhaseTimingText } from "./campaign-timing.js";
+import { stageDashboardBrandAssets } from "./report-assets.js";
+import { discoverReportCatalog } from "./report-catalog.js";
 import path from "node:path";
 import {
   copyFile,
   mkdir,
+  lstat,
+  realpath,
   readFile,
   readdir,
   writeFile,
 } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
-import { summarizeExecutionBilling } from "./billing.js";
+import { billingCoverageLabel, summarizeExecutionBilling } from "./billing.js";
+import { isSelectedCarryForward, retainedCampaignAttempts } from "./attempt-accounting.js";
+import { summarizeCampaignFeedback } from "./feedback.js";
+import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
+import { operationsReportText, readEvalOperationsReport } from "./operations-report.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   buildRunnerCampaign,
@@ -17,6 +26,7 @@ import {
 import { resolveRunnerE2ESource } from "./source.js";
 import { runnerE2ESummaryLinks } from "./summary-links.js";
 import type { RunnerE2EResult } from "./types.js";
+import { gradeRetainedDependableResults, type DependableQualification } from "./dependable-qualification.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -56,8 +66,6 @@ function xml(value: unknown) {
 
 function validate(result: RunnerE2EResult, evidence: EvidenceManifest | null) {
   const errors: string[] = [];
-  if (result.status !== "passed")
-    errors.push(result.error ?? result.failureClass ?? "execution failed");
   if (result.cleanup !== "passed") errors.push(`cleanup=${result.cleanup}`);
   if (!evidence) errors.push("evidence manifest missing");
   if (evidence?.leaks?.length)
@@ -66,7 +74,7 @@ function validate(result: RunnerE2EResult, evidence: EvidenceManifest | null) {
     errors.push(`missing evidence=${evidence.missing.join(",")}`);
   if (
     result.status === "passed" &&
-    !evidence?.files?.includes("final-state.png")
+    (!Array.isArray(evidence?.files) || !evidence.files.includes("final-state.png"))
   ) {
     errors.push("passing final-state screenshot missing");
   }
@@ -79,6 +87,22 @@ function safeEvidenceRelative(relative: string) {
   if (segments.length === 0 || segments.some((segment) => segment === ".."))
     return null;
   return segments;
+}
+
+async function retainedProofAvailable(directory: string, evidence: EvidenceManifest | null): Promise<boolean> {
+  if (!Array.isArray(evidence?.files) || evidence.files.length === 0) return false;
+  const root = await realpath(directory);
+  for (const file of evidence.files) {
+    const segments = typeof file === "string" ? safeEvidenceRelative(file) : null;
+    if (!segments) return false;
+    const source = path.join(root, ...segments);
+    const valid = await lstat(source).then(async stat => {
+      const resolved = await realpath(source);
+      return stat.isFile() && !stat.isSymbolicLink() && resolved.startsWith(`${root}${path.sep}`);
+    }).catch(() => false);
+    if (!valid) return false;
+  }
+  return true;
 }
 
 async function stageDashboardEvidence(
@@ -106,6 +130,40 @@ async function stageDashboardEvidence(
         .catch(() => false);
       if (didCopy) copied.push(segments.join("/"));
     }
+    // Playwright renames attachment files with a content hash, while runner
+    // results retain the stable screenshot basename used by the dashboard and
+    // history publisher. Materialize each declared screenshot under that
+    // basename when its hashed attachment is present in the evidence manifest.
+    // The source is still restricted to manifest-listed files, so this cannot
+    // expand the evidence set beyond what the test recorded.
+    for (const screenshot of entry.result.screenshots ?? []) {
+      if (copied.includes(screenshot.file)) continue;
+      const stem = screenshot.file.replace(/\.png$/i, "");
+      const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const hashedAttachment = new RegExp(
+        `^${escapedStem}-[0-9a-f]{8,128}\\.png$`,
+        "i",
+      );
+      const candidates = (entry.evidence?.files ?? []).filter((relative) => {
+        const basename = path.posix.basename(relative);
+        return (
+          basename === screenshot.file ||
+          hashedAttachment.test(basename)
+        );
+      });
+      if (candidates.length !== 1) continue;
+      const segments = safeEvidenceRelative(candidates[0]!);
+      if (!segments) continue;
+      const source = path.join(entry.directory, ...segments);
+      const destination = path.join(output, ...baseSegments, screenshot.file);
+      const didCopy = await mkdir(path.dirname(destination), {
+        recursive: true,
+      })
+        .then(() => copyFile(source, destination))
+        .then(() => true)
+        .catch(() => false);
+      if (didCopy) copied.push(screenshot.file);
+    }
     staged.set(entry.result.executionId, {
       baseHref: baseSegments.join("/"),
       files: copied,
@@ -114,20 +172,6 @@ async function stageDashboardEvidence(
   return staged;
 }
 
-async function stageDashboardBrandAssets(output: string) {
-  const assets = path.join(output, "assets");
-  await mkdir(assets, { recursive: true });
-  await Promise.all([
-    copyFile(
-      path.join(repositoryRoot, "ui/public/favicon-32x32.png"),
-      path.join(assets, "favicon-32x32.png"),
-    ),
-    copyFile(
-      path.join(repositoryRoot, "ui/public/fonts/InterVariable.woff2"),
-      path.join(assets, "InterVariable.woff2"),
-    ),
-  ]);
-}
 
 async function main() {
   const root = path.resolve(
@@ -156,6 +200,12 @@ async function main() {
   const resultFiles = (await walk(root)).filter(
     (file) => path.basename(file) === "result.json",
   );
+  const requestedCampaignId = process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
+    (process.env.GITHUB_RUN_ID ? `gha-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? "1"}` : undefined);
+  const selection = await readFile(path.join(root, "selected-artifacts.json"), "utf8")
+    .then(value => JSON.parse(value) as unknown)
+    .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+  let excludedArtifacts = 0;
   const candidates = new Map<string, AggregatedResult[]>();
   for (const resultFile of resultFiles) {
     const parsed = JSON.parse(
@@ -167,6 +217,13 @@ async function main() {
     )
       continue;
     const result = upgradeRunnerResult(parsed);
+    if (requestedCampaignId && result.accountingIdentity &&
+        result.accountingIdentity.campaignId !== requestedCampaignId &&
+        !isSelectedCarryForward({ requestedCampaignId, result, selection,
+          relativeResultPath: path.relative(root, resultFile).split(path.sep).join("/") })) {
+      excludedArtifacts += 1;
+      continue;
+    }
     const directory = path.dirname(resultFile);
     const evidence = await readFile(
       path.join(directory, "evidence-manifest.json"),
@@ -175,11 +232,12 @@ async function main() {
       .then((value) => JSON.parse(value) as EvidenceManifest)
       .catch(() => null);
     const errors = validate(result, evidence);
+    if (result.dependableWork && !await retainedProofAvailable(directory, evidence)) errors.push("Retained qualification proof is missing or invalid");
     const entry = {
       result,
       evidence,
       directory,
-      valid: errors.length === 0,
+      valid: result.status === "passed" && errors.length === 0,
       errors,
     };
     candidates.set(result.executionId, [
@@ -188,6 +246,13 @@ async function main() {
     ]);
   }
 
+  const reportCatalog = discoverReportCatalog({
+    catalog: runnerMatrix,
+    expected,
+    results: [...candidates.values()].flatMap((entries) =>
+      entries.map((entry) => entry.result),
+    ),
+  });
   const selected: AggregatedResult[] = [];
   for (const executionId of expected) {
     const attempts = (candidates.get(executionId) ?? []).sort((left, right) => {
@@ -205,9 +270,9 @@ async function main() {
     });
     if (attempts.length === 0) {
       const now = new Date().toISOString();
-      const execution = runnerMatrix.find(
+      const execution = reportCatalog.find(
         (candidate) => candidate.id === executionId,
-      );
+      )!;
       const missing: RunnerE2EResult = {
         schema: "paperclip.runner-e2e.result/v2",
         executionId,
@@ -241,6 +306,14 @@ async function main() {
   }
 
   await mkdir(output, { recursive: true });
+  const qualificationConfigPath = process.env.PAPERCLIP_DEPENDABLE_QUALIFICATION_MANIFEST;
+  const dependable = qualificationConfigPath ? gradeRetainedDependableResults(
+    JSON.parse(await readFile(qualificationConfigPath, "utf8")) as DependableQualification,
+    [...candidates.values()].flat(),
+  ) : null;
+  if (dependable) {
+    await writeFile(path.join(output, "dependable-qualification.json"), `${JSON.stringify(dependable, null, 2)}\n`);
+  }
   const [stagedEvidence] = await Promise.all([
     stageDashboardEvidence(selected, output),
     stageDashboardBrandAssets(output),
@@ -252,25 +325,36 @@ async function main() {
     // of allowing retained result metadata to claim another revision.
     source: resolveRunnerE2ESource(entry.result.source),
     status: entry.valid ? entry.result.status : ("failed" as const),
+    // Evidence failures must not be mistaken for an interrupted behavior recording.
+    failureClass: entry.errors.length > 0
+      ? entry.evidence?.leaks?.length ? "secret_leak" as const : "permanent_infrastructure" as const
+      : entry.result.failureClass,
     billing: summarizeExecutionBilling(entry.result),
   }));
   const generatedAt = new Date().toISOString();
+  const retained = retainedCampaignAttempts(
+    selected.map(entry => entry.result),
+    [...candidates.values()].flatMap(entries => entries.map(entry => entry.result)),
+  );
   const campaign = buildRunnerCampaign({
     campaignId:
-      process.env.PAPERCLIP_E2E_CAMPAIGN_ID ??
-      (process.env.GITHUB_RUN_ID
-        ? `gha-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT ?? "1"}`
-        : `report-${generatedAt.replace(/[:.]/g, "-")}`),
+      requestedCampaignId ?? `report-${generatedAt.replace(/[:.]/g, "-")}`,
     generatedAt,
     expected,
     results: resolvedResults,
+    attempts: retained.attempts,
+    excludedArtifacts: excludedArtifacts + retained.excludedArtifacts,
+    ...(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER ? { operations: await readEvalOperationsReport(process.env.PAPERCLIP_E2E_OPERATIONS_LEDGER) } : {}),
+    ...(process.env.PAPERCLIP_E2E_FEEDBACK_REVIEW ? { feedbackReview: JSON.parse(await readFile(process.env.PAPERCLIP_E2E_FEEDBACK_REVIEW, "utf8")) } : {}),
+    ...(process.env.PAPERCLIP_E2E_BRAINTRUST_EXPERIMENT ? { braintrustExperiment: JSON.parse(await readFile(process.env.PAPERCLIP_E2E_BRAINTRUST_EXPERIMENT, "utf8")) } : {}),
   });
   const billing = campaign.billing;
+  const feedback = summarizeCampaignFeedback(campaign.accounting?.attempts ?? campaign.results);
   const normalized = {
     ...campaign,
     results: selected.map((entry, index) => ({
       ...resolvedResults[index]!,
-      evidenceValid: entry.valid,
+      evidenceValid: entry.errors.length === 0,
       evidenceErrors: entry.errors,
     })),
   };
@@ -279,7 +363,7 @@ async function main() {
     `${JSON.stringify(normalized, null, 2)}\n`,
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: "Runner Full-Stack E2E",
+    title: "E2E tests",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,
@@ -309,10 +393,11 @@ async function main() {
   )?.url;
 
   const summaryLines = [
-    "# Runner Full-Stack E2E",
+    "# E2E tests",
     "",
     `Passed: ${normalized.passed}/${selected.length}`,
     "",
+    ...(dependable ? [`Dependable-work checkpoint: ${dependable.complete ? "complete" : "incomplete"}; ${dependable.cells.filter(cell => cell.complete).length}/24 cells; ${dependable.failedAttempts} retained failed attempts; ${dependable.unclassifiedResults.length} results without observer receipts.`, ""] : []),
     ...(summaryLinks.length > 0
       ? [
           "## View results",
@@ -324,23 +409,32 @@ async function main() {
           "",
         ]
       : []),
-    `Tokens: ${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`,
+    `Tokens: ${billingCoverageLabel(`${billing.llm.inputTokens} input / ${billing.llm.outputTokens} output / ${billing.llm.cachedInputTokens} cached`, billing.llm.runsWithTokenUsage, billing.llm.runCount)}`,
     "",
-    `Provider-reported LLM cost: $${billing.reportedLlmCostUsd.toFixed(6)} (${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs priced)`,
+    `Provider-reported LLM cost: ${billingCoverageLabel(`$${billing.reportedLlmCostUsd.toFixed(6)}`, billing.llm.runsWithReportedCost, billing.llm.runCount, (billing.llm.runsWithPartialReportedCost ?? 0) > 0)}`,
+    `Estimated LLM cost: ${billingCoverageLabel(`$${(billing.estimatedLlmCostUsd ?? 0).toFixed(6)}`, billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount)}`,
+    `Accounting: ${campaign.accounting!.attempts.length} retained attempts; ${campaign.accounting!.missingAttempts} missing attempts; ${campaign.accounting!.excludedArtifacts} out-of-scope artifacts excluded. Costs cover captured usage, not unobserved setup or external charges.`,
+    ...campaignTimingText(summarizeCampaignTiming(campaign.results, campaign.accounting)),
+    ...workerPhaseTimingText(summarizeWorkerPhaseTiming(campaign.results, campaign.accounting)),
+    ...(campaign.operations ? operationsReportText(campaign.operations) : []),
+    "",
+    `Feedback across retained attempts: ${feedback.complaints} complaints; ${feedback.suggestions} suggestions; ${feedback.incomplete} attempts with incomplete collection. Tool submissions: ${feedback.failedSubmissions} failed, ${feedback.unknownSubmissions} unresolved. Full bodies are in access-controlled snapshots/agent-feedback.json or snapshots/agent-feedback-recovered.json.`,
+    campaignFeedbackReviewText(campaign),
     "",
     `Estimated Daytona list-price runtime cost: $${billing.estimatedRuntimeCostUsd.toFixed(6)}`,
+    ...(billing.judge ? [`Estimated judge cost: ${billing.judge.estimatedCostUsd === null ? "unknown" : `$${billing.judge.estimatedCostUsd.toFixed(6)}`}; ${billing.judge.attempts} attempts; ${billing.judge.attemptsWithUnknownUsage} with unknown usage; $${billing.judge.reservedCostUsd.toFixed(6)} reserved`] : []),
     "",
     "| Cell | Attempt | Result | Runtime | Duration | Tokens (in/out) | LLM reported | Runtime estimate | Detail |",
     "|---|---:|---|---|---:|---:|---:|---:|---|",
     ...selected.map((entry, index) => {
-      const detail = entry.errors.join("; ").replaceAll("|", "\\|") || "ok";
+      const detail = [entry.result.error, ...entry.errors].filter(Boolean).join("; ").replaceAll("|", "\\|") || "ok";
       const resolved = resolvedResults[index]!;
       const cellBilling = resolved.billing!;
       const runtimeCost = cellBilling.runtime.estimatedListCostUsd;
       const cell = publicCampaignUrl
         ? `[${resolved.executionId}](${publicCampaignUrl}#execution-${encodeURIComponent(resolved.executionId)})`
         : resolved.executionId;
-      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens} | $${cellBilling.reportedCostUsd.toFixed(6)} (${cellBilling.llm.costStatus}) | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
+      return `| ${cell} | ${resolved.attempt} | ${entry.valid ? "pass" : "fail"} | ${resolved.runtimeMode} | ${Math.round(resolved.durationMs / 1000)}s | ${billingCoverageLabel(`${cellBilling.llm.inputTokens}/${cellBilling.llm.outputTokens}`, cellBilling.llm.runsWithTokenUsage, cellBilling.llm.runCount)} | ${billingCoverageLabel(`$${cellBilling.reportedCostUsd.toFixed(6)}`, cellBilling.llm.runsWithReportedCost, cellBilling.llm.runCount, (cellBilling.llm.runsWithPartialReportedCost ?? 0) > 0)} | ${runtimeCost === undefined ? cellBilling.runtime.costStatus : `$${runtimeCost.toFixed(6)} est.`} | ${detail} |`;
     }),
     "",
   ];
@@ -351,14 +445,14 @@ async function main() {
     .map((entry) => {
       const failure = entry.valid
         ? ""
-        : `<failure message="${xml(entry.errors.join("; "))}"/>`;
+        : `<failure message="${xml([entry.result.error, ...entry.errors].filter(Boolean).join("; "))}"/>`;
       return `<testcase classname="runner-full-stack-e2e" name="${xml(entry.result.executionId)}" time="${entry.result.durationMs / 1000}">${failure}</testcase>`;
     })
     .join("");
   const junit = `<?xml version="1.0" encoding="UTF-8"?><testsuite name="Runner Full-Stack E2E" tests="${selected.length}" failures="${failures}">${cases}</testsuite>\n`;
   await writeFile(path.join(output, "junit.xml"), junit);
   console.log(summaryLines.join("\n"));
-  if (failures > 0) process.exitCode = 1;
+  if (failures > 0 || campaign.operations?.status === "unavailable" || (dependable && (!dependable.complete || dependable.unclassifiedResults.length > 0))) process.exitCode = 1;
 }
 
 await main().catch((error) => {

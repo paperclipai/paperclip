@@ -66,6 +66,8 @@ export type SandboxEnvironmentConfig =
   | PluginSandboxEnvironmentConfig;
 
 export interface PluginEnvironmentConfig {
+  runnerLifecycleMode?: "inherit" | "per_turn" | "warm";
+  runnerIdleTimeoutMs?: number;
   pluginKey: string;
   driverKey: string;
   driverConfig: Record<string, unknown>;

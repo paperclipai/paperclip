@@ -288,7 +288,7 @@ describe("native provider capacity failure persistence", () => {
         .select()
         .from(issues)
         .where(eq(issues.id, issueId));
-      expect(waitingIssue.status).toBe("in_review");
+      expect(waitingIssue.status).toBe("blocked");
       const events = await db
         .select()
         .from(heartbeatRunEvents)

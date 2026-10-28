@@ -37,6 +37,7 @@ import type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   PluginManagedAgentResolution,
@@ -143,6 +144,7 @@ export type {
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
   CreateIssueThreadInteraction,
+  CreateIssueThreadInteractionInput,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
   Agent,
@@ -406,8 +408,7 @@ export interface PluginExecutionWorkspaceMetadata {
   id: string;
   /** UUID of the owning company. */
   companyId: string;
-  /** UUID of the parent project. */
-  projectId: string;
+  projectId: string | null;
   /** UUID of the backing project workspace, when present. */
   projectWorkspaceId: string | null;
   /** Absolute filesystem path to the workspace when locally realized. */
@@ -544,6 +545,15 @@ export interface PluginLocalFoldersClient {
  * @see PLUGIN_SPEC.md §16 — Event System
  */
 export interface PluginEventsClient {
+  /** Read durable resource hooks. Requires events.subscribe and a company scope.
+   * Creation is delivered first, then the remaining events in id order.
+   * Prefer manifest resourceLifecycle + onResourceLifecycle for automatic delivery.
+   * Manual consumers page using afterId and restart pagination to revisit unacknowledged events.
+   * Events repeat until acknowledged; use a company-scoped provider idempotency key.
+   */
+  listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
+  /** Acknowledge only after the provider operation succeeds. */
+  acknowledgeLifecycle(companyId: string, eventId: string): Promise<void>;
   /**
    * Subscribe to a core Paperclip domain event or a plugin-namespaced event.
    *
@@ -579,6 +589,32 @@ export interface PluginEventsClient {
    * @param payload - JSON-serializable event payload
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
+}
+
+export type ResourceLifecycleEvent = {
+  /** Native private credentials for this plugin/project. Only supplied to automatic
+   * project lifecycle callbacks with projects.instance-secrets. Never expose to UI. */
+  instanceSecrets?: Record<string, string>;
+  id: string;
+  companyId: string;
+  resourceId: string;
+  createdAt: string;
+} & (
+  | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" | "delete" }
+  | { resourceType: "agent_runtime"; action: "update" | "delete" }
+);
+
+/** Return acknowledged only after durable effects finish. Retry unfinished work;
+ * defer when configuration is missing (replayed on configuration changes or startup).
+ * Both retry and deferred leave the event unacknowledged.
+ */
+export interface ResourceLifecycleResult {
+  eventId: string;
+  status: "acknowledged" | "retry" | "deferred";
+  /** Project-only patch, saved atomically with acknowledgment. Null removes a key.
+   * Up to 16 lowercase snake_case keys, each value at most 128 KiB. */
+  instanceSecrets?: Record<string, string | null>;
 }
 
 /**
@@ -839,6 +875,13 @@ export interface PluginEntitiesClient {
  * @see PLUGIN_SPEC.md §7 — Project Workspaces
  */
 export interface PluginProjectsClient {
+  /** Transient GitHub credential for a stored repository in the current host-issued
+   * lifecycle/workspace invocation. Requires projects.git-credentials. Never persist or log. */
+  resolveGitCredential(projectId: string, workspaceId: string, companyId: string): Promise<string | null>;
+  /** Trusted worker access to this plugin’s native project credentials.
+   * Requires projects.instance-secrets; never expose via UI/data handlers. */
+  getInstanceSecrets(projectId: string, companyId: string): Promise<Record<string, string>>;
+
   /**
    * List projects visible to the plugin.
    *
@@ -1544,7 +1587,7 @@ export interface PluginIssuesClient {
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,
-    interaction: CreateIssueThreadInteraction,
+    interaction: CreateIssueThreadInteractionInput,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<IssueThreadInteraction>;
@@ -1556,7 +1599,7 @@ export interface PluginIssuesClient {
   ): Promise<SuggestTasksInteraction>;
   askUserQuestions(
     issueId: string,
-    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "ask_user_questions" }>, "kind">,
+    interaction: Omit<Extract<CreateIssueThreadInteractionInput, { kind: "ask_user_questions" }>, "kind">,
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<AskUserQuestionsInteraction>;
@@ -1657,7 +1700,44 @@ export interface PluginApprovalsClient {
  * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
  * `agents.invoke` for write operations.
  */
+export interface PluginAgentRuntimeSkill {
+  key: string;
+  runtimeName: string;
+  source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
+  sourceStatus?: "available" | "missing";
+  missingDetail?: string | null;
+}
+
+export interface PluginAgentConnectionAssignments {
+  features: { publicMcp: boolean; chatConnectors: boolean };
+  connections: Array<{ id: string; name: string; transport: string; enabled: boolean; status: string }>;
+  profileIds: string[];
+}
+
+export interface PluginAgentRuntimeState {
+  connectionAssignments: PluginAgentConnectionAssignments;
+  skills: PluginAgentRuntimeSkill[];
+  /** Selected company skills omitted because the environment requires the same skill name. */
+  shadowedSkills?: Array<{ key: string; shadowedBy: string }>;
+  revision: string;
+  agent: Agent;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string;
+  /** Default entry content when the agent has no instruction directory. */
+  instructionsEntryContent?: string;
+  instanceSecrets: Record<string, string>;
+}
+
+export type PluginAgentRuntimeIdentity = Pick<PluginAgentRuntimeState, "revision" | "instanceSecrets"> & {
+  agent: Pick<Agent, "id" | "companyId" | "status" | "lifecycleState" | "lifecycleVersion">;
+};
+
 export interface PluginAgentsClient {
+  getRuntimeIdentity(agentId: string, companyId: string): Promise<PluginAgentRuntimeIdentity | null>;
+  /** Lifecycle reconciliation can install missing environment skills; task and recovery reads leave this false. */
+  getRuntime(agentId: string, companyId: string, environmentId?: string, installEnvironmentSkills?: boolean): Promise<PluginAgentRuntimeState | null>;
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */

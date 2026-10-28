@@ -120,3 +120,7 @@ export const sessionCodec: AdapterSessionCodec = {
     );
   },
 };
+
+export { decideCodexAuthMerge } from "./codex-auth-merge-decision.js";
+
+export { copyBackCodexAuth } from "./codex-auth-copyback.js";

@@ -73,6 +73,38 @@ describe("isWorkerEntrypoint", () => {
   });
 });
 
+describe("worker resource lifecycle delivery", () => {
+  it("advertises and dispatches the native lifecycle callback", async () => {
+    const stdin = new PassThrough(), stdout = new PassThrough();
+    const lines = createInterface({ input: stdout });
+    const plugin = definePlugin({
+      async setup() {},
+      async onResourceLifecycle(event) { return { eventId: event.id, status: "retry" }; },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin, stdout });
+    async function call(method: string, params: unknown) {
+      const response = new Promise<JsonRpcResponse>(resolve => {
+        const handler = (line: string) => {
+          const message = parseMessage(line);
+          if (isJsonRpcResponse(message)) { lines.off("line", handler); resolve(message); }
+        };
+        lines.on("line", handler);
+      });
+      stdin.write(serializeMessage(createRequest(method, params, method)));
+      return response;
+    }
+    try {
+      const initialized = await call("initialize", {
+        manifest: { id: "test.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Test", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "worker.js" } },
+        config: {}, databaseNamespace: null,
+      });
+      expect(initialized).toMatchObject({ result: { supportedMethods: expect.arrayContaining(["resourceLifecycle"]) } });
+      expect(await call("resourceLifecycle", { id: "17", companyId: "company", resourceType: "project", resourceId: "project", action: "delete", createdAt: "2020-01-01T00:00:00Z" }))
+        .toMatchObject({ result: { eventId: "17", status: "retry" } });
+    } finally { worker.stop(); lines.close(); stdin.destroy(); stdout.destroy(); }
+  });
+});
+
 describe("worker performAction context", () => {
   it("does not derive context companyId from caller params without host actor context", async () => {
     const hostToWorker = new PassThrough();
@@ -342,7 +374,7 @@ describe("worker configChanged cross-tenant guard", () => {
     });
 
     async function initialize() {
-      await callWorker("initialize", {
+      return await callWorker("initialize", {
         manifest: {
           id: "paperclip.config-guard-test",
           apiVersion: 1,
@@ -368,6 +400,41 @@ describe("worker configChanged cross-tenant guard", () => {
 
     return { callWorker, initialize, stop };
   }
+
+  it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
+    let releases = 0, stops = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { releases++; return { providerLeaseId: "allocation", state: "destroyed" }; },
+      ...(supported ? { async onEnvironmentStopLease() { stops++; return { providerLeaseId: "allocation", state: "stopped" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentStopLease")).toBe(supported);
+      const stopped = worker.callWorker("environmentStopLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(stopped).resolves.toEqual({ providerLeaseId: "allocation", state: "stopped" });
+      else await expect(stopped).rejects.toThrow();
+      expect(stops).toBe(supported ? 1 : 0);
+      expect(releases).toBe(0);
+    } finally { worker.stop(); }
+  });
+
+  it.each([false, true])("advertises read-only inspection only when implemented: %s", async supported => {
+    let inspections = 0, mutations = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { mutations++; },
+      async onEnvironmentDestroyLease() { mutations++; },
+      ...(supported ? { async onEnvironmentInspectLease() { inspections++; return { providerLeaseId: "allocation", state: "destroyed" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentInspectLease")).toBe(supported);
+      const result = worker.callWorker("environmentInspectLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(result).resolves.toEqual({ providerLeaseId: "allocation", state: "destroyed" });
+      else await expect(result).rejects.toThrow();
+      expect(inspections).toBe(supported ? 1 : 0);
+      expect(mutations).toBe(0);
+    } finally { worker.stop(); }
+  });
 
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];
@@ -1096,5 +1163,71 @@ describe("worker duplex channel dispatch", () => {
       worker.stop();
       hostReadline.close();
     }
+  });
+});
+
+
+describe("AI connection router RPC", () => {
+  it("advertises and calls only an implemented routing hook", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const request = { companyId: "company", taskKey: "task", candidates: [], memberOrder: [] };
+    let received: unknown;
+    const plugin = definePlugin({ async setup() {}, onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    try {
+      const initialized = await call("initialize", { manifest: { id: "fixture.router", apiVersion: 1, version: "1.0.0", displayName: "Router", description: "Fixture", author: "Tests", categories: ["connector"], capabilities: ["ai.connections.route"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((initialized as { result: { supportedMethods: string[] } }).result.supportedMethods).toContain("routeAiConnection");
+      expect((await call("routeAiConnection", request) as { result: unknown }).result).toEqual({ kind: "selected", memberId: "authorized-member" });
+      expect(received).toEqual(request);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
+  });
+});
+
+describe("Durable lifecycle inbox RPC", () => {
+  it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const event = { id: "7", companyId: "company-a", resourceType: "agent", resourceId: "agent-a", action: "pause", createdAt: new Date(0).toISOString() };
+    const plugin = definePlugin({ async setup(ctx) {
+      ctx.data.register("drain", async ({ companyId }) => {
+        const events = await ctx.events.listLifecycle(companyId!, 10, "6");
+        await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a", true);
+        return events;
+      });
+    } });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: JsonRpcResponse) => void>();
+    reader.on("line", line => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+      } else if (isJsonRpcRequest(message)) {
+        calls.push({ method: message.method, params: message.params });
+        input.write(serializeMessage(createSuccessResponse(message.id, message.method === "events.listLifecycle" ? [event] : null)));
+      }
+    });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => {
+      const id = String(++sequence);
+      pending.set(id, resolve);
+      input.write(serializeMessage(createRequest(method, params, id)));
+    });
+    try {
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe", "agents.lifecycle.manage"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
+      expect(calls).toEqual([
+        { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
+        { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
+      ]);
+    } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });
 });

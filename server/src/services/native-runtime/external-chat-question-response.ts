@@ -1,4 +1,5 @@
-import { and, eq, inArray, notExists, sql } from "drizzle-orm";
+import { photonAnswersMatch } from "../photon/interactions.js";
+import { and, or, eq, lte, inArray, notExists, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -6,7 +7,12 @@ import {
   chatConversations,
   chatDeliveries,
   chatEndpoints,
+  chatExternalPrincipals,
   chatIdentityLinks,
+  chatVoiceSessions,
+  chatVoiceToolCalls,
+  chatVoiceReplies,
+  toolConnections,
   chatMessageLinks,
   chatPublications,
   heartbeatRuns,
@@ -20,6 +26,7 @@ import {
   validateChatQuestionFormSubmission,
 } from "../chat-question-forms.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
+import { voiceSessionStore, type VoiceTransaction, currentVoiceCredentialFingerprint } from "../voice/voice-session-store.js";
 import { nativeSha256 } from "./canonical.js";
 
 export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
@@ -67,6 +74,23 @@ const ids = (value: unknown): string[] =>
   Array.isArray(value)
     ? value.filter((id): id is string => typeof id === "string")
     : [];
+
+function completedMultiChoiceMatches(question: Record<string, unknown>, answer: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  const selected = ids(payload.selectionValues);
+  const answered = ids(answer.optionIds);
+  const mappings = Array.isArray(payload.selectionOptions) ? payload.selectionOptions.map(record) : [];
+  const options = Array.isArray(question.options) ? question.options.map(record) : [];
+  if (question.selectionMode !== "multi" || question.allowOther === true ||
+      !Array.isArray(payload.selectionValues) || selected.length !== payload.selectionValues.length ||
+      !Array.isArray(answer.optionIds) || answered.length !== answer.optionIds.length ||
+      new Set(selected).size !== selected.length || new Set(answered).size !== answered.length ||
+      mappings.length !== options.length || new Set(mappings.map(item => item.value)).size !== mappings.length ||
+      new Set(mappings.map(item => item.optionId)).size !== mappings.length ||
+      (question.required !== false && selected.length === 0) ||
+      selected.length !== answered.length ||
+      mappings.some(item => typeof item.value !== "string" || typeof item.optionId !== "string" || !options.some(option => option.id === item.optionId && option.freeText !== true))) return false;
+  return selected.every((value, index) => mappings.find(item => item.value === value)?.optionId === answered[index]);
+}
 
 function completedQuestionFormMatchesInteraction(
   interaction: AskUserQuestionsInteraction,
@@ -152,7 +176,7 @@ function completedQuestionFormMatchesInteraction(
 }
 
 /**
- * Resolve a durable provider answer or GitHub's authenticated Board fallback,
+ * Resolve a durable provider answer or an authenticated Board fallback,
  * never a caller-supplied wake marker. This
  * is routing/reading authority only: it never checks out a task or resolves a
  * review. Callers retain their issue/run/actor and current destination checks.
@@ -338,7 +362,7 @@ async function resolveQuestionResponseChain(
   const provider =
     parent?.provider ??
     (
-      ["slack", "github", "discord", "microsoft-teams", "telegram"] as const
+      ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon", "speko"] as const
     ).find(
       (candidate) =>
         sourceContext.source === `chat:${candidate}` ||
@@ -346,11 +370,18 @@ async function resolveQuestionResponseChain(
     );
   const sourceIds = ids(sourceContext.wakeCommentIds);
   const wakePayload = record(wake.payload);
+  // Legacy CLI adapters create the same durable provider interactions through
+  // the API. Their task binding lives in the saved wake rather than nativeIssueId.
+  // Keep the source task, answer receipt, actor and provider proofs below intact.
+  const sourceTaskMatches = source.runtimeMode === "native"
+    ? source.nativeIssueId === binding.issueId
+    : source.runtimeMode === "legacy"
+      && source.nativeIssueId === null
+      && record(sourceWake.issue).id === binding.issueId;
   if (
     !provider ||
     source.agentId !== binding.agentId ||
-    source.runtimeMode !== "native" ||
-    source.nativeIssueId !== binding.issueId ||
+    (!sourceTaskMatches && !(provider === "speko" && source.runtimeMode === "legacy" && source.nativeIssueId === null)) ||
     sourceContext.issueId !== binding.issueId ||
     (source.status !== "succeeded" &&
       !(
@@ -410,6 +441,121 @@ async function resolveQuestionResponseChain(
   )
     return null;
 
+  if (provider === "speko") {
+    // A model-selected interaction ID is insufficient. Require the exact
+    // canonical answer, a presented publication, and the durable signed-tool
+    // receipt committed atomically with that answer. No synthetic identity link.
+    const proofs = await tx.select({ receipt: chatVoiceToolCalls, session: chatVoiceSessions,
+      reply: chatVoiceReplies, publication: chatPublications, endpoint: chatEndpoints, connection: toolConnections,
+      conversation: chatConversations }).from(chatVoiceToolCalls)
+      .innerJoin(chatVoiceSessions, and(eq(chatVoiceSessions.id, chatVoiceToolCalls.sessionId), eq(chatVoiceSessions.companyId, binding.companyId)))
+      .innerJoin(chatVoiceReplies, and(eq(chatVoiceReplies.sessionId, chatVoiceSessions.id), eq(chatVoiceReplies.companyId, binding.companyId)))
+      .innerJoin(chatPublications, and(eq(chatPublications.id, chatVoiceReplies.publicationId), eq(chatPublications.companyId, binding.companyId)))
+      .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, binding.companyId)))
+      .innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, binding.companyId)))
+      .innerJoin(chatConversations, and(eq(chatConversations.id, chatVoiceSessions.conversationId), eq(chatConversations.companyId, binding.companyId)))
+      .where(and(eq(chatVoiceToolCalls.companyId, binding.companyId), eq(chatVoiceToolCalls.tool, "answer_question"),
+        sql`${chatVoiceToolCalls.response}->>'interactionId' = ${interaction.id}`,
+        sql`${chatPublications.payload}->>'interactionId' = ${interaction.id}`,
+        eq(chatVoiceSessions.issueId, binding.issueId),
+        // Terminal acknowledgment publications use the same interaction ID.
+        // Only a question actually delivered before its answer can be proof.
+        lte(chatVoiceReplies.deliveredAt, interaction.resolvedAt)));
+    if (proofs.length === 0 && interaction.resolvedByRunId === null) {
+      // The authenticated task-page answer commits the canonical interaction
+      // and response delivery too. Bind it to the original voice requester;
+      // do not require hearing the question or fabricate a signed-tool receipt.
+      const origins = await tx.select({ session: chatVoiceSessions, endpoint: chatEndpoints,
+        connection: toolConnections, conversation: chatConversations, comment: issueComments,
+        inbound: chatDeliveries, link: chatMessageLinks }).from(chatMessageLinks)
+        .innerJoin(issueComments, and(eq(issueComments.id, chatMessageLinks.commentId), eq(issueComments.companyId, binding.companyId), eq(issueComments.issueId, binding.issueId)))
+        .innerJoin(chatDeliveries, and(eq(chatDeliveries.id, chatMessageLinks.deliveryId), eq(chatDeliveries.companyId, binding.companyId), eq(chatDeliveries.endpointId, chatMessageLinks.endpointId), eq(chatDeliveries.conversationId, chatMessageLinks.conversationId)))
+        .innerJoin(chatExternalPrincipals, and(eq(chatExternalPrincipals.id, chatDeliveries.principalId), eq(chatExternalPrincipals.companyId, binding.companyId), eq(chatExternalPrincipals.provider, "speko")))
+        .innerJoin(chatVoiceSessions, and(sql`${chatExternalPrincipals.externalId} = 'voice:' || ${chatVoiceSessions.id}::text`, eq(chatVoiceSessions.companyId, binding.companyId), eq(chatVoiceSessions.endpointId, chatMessageLinks.endpointId), eq(chatVoiceSessions.conversationId, chatMessageLinks.conversationId), eq(chatVoiceSessions.issueId, binding.issueId)))
+        .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatVoiceSessions.endpointId), eq(chatEndpoints.companyId, binding.companyId)))
+        .innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, binding.companyId)))
+        .innerJoin(chatConversations, and(eq(chatConversations.id, chatVoiceSessions.conversationId), eq(chatConversations.companyId, binding.companyId), eq(chatConversations.endpointId, chatEndpoints.id)))
+        .where(and(eq(chatMessageLinks.companyId, binding.companyId), eq(chatMessageLinks.commentId, context.sourceCommentId), eq(chatMessageLinks.direction, "inbound")));
+      if (origins.length !== 1) return null;
+      const { session, endpoint, connection, conversation, comment, inbound, link } = origins[0]!;
+      if (comment.deletedAt || inbound.state !== "processed" || comment.authorUserId !== interaction.resolvedByUserId
+        || session.callerId !== interaction.resolvedByUserId || !["member", "instance_admin", "local_board"].includes(session.callerAuthority)
+        || session.assignedAgentId !== binding.agentId || endpoint.assignedAgentId !== binding.agentId
+        || endpoint.provider !== "speko" || !["active", "verifying"].includes(endpoint.status)
+        || !connection.enabled || connection.status !== "active" || connection.transport !== "voice"
+        || session.generation !== record(endpoint.setup).runtimeGeneration
+        || session.credentialFingerprint !== await currentVoiceCredentialFingerprint(tx, binding.companyId, connection.credentialSecretRefs)
+        || !["active", "waiting"].includes(conversation.state) || conversation.issueId !== binding.issueId
+        || (parent && (parent.marker.endpointId !== endpoint.id || parent.marker.conversationId !== conversation.id))) return null;
+      try {
+        const store = voiceSessionStore(tx, { allowLocalBoard: session.callerAuthority === "local_board" });
+        await store.authorizePrincipal(tx as unknown as VoiceTransaction, binding.companyId, endpoint.id, `voice:${session.id}`);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "55P03") throw error;
+        return null;
+      }
+      const marker: Marker = {
+        schema: "paperclip.external_chat_question_response.v1", interactionId: interaction.id,
+        responseDeliveryId: delivery.id, sourceRunId: source.id, sourceCommentId: context.sourceCommentId,
+        endpointId: endpoint.id, conversationId: conversation.id,
+        bindingSha256: nativeSha256({ binding: {companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, agentId: binding.agentId}, responseDeliveryId: delivery.id, payloadSha256: delivery.payloadSha256,
+          sourceRunId: source.id, sourceCommentId: context.sourceCommentId, sourceOrigin: sourceContext.source,
+          ...(parent ? { sourceQuestionResponseSha256: parent.marker.bindingSha256 } : {}),
+          interaction: { id: interaction.id, payload: interaction.payload, result: interaction.result,
+            resolvedAt: interaction.resolvedAt.toISOString(), resolvedByUserId: interaction.resolvedByUserId },
+          boardResponse: { sessionId: session.id, callerId: session.callerId, generation: session.generation,
+            credentialFingerprint: session.credentialFingerprint, inboundId: inbound.id, linkId: link.id },
+          conversationGeneration: conversation.sessionGeneration, wakeId: wake.id }),
+      };
+      if (!mint && nativeSha256(record(context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY])) !== nativeSha256(marker)) return null;
+      return { marker, provider, answeredAtMs: interaction.resolvedAt.getTime(),
+        interactionIds: [...(parent?.interactionIds ?? []), interaction.id],
+        authorizationContext: { ...context, source: "chat:speko", paperclipHarnessCheckedOut: false, paperclipExternalChatExecutionBound: true } };
+    }
+    if (proofs.length !== 1) return null;
+    const proof = proofs[0]!;
+    const { receipt, session, reply, publication, endpoint, connection, conversation } = proof;
+    const [original] = await tx.select({ comment: issueComments, inbound: chatDeliveries, link: chatMessageLinks })
+      .from(chatMessageLinks).innerJoin(issueComments, eq(issueComments.id, chatMessageLinks.commentId))
+      .innerJoin(chatDeliveries, eq(chatDeliveries.id, chatMessageLinks.deliveryId))
+      .where(and(eq(chatMessageLinks.companyId, binding.companyId), eq(chatMessageLinks.endpointId, endpoint.id),
+        eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.direction, "inbound"),
+        eq(chatMessageLinks.commentId, context.sourceCommentId), eq(issueComments.companyId, binding.companyId),
+        eq(issueComments.issueId, binding.issueId), eq(chatDeliveries.companyId, binding.companyId)));
+    if (!original || original.comment.deletedAt || original.inbound.state !== "processed"
+      || original.comment.authorUserId !== interaction.resolvedByUserId
+      || session.callerId !== interaction.resolvedByUserId || !["member", "instance_admin", "local_board"].includes(session.callerAuthority)
+      || session.assignedAgentId !== binding.agentId || endpoint.assignedAgentId !== binding.agentId
+      || endpoint.provider !== "speko" || !["active", "verifying"].includes(endpoint.status)
+      || !connection.enabled || connection.status !== "active" || connection.transport !== "voice"
+      || session.generation !== record(endpoint.setup).runtimeGeneration
+      || session.credentialFingerprint !== await currentVoiceCredentialFingerprint(tx, binding.companyId, connection.credentialSecretRefs)
+      || !["active", "waiting"].includes(conversation.state) || conversation.issueId !== binding.issueId
+      || publication.conversationId !== conversation.id || publication.endpointId !== endpoint.id || publication.issueId !== binding.issueId
+      || publication.state !== "published" || !publication.providerMessageId || !reply.deliveredAt
+      || reply.deliveredAt > interaction.resolvedAt || receipt.response.status !== "answered"
+      || receipt.response.resultSha256 !== nativeSha256(interaction.result)
+      || (parent && (parent.marker.endpointId !== endpoint.id || parent.marker.conversationId !== conversation.id))) return null;
+    const marker: Marker = {
+      schema: "paperclip.external_chat_question_response.v1", interactionId: interaction.id,
+      responseDeliveryId: delivery.id, sourceRunId: source.id, sourceCommentId: context.sourceCommentId,
+      endpointId: endpoint.id, conversationId: conversation.id,
+      bindingSha256: nativeSha256({ binding: { companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, agentId: binding.agentId }, responseDeliveryId: delivery.id, payloadSha256: delivery.payloadSha256,
+        sourceRunId: source.id, sourceCommentId: context.sourceCommentId, sourceOrigin: sourceContext.source,
+        ...(parent ? { sourceQuestionResponseSha256: parent.marker.bindingSha256 } : {}),
+        interaction: { id: interaction.id, payload: interaction.payload, result: interaction.result,
+          resolvedAt: interaction.resolvedAt.toISOString(), resolvedByUserId: interaction.resolvedByUserId },
+        voiceResponse: { receiptId: receipt.id, fingerprint: receipt.fingerprint, response: receipt.response,
+          sessionId: session.id, callerId: session.callerId, generation: session.generation, credentialFingerprint: session.credentialFingerprint },
+        publicationId: publication.id, replyId: reply.id, inboundId: original.inbound.id, linkId: original.link.id,
+        conversationGeneration: conversation.sessionGeneration, wakeId: wake.id }),
+    };
+    if (!mint && nativeSha256(record(context[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY])) !== nativeSha256(marker)) return null;
+    return { marker, provider, answeredAtMs: interaction.resolvedAt.getTime(),
+      interactionIds: [...(parent?.interactionIds ?? []), interaction.id],
+      authorizationContext: { ...context, source: "chat:speko", paperclipHarnessCheckedOut: false, paperclipExternalChatExecutionBound: true } };
+  }
+
   const actionQuery = tx
     .select({
       action: chatActions,
@@ -448,7 +594,7 @@ async function resolveQuestionResponseChain(
         eq(chatDeliveries.companyId, chatActions.companyId),
         eq(chatDeliveries.endpointId, chatActions.endpointId),
         eq(chatDeliveries.conversationId, chatActions.conversationId),
-        eq(chatDeliveries.principalId, chatActions.principalId),
+        or(eq(chatActions.kind, "photon_interaction"), eq(chatDeliveries.principalId, chatActions.principalId)),
       ),
     )
     .innerJoin(
@@ -485,14 +631,14 @@ async function resolveQuestionResponseChain(
     .where(
       and(
         eq(chatActions.companyId, binding.companyId),
-        inArray(chatActions.kind, ["question_answer", "question_form_submit"]),
+        inArray(chatActions.kind, ["question_answer", "question_form_submit", "photon_interaction"]),
         eq(chatActions.status, "processed"),
         sql`${chatActions.payload}->>'interactionId' = ${interaction.id}`,
         sql`${chatActions.result}->>'interactionId' = ${interaction.id}`,
       ),
     );
-  // GitHub has no executable question callback. Its published link leads to
-  // the ordinary authenticated Board answer route, whose pending→answered CAS
+  // GitHub and Slack forms without native controls use the ordinary
+  // authenticated Board answer route, whose pending→answered CAS
   // creates the response delivery above atomically. Do not fabricate a provider
   // action: bind that distinct receipt to the original linked person instead.
   const boardQuery = tx
@@ -547,7 +693,7 @@ async function resolveQuestionResponseChain(
       and(
         eq(chatEndpoints.id, chatPublications.endpointId),
         eq(chatEndpoints.companyId, chatPublications.companyId),
-        eq(chatEndpoints.provider, "github"),
+        eq(chatEndpoints.provider, provider),
       ),
     )
     .innerJoin(
@@ -580,7 +726,12 @@ async function resolveQuestionResponseChain(
         ),
       ),
     );
-  const evidenceQuery = provider === "github" ? boardQuery : actionQuery;
+  // Slack native actions remain authoritative when present. The Board query
+  // excludes every native answer token, including unfinished ones; its result
+  // is re-read under the same identity and row locks below.
+  const boardAnswer = provider === "github" ||
+    (provider === "slack" && (await boardQuery).length === 1);
+  const evidenceQuery = boardAnswer ? boardQuery : actionQuery;
   let expectedPrincipalId: string | null = null;
   if (lockMode !== "read") {
     // Identity changes take this advisory lock before their row lock. Resolve
@@ -644,7 +795,7 @@ async function resolveQuestionResponseChain(
     const card = record(record(publication.payload).card);
     const links = Array.isArray(card.actions) ? card.actions.map(record) : [];
     if (
-      provider !== "github" ||
+      !boardAnswer ||
       interaction.resolvedByRunId !== null ||
       publication.payload.progressState !== "waiting_for_input" ||
       card.kind !== "question" ||
@@ -652,12 +803,14 @@ async function resolveQuestionResponseChain(
       links.some((link) => link.type !== "link") ||
       !publication.publishedAt ||
       publication.publishedAt > interaction.resolvedAt ||
-      typeof boardGeneration !== "number" ||
-      !Number.isSafeInteger(boardGeneration) ||
-      boardGeneration < 0 ||
-      boardRuntime.generation !== boardGeneration ||
-      typeof boardRuntime.credentialFingerprint !== "string" ||
-      !/^[a-f0-9]{64}$/.test(boardRuntime.credentialFingerprint)
+      (provider === "github" && (
+        typeof boardGeneration !== "number" ||
+        !Number.isSafeInteger(boardGeneration) ||
+        boardGeneration < 0 ||
+        boardRuntime.generation !== boardGeneration ||
+        typeof boardRuntime.credentialFingerprint !== "string" ||
+        !/^[a-f0-9]{64}$/.test(boardRuntime.credentialFingerprint)
+      ))
     )
       return null;
   } else if (action.kind === "question_answer") {
@@ -677,15 +830,20 @@ async function resolveQuestionResponseChain(
       record(action.result).interactionStatus !== "answered" ||
       !selectedAnswer ||
       !selectedQuestion ||
-      selectedQuestion.selectionMode !== "single" ||
-      ids(selectedAnswer.optionIds).length !== 1 ||
-      ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
       !Array.isArray(selectedQuestion.options) ||
-      !selectedQuestion.options.some(
-        (option) => record(option).id === action.payload.optionId,
-      )
+      !Array.isArray(answers) || answers.length !== 1 ||
+      !Array.isArray(questions) || questions.length !== 1 ||
+      Boolean(selectedAnswer.otherText) ||
+      (Array.isArray(action.payload.selectionOptions)
+        ? provider !== "slack" || !completedMultiChoiceMatches(selectedQuestion, selectedAnswer, action.payload)
+        : selectedQuestion.selectionMode !== "single" ||
+          ids(selectedAnswer.optionIds).length !== 1 ||
+          ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
+          !selectedQuestion.options.some(option => record(option).id === action.payload.optionId))
     )
       return null;
+  } else if (action.kind === "photon_interaction") {
+    if (provider !== "imessage-photon" || !photonAnswersMatch(interaction as unknown as AskUserQuestionsInteraction, action.result) || action.payload.version !== 1 || action.payload.sessionGeneration !== conversation.sessionGeneration || typeof action.payload.expiresAt !== "string" || Date.parse(action.payload.expiresAt) <= interaction.resolvedAt.getTime() || !Number.isFinite(Date.parse(action.payload.expiresAt))) return null;
   } else if (
     !completedQuestionFormMatchesInteraction(
       interaction as unknown as AskUserQuestionsInteraction,
@@ -697,12 +855,13 @@ async function resolveQuestionResponseChain(
   if (
     inbound.state !== "processed" ||
     comment.deletedAt !== null ||
-    comment.authorUserId !== interaction.resolvedByUserId ||
+    (action?.kind !== "photon_interaction" && comment.authorUserId !== interaction.resolvedByUserId) ||
     conversation.issueId !== binding.issueId ||
     !["active", "waiting"].includes(conversation.state) ||
     endpoint.provider !== provider ||
     endpoint.assignedAgentId !== binding.agentId ||
-    endpoint.status !== "active" ||
+    (endpoint.status !== "active" &&
+      !(provider === "imessage-photon" && endpoint.status === "verifying" && record(endpoint.setup).step === "test")) ||
     publication.state !== "published" ||
     !publication.providerMessageId ||
     publication.issueId !== binding.issueId ||
@@ -760,10 +919,12 @@ async function resolveQuestionResponseChain(
           }
         : {
             boardResponse: {
-              schema: "paperclip.github_board_question_response.v1",
+              schema: `paperclip.${provider}_board_question_response.v1`,
               principalId: inbound.principalId,
-              runtimeGeneration: boardGeneration,
-              credentialFingerprint: boardRuntime.credentialFingerprint,
+              ...(provider === "github" ? {
+                runtimeGeneration: boardGeneration,
+                credentialFingerprint: boardRuntime.credentialFingerprint,
+              } : {}),
             },
           }),
       publication: {

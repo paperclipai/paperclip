@@ -1,12 +1,12 @@
 import { Router } from "express";
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import {
-  issueRecoveryActions,
   issues as issueRows,
   type Db,
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
-import { executionBlockerPredicate } from "../services/execution-blocker.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { ISSUE_TREE_RESUME_EXECUTABLE_STATUSES } from "../services/issue-tree-control.js";
 import { conflict } from "../errors.js";
 import {
   createIssueTreeHoldSchema,
@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import {
+  accessService,
   heartbeatService,
   issueService,
   issueTreeControlService,
@@ -23,8 +24,9 @@ import {
 } from "../services/index.js";
 import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
-const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -44,11 +46,45 @@ async function waitForRunCancellationTasks(tasks: Promise<void>[]) {
   }
 }
 
-export function issueTreeControlRoutes(db: Db) {
+export function issueTreeControlRoutes(
+  db: Db,
+  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+) {
   const router = Router();
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: options.pluginWorkerManager,
+  });
+  const access = accessService(db);
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: {
+    id: string;
+    companyId: string;
+    projectId?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string;
+  }) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        assigneeUserId: issue.assigneeUserId ?? null,
+        status: issue.status ?? "backlog",
+      },
+    });
+    if (decision.allowed) return true;
+    res.status(404).json({ error: "Root issue not found" });
+    return false;
+  }
 
   async function resolveRootIssue(req: Request) {
     const rootIssueId = req.params.id as string;
@@ -60,6 +96,7 @@ export function issueTreeControlRoutes(db: Db) {
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const preview = await treeControlSvc.preview(root.companyId, root.id, req.body);
     const actor = getActorInfo(req);
@@ -87,6 +124,7 @@ export function issueTreeControlRoutes(db: Db) {
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const actor = getActorInfo(req);
     const actorInput = {
@@ -125,7 +163,19 @@ export function issueTreeControlRoutes(db: Db) {
       for (const heartbeatRunId of interruptedRunIds) {
         const cancellationTask = (async () => {
           try {
-            await heartbeat.cancelRun(heartbeatRunId);
+            // This board-only operation is an intentional interruption, just
+            // like composer Stop. Preserve its actor so verified native stops
+            // do not manufacture recovery incidents while the hold is active.
+            await heartbeat.cancelRun(
+              heartbeatRunId,
+              `Cancelled by a board operator's subtree ${result.hold.mode}`,
+              {
+                resultJson: {
+                  cancelledByActorType: "user",
+                  cancelledByUserId: req.actor.userId ?? null,
+                },
+              },
+            );
             await logActivity(db, {
               companyId: root.companyId,
               actorType: actor.actorType,
@@ -316,6 +366,7 @@ export function issueTreeControlRoutes(db: Db) {
     const issueId = req.params.id as string;
     const issue = await getAccessibleResource(req, res, issuesSvc.getById(issueId), "Issue not found");
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
     res.json({ activePauseHold });
   });
@@ -324,6 +375,7 @@ export function issueTreeControlRoutes(db: Db) {
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
     const statusParam = typeof req.query.status === "string" ? req.query.status : null;
     const modeParam = typeof req.query.mode === "string" ? req.query.mode : null;
     const includeMembers = req.query.includeMembers === "true";
@@ -342,6 +394,7 @@ export function issueTreeControlRoutes(db: Db) {
     assertBoard(req);
     const root = await getAccessibleResource(req, res, resolveRootIssue(req), "Root issue not found");
     if (!root) return;
+    if (!(await assertIssueReadAllowed(req, res, root))) return;
 
     const holdId = req.params.holdId as string;
     if (!isUuidLike(holdId)) {
@@ -369,6 +422,7 @@ export function issueTreeControlRoutes(db: Db) {
         "Root issue not found",
       );
       if (!root) return;
+      if (!(await assertIssueReadAllowed(req, res, root))) return;
 
       const holdId = req.params.holdId as string;
       if (!isUuidLike(holdId)) {
@@ -382,35 +436,18 @@ export function issueTreeControlRoutes(db: Db) {
         const activeHold = await treeControlSvc.getHold(root.companyId, holdId);
         const issueIds =
           activeHold?.mode === "pause" && activeHold.rootIssueId === root.id
-            ? (activeHold.members ?? [])
-                .filter((member) => !member.skipped)
-                .map((member) => member.issueId)
+            ? (activeHold.members ?? []).map((member) => member.issueId)
             : [];
         if (issueIds.length > 0) {
-          const [blocked] = await db
-            .select({ identifier: issueRows.identifier })
-            .from(issueRecoveryActions)
-            .innerJoin(
-              issueRows,
-              and(
-                eq(issueRows.id, issueRecoveryActions.sourceIssueId),
-                eq(issueRows.companyId, root.companyId),
-              ),
-            )
-            .where(
-              and(
-                eq(issueRecoveryActions.companyId, root.companyId),
-                inArray(issueRecoveryActions.sourceIssueId, issueIds),
-                inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES),
-                isNotNull(issueRows.assigneeAgentId),
-                executionBlockerPredicate(),
-              ),
-            )
-            .limit(1);
-          if (blocked)
-            throw conflict(
-              `Cannot wake ${blocked.identifier ?? "this task"} until its stopped execution is reconciled. Resume without waking agents, or review the stopped run first.`,
-            );
+          const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
+            .from(issueRows).where(and(
+              eq(issueRows.companyId, root.companyId), inArray(issueRows.id, issueIds),
+              inArray(issueRows.status, ISSUE_TREE_RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
+            ));
+          for (const task of candidates) {
+            const blocked = await getExecutionBlocker(db, root.companyId, task.id);
+            if (blocked) throw conflict(`Cannot wake ${task.identifier ?? "this task"}: ${blocked.nextAction}`);
+          }
         }
       }
       const actor = getActorInfo(req);
@@ -450,16 +487,18 @@ export function issueTreeControlRoutes(db: Db) {
       const wakeFailures: Array<{ issueId: string; message: string }> = [];
       if (hold.mode === "pause" && req.body.metadata?.wakeAgents === true) {
         for (const member of hold.members ?? []) {
-          if (member.skipped) continue;
           try {
             const issue = await issuesSvc.getById(member.issueId);
             if (
               !issue ||
               issue.companyId !== root.companyId ||
               !issue.assigneeAgentId ||
-              !RESUME_EXECUTABLE_STATUSES.includes(issue.status)
+              !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
+            // The snapshot may predate reopening a task or releasing another
+            // pause. Current task state and remaining holds govern execution.
+            if (await treeControlSvc.getActivePauseHoldGate(root.companyId, issue.id)) continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {
               source: "assignment",
               triggerDetail: "system",

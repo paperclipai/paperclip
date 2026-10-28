@@ -16,8 +16,8 @@ pub use runner::{
     TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text,
-    sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
+    redact_text, sanitize_value, validate_semantic_tool_input, verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -27,7 +27,7 @@ pub(crate) use transport::current_unix_ms;
 
 pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
-pub const PROTOCOL_VERSION: u64 = 2;
+pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -194,6 +194,7 @@ pub struct DurableRunnerConfig {
     pub max_frame_bytes: usize,
     pub reconnect_delay: Duration,
     pub reconnect_grace: Option<Duration>,
+    /// Zero disables the total process lifetime limit.
     pub max_runtime: Duration,
 }
 
@@ -245,11 +246,6 @@ impl DurableRunnerConfig {
                 "transport frame limit must be between 1 KiB and 16 MiB",
             ));
         }
-        if self.max_runtime.is_zero() {
-            return Err(DurableRunnerError::invalid(
-                "durable runner max runtime must be non-zero",
-            ));
-        }
         if self.reconnect_delay.is_zero() || self.reconnect_delay > Duration::from_secs(60) {
             return Err(DurableRunnerError::invalid(
                 "reconnect delay must be between one millisecond and 60 seconds",
@@ -258,11 +254,6 @@ impl DurableRunnerConfig {
         if self.reconnect_grace.is_some_and(|grace| grace.is_zero()) {
             return Err(DurableRunnerError::invalid(
                 "reconnect grace must be non-zero when configured",
-            ));
-        }
-        if self.max_runtime > Duration::from_secs(7 * 24 * 60 * 60) {
-            return Err(DurableRunnerError::invalid(
-                "durable runner max runtime must not exceed seven days",
             ));
         }
         if let Some(profile) = self.acpx_launch_profile.as_ref() {

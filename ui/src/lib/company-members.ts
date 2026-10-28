@@ -85,7 +85,7 @@ export function buildCompanyUserMentionOptions(
 }
 
 export function isAgentTaskTarget(
-  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth">>,
+  agent: Pick<Agent, "status"> & Partial<Pick<Agent, "orgChainHealth" | "appearance">>,
 ): boolean {
   return (
     agent.status !== "terminated" &&
@@ -116,7 +116,7 @@ export function buildIssueMentionOptions(
 }
 
 export function buildMarkdownMentionOptions(args: {
-  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon"> & Partial<Pick<Agent, "orgChainHealth">>> | null | undefined;
+  agents?: Array<Pick<Agent, "id" | "name" | "status" | "icon"> & Partial<Pick<Agent, "orgChainHealth" | "appearance">>> | null | undefined;
   projects?: Array<Pick<Project, "id" | "name" | "color">> | null | undefined;
   members?: CompanyUserRecord[] | null | undefined;
   issues?: Array<Pick<Issue, "id" | "identifier" | "title">> | null | undefined;
@@ -132,6 +132,7 @@ export function buildMarkdownMentionOptions(args: {
         kind: "agent" as const,
         agentId: agent.id,
         agentIcon: agent.icon,
+        agentAppearance: agent.appearance,
       })),
     ...[...(args.projects ?? [])]
       .sort((left, right) => left.name.localeCompare(right.name))

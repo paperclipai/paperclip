@@ -53,12 +53,14 @@ export interface IssueChatLinkedRun {
   agentId: string;
   adapterType?: string;
   agentName?: string;
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  error?: string | null;
   scheduledRetryAt?: string | null;
   nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
@@ -597,6 +599,8 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    origin: comment.origin ?? "comment",
+    fastResponseRequestId: comment.fastResponseRequestId ?? null,
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
     deletedByType: comment.deletedByType ?? null,
     deletedByAgentId: comment.deletedByAgentId ?? null,
@@ -1141,6 +1145,20 @@ function createLiveRunMessage(args: {
   return message;
 }
 
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
+}
+
 export function buildIssueChatMessages(args: {
   comments: readonly IssueChatComment[];
   interactions?: readonly IssueThreadInteraction[];
@@ -1181,6 +1199,7 @@ export function buildIssueChatMessages(args: {
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,

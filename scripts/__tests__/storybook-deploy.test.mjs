@@ -43,6 +43,29 @@ test("allows each current CODEOWNER on a feature branch; reads policy from maste
     assert.equal(f.calls[0].path, ".github/CODEOWNERS");
   }
 });
+test("owners listed only for release docs may initiate and rerun Storybook", async (t) => {
+  const triggeringActor = process.env.GITHUB_TRIGGERING_ACTOR;
+  t.after(() => { process.env.GITHUB_TRIGGERING_ACTOR = triggeringActor; });
+  const codeowners = `${ownerFile}doc/RELEASING.md @release-owner @release-reviewer\n`;
+  for (const actor of ["cryppadotta", "release-owner", "release-reviewer"]) {
+    for (const rerunner of ["cryppadotta", "release-owner", "release-reviewer"]) {
+      process.env.GITHUB_TRIGGERING_ACTOR = rerunner;
+      const f = fixture({ context: { actor }, codeowners });
+      await authorize(f);
+      assert.equal(f.calls[0].ref, "master");
+    }
+  }
+});
+test("removing an owner from CODEOWNERS revokes initiating and rerunning access", async (t) => {
+  const triggeringActor = process.env.GITHUB_TRIGGERING_ACTOR;
+  t.after(() => { process.env.GITHUB_TRIGGERING_ACTOR = triggeringActor; });
+  for (const actor of ["release-owner", "release-reviewer"]) {
+    process.env.GITHUB_TRIGGERING_ACTOR = "cryppadotta";
+    await assert.rejects(authorize(fixture({ context: { actor } })), /Only default-branch CODEOWNERS/);
+    process.env.GITHUB_TRIGGERING_ACTOR = actor;
+    await assert.rejects(authorize(fixture()), /Only default-branch CODEOWNERS/);
+  }
+});
 test("rejects non-owner initiators", async () => {
   await assert.rejects(authorize(fixture({ context: { actor: "contributor" } })), /Only default-branch CODEOWNERS/);
 });
@@ -106,7 +129,23 @@ test('different branches have distinct stable URLs, including names that sanitiz
   const branches = ['feature/foo', 'feature-foo', 'Feature/foo', 'master', 'feature_foo', 'a'.repeat(100), 'a'.repeat(101)];
   const urls = branches.map(branch => storybookDestination({ ...input, branch }).url);
   assert.equal(new Set(urls).size, branches.length);
-  assert.ok(urls.every(url => /^https:\/\/example.cloudfront.net\/storybook\/branches\/[a-z0-9-]+\/index.html$/.test(url)));
+  assert.ok(urls.every(url => /^https:\/\/example.cloudfront.net\/storybook\/branches\/[A-Za-z0-9_~\-]+\/$/.test(url)));
+  assert.equal(storybookDestination({ ...input, branch: 'master' }).url,
+    'https://example.cloudfront.net/storybook/branches/master/');
+  assert.equal(storybookDestination(input).url,
+    'https://example.cloudfront.net/storybook/branches/feature~2Ffoo/');
+});
+test('bookmark paths cannot collide with other branches or existing immutable build directories', () => {
+  const branches = ['feature/foo', 'feature~2Ffoo', '../master', 'master/index.html',
+    'master', storybookDestination({ ...input, branch: 'master' }).branchKey,
+    'a'.repeat(1000), 'a'.repeat(1001), 'café', 'caf~C3~A9'];
+  const destinations = branches.map(branch => storybookDestination({ ...input, branch }));
+  assert.equal(new Set(destinations.map(d => d.url)).size, branches.length);
+  for (const d of destinations) {
+    assert.doesNotMatch(d.bookmarkPrefix.slice('storybook/branches/'.length), /[/.]/);
+    assert.ok(Buffer.byteLength(`${d.bookmarkPrefix}/index.html`) <= 1024);
+    assert.ok(destinations.every(other => d.bookmarkPrefix !== other.prefix));
+  }
 });
 test('redeploying a branch preserves its entry URL and creates a new build URL', () => {
   const a = storybookDestination(input);
@@ -166,10 +205,12 @@ function publishFixture(options = {}) {
 test('publisher uploads a complete build then updates only that branch entry', () => {
   const { result, uploads } = publishFixture();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(uploads.length, 2);
+  assert.equal(uploads.length, 3);
   const d = storybookDestination(input);
   assert.ok(uploads[0].includes(`s3://${input.bucket}/${d.buildPrefix}/`));
   assert.ok(uploads[1].includes(`s3://${input.bucket}/${d.prefix}/index.html`));
+  assert.ok(uploads[2].includes(`s3://${input.bucket}/${d.bookmarkPrefix}/index.html`));
+  assert.ok(uploads[2].includes('no-cache,max-age=0,must-revalidate'));
   assert.ok(uploads[0].includes('--no-follow-symlinks'));
   assert.doesNotMatch(JSON.stringify(uploads), /--delete/);
 });
@@ -214,4 +255,44 @@ test('public verification rejects a permanently stale branch URL or wrong source
         : new Response(branchIndex(wrong === 'branch' ? d.buildUrl.replace('123-1', '122-1') : d.buildUrl)) }),
     wrong === 'branch' ? /does not point to this build/ : /wrong source commit/);
   }
+});
+
+import { createHash } from 'node:crypto';
+import { verifyAvatarImages } from '../../.github/scripts/verify-storybook.cjs';
+function avatarVerificationFixture(change = {}) {
+  const png = Buffer.alloc(24);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+  png.writeUInt32BE(48, 16); png.writeUInt32BE(48, 20);
+  const entry = { path: 'agent-avatar-images/cap-v1/bubblegum-sky/rest-24-2.png', pixels: 48,
+    sha256: createHash('sha256').update(png).digest('hex'), ...change.entry };
+  const requested = [];
+  return { requested, fetch: async (url) => {
+    requested.push(String(url));
+    if (String(url).endsWith('manifest.json')) return Response.json({ schemaVersion: 1, images: [entry] });
+    return new Response(change.body ?? png, { status: change.status ?? 200,
+      headers: { 'content-type': change.type ?? 'image/png' } });
+  } };
+}
+test('public avatar verification checks relative PNG paths, bytes and density dimensions', async () => {
+  const fixture = avatarVerificationFixture();
+  const d = storybookDestination(input);
+  await verifyAvatarImages({ buildUrl: d.buildUrl, fetch: fixture.fetch });
+  assert.ok(fixture.requested.every(url => url.startsWith(d.buildUrl.replace('index.html', ''))));
+  assert.equal(fixture.requested.length, 2);
+});
+test('public avatar verification rejects missing, HTML, corrupt or wrong-density images', async () => {
+  for (const change of [{ status: 403 }, { type: 'text/html' }, { body: 'broken PNG' },
+    { entry: { pixels: 24 } }, { entry: { sha256: '0'.repeat(64) } },
+    { entry: { path: '../../api/agent-avatars/portrait.png' } }]) {
+    await assert.rejects(verifyAvatarImages({ buildUrl: storybookDestination(input).buildUrl,
+      fetch: avatarVerificationFixture(change).fetch }), /Avatar|avatar/);
+  }
+});
+test('deployment metadata opts into avatar verification and fails on missing images', async () => {
+  const d = storybookDestination(input);
+  await assert.rejects(verifyStorybook({ branchUrl: d.url, buildUrl: d.buildUrl, sha: d.sha, attempts: 1,
+    fetch: async url => String(url).endsWith('deployment.json')
+      ? Response.json({ sha: d.sha, avatarManifest: 'agent-avatar-images/manifest.json' })
+      : String(url) === d.url ? new Response(branchIndex(d.buildUrl)) : new Response('', { status: 403 }),
+  }), /Avatar manifest returned HTTP 403/);
 });
