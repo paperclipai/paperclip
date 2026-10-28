@@ -42,6 +42,9 @@ export async function readUpgradeReadiness(db: Db, input: {
       and c.issue_id = r.native_issue_id and c.part = 'header'
     left join lateral (select l.id from environment_leases l
       where l.company_id = r.company_id and l.heartbeat_run_id = r.id and l.status = 'active'
+        and l.issue_id = r.native_issue_id and l.metadata->>'agentId' = r.agent_id::text
+        and l.released_at is null and l.cleanup_status is null
+        and (l.expires_at is null or l.expires_at > clock_timestamp())
         and l.metadata->>'runnerTaskLease' = 'true' and l.metadata->>'runnerTaskDispatched' = 'true'
         and coalesce(l.metadata->>'runnerTaskExecutionStopped', 'false') != 'true'
         and coalesce(l.metadata->>'runnerTaskRetiring', 'false') != 'true'

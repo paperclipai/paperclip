@@ -123,7 +123,7 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     // Plugin task admission owns an environment lease identity and deliberately has no workspace-sync record.
     const pluginLeaseId = randomUUID();
     await db.insert(environmentLeases).values({ id: pluginLeaseId, companyId, heartbeatRunId: runId, issueId,
-      provider: "plugin", providerLeaseId: "synthetic-task", metadata: { runnerTaskLease: true, runnerTaskDispatched: true } });
+      provider: "plugin", providerLeaseId: "synthetic-task", metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true } });
     await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(false); // workspace identity is not plugin task authority
     const pluginHeader = JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state,
@@ -131,11 +131,12 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: pluginHeader })) })
       .where(eq(nativeRunnerCheckpoints.runId, runId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
-    for (const patch of [{ status: "released" }, { metadata: { runnerTaskLease: true, runnerTaskDispatched: false } },
-      { metadata: { runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: true } }]) {
+    for (const patch of [{ status: "released" }, { expiresAt: new Date(0) }, { releasedAt: new Date() },
+      { cleanupStatus: "pending" }, { metadata: { agentId: randomUUID(), runnerTaskLease: true, runnerTaskDispatched: true } }, { metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: false } },
+      { metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: true } }]) {
       await db.update(environmentLeases).set(patch).where(eq(environmentLeases.id, pluginLeaseId));
       expect((await readUpgradeReadiness(db, input)).ready).toBe(false);
-      await db.update(environmentLeases).set({ status: "active", metadata: { runnerTaskLease: true, runnerTaskDispatched: true } }).where(eq(environmentLeases.id, pluginLeaseId));
+      await db.update(environmentLeases).set({ status: "active", expiresAt: null, releasedAt: null, cleanupStatus: null, metadata: { agentId, runnerTaskLease: true, runnerTaskDispatched: true } }).where(eq(environmentLeases.id, pluginLeaseId));
     }
     await db.delete(environmentLeases).where(eq(environmentLeases.id, pluginLeaseId));
     await db.update(heartbeatRuns).set({ runnerProfileJson: execution.runnerProfileJson }).where(eq(heartbeatRuns.id, runId));
