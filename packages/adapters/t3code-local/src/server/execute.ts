@@ -286,7 +286,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const remainingSec = () => Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
     const notConfirmed = (id: string) => `T3 Code did not confirm within ${budgetSec}s that thread ${id} stopped.`;
     let threadId = attempt.result?.threadId ?? attempt.threadId;
-    if (!threadId) {
+    while (!threadId) {
       const listed = await runT3(["thread", "list", "--project", cwd, "--json"], {
         helper: "thread-list",
         timeoutSec: remainingSec(),
@@ -297,7 +297,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return { threadId: null, error: `Could not check whether T3 Code started a thread for this run: ${reason}` };
       }
       threadId = threads.find((thread) => thread.title === title)?.threadId ?? null;
-      if (!threadId) return { threadId: null, error: null };
+      if (threadId) break;
+      if (Date.now() + STOP_POLL_MS >= deadline) {
+        return { threadId: null, error: `T3 Code did not list a thread for this run within ${budgetSec}s; the interrupted start may still create one.` };
+      }
+      await new Promise((resolve) => setTimeout(resolve, STOP_POLL_MS));
     }
     for (;;) {
       const stop = await runT3(["thread", "stop", threadId, "--json"], {
