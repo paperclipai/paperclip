@@ -283,3 +283,57 @@ Logs: `/tmp/sleep24-config-amplification-red.log` (1,025 rows),
 required after publication; the prior green CI and 4/5 review are not reused for
 the new commit. No complete local repository suite, live provider, Cloud wake or
 physical suspension claim is added.
+
+## Current-master CI repair — October 28
+
+After normal integration of landed cleanup, head `768c650365362b12b75ca6481f44468132cf599a`
+received exact-head Greptile 5/5 and Ponytail 5/5, but CI run `40697141057`
+failed. This is not accepted as green evidence. Server shard 7/12 job
+`122846941793` reported 1 failed test, 1,750 passed and 6 skipped: cleanup's
+backlog fairness case expected the other company in the first 25 provider
+calls even when its random admission ID placed it after the first 100-row
+inventory page. The secondary afterEach error retained the deliberately
+injected provider failure because the assertion interrupted settlement.
+
+Giving the second company a fixed final UUID reproduced the same first-batch
+assertion on unchanged production scheduling. The fixture now uses its supplied
+ID for both the inserted row and transaction notification. The corrected case
+controls fake time, places that company on the second inventory page, checks it
+is absent before discovery and served within the next 25-call batch, completes
+all 105 successful calls before the failed provider's saved retry, and checks
+that failed provider runs exactly once again when its deadline arrives. It also
+checks idle SQL after settlement. No production worker, policy, deadline,
+assertion timeout, or workflow changes are made.
+
+The first controlled-time repair run passed 23 cases but failed the fairness
+case by demanding idle active=0 between inventory passes. An unresolved
+transaction intent can legitimately retain that hold while the next pass is
+scheduled. The final test waits for the next scheduled pass or actual idle
+settlement while advancing one second at a time, then requires actual idle
+settlement after the backlog. This failure is retained rather than counted as
+a pass. A guarded mutation bypassing company rotation fails the corrected
+fairness assertion with missing second-company delivery; the original shared
+helper was restored byte-for-byte before final acceptance.
+
+The same CI run's Canary Dry Run job `122846941357` independently failed
+installing the standalone Kubernetes plugin: npm returned 404 for the exact
+`rollup-4.66.0.tgz` requested by Vite through Vitest. At 13:39:46 UTC both that
+version metadata and exact tarball returned HTTP 200. No dependency pin,
+workflow exception, or blind CI retry was introduced. New-head CI, including
+the canary, must pass independently; the original 404 remains recorded.
+
+Final local acceptance after restoring the guarded shared helper: both complete
+cleanup (24) and retention (13) lifecycle suites pass, 37 distinct cases total.
+Retention starts from a new empty dedicated PostgreSQL database and applies the
+application migrator; cleanup uses its isolated already-migrated database.
+The earlier 282-case evidence belongs to unchanged retention source at its
+stated head and is not added to 37. No new full local repository suite, live
+provider, Cloud wake, suspension, or cost-saving result is claimed.
+
+Logs: `/tmp/sleep24-768-server7-job.log`, `/tmp/sleep24-768-canary-job.log`,
+`/tmp/sleep24-cleanup-fairness-red.log`,
+`/tmp/sleep24-cleanup-fairness-green.log` (the 23/24 failed intermediate run),
+`/tmp/sleep24-cleanup-fairness-final.log` (24 pass),
+`/tmp/sleep24-cleanup-fairness-mutant-red.log`,
+`/tmp/sleep24-ci-fairness-final-consumers.log` (37 pass), and
+`/tmp/sleep24-rollup-registry-probe.json` (current HTTP availability only).
