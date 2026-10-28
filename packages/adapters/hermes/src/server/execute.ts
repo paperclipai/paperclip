@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import type {
@@ -398,6 +399,12 @@ export async function execute(
   const extraArgs = cfgStringArray(config.extraArgs);
   const { preCommandArgs, postCommandArgs } = splitHermesGlobalExtraArgs(extraArgs);
   const hasProfileArg = preCommandArgs.length > 0;
+  const userEnv = config.env as Record<string, string> | undefined;
+  const defaultHome = homedir();
+  const hermesHome = cfgString(userEnv?.HERMES_HOME ?? process.env.HERMES_HOME)
+    || path.join(cfgString(userEnv?.HOME) || defaultHome, ".hermes");
+  const deferToHermesConfig = hasProfileArg
+    || path.resolve(hermesHome) !== path.join(defaultHome, ".hermes");
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -437,7 +444,7 @@ export async function execute(
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  if (!explicitProvider && !deferToHermesConfig) {
     try {
       detectedConfig = await detectModel();
     } catch {
@@ -445,18 +452,18 @@ export async function execute(
     }
   }
 
-  if (!hasProfileArg && model.toLowerCase() === "auto" && detectedConfig?.model && detectedConfig.model.toLowerCase() !== "auto") {
+  if (model.toLowerCase() === "auto" && detectedConfig?.model && detectedConfig.model.toLowerCase() !== "auto") {
     model = detectedConfig.model;
   }
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
     explicitProvider,
-    detectedProvider: hasProfileArg ? undefined : detectedConfig?.provider,
-    detectedModel: hasProfileArg ? undefined : detectedConfig?.model,
-    detectedBaseUrl: hasProfileArg ? undefined : detectedConfig?.baseUrl,
-    detectedHasApiKey: hasProfileArg ? undefined : detectedConfig?.hasApiKey,
-    detectedApiMode: hasProfileArg ? undefined : detectedConfig?.apiMode,
-    model,
+    detectedProvider: detectedConfig?.provider,
+    detectedModel: detectedConfig?.model,
+    detectedBaseUrl: detectedConfig?.baseUrl,
+    detectedHasApiKey: detectedConfig?.hasApiKey,
+    detectedApiMode: detectedConfig?.apiMode,
+    model: deferToHermesConfig ? undefined : model,
   });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
@@ -545,7 +552,6 @@ export async function execute(
   if (postCommandArgs.length) args.push(...postCommandArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),

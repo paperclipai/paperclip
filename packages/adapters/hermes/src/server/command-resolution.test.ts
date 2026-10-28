@@ -73,6 +73,7 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
 async function runExecuteWithFakeHermes(
   config: Record<string, unknown>,
   hermesConfig?: string,
+  inheritedHermesHome?: string,
 ): Promise<{ args: string[]; resultModel: string | null | undefined }> {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-execute-args-"));
   const cliPath = path.join(tempDir, "fake-hermes");
@@ -81,6 +82,7 @@ async function runExecuteWithFakeHermes(
   const previousUserProfile = process.env.USERPROFILE;
   const previousHomeDrive = process.env.HOMEDRIVE;
   const previousHomePath = process.env.HOMEPATH;
+  const previousHermesHome = process.env.HERMES_HOME;
 
   try {
     await writeFile(
@@ -98,6 +100,8 @@ async function runExecuteWithFakeHermes(
     process.env.USERPROFILE = tempDir;
     delete process.env.HOMEDRIVE;
     delete process.env.HOMEPATH;
+    if (inheritedHermesHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = inheritedHermesHome;
 
     if (hermesConfig) {
       await mkdir(path.join(tempDir, ".hermes"), { recursive: true });
@@ -116,7 +120,7 @@ async function runExecuteWithFakeHermes(
         ...config,
         hermesCommand: cliPath,
         cwd: tempDir,
-        env: { HERMES_ARGS_FILE: argsPath },
+        env: { ...(config.env as Record<string, string>), HERMES_ARGS_FILE: argsPath },
       },
       runtime: {},
       onLog: async () => {},
@@ -133,6 +137,8 @@ async function runExecuteWithFakeHermes(
     else process.env.HOMEDRIVE = previousHomeDrive;
     if (previousHomePath === undefined) delete process.env.HOMEPATH;
     else process.env.HOMEPATH = previousHomePath;
+    if (previousHermesHome === undefined) delete process.env.HERMES_HOME;
+    else process.env.HERMES_HOME = previousHermesHome;
     await rm(tempDir, { recursive: true, force: true });
   }
 }
@@ -198,6 +204,56 @@ test("execute does not inherit the detected provider for a selected Hermes profi
 
   expect(args).not.toContain("--provider");
   expect(args).not.toContain("openai-codex");
+});
+
+const defaultHermesConfig = "model:\n  default: gpt-5.5\n  provider: openai-codex\n";
+
+for (const [selection, config] of [
+  ["profile", { extraArgs: ["--profile", "profile-a"] }],
+  ["HOME", { env: { HOME: "/private/qa/other-home" } }],
+  ["HERMES_HOME", { env: { HERMES_HOME: "/private/qa/other-hermes" } }],
+] as const) {
+  test(`execute defers auto model and provider selection for ${selection}`, async () => {
+    const { args, resultModel } = await runExecuteWithFakeHermes(
+      { ...config, model: "auto" }, defaultHermesConfig,
+    );
+    expect(args).not.toContain("-m");
+    expect(args).not.toContain("--provider");
+    expect(resultModel).toBe("auto");
+  });
+
+  test(`execute preserves a concrete model without inferring a provider for ${selection}`, async () => {
+    const { args, resultModel } = await runExecuteWithFakeHermes(
+      { ...config, model: "gpt-5.5" }, defaultHermesConfig,
+    );
+    expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.5");
+    expect(args).not.toContain("--provider");
+    expect(resultModel).toBe("gpt-5.5");
+  });
+
+  test(`execute preserves explicit model and provider overrides for ${selection}`, async () => {
+    const { args } = await runExecuteWithFakeHermes(
+      { ...config, model: "gpt-5.5", provider: "anthropic" }, defaultHermesConfig,
+    );
+    expect(args[args.indexOf("-m") + 1]).toBe("gpt-5.5");
+    expect(args[args.indexOf("--provider") + 1]).toBe("anthropic");
+  });
+}
+
+test("execute defers selection for an inherited HERMES_HOME", async () => {
+  const { args, resultModel } = await runExecuteWithFakeHermes(
+    { model: "auto" }, defaultHermesConfig, "/private/qa/inherited-hermes",
+  );
+  expect(args).not.toContain("-m");
+  expect(args).not.toContain("--provider");
+  expect(resultModel).toBe("auto");
+});
+
+test("execute preserves default-home provider detection for a concrete model", async () => {
+  const { args } = await runExecuteWithFakeHermes(
+    { model: "gpt-5.5" }, defaultHermesConfig,
+  );
+  expect(args[args.indexOf("--provider") + 1]).toBe("openai-codex");
 });
 
 test("execute renders prompt API base from adapter env PAPERCLIP_API_URL", async () => {
