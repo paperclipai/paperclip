@@ -1,3 +1,4 @@
+import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
 import { notifyVoiceReplies } from "./voice-reply-notifications.js";
 import { recoverVoiceReplyDispatches } from "./voice-reply-dispatch-recovery.js";
 import { notifyVoiceRecovery } from "./voice-recovery-notifications.js";
@@ -83,6 +84,7 @@ export async function pushVoiceReplies(db: Db, options: {
           await notifyVoiceReplies(tx, { kind: "session", id: candidate.id });
           await tx.update(chatActions).set({status, result: {errorCode: providerError?.code ?? "voice_authority_unavailable", ...(status === "retry" ? {retryAt: Date.now() + 10_000} : {})}, updatedAt: new Date()}).where(eq(chatActions.id, claim.action.id));
           if (status === "call_ended" || status === "unknown") await notifyVoiceRecovery(tx, { kind: "session", id: candidate.id });
+          if (status === "call_ended") await notifyVoiceInbound(tx, { kind: "session", id: candidate.id });
           if (status === "call_ended") await tx.update(chatVoiceSessions).set({state: "ended", endedAt: new Date(), updatedAt: new Date()}).where(and(eq(chatVoiceSessions.id, candidate.id), eq(chatVoiceSessions.companyId, candidate.companyId)));
           if (status === "unknown") await tx.update(chatVoiceSessions).set({errorCode: "message_delivery_unknown", updatedAt: new Date()}).where(eq(chatVoiceSessions.id, candidate.id));
         });

@@ -162,6 +162,42 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(runIdentityContexts.runId, input.runId));
       expect(JSON.stringify(history)).not.toContain("test-token-");
     });
+    it("writes the GitHub summary only when it changes", async () => {
+      const input = await seed();
+      const selected = await grant(input, "A");
+      const update = vi.spyOn(db, "update");
+      const summaryWrites = () => update.mock.calls.filter(([table]) => table === runIdentityContexts).length;
+      const stored = async () => (await db.select().from(runIdentityContexts)
+        .where(eq(runIdentityContexts.runId, input.runId)))[0].github;
+      try {
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        expect(summaryWrites()).toBe(1);
+        expect(await stored()).toMatchObject({ status: "available", login: "A", grantId: selected.id });
+        for (let call = 0; call < 3; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "available", grantId: selected.id });
+        }
+        expect(summaryWrites()).toBe(1);
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, selected.id));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({ status: "unavailable" });
+        }
+        expect(summaryWrites()).toBe(2);
+        expect(await stored()).toMatchObject({ status: "unavailable" });
+        await db.update(issues).set({ executionPolicy: { authorizationPolicy: { trustPreset: LOW_TRUST_REVIEW_PRESET,
+          trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, companyId: input.companyId, rootIssueId: input.issueId,
+            issueIds: [input.issueId], allowedAgentIds: [input.agentId], allowedToolClasses: ["git.read", "github.pr.read"] } } } })
+          .where(eq(issues.id, input.issueId));
+        for (let call = 0; call < 2; call++) {
+          expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+            status: "unavailable", reason: expect.stringContaining("low-trust"),
+          });
+        }
+        expect(summaryWrites()).toBe(3);
+        expect(await stored()).toMatchObject({ status: "unavailable", reason: expect.stringContaining("low-trust") });
+      } finally {
+        update.mockRestore();
+      }
+    });
     it("returns no credential for unconnected users, removed membership, or ambiguous personal accounts", async () => {
       const input = await seed();
       await grant(input, "A");

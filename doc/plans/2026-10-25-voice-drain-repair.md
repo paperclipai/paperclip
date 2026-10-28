@@ -50,3 +50,13 @@ then verifies the saved reply sends on resume without another producer.
 
 All later shared-worker consumers inherit this repair through the stack. Their
 combined-tip checks and PR checks still need fresh verification after propagation.
+
+## Retention resume assertion
+
+The combined-tip consumer run exposed a retention test that called flush after
+resume and assumed a zero activity counter meant the retained retry had run. Its
+helper checks active work only; zero is now also the correct paused state. The
+owner test now advances the actual retained nextWakeAt, waits for row removal,
+and checks disarm. Before resume it also proves a stable idle snapshot through a
+minute of quiet. All 11 retention cases pass in /tmp/sleep24-drain-tests.log.
+No production scheduling deadline or dispatch behavior changed for this repair.

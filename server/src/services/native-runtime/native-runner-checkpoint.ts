@@ -1,7 +1,8 @@
-import { and, eq, exists, gt, isNull, lte, inArray, or, sql } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
 import { decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
+import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 type Owner = Binding & { bootId: string; leaseOwner: string; generation: number; authorityRunId: string };
@@ -54,7 +55,16 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: Owner) {
               eq(nativeRunFinalizations.runId, task.executionRunId), eq(nativeRunFinalizations.companyId, owner.companyId),
               eq(nativeRunFinalizations.issueId, owner.issueId), eq(nativeRunFinalizations.controllerBootId, owner.bootId),
               gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`))) : [];
-        if (!current.resultId || newWork || !task || (task.executionRunId && task.executionRunId !== owner.runId && !successor)) {
+        const [preparingSuccessor] = !successor && task?.executionRunId && task.executionRunId !== owner.runId
+          ? await tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.id, task.executionRunId), eq(heartbeatRuns.companyId, owner.companyId),
+              eq(heartbeatRuns.issueId, owner.issueId), eq(heartbeatRuns.runtimeMode, "legacy"),
+              eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.executionStage, "preparing"),
+              eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+              gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
+              notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+                .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
+        if (!current.resultId || newWork || !task || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor)) {
           throw new Error("native_runner_checkpoint_owner_lost");
         }
       }

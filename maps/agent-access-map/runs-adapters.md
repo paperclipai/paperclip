@@ -271,6 +271,18 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Scoped source evidence: completed warm-runner retirement can persist maintenance
+under the same process's live, task-bound preparation lease before native
+coordinator admission. Original controller generation, committed-result and
+no-new-work checks remain required. This changes no actor permission or session
+reset authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+for configuration invalidation and expired or foreign owner rejection.
+
+Fresh-session admission with external checkpoints reads current canonical state
+from the registered controller. A local marker does not grant bootstrap or
+session-reset authority. Exact run/session/runner/lease binding, no prior activity,
+backup checks and atomic remote directory admission retain their existing gates.
+
 Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.

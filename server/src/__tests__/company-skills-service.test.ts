@@ -8,6 +8,7 @@ import {
   agents,
   authUsers,
   companies,
+  costEvents,
   companySkillVersions,
   companySkills,
   createDb,
@@ -660,6 +661,78 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       status: 404,
       message: "Company not found",
     });
+  });
+
+  it("counts current skill attachments without loading unrelated agent payloads or spend", async () => {
+    const companyId = randomUUID(), otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      { id: companyId, name: "Attachment projections", issuePrefix: "ATP" },
+      { id: otherCompanyId, name: "Other attachments", issuePrefix: "ATO" },
+    ]);
+    const [first, second, ambiguous] = await db.insert(companySkills).values([
+      { companyId, key: "fixture/first", slug: "shared", name: "First", markdown: "# First", sourceType: "github" },
+      { companyId, key: "fixture/second", slug: "second", name: "Second", markdown: "# Second", sourceType: "github" },
+      { companyId, key: "fixture/ambiguous", slug: "shared", name: "Ambiguous", markdown: "# Ambiguous", sourceType: "github" },
+    ]).returning();
+    if (!first || !second || !ambiguous) throw new Error("Expected attachment fixture");
+    const unused = "unused-agent-context".repeat(6_000);
+    const readerId = randomUUID();
+    await db.insert(agents).values([
+      { id: readerId, companyId, name: "Reader", adapterType: "process", status: "idle",
+        adapterConfig: { instructions: unused, paperclipSkillSync: { desiredSkills: [first.key, second.id, second.slug, first.key] } },
+        runtimeConfig: { unused }, metadata: { unused } },
+      { companyId, name: "Paused reader", adapterType: "process", status: "paused",
+        adapterConfig: { instructions: unused, paperclipSkillSync: { desiredSkills: [{ key: first.id, versionId: randomUUID() }] } } },
+      { companyId, name: "Ambiguous reader", adapterType: "process", status: "idle",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: ["shared"] } } },
+      { companyId, name: "Malformed selection", adapterType: "process", status: "idle",
+        adapterConfig: { paperclipSkillSync: [first.key] } },
+      { companyId, name: "Terminated reader", adapterType: "process", status: "terminated",
+        adapterConfig: { instructions: unused, paperclipSkillSync: { desiredSkills: [first.key] } } },
+      { companyId: otherCompanyId, name: "Other company reader", adapterType: "process", status: "idle",
+        adapterConfig: { paperclipSkillSync: { desiredSkills: [first.key] } } },
+    ]);
+    await svc.list(companyId);
+    const events: Record<string, unknown>[] = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { agents, costEvents }, capture);
+    let listed: Awaited<ReturnType<typeof svc.list>>;
+    try { listed = await svc.list(companyId); } finally { capture.flush(); }
+    expect(listed.find(item => item.id === first.id)?.attachedAgentCount).toBe(2);
+    expect(listed.find(item => item.id === second.id)?.attachedAgentCount).toBe(1);
+    expect(listed.find(item => item.id === ambiguous.id)?.attachedAgentCount).toBe(0);
+    const agentReads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "agents");
+    expect(agentReads).toHaveLength(1);
+    expect(Number(agentReads[0]?.responseValueBytes)).toBeLessThan(2_000);
+    expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "cost_events")).toHaveLength(0);
+    await db.update(agents).set({ adapterConfig: { paperclipSkillSync: { desiredSkills: [second.key] } } }).where(eq(agents.id, readerId));
+    const refreshed = await svc.list(companyId, { q: "First" });
+    expect(refreshed.find(item => item.id === first.id)?.attachedAgentCount).toBe(1);
+  });
+
+  it("keeps folder classification and stored content while narrowing inventory refresh reads", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Inventory projections", issuePrefix: "IVP" });
+    const unused = "unused".repeat(11_000);
+    const savedMarkdown = "# Required detail content\n".repeat(2_000);
+    const inserted = await db.insert(companySkills).values(Array.from({ length: 10 }, (_, index) => ({
+      companyId, key: `fixture/inventory-${index}`, slug: `inventory-${index}`, name: `Inventory ${index}`,
+      sourceType: "github", markdown: savedMarkdown,
+      metadata: { unused, ...(index === 0 ? { sourceKind: " paperclip_bundled " } : {}) },
+    }))).returning();
+    const before = await svc.list(companyId);
+    expect(before.find(item => item.id === inserted[0]!.id)?.folderPath).toBe("bundled/paperclip-core");
+    const events: Record<string, unknown>[] = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { companySkills }, capture);
+    let after: Awaited<ReturnType<typeof svc.list>>;
+    try { after = await svc.list(companyId); } finally { capture.flush(); }
+    expect(after).toEqual(before);
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1" && event.table === "company_skills");
+    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(950_000);
+    const stored = await svc.getById(companyId, inserted[0]!.id);
+    expect(stored?.markdown).toBe(savedMarkdown);
+    expect(stored?.metadata).toEqual({ unused, sourceKind: " paperclip_bundled " });
   });
 
   it("does not retouch unchanged bundled skills during list refresh", async () => {

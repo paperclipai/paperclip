@@ -7,7 +7,7 @@ import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -14728,7 +14728,7 @@ describe("runnerd provider runtime wiring", () => {
   });
 
   it.each(["resumed", "replacement"].flatMap((outcome) =>
-    ["fresh", "existing_state", "symlink_parent", "wrong_identity", "wrong_runner", "wrong_lease", "missing_control_plane", "connected", "committed_event", "committed_command", "pending_turn", "remote_probe_failed", "backup_present"]
+    ["fresh", "external_checkpoint", "external_pending_turn", "external_wrong_identity", "external_unregistered", "existing_state", "symlink_parent", "wrong_identity", "wrong_runner", "wrong_lease", "missing_control_plane", "connected", "committed_event", "committed_command", "pending_turn", "remote_probe_failed", "backup_present"]
       .map((scenario) => ({ outcome, scenario }))))(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario", async ({ outcome, scenario }) => {
     const remoteCwd = join(isolatedStateDirectory, "remote");
@@ -14768,14 +14768,20 @@ describe("runnerd provider runtime wiring", () => {
     const runtimeContext = nativeRuntimeContextFixture();
     const executionWithContext = { ...execution, runtimeContext };
     const onTraceEvent = vi.fn(async (_event: AdapterRuntimeEvent) => undefined);
+    const controllerArtifact = join(isolatedStateDirectory, "bootstrap-runnerd");
+    if (scenario.startsWith("external_")) await writeFile(controllerArtifact, "fixture bootstrap artifact");
     const backend = await createRunnerdBackend({
       db: leaseDb(execution), execution: executionWithContext, runnerInstanceId: "runner-new-in-retained-workspace",
+      ...(scenario.startsWith("external_") ? { runnerRemoteBinaryPath: controllerArtifact, runnerRemoteCodexPath: controllerArtifact } : {}),
       trace: createNativeRunTrace({ runId: execution.binding.runId, onEvent: onTraceEvent }),
       runnerIngressAuthorized: true,
       runnerExecutionTarget: {
         kind: "remote", transport: "sandbox", remoteCwd, environmentId: "environment",
         leaseId: "lease-resumed", providerKey: "daytona",
         effectiveCapabilities: { runnerWebSocketIngress: true },
+        getRunnerIngressEndpoint: async () => ({ kind: "authenticated_websocket", websocketUrl: "wss://sandbox.invalid/runner",
+          secretHeaders: [{ name: "Authorization", value: "fixture-ingress-secret" }], generation: "1",
+          refresh: vi.fn(), close: vi.fn(async () => undefined) }),
         sandboxLeaseAcquisition: { outcome, providerLeaseId: "sandbox-acquired", reason: outcome === "replacement" ? "not_found" : undefined },
         runner: { execute: remoteExecute, syncIn },
       } as never,
@@ -14785,9 +14791,39 @@ describe("runnerd provider runtime wiring", () => {
     const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
       prepareExternalRunnerState: () => Promise<void>;
       runnerProcessLauncher: ReturnType<typeof createRemoteRunnerProcessLauncher>;
+      controlPlaneRegistration: NonNullable<import("../../vendor/paperclip-runner/index.js").RunnerExecutionDriver["controlPlaneRegistration"]>;
     };
-    await mkdir(join(options.stateDirectory!, "control-plane"), { recursive: true });
-    await writeFile(join(options.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify({
+    let controller: DurablePrpControlPlane | undefined;
+    let registration: Awaited<ReturnType<typeof options.controlPlaneRegistration>> | undefined;
+    onTestFinished(async () => {
+      await registration?.release();
+      await controller?.stop();
+    });
+    if (scenario.startsWith("external_")) {
+      controller = new DurablePrpControlPlane({ stateDirectory: join(options.stateDirectory!, "control-plane"),
+        identity: { ...options.prpIdentity!, ...(scenario === "external_wrong_identity" ? { runId: "other-run" } : {}) } as ConstructorParameters<typeof DurablePrpControlPlane>[0]["identity"],
+        expectedRunnerVersion: "bootstrap-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      controller.queueCommand("run.prepare", {});
+      controller.queueCommand("session.open", { reuse: "same_session" });
+      if (scenario !== "external_unregistered") registration = await options.controlPlaneRegistration(controller);
+      syncIn.mockClear();
+      remoteExecute.mockClear();
+      const persisted = new Map<string, string>();
+      controller.setCheckpointPersistence(async checkpoint => {
+        persisted.clear();
+        for (const [part, value] of checkpoint.records) persisted.set(part, value);
+      });
+      await controller.flushCheckpoint();
+      expect(persisted.has("header")).toBe(true);
+      expect(JSON.parse(await readFile(join(options.stateDirectory!, "control-plane", "control-plane-state.json"), "utf8")).schema)
+        .toBe("paperclip.runner.external-control-plane-state.v1");
+      if (scenario === "external_pending_turn") {
+        controller.queueCommand("turn.start", {});
+        await controller.flushCheckpoint();
+      }
+    } else {
+      await mkdir(join(options.stateDirectory!, "control-plane"), { recursive: true });
+      await writeFile(join(options.stateDirectory!, "control-plane", "control-plane-state.json"), JSON.stringify({
       schema: "paperclip.runner.durable.control-plane-state.v1",
       identity: { ...options.prpIdentity,
         ...(scenario === "wrong_identity" ? { runId: "other-run" } : {}),
@@ -14797,7 +14833,8 @@ describe("runnerd provider runtime wiring", () => {
       committedEvents: scenario === "committed_event" ? [{ type: "session.opened" }] : [],
       commands: [{ type: "run.prepare", status: scenario === "committed_command" ? "committed" : "pending" },
         { type: scenario === "pending_turn" ? "turn.start" : "session.open", status: "pending" }],
-    }));
+      }));
+    }
     if (scenario === "missing_control_plane") {
       await rm(join(options.stateDirectory!, "control-plane", "control-plane-state.json"));
     }
@@ -14805,7 +14842,7 @@ describe("runnerd provider runtime wiring", () => {
       await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
-    if (scenario === "fresh") {
+    if (scenario === "fresh" || scenario === "external_checkpoint") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       expect(onTraceEvent).toHaveBeenCalledWith(expect.objectContaining({
         payload: expect.objectContaining({

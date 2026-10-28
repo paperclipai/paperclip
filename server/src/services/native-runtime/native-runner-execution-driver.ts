@@ -22,7 +22,7 @@ export interface NativeRunnerExecutionDriverInput {
   mapCaBundle?: (sourcePath: string) => string | Promise<string>;
   processStarted?: Promise<void>;
   processIdentityReady?: Promise<void>;
-  beforeConnect?: (identity?: RunnerIdentity) => Promise<void>;
+  beforeConnect?: (identity: RunnerIdentity, authority: Parameters<ConnectionRegistration>[0]) => Promise<void>;
   controllerPersistence?: { db: Db; bootId: string; authorityRunId?: string | (() => string); onFailure?: (runId: string, leaseOwner: string) => Promise<void> };
   checkpoint?: Awaited<ReturnType<ConnectionRegistration>>["checkpoint"];
   process?: Omit<RunnerExecutionDriver, "controlPlaneRegistration">;
@@ -93,7 +93,7 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
   return {
     ...input.process,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
-      await input.beforeConnect?.(attachmentIdentity);
+      await input.beforeConnect?.(attachmentIdentity, authority);
       if (input.controllerPersistence && input.binding.issueId) {
         await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
           binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },

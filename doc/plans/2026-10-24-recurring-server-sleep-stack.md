@@ -1557,6 +1557,66 @@ fixture failures and local full-suite infrastructure limitations. Publication an
 latest-head review/check acceptance remain outstanding. Inbound admission cleanup,
 inbound history retention, and call reports remain separate next slices.
 
+Voice reply delivery is [#17578](https://github.com/paperclipai/paperclip/pull/17578),
+head 439d0a86eb75c129c30742a8cc24bf18e2a6ebf3, stacked on #17576. Local selected
+checks pass; remote acceptance is pending. Slice 23 starts the inbound admission
+cleanup audit in `2026-10-25-voice-inbound-cleanup-sleep-audit.md`. It explicitly
+separates retention and reports and requires proof of approval/cleanup handoff,
+termination confirmation, and protection against deleting unfinished cleanup.
+
+
+Voice reply review repairs are published at #17578 head `90caaf3fa9`: shared scoped
+worker, actual authority-restoration wiring regression, 191 overlapping selected
+consumer tests and workspace types/build passing. Removing the real notification
+reproduces the lost reply. Both review threads are resolved; fresh CI/review remain.
+
+Inbound cleanup slice 23 now makes approval/session handoff atomic, after a real
+expiry regression reproduced termination of an already authorized call. All 110
+voice integration cases and server typechecking pass. This slice is not published:
+locked cleanup claims, legacy handoff recovery, bound-guest ownership, termination
+confirmation, retention protection and scheduler/producer migration remain required.
+The full original inventory, older #17490 E2E failure, and stack/master reconciliation
+remain outstanding. No stack PR has been merged by this work.
+
+
+Slice 23 inbound cleanup now uses committed admission/session changes and actual
+expiry/retry deadlines. The admission row separately records physical confirmation
+and saved provider account. Locked claims, legacy handoff repair, bound-call owner
+handoff, retention/deletion protection and safe same-account rotation are verified.
+All 205 selected tests, workspace types and build pass; publication and remote
+acceptance remain pending. History retention and call reports remain separate next
+slices. Parent #17578 at 90caaf3fa9 has no pending/failed checks and exact-head
+Greptile 5/5; the second Paperclip reviewer stopped before completion. The original
+remaining inventory, #17490 E2E failure and final reconciliation remain in scope.
+
+
+Inbound cleanup is [#17580](https://github.com/paperclipai/paperclip/pull/17580),
+head 4b4bf2d8af6e08d3859ada4b720e7fbd3ea27e24, stacked on #17578. It is
+mergeable; CI 40181994295 and review 40181994134 are live with no initial failure.
+The final migration applies/replays and its backfill is tested twice. Slice 24
+starts the separate inbound-history retention audit. Its deadline preserves both
+seven-day age conditions and requires confirmed cleanup plus no task/session
+binding. Call reports follow separately. No original remaining scope is removed.
+
+## Slice 24: inbound voice history retention
+
+Branch `codex/sleep-24-voice-inbound-retention` follows inbound cleanup #17580
+including its migration runner repair `4f0364d269`. It removes only periodic
+history pruning. The existing admission row owns the seven-day deadline and
+confirmation/binding conditions. The existing notification helper wakes retention
+on outer transaction settlement; no new table or caller wrapper is added.
+
+218 selected tests pass: 131 full voice/app wiring, 24 retention/cleanup lifecycle,
+52 deletion/startup, and 11 parent recovery. Workspace typecheck/build and final
+server typecheck pass. Tests prove real signed-callback and provider-cleanup
+reactivation, pre-deadline quiet, exact deadlines, concurrent binding protection,
+restart, drain, rollback, failure and shutdown. Initial fixture failures remain
+recorded in the slice audit. Remote checks and review are pending publication.
+
+Next separate owner: voice call-report reconciliation. Preserve the existing
+24-hour post-call refresh obligation, transcript ordering, task projection and
+provider diagnostics while removing scans with no eligible calls. Inspect
+completion semantics before treating a report marked available as fully settled.
 ## Acceptance follow-up after the plugin parent merged (October 27)
 
 Eighteen preceding sleep PRs are merged through plugin scheduling #17518 at
@@ -1658,3 +1718,39 @@ budget after repair. The [reply audit](2026-10-25-voice-reply-delivery-sleep-aud
 records restart, denial-cursor and guarded-mutation coverage. All 449 current
 targeted cases, server typecheck/build and the policy check pass on parent
 `ad79c7e805`. Fresh exact-head review, CI and parent landing remain required.
+
+
+## Inbound cleanup current-parent acceptance, October 28
+
+Inbound cleanup #17580 now includes reply parent `d2c0a7de8c` and uses its existing
+paged worker contract. Startup yields after 100 rows per scope refresh, and a
+same-owner restart reconstructs all 105 saved fixture deadlines. Migration 0395
+was generated on the parent's 0394 lineage, preserves all historical SQL/journal
+entries, and commits historical backfill in batches of at most 1,000. The
+[inbound cleanup audit](2026-10-25-voice-inbound-cleanup-sleep-audit.md#current-parent-acceptance-and-bounded-discovery-october-28)
+records 266 passing cases, negative probes, migration lineage, preserved failures,
+and limits. Exact-head review, CI, and the preceding stack still must pass before
+landing. History retention and call reports remain separate duties.
+
+
+## Inbound history retention current-parent acceptance, October 28
+
+Retention #17583 includes cleanup parent `b8b12199b9` and preserves its generated
+0395 migration. The existing shared page contract now yields after 100 history
+rows per scope refresh and resets on same-owner restart. All 280 distinct cases,
+server types/build and module boundaries pass. The [retention audit](2026-10-25-voice-inbound-retention-sleep-audit.md#current-parent-paging-and-restart-acceptance-october-28)
+records the 13-path scope, real 105-row reconstruction, negative probe, setup and
+merge failures, and limits. Latest-head review, CI and parent landing remain
+required. Call-report reconciliation follows as a separate duty.
+
+
+## Retention notification review follow-up, October 28
+
+The current retention review found repeated configuration-driven history scans.
+Five real connection saves selected 1,025 rows across 205 retained admissions.
+Retention now wakes only for admission writes and startup; cleanup retains all
+of its broader scopes. The same writes select zero history rows and preserve the
+saved deadline. Confirmed deletes also avoid a redundant reload. The
+[retention review ledger](2026-10-25-voice-inbound-retention-sleep-audit.md#configuration-rescan-review-repair-october-28)
+records 282 passing cases, types/build, failures, writer coverage and limits.
+Current-head review/CI and the earlier stack remain required.

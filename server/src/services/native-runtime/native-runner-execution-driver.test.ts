@@ -158,7 +158,7 @@ describe("shared Runner execution driver", () => {
     const identity = { runId: "run-b" } as Parameters<NonNullable<ReturnType<typeof createNativeRunnerExecutionDriver>["controlPlaneRegistration"]>>[1];
     const driver = createNativeRunnerExecutionDriver({ target: { kind: "local" }, binding, beforeConnect });
     await driver.controlPlaneRegistration!(authority, identity);
-    expect(beforeConnect).toHaveBeenCalledWith(identity);
+    expect(beforeConnect).toHaveBeenCalledWith(identity, authority);
     expect(transport.register).toHaveBeenCalledWith({ ...binding, runId: "run-b", authority });
     expect(beforeConnect.mock.invocationCallOrder[0]).toBeLessThan(transport.register.mock.invocationCallOrder[0]);
   });

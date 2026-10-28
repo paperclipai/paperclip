@@ -85,6 +85,13 @@ the owner's newer completed checkpoint. The
 cover checkpoint restoration and its guards; real-provider acceptance remains
 separate evidence.
 
+After a completed warm turn, change an agent setting that invalidates its
+instruction copy, then send a follow-up. Verify the old runner suspends during
+preparation, saved files remain available, and the follow-up completes once.
+Repeat with an expired or foreign preparation owner and verify that execution
+stays held. The checkpoint integration regression covers the ownership boundary;
+a real provider run remains separate acceptance evidence.
+
 For a repository project that inherits storage-plugin defaults, run a task and
 send two follow-ups. Start with unset task workspace settings, then repeat with
 an explicit isolated mode or strategy. Binding must save `reuse_existing` and
@@ -105,6 +112,11 @@ provider sandbox. Send a follow-up that
 reads the retained file and appends one new line. Verify a replacement sandbox,
 a new provider session, the exact file contents, successful finalization and no
 stranded task lock. Send another follow-up and verify ordinary session reuse.
+
+With external controller checkpoints enabled, also admit a fresh session on a
+reused sandbox lease. Verify startup from canonical controller evidence and
+reject a marker without a registered controller, changed identity or prior turn
+activity. An existing remote session directory must retain its recovery gate.
 
 Repeat without resetting the session: its replacement must restore verified
 history or remain blocked. Missing backup state must not silently start an

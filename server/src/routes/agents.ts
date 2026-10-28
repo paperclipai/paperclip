@@ -50,6 +50,7 @@ import { executionProjectionForRun, executionProjectionsForRuns } from "../servi
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -5599,7 +5600,7 @@ export function agentRoutes(
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
-      const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
+      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
       if (changed && req.actor.type === "agent") {
         await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
           type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,
@@ -5608,10 +5609,17 @@ export function agentRoutes(
         });
       }
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+      const nextEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId;
+      const runtimeSelectionChanged = requestedAdapterType !== existing.adapterType
+        || nextEnvironmentId !== existing.defaultEnvironmentId
+        || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
+          key => aiConfig[key] !== existing.adapterConfig[key],
+        ));
       if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
       const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
         && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
-      if (runtimeSettings || changed || copilotConfigurationChanged || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) {
+      if (runtimeSettings || changed || runtimeSelectionChanged || copilotConfigurationChanged) {
         const configuringSetup = isAgentSetupDraft(existing);
         await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
           (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
