@@ -40,6 +40,7 @@ function callbacks(db: Db) {
       listReviewAttention: vi.fn<HeartbeatSchedulingDependencies["issuesSvc"]["listReviewAttention"]>(async () => new Map()),
       create: vi.fn<HeartbeatSchedulingDependencies["issuesSvc"]["create"]>(),
     },
+    enqueueMonitorWakeup: vi.fn<HeartbeatSchedulingDependencies["enqueueMonitorWakeup"]>(async () => admitted),
     enqueueWakeup: vi.fn<HeartbeatSchedulingDependencies["enqueueWakeup"]>(async () => admitted),
     scheduleBoundedRetryForRun: vi.fn<HeartbeatSchedulingDependencies["scheduleBoundedRetryForRun"]>(),
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),
