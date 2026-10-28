@@ -6,7 +6,7 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fixture, success } from './controller-fixture.mjs';
-import { canonical, sha256 } from './manifest.mjs';
+import { canonical, sha256, validateManifest } from './manifest.mjs';
 const runtime = process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME ? pathToFileURL(resolve(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME) + '/') : import.meta.url;
 const { hostedPaths, hostedPolicyConfiguration, prepareHostedManifest, verifyHostedCell, hostedAdmissionDiagnostic } = await import(new URL('./hosted.mjs', runtime));
 const { packControlledAttempt, summarizeControlledManifest } = await import(new URL('./archive.mjs', runtime));
@@ -94,6 +94,25 @@ test('hosted preparation rejects selection drift, unsupported cells and unreview
   const input = structuredClone(c.input); input.policy.maxUsd = '0.01';
   input.policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(input.policy)));
   assert.throws(() => prepareHostedManifest(input), /budget/);
+});
+
+test('hosted admission rejects local and fleet origins while preserving retained manifests', async t => {
+  const c = await campaign(t);
+  c.input.policy.overhead.accountingReadiness = 'model_requests';
+  for (const component of c.input.policy.overhead.components) delete component.provisionalBound;
+  delete c.input.policy.capacityBound;
+  const original = c.build().manifest;
+  for (const runner of ['local', 'aws-fleet']) {
+    const input = structuredClone(c.input); input.policy.overhead.runner = runner;
+    assert.throws(() => prepareHostedManifest(input), /GitHub-hosted operating origin/);
+    const retained = structuredClone(original); retained.overhead.runner = runner;
+    assert.equal(validateManifest(retained, Date.now(), { admission: false }).manifest.overhead.runner, runner);
+    await writeFile(c.paths.manifest, canonical(retained));
+    await assert.rejects(verifyHostedCell({ manifestPath: c.paths.manifest, manifestSha256: sha256(canonical(retained)),
+      cellId: 'execution-0', environment: { ...c.environment, PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: 'execution-0' } }), /GitHub-hosted operating origin/);
+  }
+  const local = structuredClone(original); delete local.hosted; local.overhead.runner = 'local';
+  assert.equal(validateManifest(local).manifest.overhead.runner, 'local');
 });
 
 test('worker preflight verifies identical manifest bytes and current cell/run before credentials', async t => {
