@@ -24,6 +24,7 @@ import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
 import { coordinatorAttentionQueryKey, pendingDecisionTaskIds } from "@/lib/coordinator-attention";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
+import { defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { queryKeys } from "@/lib/queryKeys";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { taskListViewStorageKey } from "@/lib/task-list-views";
@@ -42,11 +43,13 @@ export function CoordinatorTasks() {
   const client = useQueryClient();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
-  const urlAssignee = params.get("assignee");
+  const urlAssignee = JSON.stringify(params.getAll("assignee"));
+  const urlStatuses = JSON.stringify(params.getAll("status"));
   const urlView = params.get("view");
   const normalizedView = normalizeTaskViewKey(urlView);
-  const initialStatuses = normalizedView && taskView(normalizedView).surface === "issues" ? taskView(normalizedView).statuses ?? [] : [];
-  const previousUrlFilters = useRef({ assignee: urlAssignee, view: urlView });
+  const presetStatuses = normalizedView && taskView(normalizedView).surface === "issues" ? taskView(normalizedView).statuses ?? [] : [];
+  const initialStatuses: string[] = params.has("status") ? params.getAll("status") : presetStatuses;
+  const previousUrlFilters = useRef({ assignee: urlAssignee, statuses: urlStatuses, view: urlView });
   const needsAttention = params.get("view") === "needs_attention";
   const query = params.get("q") ?? "";
   const deferredQuery = useDeferredValue(query.trim());
@@ -112,17 +115,45 @@ export function CoordinatorTasks() {
     searchMode: needsAttention ? "local" : "server",
     liveIssueIds: collectLiveIssueIds(liveRuns.data, records),
     viewStorageKey: taskListViewStorageKey("coordinator", userId ?? "local-board"),
-    initialFilters: { assignees: urlAssignee ? [urlAssignee] : [], statuses: initialStatuses },
+    initialFilters: { assignees: params.getAll("assignee"), statuses: initialStatuses },
   });
   useEffect(() => {
     const previous = previousUrlFilters.current;
-    if (previous.assignee === urlAssignee && previous.view === urlView) return;
-    previousUrlFilters.current = { assignee: urlAssignee, view: urlView };
+    if (previous.assignee === urlAssignee && previous.view === urlView && previous.statuses === urlStatuses) return;
+    previousUrlFilters.current = { assignee: urlAssignee, statuses: urlStatuses, view: urlView };
     collection.updateFilters({
-      ...(previous.assignee !== urlAssignee ? { assignees: urlAssignee ? [urlAssignee] : [] } : {}),
-      ...(previous.view !== urlView ? { statuses: initialStatuses } : {}),
+      ...(previous.assignee !== urlAssignee ? { assignees: params.getAll("assignee") } : {}),
+      ...(previous.view !== urlView || previous.statuses !== urlStatuses ? { statuses: initialStatuses } : {}),
     });
-  }, [urlAssignee, urlView, initialStatuses, collection.updateFilters]);
+  }, [urlAssignee, urlView, urlStatuses, initialStatuses, collection.updateFilters]);
+  const updateFilters = (patch: Partial<IssueFilterState>) => {
+    collection.updateFilters(patch);
+    if (patch.assignees === undefined && patch.statuses === undefined) return;
+    setParams(current => {
+      const next = new URLSearchParams(current);
+      if (patch.assignees !== undefined) {
+        next.delete("assignee");
+        for (const id of patch.assignees) next.append("assignee", id);
+      }
+      if (patch.statuses !== undefined) {
+        next.delete("status");
+        for (const status of patch.statuses) next.append("status", status);
+        // A changed status selection replaces the legacy preset, while the
+        // independent Needs attention surface remains selected.
+        if (next.get("view") !== "needs_attention") next.set("view", "all");
+      }
+      return next;
+    }, { replace: true });
+  };
+  const clearFilters = () => {
+    collection.updateFilters(defaultIssueFilterState);
+    setParams(current => {
+      const next = new URLSearchParams(current);
+      for (const key of ["q", "assignee", "status"]) next.delete(key);
+      if (next.get("view") !== "needs_attention") next.set("view", "all");
+      return next;
+    }, { replace: true });
+  };
   const update = useMutation({ mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: coordinatorAttentionQueryKey(companyId!) }); },
   });
@@ -134,7 +165,7 @@ export function CoordinatorTasks() {
   const empty = <EmptyState icon={query || collection.activeFilterCount ? SearchX : ListChecks}
     message={query || collection.activeFilterCount ? "No tasks match this view" : needsAttention ? "No tasks need a decision." : "No tasks in this organization"}
     action={query || collection.activeFilterCount ? "Clear filters" : needsAttention ? undefined : "New Task"}
-    onAction={query || collection.activeFilterCount ? collection.clear : () => openNewIssue()} />;
+    onAction={query || collection.activeFilterCount ? clearFilters : () => openNewIssue()} />;
   const issueLinkState = createIssueDetailLocationState("Tasks", `${location.pathname}${location.search}`, "issues");
   const retry = () => {
     update.reset();
@@ -149,7 +180,7 @@ export function CoordinatorTasks() {
     <TaskListToolbar view={needsAttention ? "blocked" : "all"} viewOptions={views} onViewChange={view => setView(view === "blocked")}
       query={collection.query} onQueryChange={collection.setQuery} layout={collection.layout} onLayoutChange={collection.setLayout}
       allExpanded={collection.allExpanded} onToggleExpanded={collection.toggleExpanded} onNewTask={() => openNewIssue()}
-      filters={{ state: collection.filters, onChange: collection.updateFilters, activeFilterCount: collection.activeFilterCount,
+      filters={{ state: collection.filters, onChange: updateFilters, activeFilterCount: collection.activeFilterCount,
         agents: agents.data ?? [], projects: projects.data ?? [], labels: labels.data ?? [], currentUserId: userId, creators: collection.creators }} />
     {error ? <div role="alert" className="flex items-center gap-2 text-sm text-destructive"><span>{error instanceof Error ? error.message : "Could not load tasks"}</span><Button variant="outline" size="sm" onClick={retry}>Retry</Button></div> : null}
     {pending ? <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p> : !error && <>

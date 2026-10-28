@@ -7,7 +7,7 @@ import type { AttentionItem } from "@paperclipai/shared";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
 import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { MemoryRouter } from "@/lib/router";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -22,9 +22,11 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[] }) => void }; onViewChange: (view: "blocked") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[] }) => void }; onViewChange: (view: "blocked") => void }) => <>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
+  <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
+  <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
   <button onClick={() => onViewChange("blocked")}>Needs attention</button>
 </> }));
 vi.mock("@/components/KanbanBoard", () => ({ KanbanBoard: () => null }));
@@ -124,6 +126,35 @@ describe("Coordinator tasks using the proposed table", () => {
     await vi.waitFor(() => expect(taskIds()).toEqual(["second-high"]));
     click("All assignees");
     await vi.waitFor(() => expect(taskIds()).toEqual(["first-high", "second-high"]));
+  });
+  it.each(["clear", "change", "empty"])("persists %s URL-backed filters when leaving tasks and returning", async action => {
+    mocks.list.mockResolvedValue([
+      createIssue({ id: "first-done", companyId: "company", parentId: null, assigneeAgentId: "first", status: "done" }),
+      createIssue({ id: "second-todo", companyId: "company", parentId: null, assigneeAgentId: "second", status: "todo" }),
+      createIssue({ id: "third-todo", companyId: "company", parentId: null, assigneeAgentId: "third", status: "todo" }),
+    ]);
+    function Navigation() {
+      const navigate = useNavigate();
+      const location = useLocation();
+      return <><output>{location.search}</output><button onClick={() => navigate("/task")}>Open task</button>
+        <button onClick={() => navigate(-1)}>Back</button>{location.pathname === "/issues" ? <CoordinatorTasks /> : null}</>;
+    }
+    const search = action === "empty" ? "?assignee=missing&view=done&workspace=team" : "?assignee=first&view=done&workspace=team";
+    flushSync(() => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/issues${search}`]}><Navigation /></MemoryRouter></QueryClientProvider>));
+    const taskIds = () => [...host.querySelectorAll("[data-task-id]")].map(node => node.getAttribute("data-task-id"));
+    const click = (label: string) => flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === label)!.click());
+    await vi.waitFor(() => expect(host.textContent).not.toContain("Loading tasks"));
+    click(action === "empty" ? "Clear filters" : action === "clear" ? "Clear assignee and status" : "Change assignee and status");
+    const expected = action === "change" ? ["second-todo"] : ["first-done", "second-todo", "third-todo"];
+    await vi.waitFor(() => expect(taskIds()).toEqual(expected));
+    await vi.waitFor(() => expect(host.querySelector("output")!.textContent).toContain("view=all"));
+    const url = new URLSearchParams(host.querySelector("output")!.textContent!);
+    expect(url.getAll("assignee")).toEqual(action === "change" ? ["first", "second"] : []);
+    expect(url.getAll("status")).toEqual(action === "change" ? ["todo"] : []);
+    expect(url.get("view")).toBe("all");
+    expect(url.get("workspace")).toBe("team");
+    click("Open task"); click("Back");
+    await vi.waitFor(() => expect(taskIds()).toEqual(expected));
   });
   it("keeps local search for the hydrated Needs attention collection", async () => {
     await mount("/issues?view=needs_attention&q=no-matching-decision");

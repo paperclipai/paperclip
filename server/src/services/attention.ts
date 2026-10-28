@@ -767,10 +767,14 @@ function collapsePendingConfirmationsToNewest<T extends {
   issueId: string;
   kind: string;
   createdAt: Date;
+  payload: unknown;
 }>(rows: T[]) {
+  // Quality gates bind independent outputs; a newer visual approval must not
+  // hide a still-pending copy approval (or affect its badge count).
+  const independent = (row: T) => Boolean(row.payload && typeof row.payload === "object" && "qualityReview" in row.payload && row.payload.qualityReview);
   const newestByGroup = new Map<string, T>();
   for (const row of rows) {
-    if (row.kind !== "request_confirmation") continue;
+    if (row.kind !== "request_confirmation" || independent(row)) continue;
     const groupKey = `${row.issueId}:${row.kind}`;
     const newest = newestByGroup.get(groupKey);
     if (
@@ -784,6 +788,7 @@ function collapsePendingConfirmationsToNewest<T extends {
 
   return rows.filter((row) => (
     row.kind !== "request_confirmation"
+    || independent(row)
     || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
   ));
 }
