@@ -142,7 +142,9 @@ On a blocked task with a retained monitor, verify that automatic checks show as
 paused. Check now requests one check through normal admission without changing
 the task status. Confirm that an unresolved dependency or recovery hold prevents
 dispatch and does not produce a success message. Backlog and todo tasks must not
-offer Check now. Agents and automatic ticks cannot check a blocked task.
+offer Check now. Blocked provider-quota recovery must offer no manual check and
+retain its schedule until the task resumes. Agents and automatic ticks cannot
+check a blocked task.
 Hold native finalization after the provider has stopped, and verify that both
 scheduled and manual checks retain the due monitor. After settlement, verify one
 wake. If its timeout passes during workspace recovery, verify settlement followed

@@ -909,6 +909,12 @@ export function createHeartbeatScheduling(
     if (!issue.assigneeAgentId || issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
     }
+    if (issue.status === "blocked" && actorType === "user" &&
+      normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
+      // Quota recovery schedules a bounded retry directly, rather than using
+      // ordinary wake admission. It must not consume a blocked task's monitor.
+      throw conflict("Resume this task before checking provider usage.", { code: "blocked_quota_monitor" });
+    }
     // A human can request one check of a blocked task. Admission still owns
     // dependencies, recovery, pause and budget gates; automatic ticks stay idle.
     const allowedStatuses = actorType === "user"

@@ -51,6 +51,7 @@ import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-ex
 import { useExecutionPolicy } from "../../hooks/useExecutionPolicy";
 import {
   areAutomaticMonitorChecksPaused,
+  canCheckIssueMonitorNow,
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
@@ -1325,6 +1326,7 @@ export function IssueProperties({
   const monitorServiceName = executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
   const monitorNotes = executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
   const monitorPaused = areAutomaticMonitorChecksPaused(issue);
+  const canCheckMonitorNow = canCheckIssueMonitorNow(issue, monitorServiceName);
   const monitorNow = useMonitorCountdown(monitorPaused ? null : monitorNextCheckAt);
   const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
@@ -1336,7 +1338,7 @@ export function IssueProperties({
       : "None";
   const monitorSecondary = monitorNextCheckAt
     ? monitorPaused
-      ? issue.status === "blocked" ? "Check now to request a manual check" : "Resume this task to continue checking"
+      ? canCheckMonitorNow ? "Check now to request a manual check" : "Resume this task to continue checking"
       : monitorIsDueNow
       ? "checking momentarily…"
       : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
@@ -1396,7 +1398,7 @@ export function IssueProperties({
             </div>
           </div>
           <div className="flex gap-2 border-t border-border px-4 py-3">
-            {onCheckMonitorNow && (!monitorPaused || issue.status === "blocked") ? (
+            {onCheckMonitorNow && canCheckMonitorNow ? (
               <Button type="button" size="sm" variant="outline" disabled={checkingMonitorNow} onClick={() => { setMonitorDetailsOpen(false); onCheckMonitorNow(); }}>
                 {checkingMonitorNow ? "Checking…" : "Check now"}
               </Button>

@@ -95,7 +95,8 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 Automatic monitor checks pause when a task is blocked. A person can use Check now
 to request one check of a retained monitor through normal execution admission.
-Dependencies, recovery, pause, budgets and ownership still apply. A check that
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
 cannot start reports that result instead of claiming it was queued.
 
 The experimental Cases feature also supports persistent work records and

@@ -19,6 +19,7 @@ import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-r
 import { cn } from "@/lib/utils";
 import {
   areAutomaticMonitorChecksPaused,
+  canCheckIssueMonitorNow,
   deriveMonitorState,
   formatMonitorAbsolute,
   formatMonitorEta,
@@ -87,7 +88,8 @@ export function buildMonitorSurfaceCopy(
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
   if (derived.source === "monitor" && areAutomaticMonitorChecksPaused({ status: issueStatus })) {
-    const hint = issueStatus === "blocked"
+    const canCheckNow = canCheckIssueMonitorNow({ status: issueStatus }, derived.serviceName);
+    const hint = canCheckNow
       ? "This task is blocked. You can ask the agent to check now."
       : "Resume this task to continue checking.";
     return {
@@ -97,7 +99,7 @@ export function buildMonitorSurfaceCopy(
       stripMeta: [hint],
       tone: "info",
       automaticChecksPaused: true,
-      checkUnavailable: issueStatus !== "blocked",
+      checkUnavailable: !canCheckNow,
     };
   }
 

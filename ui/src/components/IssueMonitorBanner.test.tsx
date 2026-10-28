@@ -3,7 +3,7 @@
 import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue, type IssueWorkProduct } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -287,6 +287,19 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     expect(container.textContent).toContain("Resume this task to continue checking.");
     expect(container.querySelector("button")).toBeNull();
     expect(container.textContent).not.toMatch(/next tick|momentarily|reply wakes/i);
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps blocked quota recovery paused until the task resumes", () => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status: "blocked" as const };
+    issue.executionState!.monitor!.serviceName = PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
     flushSync(() => root.unmount());
   });
 
