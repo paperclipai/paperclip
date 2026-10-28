@@ -5,7 +5,6 @@ import { agents, companies, createDb, heartbeatRuns, issueComments, issues, runI
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { boundRunIssueId, boundRunIssueIdSql } from "../run-task-binding.js";
 import { chatRunSourceMessageId } from "./run-origin.js";
-import { githubGuestBotConnectionForSession } from "../chat-github-tools.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("channel task provenance", () => {
@@ -124,6 +123,13 @@ const support = await getEmbeddedPostgresTestSupport();
     return { ...f, delegator, parentTask, delegatorRun };
   }
 
+  async function comeBack(f: Awaited<ReturnType<typeof delegatedFixture>>, values: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded", nativeIssueId: f.issue.id, responsibleUserId: "requester", ...values }).returning();
+    const [back] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: earlier.id, revision: 1, responsibleUserId: "requester", cause: "issue_assigned", correlationId: "dispatch" }).returning();
+    await db.update(runIdentityContexts).set({ parentContextId: back.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    return back;
+  }
+
   it("stops at a delegating run on another task only when asked, and keeps rejecting by default", async () => {
     const f = await delegatedFixture();
     await expect(chatRunSourceMessageId(db, f.run)).rejects.toMatchObject({ status: 403 });
@@ -131,19 +137,32 @@ const support = await getEmbeddedPostgresTestSupport();
     const wakeCommentId = randomUUID();
     const [run] = await db.update(heartbeatRuns).set({ contextSnapshot: { wakeCommentId } }).where(eq(heartbeatRuns.id, f.run.id)).returning();
     expect(await chatRunSourceMessageId(db, run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).toBe(wakeCommentId);
-    await expect(githubGuestBotConnectionForSession(db, { companyId: f.company.id, agentId: f.agent.id, runId: f.run.id, issueId: f.issue.id })).resolves.toBeNull();
   });
 
   it("follows a chain that leaves the task and comes back, and judges the task's own earlier context", async () => {
     const f = await delegatedFixture();
-    const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded", nativeIssueId: f.issue.id, responsibleUserId: "requester" }).returning();
-    const [back] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: earlier.id, revision: 1, responsibleUserId: "requester", cause: "issue_assigned", correlationId: "dispatch" }).returning();
-    await db.update(runIdentityContexts).set({ parentContextId: back.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    const back = await comeBack(f);
     expect(await chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).toBeNull();
-    await expect(githubGuestBotConnectionForSession(db, { companyId: f.company.id, agentId: f.agent.id, runId: f.run.id, issueId: f.issue.id })).resolves.toBeNull();
     await expect(chatRunSourceMessageId(db, f.run)).rejects.toMatchObject({ status: 403 });
     await db.update(runIdentityContexts).set({ responsibleUserId: "another-person" }).where(eq(runIdentityContexts.id, back.id));
     await expect(chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("rejects a chain that comes back through another agent on the same task", async () => {
+    const f = await delegatedFixture();
+    await comeBack(f, { agentId: f.delegator.id });
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it.each([
+    { requester: "requester", allowLegacyWakeComment: true, collected: true },
+    { requester: "another-person", allowLegacyWakeComment: true, collected: false },
+    { requester: "requester", allowLegacyWakeComment: false, collected: false },
+  ])("recovers a legacy wake where the chain comes back only for the same requester ($requester, legacy=$allowLegacyWakeComment)", async ({ requester, allowLegacyWakeComment, collected }) => {
+    const f = await delegatedFixture();
+    const wakeCommentId = randomUUID();
+    await comeBack(f, { responsibleUserId: requester, contextSnapshot: { wakeCommentId } });
+    expect(await chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment, stopAtOtherTask: true })).toBe(collected ? wakeCommentId : null);
   });
 
   it.each(["reentry", "missing-run", "foreign-cycle"])("still rejects a delegated chain with a %s", async fault => {

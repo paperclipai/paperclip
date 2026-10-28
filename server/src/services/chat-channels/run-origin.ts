@@ -54,7 +54,7 @@ export async function chatRunSourceMessageId(db: Db, run: Run, options: { contex
     if (!origin.parentContextId) return legacyMessageId;
     if (seen.has(origin.id)) throw forbidden("Chat source provenance could not be verified");
     seen.add(origin.id);
-    const [parent] = await db.select().from(runIdentityContexts).where(and(
+    let [parent] = await db.select().from(runIdentityContexts).where(and(
       eq(runIdentityContexts.id, origin.parentContextId),
       eq(runIdentityContexts.companyId, run.companyId),
       eq(runIdentityContexts.status, "accepted"),
@@ -64,24 +64,19 @@ export async function chatRunSourceMessageId(db: Db, run: Run, options: { contex
       if (acceptedMessageSeen) return null;
       throw forbidden("Chat requester provenance changed");
     }
-    const [sourceRun] = await db.select({
-      issueId: boundRunIssueIdSql(),
-      responsibleUserId: heartbeatRuns.responsibleUserId,
-      wakeCommentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'wakeCommentId'`,
-    }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.id, parent.runId),
-      eq(heartbeatRuns.companyId, run.companyId),
-      eq(heartbeatRuns.agentId, run.agentId),
-    )).limit(1);
-    if (!sourceRun || !boundRunIssueId(run) || sourceRun.issueId !== boundRunIssueId(run)) {
-      if (!options.stopAtOtherTask || !boundRunIssueId(run)) throw forbidden("Chat tools cannot be inherited by another task");
-      const reentry = await reentryContext(db, run, parent, seen);
-      if (reentry === null) return legacyMessageId;
-      if (!reentry || reentry.status !== "accepted" || reentry.responsibleUserId !== run.responsibleUserId) {
+    const issueId = boundRunIssueId(run);
+    let sourceRun = await ownerRun(db, run, parent.runId);
+    if (!sourceRun || !issueId || sourceRun.issueId !== issueId || sourceRun.agentId !== run.agentId) {
+      if (!sourceRun || !issueId || sourceRun.issueId === issueId || !options.stopAtOtherTask) {
         throw forbidden("Chat tools cannot be inherited by another task");
       }
-      origin = reentry;
-      continue;
+      const reentry = await reentryContext(db, run, parent, seen);
+      if (reentry === null) return legacyMessageId;
+      if (!reentry || reentry.context.status !== "accepted" || reentry.context.responsibleUserId !== run.responsibleUserId) {
+        throw forbidden("Chat tools cannot be inherited by another task");
+      }
+      parent = reentry.context;
+      sourceRun = reentry.owner;
     }
     if (options.allowLegacyWakeComment && sourceRun.responsibleUserId === run.responsibleUserId &&
         typeof sourceRun.wakeCommentId === "string") legacyMessageId ??= sourceRun.wakeCommentId;
@@ -91,17 +86,28 @@ export async function chatRunSourceMessageId(db: Db, run: Run, options: { contex
 
 const MAX_FOREIGN_ANCESTORS = 256;
 
-async function reentryContext(db: Db, run: Run, from: Context, visited: ReadonlySet<string>): Promise<Context | null | undefined> {
+async function ownerRun(db: Db, run: Run, runId: string) {
+  const [owner] = await db.select({
+    agentId: heartbeatRuns.agentId,
+    issueId: boundRunIssueIdSql(),
+    responsibleUserId: heartbeatRuns.responsibleUserId,
+    wakeCommentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'wakeCommentId'`,
+  }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
+  return owner;
+}
+
+type OwnerRun = NonNullable<Awaited<ReturnType<typeof ownerRun>>>;
+
+async function reentryContext(db: Db, run: Run, from: Context, visited: ReadonlySet<string>): Promise<{ context: Context; owner: OwnerRun } | null | undefined> {
   const issueId = boundRunIssueId(run);
   const seen = new Set(visited);
   let current: Context | undefined = from;
   for (let depth = 0; current; depth += 1) {
     if (depth >= MAX_FOREIGN_ANCESTORS || seen.has(current.id)) return undefined;
     seen.add(current.id);
-    const [owner] = await db.select({ issueId: boundRunIssueIdSql() }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.id, current.runId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
+    const owner = await ownerRun(db, run, current.runId);
     if (!owner) return undefined;
-    if (owner.issueId === issueId) return current;
+    if (owner.issueId === issueId) return owner.agentId === run.agentId ? { context: current, owner } : undefined;
     if (!current.parentContextId) return null;
     [current] = await db.select().from(runIdentityContexts).where(and(
       eq(runIdentityContexts.id, current.parentContextId),

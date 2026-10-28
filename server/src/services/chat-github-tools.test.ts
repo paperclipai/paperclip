@@ -88,6 +88,13 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(githubGuestBotConnectionForSession(db, session)).rejects.toMatchObject({ status: 403 });
   });
 
+  it("finds no guest sponsor for a guest-sponsored task whose run chain was delegated from another task", async () => {
+    const f = await fixture();
+    await guestSource(f, true);
+    const session = await continuation(f, { agentId: f.first.id, issueId: f.other.id });
+    expect(await githubGuestBotConnectionForSession(db, session)).toBeNull();
+  });
+
   it.each([true, false])("resolves the bot connection only for a run sponsored by a GitHub guest (guest=%s)", async (guest) => {
     const f = await fixture();
     const source = await guestSource(f, guest);
