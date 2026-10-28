@@ -44,6 +44,7 @@ import {
   issueDocuments,
   issueQuestionResponseDeliveries,
   issueThreadInteractions,
+  issueThreadInteractionIdempotencyKeys,
   issues,
   toolActionRequests,
   toolOauthStates,
@@ -611,7 +612,6 @@ function isEquivalentCreateRequest(
     (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null) &&
     (row.addresseeUserId ?? defaultAddresseeUserId) === (input.addresseeUserId ?? defaultAddresseeUserId) &&
     row.continuationPolicy === input.continuationPolicy &&
-    (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null) &&
     (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null) &&
     (row.sourceRunId ?? null) === (input.sourceRunId ?? null) &&
     (row.title ?? null) === (input.title ?? null) &&
@@ -2043,18 +2043,18 @@ export function issueThreadInteractionService(
     issueId: string;
     companyId: string;
     idempotencyKey: string;
-  }) {
-    return db
-      .select()
-      .from(issueThreadInteractions)
-      .where(
-        and(
-          eq(issueThreadInteractions.companyId, args.companyId),
-          eq(issueThreadInteractions.issueId, args.issueId),
-          eq(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
-        ),
-      )
-      .then((rows) => rows[0] ?? null);
+  }, handle: Db = db) {
+    const [original] = await handle.select().from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, args.companyId), eq(issueThreadInteractions.issueId, args.issueId),
+      eq(issueThreadInteractions.idempotencyKey, args.idempotencyKey),
+    )).limit(1);
+    if (original) return original;
+    const [alias] = await handle.select({ interaction: issueThreadInteractions }).from(issueThreadInteractionIdempotencyKeys)
+      .innerJoin(issueThreadInteractions, and(eq(issueThreadInteractions.id, issueThreadInteractionIdempotencyKeys.interactionId),
+        eq(issueThreadInteractions.companyId, args.companyId), eq(issueThreadInteractions.issueId, args.issueId)))
+      .where(and(eq(issueThreadInteractionIdempotencyKeys.companyId, args.companyId),
+        eq(issueThreadInteractionIdempotencyKeys.issueId, args.issueId), eq(issueThreadInteractionIdempotencyKeys.idempotencyKey, args.idempotencyKey))).limit(1);
+    return alias?.interaction ?? null;
   }
 
   // Readiness is a projection, not durable interaction state. Use the same
@@ -2723,6 +2723,11 @@ export function issueThreadInteractionService(
         if (!issueRow || isTerminalIssueStatus(issueRow.status) || issueRow.assigneeAgentId !== payload.requestingAgentId) {
           throw conflict("Cannot create an interaction on a closed issue");
         }
+
+        const [qualityAlias] = await tx.select({ id: issueThreadInteractionIdempotencyKeys.id }).from(issueThreadInteractionIdempotencyKeys)
+          .where(and(eq(issueThreadInteractionIdempotencyKeys.companyId, issue.companyId), eq(issueThreadInteractionIdempotencyKeys.issueId, issue.id),
+            eq(issueThreadInteractionIdempotencyKeys.idempotencyKey, input.idempotencyKey))).limit(1);
+        if (qualityAlias) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: input.idempotencyKey });
 
         // Serialize on the task so retries and later runs share the same live card.
         const pending = await tx.select().from(issueThreadInteractions).where(and(
@@ -3708,6 +3713,17 @@ export function issueThreadInteractionService(
               ),
             )
             .for("update");
+          // Recheck after taking the shared issue lock: a concurrent request
+          // may have registered this retry key while we waited. Key identity is
+          // proven by this lookup; request equivalence also checks actor/payload.
+          if (normalizedData.idempotencyKey) {
+            const existing = await getIdempotentInteraction({ ...issue, issueId: issue.id, idempotencyKey: normalizedData.idempotencyKey }, tx as unknown as Db);
+            if (existing) {
+              if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
+              await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(existing));
+              return { row: existing, supersededRows: [], reused: true };
+            }
+          }
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
           }
@@ -3811,6 +3827,13 @@ export function issueThreadInteractionService(
                 : interaction.kind === "request_item_verdicts" ? interaction.payload.items.filter(item => !interaction.result?.items.some(result => result.id === item.id)).map(item => item.qualityReview?.key) : [];
               if (!existingKeys.some(key => key && keys.includes(key))) continue;
               if (isEquivalentCreateRequest(pending, { ...normalizedData, idempotencyKey: pending.idempotencyKey ?? undefined }, actor, defaultAddresseeUserId)) {
+                if (normalizedData.idempotencyKey) {
+                  const aliases = await tx.select({ id: issueThreadInteractionIdempotencyKeys.id }).from(issueThreadInteractionIdempotencyKeys)
+                    .where(eq(issueThreadInteractionIdempotencyKeys.interactionId, pending.id)).limit(100);
+                  if (aliases.length >= 100) throw conflict("This review has reached its retry-key limit; use its existing idempotency key", { code: "quality_review_retry_key_limit", interactionId: pending.id });
+                  await tx.insert(issueThreadInteractionIdempotencyKeys).values({ companyId: issue.companyId, issueId: issue.id,
+                    interactionId: pending.id, idempotencyKey: normalizedData.idempotencyKey });
+                }
                 await enqueueIssueInteractionChatPublications(tx as unknown as Db, interaction);
                 return { row: pending, supersededRows: [], reused: true };
               }

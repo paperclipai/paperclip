@@ -2822,6 +2822,13 @@
       "when": 1793231092905,
       "tag": "0404_tense_silver_sable",
       "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1793231130478,
+      "tag": "0405_harsh_avengers",
+      "breakpoints": true
     }
   ]
 }

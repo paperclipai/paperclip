@@ -1,8 +1,9 @@
+import { readFile, readdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import Ajv2020 from "ajv/dist/2020.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, assets, companies, createDb, documents, heartbeatRuns, issueAttachments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agents, assets, companies, createDb, documents, heartbeatRuns, issueAttachments, issueThreadInteractionIdempotencyKeys, issueThreadInteractions, issues } from "@paperclipai/db";
 import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -159,7 +160,8 @@ const support = await getEmbeddedPostgresTestSupport();
       { id: "second", label: "Copy two", qualityReview: { key: "copy" }, target: f.copy },
     ] } }, actor)).rejects.toThrow("Quality review keys must be unique");
     const first = await f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor);
-    const repeats = await Promise.all(Array.from({ length: 12 }, () => f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor)));
+    const retryKeys = Array.from({ length: 12 }, () => randomUUID());
+    const repeats = await Promise.all(retryKeys.map(idempotencyKey => f.service.create(f.task, { ...request, idempotencyKey }, actor)));
     expect(new Set(repeats.map(card => card.id))).toEqual(new Set([first.id]));
     const visual = await f.service.create(f.task, { kind: "request_confirmation", payload: { version: 1, prompt: "Approve visual?", target: f.visual, qualityReview: { key: "visual" } } }, actor);
     await expect(f.service.create(f.task, { ...request, payload: { ...request.payload, prompt: "Another copy request" } }, actor)).rejects.toMatchObject({ details: { code: "quality_review_already_pending", interactionId: first.id } });
@@ -167,7 +169,33 @@ const support = await getEmbeddedPostgresTestSupport();
     const rows = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
     expect(rows.filter(row => row.status === "pending").map(row => row.id).sort()).toEqual([first.id, visual.id].sort());
     await f.service.acceptInteraction(f.task, first.id, {}, { userId: f.userId });
+    const replay = await f.service.create(f.task, { ...request, idempotencyKey: retryKeys[0] }, actor);
+    expect(replay).toMatchObject({ id: first.id, status: "accepted" });
+    await expect(f.service.create(f.task, { ...request, idempotencyKey: retryKeys[0], payload: { ...request.payload, prompt: "Changed request" } }, actor)).rejects.toMatchObject({ status: 409 });
+    expect((await readRequiredQualityReview(db, f.task)).missing.map(item => item.key)).toEqual(["visual"]);
+    const aliases = await db.select().from(issueThreadInteractionIdempotencyKeys).where(eq(issueThreadInteractionIdempotencyKeys.interactionId, first.id));
+    expect(aliases.map(alias => alias.idempotencyKey).sort()).toEqual(retryKeys.sort());
+    // Replaying the additive migration after a rebase must retain these durable
+    // acknowledgements and their FK/index protections.
+    const migrations = new URL("../../../packages/db/src/migrations/", import.meta.url);
+    for (const file of (await readdir(migrations)).filter(file => file.endsWith(".sql"))) {
+      const source = await readFile(new URL(file, migrations), "utf8");
+      if (!source.includes('CREATE TABLE IF NOT EXISTS "issue_thread_interaction_idempotency_keys"')) continue;
+      for (const statement of source.split("--> statement-breakpoint").map(value => value.trim()).filter(Boolean)) await db.execute(sql.raw(statement));
+    }
+    expect(await f.service.create(f.task, { ...request, idempotencyKey: retryKeys[0] }, actor)).toMatchObject({ id: first.id, status: "accepted" });
     expect((await f.service.create(f.task, { ...request, idempotencyKey: randomUUID() }, actor)).id).not.toBe(first.id);
+  });
+  it("bounds acknowledged retry keys while preserving already-acknowledged replay", async () => {
+    const f = await fixture();
+    const request = { kind: "request_confirmation" as const, idempotencyKey: "original", payload: { version: 1 as const, prompt: "Approve copy?", target: f.copy, qualityReview: { key: "copy" } } };
+    const actor = { agentId: f.agentId };
+    const first = await f.service.create(f.task, request, actor);
+    await db.insert(issueThreadInteractionIdempotencyKeys).values(Array.from({ length: 100 }, (_, index) => ({ companyId: f.companyId, issueId: f.issueId, interactionId: first.id, idempotencyKey: `retry-${index}` })));
+    await expect(f.service.create(f.task, { ...request, idempotencyKey: "one-too-many" }, actor)).rejects.toMatchObject({ details: { code: "quality_review_retry_key_limit", interactionId: first.id } });
+    await f.service.acceptInteraction(f.task, first.id, {}, { userId: f.userId });
+    expect(await f.service.create(f.task, { ...request, idempotencyKey: "retry-99" }, actor)).toMatchObject({ id: first.id, status: "accepted" });
+    expect(await f.service.create(f.task, request, actor)).toMatchObject({ id: first.id, status: "accepted" });
   });
   it("allows a fresh review for an answered item while another output in its batch remains pending", async () => {
     const f = await fixture();
