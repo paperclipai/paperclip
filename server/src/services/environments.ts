@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { writeEnvironmentCleanup, notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { randomUUID } from "node:crypto";
@@ -1549,6 +1550,7 @@ export function environmentService(db: Db) {
                 }
               }
               if (input.replacesReusableLeaseId) {
+                await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
                 const retired = await tx
                   .update(environmentLeases)
                   .set({
@@ -1671,8 +1673,24 @@ export function environmentService(db: Db) {
         : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`;
       const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
         && status !== "pending_cleanup";
-      const row = await writeEnvironmentCleanup(db, tx => tx
-        .update(environmentLeases)
+      const row = await writeEnvironmentCleanup(db, async tx => {
+        const condition = and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
+          ? and(eq(environmentLeases.status, "pending_cleanup"),
+              sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
+          : undefined);
+        const [previous] = await tx.select({ companyId: environmentLeases.companyId, issueId: environmentLeases.issueId,
+          heartbeatRunId: environmentLeases.heartbeatRunId, status: environmentLeases.status,
+          cleanupStatus: environmentLeases.cleanupStatus, releasedAt: environmentLeases.releasedAt,
+        }).from(environmentLeases).where(condition).for("update");
+        if (!previous) return null;
+        if (previous.heartbeatRunId && (previous.status !== status ||
+            (options?.cleanupStatus !== undefined && previous.cleanupStatus !== options.cleanupStatus) ||
+            (status !== "retained" && !previous.releasedAt))) {
+          await notifyChatInboundWakeNotices(tx, {
+            companyId: previous.companyId, issueId: previous.issueId ?? undefined,
+          });
+        }
+        return tx.update(environmentLeases)
         .set({
           status,
           releasedAt: status === "retained" ? null : now,
@@ -1686,12 +1704,10 @@ export function environmentService(db: Db) {
             ? sql`coalesce(${releaseMetadata}, '{}'::jsonb) || '{"pendingCleanupInFlight":false,"pendingCleanupLeaseExpiresAtMs":0}'::jsonb`
             : releaseMetadata,
         })
-        .where(and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
-          ? and(eq(environmentLeases.status, "pending_cleanup"),
-              sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
-          : undefined))
+        .where(condition)
         .returning()
-        .then((rows) => rows[0] ?? null));
+        .then((rows) => rows[0] ?? null);
+      });
       return row ? toEnvironmentLease(row) : null;
     },
 

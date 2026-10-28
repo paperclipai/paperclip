@@ -61,6 +61,12 @@ export function Companies() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteFiles, setDeleteFiles] = useState(false);
 
+  useEffect(() => {
+    if (!companies.some((company) => company.id === confirmDeleteId && company.status === "archived")) {
+      setDeleteFiles(false);
+    }
+  }, [companies, confirmDeleteId]);
+
   const editMutation = useMutation({
     mutationFn: ({ id, newName }: { id: string; newName: string }) =>
       companiesApi.update(id, { name: newName }),
@@ -331,7 +337,7 @@ export function Companies() {
                     </p>
                     <label className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Checkbox
-                        checked={deleteFiles}
+                        checked={company.status === "archived" && deleteFiles}
                         onCheckedChange={(checked) => setDeleteFiles(checked === true)}
                         disabled={deleteMutation.isPending || company.status !== "archived"}
                       />
@@ -355,7 +361,7 @@ export function Companies() {
                     <Button
                       variant="destructive"
                       size="sm"
-                      onClick={() => deleteMutation.mutate({ id: company.id, deleteFiles })}
+                      onClick={() => deleteMutation.mutate({ id: company.id, deleteFiles: company.status === "archived" && deleteFiles })}
                       disabled={deleteMutation.isPending}
                     >
                       {deleteMutation.isPending ? "Deleting…" : "Delete"}

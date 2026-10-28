@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
@@ -8,7 +9,7 @@ import { fenceActiveCompanyAgentStopsInTransaction } from "./agent-lifecycle.js"
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
-import type { Db } from "@paperclipai/db";
+import { withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import {
   companies,
   companyLogos,
@@ -135,6 +136,7 @@ export function companyService(
         inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
       ));
 
+    await notifyChatInboundWakeNotices(tx, { companyId: id });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -369,7 +371,7 @@ export function companyService(
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
       const budgetPublications: ActivityPublication[] = [];
-      const result = await db.transaction(async (tx) => {
+      const result = await withDedicatedDbConnection(db, (connection) => connection.transaction(async (tx) => {
         if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
           await lockCompanyLifecycle(tx, id);
           await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
@@ -403,6 +405,7 @@ export function companyService(
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
         }
         const updated = await tx
@@ -492,7 +495,7 @@ export function companyService(
           unarchived: willReactivate && existing.status === "archived",
           issuePrefixRederived,
         };
-      });
+      }));
       if (!result) return null;
       publishAccountingActivities(id, budgetPublications);
       // Post-commit, fire-and-forget, and BEFORE any finalization that
@@ -541,7 +544,7 @@ export function companyService(
     },
 
     archive: async (id: string, actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR) => {
-      const result = await db.transaction(async (tx) => {
+      const result = await withDedicatedDbConnection(db, (connection) => connection.transaction(async (tx) => {
         await lockCompanyLifecycle(tx, id);
         const existing = await tx
           .select({ status: companies.status })
@@ -556,6 +559,7 @@ export function companyService(
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)
@@ -575,7 +579,7 @@ export function companyService(
           company: enrichCompany(hydrated),
           cascade,
         };
-      });
+      }));
       if (!result) return null;
 
       // Same doorbell rule as update(): the archive is committed, so ring

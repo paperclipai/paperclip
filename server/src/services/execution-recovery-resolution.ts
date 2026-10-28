@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
@@ -587,6 +588,7 @@ export async function settleUnrecoverableExecutions(
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
         if (current) {
+          if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
           const [projected] = await tx
             .update(issues)
             .set({

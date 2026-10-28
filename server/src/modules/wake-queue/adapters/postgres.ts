@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
@@ -313,6 +314,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async cancelDeferredWake({ companyId, wakeId, reason, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
@@ -344,6 +346,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async failDeferredWake({ companyId, wakeId, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({
@@ -993,6 +996,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
     async mergeIntoExistingDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
+      if (input.manualUserWakeActorId) await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
       const rows = await tx
         .update(agentWakeupRequests)
         .set({

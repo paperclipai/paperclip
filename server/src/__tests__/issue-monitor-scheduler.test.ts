@@ -17,6 +17,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issueRecoveryActions,
   issueDocuments,
   issues,
@@ -424,7 +425,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     if (change === "cleared") expect(issue.monitorNextCheckAt).toBeNull();
   });
 
-  it("does not erase a replacement scheduled after wake admission", async () => {
+  it.each(["manual", "scheduled"] as const)("reports an accepted %s check and preserves a replacement schedule", async (source) => {
     const { companyId, issueId } = await seedFixture();
     const nextCheckAt = new Date("2026-04-11T13:30:00.000Z");
     let replaced = false;
@@ -443,7 +444,14 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         };
       },
     });
-    await heartbeatService(racingDb).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+    const heartbeat = heartbeatService(racingDb);
+    const now = new Date("2026-04-11T12:31:00.000Z");
+    if (source === "manual") {
+      expect(await heartbeat.triggerIssueMonitor(issueId, { now, actorType: "user", actorId: "local-board" }))
+        .toMatchObject({ outcome: "triggered" });
+    } else {
+      expect(await heartbeat.tickTimers(now)).toMatchObject({ enqueued: 1, skipped: 0 });
+    }
     expect(replaced).toBe(true);
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue.monitorNextCheckAt).toEqual(nextCheckAt);
@@ -547,8 +555,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(participantRuns.find((run) => run.id === scheduled.id)?.errorCode).not.toBe("issue_assignee_changed");
   });
 
-  it("lets the board trigger a scheduled issue monitor immediately", async () => {
+  it.each(["in_progress", "blocked"] as const)("lets the board check a scheduled monitor on an %s task", async (status) => {
     const { issueId, agentId, nextCheckAt } = await seedFixture();
+    await db.update(issues).set({ status }).where(eq(issues.id, issueId));
     const heartbeat = heartbeatService(db);
     const triggeredAt = new Date("2026-04-11T12:00:00.000Z");
 
@@ -577,6 +586,11 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       nextCheckAt: nextCheckAt.toISOString(),
       source: "manual",
     });
+    expect(wakeup?.runId).toBeTruthy();
+    await waitForHeartbeatIdle();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wakeup!.runId!));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.startedAt).not.toBeNull();
 
     const activity = await db
       .select()
@@ -591,6 +605,32 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       nextCheckAt: nextCheckAt.toISOString(),
       source: "manual",
     });
+  });
+
+  it("retains a blocked task's monitor when a human check is held by a dependency", async () => {
+    const { issueId, agentId, companyId, nextCheckAt } = await seedFixture();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const [blocker] = await db.insert(issues).values({ companyId, title: "Unfinished dependency", status: "todo" }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: blocker.id, relatedIssueId: issueId, type: "blocks" });
+    const result = await heartbeatService(db).triggerIssueMonitor(issueId, { actorType: "user", actorId: "local-board" });
+    expect(result).toMatchObject({ outcome: "skipped" });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "blocked", monitorNextCheckAt: nextCheckAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
+  });
+
+  it("does not consume blocked quota recovery when a dependency is unresolved", async () => {
+    const { issueId, agentId, companyId, nextCheckAt } = await seedFixture({
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME },
+    });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+    const [blocker] = await db.insert(issues).values({ companyId, title: "Unfinished dependency", status: "todo" }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: blocker.id, relatedIssueId: issueId, type: "blocks" });
+    await expect(heartbeatService(db).triggerIssueMonitor(issueId, { actorType: "user", actorId: "local-board" }))
+      .rejects.toThrow("Resume this task before checking provider usage.");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "blocked", monitorNextCheckAt: nextCheckAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(0);
   });
 
   it("clears due monitors that cannot be dispatched and records a skip", async () => {

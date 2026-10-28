@@ -410,7 +410,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, agentId))).resolves.toEqual(keysBefore);
   });
 
-  it("serializes unarchive with deletion without blocking another company", async () => {
+  it("serializes unarchive with deletion on a one-connection pool without blocking another company", async () => {
     const { companyId } = await seedFixture();
     const other = await seedFixture();
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
@@ -418,7 +418,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     const stopStarted = new Promise<void>((resolve) => { stopping = resolve; });
     let release!: () => void;
     const continueDeletion = new Promise<void>((resolve) => { release = resolve; });
-    configureAgentLifecycle(db, {
+    const singleConnectionDb = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
+    configureAgentLifecycle(singleConnectionDb, {
       requiredPluginIds: async () => [],
       runPlugin: async () => "complete",
       runHost: async (agent) => {
@@ -429,16 +430,16 @@ describeEmbeddedPostgres("cleanup removal services", () => {
         return "complete";
       },
     });
-    const deletion = companyService(db, { removeManagedFiles: async () => {} })
+    const deletion = companyService(singleConnectionDb, { removeManagedFiles: async () => {} })
       .remove(companyId, { deleteFiles: true });
     await stopStarted;
     let reactivated = false;
-    const reactivation = companyService(db).update(companyId, { status: "active" }).then((result) => {
+    const reactivation = companyService(singleConnectionDb).update(companyId, { status: "active" }).then((result) => {
       reactivated = true;
       return result;
     });
     try {
-      await expect(companyService(db).update(other.companyId, { status: "paused" }))
+      await expect(companyService(singleConnectionDb).update(other.companyId, { status: "paused" }))
         .resolves.toMatchObject({ status: "paused" });
       expect(reactivated).toBe(false);
     } finally {
@@ -446,7 +447,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     }
     await expect(deletion).resolves.toMatchObject({ id: companyId, fileCleanup: "succeeded" });
     await expect(reactivation).resolves.toBeNull();
-    configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    await singleConnectionDb.$client.end({ timeout: 1 });
   });
 
   it("deletes safely when the application pool has only one connection", async () => {

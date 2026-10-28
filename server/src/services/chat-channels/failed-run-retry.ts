@@ -1,3 +1,5 @@
+import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
+import { createFailedRetryNotices } from "./failed-retry-notices.js";
 import { safeChatWakeAuthorityReason, type ChatWakeAuthorityReason } from "./inbound/wakeup-authorization-error.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
@@ -86,13 +88,8 @@ import {
 import {
   NativeChatReviewPresentationContentionError,
 } from "../native-runtime/native-chat-review-presentation.js";
-import { isExternalChatWaitAuthorizationContention } from "../native-runtime/chat-attachment-reuse.js";
 import { CHAT_CONVERSATION_ID_KEY } from "../../modules/run-dispatch/index.js";
-import { projectSafeChatPublication } from "../chat-publication-projection.js";
 
-import {
-  inboundWakePublicationKey,
-} from "../chat-inbound-wakeup-publications.js";
 
 type DbOrTransaction = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
@@ -1871,6 +1868,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
                 typeof claimed.payload.taskRetryIntentId === "string" ? claimed.payload.taskRetryIntentId : undefined,
                 true, // The durable wake callback validates admission; later phases recheck containment.
               );
+              await notifyChatInboundWakeNotices(tx, { companyId: scope.companyId, issueId: scope.issueId });
             },
             onAdmitted: async (tx, receipt) => {
               if (!source.taskRetryInput) return;
@@ -1915,12 +1913,17 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
             receipt.payload?.taskRetryRequestId === claimed.payload.taskRetryIntentId) {
           // Receipt existence proves the earlier wait, not current authority.
           // Retire only this unadmitted wake; an admitted run keeps its history.
-          await db.update(agentWakeupRequests).set({
-            status: "failed", error: "chat_failed_run_retry_not_authorized",
-            finishedAt: new Date(), updatedAt: new Date(),
-          }).where(and(eq(agentWakeupRequests.id, receipt.id),
-            eq(agentWakeupRequests.companyId, claimed.companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)));
+          await db.transaction(async tx => {
+            await notifyChatInboundWakeNotices(tx, {
+              companyId: claimed.companyId, issueId: String(claimed.payload.issueId),
+            });
+            await tx.update(agentWakeupRequests).set({
+              status: "failed", error: "chat_failed_run_retry_not_authorized",
+              finishedAt: new Date(), updatedAt: new Date(),
+            }).where(and(eq(agentWakeupRequests.id, receipt.id),
+              eq(agentWakeupRequests.companyId, claimed.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)));
+          });
           return settle("failed", { code: "failed_chat_retry_not_authorized", attemptCount });
         }
         return settle(["skipped", "failed", "cancelled"].includes(receipt.status) ? "failed" : "processed", {
@@ -1973,117 +1976,13 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     return candidates.length;
   }
 
-  let failedRetryNoticeCursor: { createdAt: Date; id: string } | null = null;
-  async function enqueueFailedChatRetryPublications(
-    limit: number,
-  ): Promise<number> {
-    const cursor = failedRetryNoticeCursor;
-    const batchSize = Math.max(1, Math.min(50, limit));
-    const candidates = await db
-      .select({ action: chatActions, receipt: agentWakeupRequests })
-      .from(chatActions)
-      .innerJoin(
-        agentWakeupRequests,
-        and(
-          eq(agentWakeupRequests.id, chatActions.id),
-          eq(agentWakeupRequests.companyId, chatActions.companyId),
-        ),
-      )
-      .where(
-        and(
-          eq(chatActions.kind, "failed_run_retry"),
-          isNull(agentWakeupRequests.runId),
-          cursor
-            ? sql`(${chatActions.createdAt}, ${chatActions.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
-            : undefined,
-          inArray(agentWakeupRequests.status, [
-            "deferred_issue_execution",
-            "cancelled",
-            "failed",
-            "skipped",
-          ]),
-          sql`not exists (select 1 from chat_publications retry_notice where retry_notice.company_id = ${chatActions.companyId}
-          and retry_notice.idempotency_key = 'wake:' || ${chatActions.id}::text || ':' ||
-          case when ${agentWakeupRequests.status} = 'deferred_issue_execution' then 'queued' else 'not_started' end || ':' ||
-          ${chatActions.endpointId}::text || ':' || ${chatActions.conversationId}::text)`,
-        ),
-      )
-      .orderBy(asc(chatActions.createdAt), asc(chatActions.id))
-      .limit(batchSize);
-    const last = candidates.at(-1)?.action;
-    failedRetryNoticeCursor =
-      candidates.length >= batchSize && last
-        ? { createdAt: last.createdAt, id: last.id }
-        : null;
-    let inserted = 0;
-    for (const { action, receipt } of candidates) {
-      try {
-        inserted += await db.transaction(async (tx) => {
-          const source = await authorizeFailedChatRunRetry(tx, {
-            companyId: action.companyId,
-            issueId: String(action.payload.issueId),
-            agentId: String(action.payload.agentId),
-            retryActionId: action.id,
-            publication: true,
-          });
-          const [current] = await tx
-            .select()
-            .from(agentWakeupRequests)
-            .where(eq(agentWakeupRequests.id, receipt.id))
-            .for("update", { noWait: true });
-          if (!current || current.runId || current.status !== receipt.status)
-            return 0;
-          const state =
-            current.status === "deferred_issue_execution"
-              ? "queued"
-              : "not_started";
-          await notifyChatPublicationWork(tx);
-          return (
-            await tx
-              .insert(chatPublications)
-              .values({
-                companyId: action.companyId,
-                endpointId: source.endpointId,
-                conversationId: source.conversationId,
-                issueId: source.issueId,
-                commentId: source.commentIds.at(-1)!,
-                idempotencyKey: inboundWakePublicationKey(
-                  action.id,
-                  state,
-                  source.endpointId,
-                  source.conversationId,
-                ),
-                payload: projectSafeChatPublication({
-                  classification: "external",
-                  source: "safe_milestone",
-                  text:
-                    state === "queued"
-                      ? "Your retry is queued."
-                      : "This retry was not started. Open the task in Paperclip for details.",
-                  progressState: state === "queued" ? "queued" : "failed",
-                }),
-                state: "pending",
-              })
-              .onConflictDoNothing()
-              .returning({ id: chatPublications.id })
-          ).length;
-        });
-      } catch (error) {
-        if (
-          isExternalChatWaitAuthorizationContention(error) ||
-          error instanceof NativeChatReviewPresentationContentionError ||
-          isExternalActionAuthorizationChange(error) ||
-          (error &&
-            typeof error === "object" &&
-            "status" in error &&
-            error.status === 409)
-        )
-          continue;
-        throw error;
-      }
-    }
-    return inserted;
-  }
+  const retryNotices = createFailedRetryNotices(db, {
+    authorize: (tx, action) => authorizeFailedChatRunRetry(tx, {
+      companyId: action.companyId, issueId: String(action.payload.issueId),
+      agentId: String(action.payload.agentId), retryActionId: action.id, publication: true,
+    }),
+    isExternalActionAuthorizationChange, isShuttingDown,
+  });
 
   return {
     retryCommentIds,
@@ -2096,7 +1995,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     unregisterFailedRetryAuthority,
     processFailedChatRunRetry,
     processFailedChatRunRetries,
-    enqueueFailedChatRetryPublications,
+    ...retryNotices,
     pendingFailedRetries: () => [...failedRetryTasks.values()],
   };
 }

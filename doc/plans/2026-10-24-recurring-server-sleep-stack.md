@@ -2188,3 +2188,253 @@ base-publication hook. The hook fixes a reproduced commit-order wake gap; its
 16 cases at `bcf2f38ff5`; final typecheck passes too. Remote checks/review are pending.
 Parent #17606 now has passing checks and Greptile 5/5 on `ed76256b97`; all three
 review threads are resolved. This is not completion of the broader stack.
+
+## Current gate update: native progress and inbound notices (2026-10-25)
+
+#17639 at `6c40618ec1bb098e1c7fe4098133d1de71d287ee` now has all checks
+passing (CI run 40218349023), a fresh Greptile 5/5 review of that commit, and
+zero review threads. The circular signal-payload and over-wide atomic-event
+selection failures were repaired, not bypassed by rerunning unchanged failures.
+The PR remains unmerged.
+
+Slice 30 now registers its scoped notice worker and removes normal inbound
+notices from periodic publication maintenance. Focused acceptance passes 42
+cases. Its full verification and new PR are still pending. See the dated inbound
+wake notice audit for the producer inventory, regressions and fixture corrections.
+This update does not clear the older Grok/runtime-discovery CI failures, voice
+session recovery review, or inbound voice cleanup ownership findings, and it does
+not shrink the remaining original checklist.
+
+
+## Slice 30 gate and slice 31 projection checkpoint (2026-10-25)
+
+[#17647](https://github.com/paperclipai/paperclip/pull/17647) at
+`fee07f3fa8cbc489cb9bbf657a6065c6e00748c3` has all 53 checks passing,
+a fresh Greptile 5/5 review, and its fairness finding resolved. The pre-repair
+full chat/startup acceptance passed 1,486 cases; the bounded-candidate repair
+passes 44 selected integration cases and server typecheck/build. No merge occurred.
+
+The next separate branch, `codex/sleep-31-failed-retry-notices`, fixes a reproduced
+manual-cursor starvation defect and adds scoped, bounded retry-notice projection.
+Its normal periodic pass remains until producer/lifecycle migration is complete.
+See [the retry notice audit](2026-10-25-failed-retry-notices-sleep-audit.md).
+
+Fresh older-parent audit still shows #17490 at `31bcd19888` and #17572 at
+`8815dfad38` failing E2E shard 3 and its aggregate. #17576 still has unresolved
+voice inventory amplification findings 4371283330/4371307607, and #17580 still
+has unresolved company-offboarding/cleanup findings 4370459800/4370543984. These
+are required repairs, not exemptions. The full original migration scope,
+master reconciliation, and all latest-head gates remain required.
+
+
+## Slice 31 worker and producer checkpoint (2026-10-25)
+
+Failed-retry notices now register a scoped worker and leave periodic publication
+maintenance. Real missed wakes were reproduced for admission, agent/tree
+cancellation, resumed-admission denial, early admission refusal, and requester
+restoration. Their owning transactions now notify through the existing shared
+boundary. Fourteen selected lifecycle cases and all 1,503 chat/startup acceptance
+cases pass. Workspace typecheck and build pass. See the retry audit for retained
+failures, exact commands/logs, and native source-cleanup qualification still open.
+This is a draft checkpoint, not a merge-ready claim. Older parent gates and every
+remaining original recurring-server duty stay in scope. No merge occurred.
+
+
+## Slice 31 native producer repairs
+
+Draft [#17649](https://github.com/paperclipai/paperclip/pull/17649) now covers
+source lease cleanup and reusable-lease retirement, each with a reproduced
+missing notice and real writer transaction tests. All 36 selected native/notice
+cases pass. The owning audit distinguishes notice authority from the stronger
+filesystem execution proof, and retains the fake-clock connection failure and
+Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
+remote gates, older parent findings, and every remaining original duty are still
+required. No stack PR has been merged.
+
+
+## Slice 31 accepted checkpoint and slice 32 owner audit
+
+[#17649](https://github.com/paperclipai/paperclip/pull/17649) at
+`2384384eeec4f32d073242ebf597b81df2df1ccb` has all 53 checks passing,
+fresh Greptile 5/5, and no inline review findings. Full chat/startup acceptance
+passes all 1,505 cases on fresh `paperclip_sleep31_native_full_20261025_test`
+(`/tmp/sleep31-native-full-chat.log`, 446.10 seconds, exit 0). The lease service
+passes 51 tests; focused native/notice acceptance passes 36; final server
+typecheck and build pass. This supersedes the earlier slice-31 pending statuses.
+The initial Runner receipt timeout did not reproduce after building debug Rust
+binaries (10 local tests pass), nor in a controlled 500ms event-loop-delay
+experiment. The updated-head remote Runner gate passes without an unchanged-job
+retry. Its exact initial cause remains unproven.
+
+The next branch is `codex/sleep-32-terminal-confirmations`, based on the accepted
+slice-31 commit. See the terminal confirmation owner audit. There is no slice-32
+implementation or PR yet. Older #17490/#17572 CI failures, #17576 inventory
+amplification findings, #17580 offboarding/cleanup ownership findings, the entire
+remaining original list, final master reconciliation and all final-head checks
+remain required. All stack PRs remain unmerged.
+
+
+## Slice 32 implementation checkpoint
+
+`codex/sleep-32-terminal-confirmations` implements terminal-confirmation recovery
+on committed signals and the shared scoped coordinator. Its Telegram owner keeps
+payload validation, settlement, continuation staging and activity attribution.
+The audit is `2026-10-25-terminal-confirmation-sleep-audit.md`. Nine distinct focused
+cases pass across the recorded commands, including real callback failure, outer
+commit/rollback, historical waiting/invalid prefixes, and a write during an active
+settlement. The new source guard excludes this duty from periodic maintenance.
+Full local acceptance, remote review/checks and publication are pending here.
+This supersedes the audit-only slice-32 status above. All older stack gates and
+every remaining original obligation remain required; no PR is merged.
+
+Slice 32 is now draft [#17651](https://github.com/paperclipai/paperclip/pull/17651).
+Initial workspace types/build pass; full chat/startup acceptance passes 1,511 of
+1,512, with a prior retry-notice test fake-clock CONNECT_TIMEOUT retained and
+corrected. Initial CI passes 51 gates but fails a plugin test at a cron boundary
+and its aggregate. A controlled timestamp diagnostic establishes an additional
+owed cron occurrence; fixing that fixture clock passes all 28 plugin tests.
+Thirteen selected chat lifecycle cases pass after the retry-notice wait fix.
+Initial Greptile is 5/5 without findings. Fresh full acceptance and corrected-head
+remote gates remain required; see the slice-32 audit for all retained failures.
+
+## Slice 32 accepted-head verification and slice 33 start
+
+At `8b43e6222706491f2d8044af3bf86358085069af`, #17651 passes all
+53 remote checks and fresh Greptile 5/5, with no review threads. The corrected
+full chat/startup run passed all 1,512 tests on a fresh database in 463.63 seconds;
+final server typecheck also passed. Prior failed runs remain documented above.
+The PR remains unmerged. Latest fetched master is `67aa87a93b`; final stack
+reconciliation and older unresolved gates/reviews remain outstanding.
+
+Slice 33 starts from that accepted head and owns interaction continuation
+recovery only. The owner audit is in
+`2026-10-25-interaction-continuation-sleep-audit.md`. GitHub history maintenance
+and host-sleep eligibility remain separate work.
+
+Slice 33 now implements interaction continuation recovery with committed action
+signals, saved retry/claim deadlines, and a scoped call into the existing
+publication dispatcher before claiming continuation work. It preserves paused
+and future-retry publication behavior. Eleven new real-database cases pass,
+including outer rollback/commit, historical prefixes, and concurrent response
+commit. Existing Telegram acceptance also passes. Broad acceptance and fresh
+PR gates remain pending; no merge or full-stack completion is claimed.
+
+Slice 33 is [#17653](https://github.com/paperclipai/paperclip/pull/17653), draft
+and unmerged. Initial broad acceptance passed 1,523 tests with 14 skipped;
+workspace types/build passed. Review found that publication preparation could
+start another send after drain/standby/shutdown. Three regressions reproduced
+it. Per-send admission/abort checks now pass all 14 new lifecycle cases, and the
+previously skipped publication suite plus startup guards pass 27 cases with the
+external test database. Fresh corrected-head verification remains required.
+
+## Slice 33 accepted verification and GitHub owner split
+
+#17653 at `276ef23d2a0b01b15e6bfb8ff31ab13495741b19` passes all 53
+remote checks, fresh Greptile 5/5, and has no unresolved review threads. Workspace
+typecheck/build pass. All 1,540 tests across chat integration, standalone
+interaction publication, and startup guards passed on a fresh database with no
+skips in 473.47 seconds. The initial skipped suite and the stop-boundary failure
+remain documented. The PR is unmerged.
+
+Slice 34 starts from that verified head and owns initial GitHub response-comment
+acknowledgement delivery. The same maintenance helper also contains terminal
+response reconciliation, review-check publication, and late stale-head review
+projection repair. Those are separate reasons and remain separate planned PRs.
+See `2026-10-25-github-chat-maintenance-sleep-audit.md` for the inspected owners,
+producer boundaries, and response-slot dependencies. No GitHub migration is yet
+claimed implemented or verified.
+
+## Slice 34: initial GitHub acknowledgement delivery
+
+Based on accepted slice 33 (`276ef23d2a0b01b15e6bfb8ff31ab13495741b19`).
+The implementation moves only initial response-comment acknowledgement out of
+recurring GitHub maintenance. The existing response actions, fast-response
+records, and publication leases own durability. Committed response-slot changes
+and actual saved deadlines drive recovery. Terminal responses, review checks,
+and stale-head projection remain separate upcoming reasons.
+
+Fourteen new real-PostgreSQL lifecycle cases and the existing startup guard pass.
+The producer-removal regression fails as expected when fast-response settlement
+has no notification. Migration application/replay pass after adding the generated
+concurrent-index migration to the existing top-level execution registry. Broader
+local and remote acceptance is pending. See the detailed
+[GitHub owner audit](2026-10-25-github-chat-maintenance-sleep-audit.md).
+
+All earlier failing CI, review findings, stack/master reconciliation, and remaining
+inventory duties retain their existing requirements. This slice does not claim
+that the stack is ready or authorize a merge.
+
+Slice-34 final focused acceptance passes 17 new cases plus the startup guard.
+Workspace typecheck/build pass again after the receipt-lifecycle correction.
+The fast-response suites pass 69 tests. The initial complete chat run passed
+1,554 tests; a fresh complete run with the three added lifecycle regressions
+is in progress. No remote gate or full-stack readiness claim is made yet.
+
+## Slice 34 accepted head and slice 35 checkpoint
+
+[#17656](https://github.com/paperclipai/paperclip/pull/17656) at
+`43900c1f94500af4c4de1987f9608ac4e12feae6` passes all 53 remote checks,
+fresh Greptile 5/5, and has zero review threads. Final chat/publication/startup
+acceptance passes all 1,557 tests with no skips in 514.70 seconds. Workspace
+types/build and 69 fast-response cases pass. The PR remains draft and unmerged.
+
+Branch `codex/sleep-35-github-terminal-responses` starts from that head.
+It extracts provider-owned terminal-state decisions, records successful paused
+presentation versions in existing receipts, and adds a scoped worker plus
+committed issue/run/response-slot notifications. Eight new real-database
+lifecycle cases and nine existing owner cases pass; server types/build pass.
+The broader GitHub workflow suite is running. Startup registration and polling
+removal wait for the three identified direct issue writers and remaining audit
+and acceptance requirements in the terminal-response audit. No slice-35 PR or
+full-stack readiness is claimed yet. Earlier parent CI/review findings, all other
+inventory duties, and reconciliation with current master remain required.
+
+Slice 35 now covers the reproduced direct tree-restoration, workspace-admission
+and exhausted-recovery producers. Real publication-owner tests preserve both
+known-unsent cancellation and ambiguous outcome parking. Startup registers the
+new terminal worker and recurring GitHub maintenance no longer invokes that duty.
+Fourteen new worker cases plus one existing case pass; workspace types/build and
+migration application/replay/safety pass. The partial candidate index excludes
+10,000 completed rows in a rollback-only query-plan experiment. Fresh full
+chat/publication/startup acceptance is running; remote gates remain required.
+See the terminal-response audit for all retained failures and scoped evidence.
+
+## Slice 35 accepted; slice 36 wired
+
+Slice 35 is [#17661](https://github.com/paperclipai/paperclip/pull/17661), head
+`3d7c79c262f92563555b278d101de8240e6f011b`. Complete local chat/publication/startup
+acceptance passed all 1,571 tests in 517.41 seconds. All 53 remote checks passed,
+and fresh Greptile is 5/5 with no findings. The PR remains draft and unmerged.
+
+Slice 36, `codex/sleep-36-github-review-checks`, owns GitHub review-check publication.
+It uses existing actions and scoped scheduling. Received nonterminal checks retain
+the existing five-second remote-head reconciliation deadline because webhook
+receipt is not a reliable proof of all future pushes. Completed history and
+configuration alone do not schedule work. Current authority, assessment ownership,
+provider identity, check replacement, lease fencing, and failure backoff remain
+with the GitHub owner. Late stale-head projection repair is the separate next duty.
+
+Eleven new worker tests cover real enqueue and nested transaction settlement,
+run-identity wake before a saved deadline, missed-head recovery, lifecycle states,
+retry reconstruction, lease contention, a full revoked prefix, retained history,
+and HTTP shutdown recovery. The fresh targeted selection passed 36 tests including
+existing maintenance/startup cases. Workspace typecheck/build, migration/replay,
+and candidate-index evidence passed. Full local acceptance and remote PR gates
+remain required. See `2026-10-25-github-review-check-sleep-audit.md` for the failed
+attempts, repairs, exact boundary, and external reconciliation limitation.
+
+Slice 36 is draft [#17662](https://github.com/paperclipai/paperclip/pull/17662).
+Its initial full local run had 13 failures and 1,569 passes, and CI failed an
+inherited login-cleanup fixture. The quiet observation and fake-clock settlement
+repairs are documented in its owner audit. The corrected selections passed 23
+chat cases and all 16 login-cleanup tests; full/new-head verification is required.
+The earlier cancellation browser failures were not reproduced in six local
+replays. #17490 and #17572 remain unresolved gates, not inferred green from that
+negative result. The next untouched duty remains late stale-head projection repair.
+
+Slice 36 follow-up: all 53 remote checks and fresh 5/5 review passed on
+`59f8c8b3e5`. The second local full run had one startup-quiescence assertion
+failure and 1,581 passes. Waiting for the actual quiet condition fixes that
+fixture; all 211 GitHub workflow tests pass after the change. Fresh remote gates
+for the fixture-only commit remain required. The next slice may build on this
+commit while those independent gates run; no stack merge is authorized.

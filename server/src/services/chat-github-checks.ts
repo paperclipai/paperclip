@@ -1,18 +1,17 @@
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { notifyGitHubReviewChecks, registerGitHubReviewCheckWork } from "./chat-channels/github/review-check-work.js";
+import { githubReviewCheckState } from "./chat-channels/github/review-check-state.js";
 import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
 } from "./chat-github-publication-lease.js";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   chatActions,
   chatDeliveries,
   chatEndpoints,
-  chatEndpointResources,
   chatGitHubConfigurations,
   chatGitHubReviews,
-  chatMessageLinks,
-  companies,
-  heartbeatRuns,
   type Db,
 } from "@paperclipai/db";
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
@@ -41,27 +40,32 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       ...config.configuration.repositories[event.repositoryId],
     };
     if (policy.ratingThreshold === null && !admitted) return;
-    await db
-      .insert(chatActions)
-      .values({
-        companyId: endpoint.companyId,
-        endpointId: endpoint.id,
-        kind: "github_review_check",
-        providerActionId: `github-check:${event.deliveryId}`,
-        payload: {
-          version: 1,
-          event,
-          admitted,
-          reason,
-          runtimeGeneration:
-            (endpoint.setup as { runtimeGeneration?: number })
-              .runtimeGeneration ?? 0,
-        },
-        status: "received",
-      })
-      .onConflictDoNothing();
+    await db.transaction(async tx => {
+      await notifyGitHubReviewChecks(tx, { companyId: endpoint.companyId, endpointId: endpoint.id,
+        repositoryId: event.repositoryId, number: event.pullNumber });
+      await tx
+        .insert(chatActions)
+        .values({
+          companyId: endpoint.companyId,
+          endpointId: endpoint.id,
+          kind: "github_review_check",
+          providerActionId: `github-check:${event.deliveryId}`,
+          payload: {
+            version: 1,
+            event,
+            admitted,
+            reason,
+            runtimeGeneration:
+              (endpoint.setup as { runtimeGeneration?: number })
+                .runtimeGeneration ?? 0,
+          },
+          status: "received",
+        })
+        .onConflictDoNothing();
+    });
   }
-  async function dispatch(id: string) {
+  async function dispatch(id: string, canContinue = () => true) {
+    if (!canContinue()) return;
     const [action] = await db
       .select()
       .from(chatActions)
@@ -74,6 +78,11 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       .limit(1);
     if (!action || ["processed", "cancelled"].includes(action.status)) return;
     const event = action.payload.event as GitHubReviewEventContext;
+    const guardedFetch: typeof fetch = (input, init) => {
+      if (!canContinue()) throw new GitHubPublicationLeaseLost();
+      return fetchImpl(input, init);
+    };
+    if (!canContinue()) return;
     await withGitHubPublicationLease(
       db,
       {
@@ -82,7 +91,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
         repositoryId: event.repositoryId,
         number: event.pullNumber,
       },
-      fetchImpl,
+      guardedFetch,
       async (lease) => {
         const [fresh] = await db
           .select()
@@ -91,155 +100,19 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
         if (!fresh || ["processed", "cancelled"].includes(fresh.status)) return;
         let attempts = Number(fresh.result?.attempts ?? 0);
         try {
-          const [source] = await db
-            .select({
-              endpoint: chatEndpoints,
-              resource: chatEndpointResources,
-              configuration: chatGitHubConfigurations.configuration,
-              companyPrefix: companies.issuePrefix,
-            })
-            .from(chatEndpoints)
-            .innerJoin(companies, eq(companies.id, chatEndpoints.companyId))
-            .innerJoin(
-              chatGitHubConfigurations,
-              eq(chatGitHubConfigurations.endpointId, chatEndpoints.id),
-            )
-            .innerJoin(
-              chatEndpointResources,
-              eq(chatEndpointResources.endpointId, chatEndpoints.id),
-            )
-            .where(
-              and(
-                eq(chatEndpoints.id, action.endpointId),
-                eq(chatEndpoints.companyId, action.companyId),
-                eq(chatEndpointResources.providerResourceId, event.repository),
-              ),
-            );
-          if (
-            !source ||
-            !source.configuration.toolsEnabled ||
-            !["active", "verifying"].includes(source.endpoint.status) ||
-            !source.resource.enabled ||
-            source.resource.availability !== "available" ||
-            String(source.resource.metadata?.providerRepositoryId) !==
-              event.repositoryId ||
-            ((source.endpoint.setup as { runtimeGeneration?: number })
-              .runtimeGeneration ?? 0) !== action.payload.runtimeGeneration
-          ) {
-            await lease.commit(async (tx) => {
-              await tx
-                .update(chatActions)
-                .set({
-                  status: "cancelled",
-                  result: { code: "connection_changed" },
-                  updatedAt: new Date(),
-                })
-                .where(eq(chatActions.id, id));
+          const currentState = await githubReviewCheckState(db, fresh);
+          if (currentState.disposition !== "publish") {
+            await lease.commit(async tx => {
+              await tx.update(chatActions).set({
+                status: currentState.disposition === "connection_changed" ? "cancelled" : "processed",
+                result: { code: currentState.disposition,
+                  ...(currentState.disposition === "assessment_owns_check" ? { reviewId: currentState.reviewId } : {}) },
+                updatedAt: new Date(),
+              }).where(eq(chatActions.id, id));
             });
             return;
           }
-          const [review] = await db
-            .select()
-            .from(chatGitHubReviews)
-            .where(
-              and(
-                eq(chatGitHubReviews.endpointId, action.endpointId),
-                eq(chatGitHubReviews.repositoryId, event.repositoryId),
-                eq(chatGitHubReviews.pullNumber, event.pullNumber),
-                eq(chatGitHubReviews.headSha, event.headSha),
-              ),
-            )
-            .orderBy(desc(chatGitHubReviews.createdAt))
-            .limit(1);
-          if (review?.assessment) {
-            // The assessment outbox owns the terminal score and its retries.
-            await lease.commit(async (tx) => {
-              await tx
-                .update(chatActions)
-                .set({
-                  status: "processed",
-                  result: {
-                    code: "assessment_owns_check",
-                    reviewId: review.id,
-                  },
-                  updatedAt: new Date(),
-                })
-                .where(eq(chatActions.id, id));
-            });
-            return;
-          }
-          let run = review?.runId
-            ? (
-                await db
-                  .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-                  .from(heartbeatRuns)
-                  .where(eq(heartbeatRuns.id, review.runId))
-              )[0]
-            : undefined;
-          if (review && !run) {
-            const [sourceRun] = await db
-              .select({ run: { id: heartbeatRuns.id, status: heartbeatRuns.status } })
-              .from(chatDeliveries)
-              .innerJoin(
-                chatMessageLinks,
-                eq(chatMessageLinks.deliveryId, chatDeliveries.id),
-              )
-              .innerJoin(
-                heartbeatRuns,
-                and(
-                  eq(heartbeatRuns.companyId, action.companyId),
-                  eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-                  sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${chatMessageLinks.commentId}::text`,
-                ),
-              )
-              .where(
-                and(
-                  eq(chatDeliveries.endpointId, action.endpointId),
-                  sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId' = ${event.deliveryId}`,
-                ),
-              )
-              .orderBy(desc(heartbeatRuns.createdAt))
-              .limit(1);
-            run = sourceRun?.run;
-          }
-          const [delivery] = await db
-            .select({ state: chatDeliveries.state })
-            .from(chatDeliveries)
-            .where(
-              and(
-                eq(chatDeliveries.endpointId, action.endpointId),
-                sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId' = ${event.deliveryId}`,
-              ),
-            )
-            .limit(1);
-          const admissionEnded =
-            !review &&
-            (delivery?.state === "filtered" || delivery?.state === "failed");
-          const terminal =
-            !!run &&
-            [
-              "succeeded",
-              "failed",
-              "cancelled",
-              "timed_out",
-              "interrupted",
-            ].includes(run.status);
-          const state =
-            (!action.payload.admitted && !review) || admissionEnded
-              ? "manual_required"
-              : terminal
-                ? run!.status === "succeeded"
-                  ? "incomplete"
-                  : "error"
-                : run?.status === "running"
-                  ? "running"
-                  : "queued";
-          const status =
-            state === "running"
-              ? "in_progress"
-              : state === "queued"
-                ? "queued"
-                : "completed";
+          const { source, review, run, terminal, state, status } = currentState;
           const policy = review?.policySnapshot ?? {
             ...source.configuration.defaults,
             ...source.configuration.repositories[event.repositoryId],
@@ -389,7 +262,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
               .where(eq(chatActions.id, id));
           });
         } catch (error) {
-          if (error instanceof GitHubPublicationLeaseLost) return;
+          if (error instanceof GitHubPublicationLeaseLost || !canContinue()) return;
           attempts++;
           await lease.commit(async (tx) => {
             await tx
@@ -412,7 +285,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       },
     );
   }
-  async function processPending(limit = 10) {
+  async function repairSupersededReviews() {
     // Check delivery and task admission run independently. A rapid push can
     // cancel an obsolete check before admission inserts its review projection.
     // Reconcile that late row from the durable cancellation receipt, without
@@ -447,6 +320,9 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       ) is not null`,
         ),
       );
+  }
+  async function processPending(limit = 10) {
+    await repairSupersededReviews();
     const rows = await db
       .select({ id: chatActions.id })
       .from(chatActions)
@@ -470,5 +346,8 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       .limit(limit);
     for (const row of rows) await dispatch(row.id);
   }
-  return { enqueue, processPending };
+  return { enqueue, processPending, repairSupersededReviews,
+    registerCheckWork: (coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) =>
+      registerGitHubReviewCheckWork(db, coordinator, dispatch, canRun),
+  };
 }

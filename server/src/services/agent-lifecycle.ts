@@ -1,3 +1,5 @@
+import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { companies, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
@@ -33,6 +35,11 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       return true;
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
+    async beforeStatusChange(tx, companyId, _agentId, before, after) {
+      if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
+        await notifyChatInboundWakeNotices(tx, { companyId });
+      }
+    },
     reportFailure(context, error) {
       const code = lifecycle.lifecycleFailureCode(error);
       logger.warn({ ...context, failureCode: code ?? "unclassified" }, "Agent lifecycle operation failed");

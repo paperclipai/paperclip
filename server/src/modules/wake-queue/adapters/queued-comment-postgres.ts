@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -94,6 +95,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
     },
 
     async cancelWake({ wakeId, reason, now }) {
+      await notifyChatInboundWakeNotices(tx, { companyId, issueId });
       await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })

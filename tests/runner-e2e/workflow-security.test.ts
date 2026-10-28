@@ -95,9 +95,7 @@ describe("public repository paid workflow security", () => {
         .split(/\n(?= {6}- )/u)
         .filter((step) => step.includes("uses: pnpm/action-setup@"));
 
-      expect(pnpmSetupSteps, workflowName).toHaveLength(
-        workflowName === "pr-trusted.yml" ? 8 : 7,
-      );
+      expect(pnpmSetupSteps, workflowName).toHaveLength(8);
       for (const step of pnpmSetupSteps) {
         expect(step, workflowName).toContain('NPM_CONFIG_AUDIT: "false"');
         expect(step, workflowName).toContain('NPM_CONFIG_FUND: "false"');
@@ -141,9 +139,7 @@ describe("public repository paid workflow security", () => {
         step.includes("uses: pnpm/action-setup@") ? [index] : [],
       );
 
-      expect(pnpmSetupStepIndexes, name).toHaveLength(
-        name === "pr-trusted.yml" ? 8 : 7,
-      );
+      expect(pnpmSetupStepIndexes, name).toHaveLength(8);
       for (const pnpmSetupStepIndex of pnpmSetupStepIndexes) {
         const pnpmSetupStep = steps[pnpmSetupStepIndex]!;
         const nodeBootstrapStep = steps[pnpmSetupStepIndex - 1]!;
@@ -282,7 +278,9 @@ describe("public repository paid workflow security", () => {
     expect(authorizeJob.match(/actions\/checkout@/gu)).toHaveLength(1);
     expect(authorizeJob).toContain("ref: ${{ github.sha }}");
     expect(authorizeJob).not.toContain("ref: ${{ needs.authorize.outputs.target_sha }}");
-    expect(authorizeJob).not.toContain("pnpm install");
+    expect(authorizeJob.match(/run: pnpm install.*$/gmu)).toEqual([
+      "run: pnpm install --lockfile-only --frozen-lockfile --ignore-scripts --offline",
+    ]);
     expect(targetLockJob).toContain("name: Resolve target pnpm lockfile");
     expect(targetLockJob).toContain("needs: authorize");
     expect(targetLockJob).toContain(

@@ -1661,6 +1661,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave).not.toHaveBeenCalled();
   });
 
+  it("tests an available managed runner directly without a separate qualification request", async () => {
+    const computer = makeEnvironment({ id: "managed-computer", driver: "sandbox", status: "active",
+      config: { provider: "daytona", snapshot: "replacement-snapshot" }, metadata: { managedByPaperclip: true } });
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "opencode_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" },
+      { type: "paperclip_runner", supportedRunners: ["paperclip"], defaultRunner: "paperclip" },
+    ]);
+    mockAgentsApi.qualifyRunner.mockRejectedValue(new Error("Separate qualification is unavailable."));
+    const result = await renderForm([computer], { adapterType: "paperclip_runner", defaultEnvironmentId: computer.id,
+      adapterConfig: { provider: "opencode", model: "example/model" } }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner",
+      expect.objectContaining({ environmentId: computer.id }));
+  });
+
   it.each(["failed", "missing-proof"])("does not run the native runtime test after %s saved-computer qualification", async state => {
     const computer = makeEnvironment({ id: "saved-computer", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" } });

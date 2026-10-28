@@ -63,6 +63,7 @@ import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../recovery/pause-hold-guard.js";
 import { readRunCancellation } from "../run-cancellation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 
 export type NativeReconciliationFacts = {
   equivalentAttentionFamily?: boolean;
@@ -392,7 +393,7 @@ export async function claimNativeSessionResumptions(input: {
       const [issue] = await tx.select().from(issues).where(and(
         eq(issues.companyId, candidate.companyId), eq(issues.id, candidate.issueId),
       )).for("update").limit(1);
-      if (!issue || !["todo", "in_progress", "in_review"].includes(issue.status)) return false;
+      if (!issue) return false;
       const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
         eq(nativeRunFinalizations.companyId, candidate.companyId), eq(nativeRunFinalizations.runId, candidate.runId),
         eq(nativeRunFinalizations.issueId, issue.id),
@@ -402,6 +403,10 @@ export async function claimNativeSessionResumptions(input: {
         eq(heartbeatRuns.nativeIssueId, issue.id),
       )).for("update").limit(1);
       if (!run || !coordinator) return false;
+      if (await retireSupersededNativeRetry(tx as unknown as Db, {
+        run, coordinator, issueExecutionRunId: issue.executionRunId, now,
+      })) return false;
+      if (!["todo", "in_progress", "in_review"].includes(issue.status)) return false;
       const row = { run, coordinator };
       if (
         row.run.runtimeMode !== "native" ||

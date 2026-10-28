@@ -13186,6 +13186,9 @@ async function createRunnerdBackendWithinSessionClaim(
             caBundleMapping: remoteCaBundleMapping,
             stageFile: asset => stageRemoteRunnerFile({ target: remoteTarget, runner: remoteCommandRunner, ...asset }),
             stageDirectory: asset => stageRemoteRunnerDirectory({ target: remoteTarget, runner: remoteCommandRunner, ...asset }),
+            isolatedCodexSkills: input.execution.provider.kind === "codex"
+              && !("homeMode" in input.execution && input.execution.homeMode === "preconfigured")
+              ? { workspaceRoot: remoteTarget.remoteCwd } : undefined,
             trace: input.trace,
           });
         }

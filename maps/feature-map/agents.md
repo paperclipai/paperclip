@@ -34,8 +34,11 @@ Use New agent from the roster or `/agents/new`.
 Submitting the name creates an inactive record before adapter selection or account setup.
 A name-only draft returns to adapter selection when reopened.
 Save & exit keeps its configuration; Finish setup on the agent returns to the
-same record. Final submission requests approval when required, then follows the
-existing preparation and verification lifecycle.
+same record. Open an unfinished agent from the roster to reach its header.
+The header shows Finish setup instead of Run or Resume, including during computer
+preparation and verification. Terminating agents cannot reopen setup. Final
+submission requests approval when required, then follows the existing preparation
+and verification lifecycle.
 
 Agent-owned plugin environments prepare the saved draft in the background when
 their driver declares `requiresAgent`. The draft waits in `verifying` with its

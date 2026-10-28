@@ -2773,6 +2773,41 @@
       "when": 1793195976732,
       "tag": "0397_known_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1793216165150,
+      "tag": "0398_yielding_random",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1793218102114,
+      "tag": "0399_ambitious_onslaught",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1793218595176,
+      "tag": "0400_absent_phantom_reporter",
+      "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1793219893186,
+      "tag": "0401_yummy_ultimates",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1793223470886,
+      "tag": "0402_ancient_malice",
+      "breakpoints": true
     }
   ]
 }

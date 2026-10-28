@@ -138,6 +138,13 @@ schema feedback supports a corrected call before a wait is claimed.
 For a due monitor held by execution recovery, confirm that the schedule remains
 and task activity explains the deferral. Repeated checks must not replay the held
 work. Resolve the hold through its existing recovery action, then verify one wake.
+On a blocked task with a retained monitor, verify that automatic checks show as
+paused. Check now requests one check through normal admission without changing
+the task status. Confirm that an unresolved dependency or recovery hold prevents
+dispatch and does not produce a success message. Backlog and todo tasks must not
+offer Check now. Blocked provider-quota recovery must offer no manual check and
+retain its schedule until the task resumes. Agents and automatic ticks cannot
+check a blocked task.
 Hold native finalization after the provider has stopped, and verify that both
 scheduled and manual checks retain the due monitor. After settlement, verify one
 wake. If its timeout passes during workspace recovery, verify settlement followed

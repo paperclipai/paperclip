@@ -1209,6 +1209,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
       if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
+        && runnerAvailability?.defaultRunner !== "paperclip"
         && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
         const target = runnerSettingsTargetRef.current;
         // Qualify only the saved computer. The strict agent-scoped endpoint

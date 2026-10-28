@@ -80,6 +80,7 @@ async function changeLockedAgent(tx: Db, effects: LifecycleEffects, agent: Lifec
   };
   if (next === "ready") operation.resumeState = "ready";
   const status = compatibilityStatus(next, agent.status);
+  if (status !== agent.status) await effects.beforeStatusChange(tx, agent.companyId, agent.id, agent.status, status);
   if (isLifecycleWorkPending(next)) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({
     lifecycleHolds: holds, lifecycleState: next, lifecycleVersion: agent.lifecycleVersion + 1, lifecycleError: null,

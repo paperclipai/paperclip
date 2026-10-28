@@ -93,6 +93,12 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+Automatic monitor checks pause when a task is blocked. A person can use Check now
+to request one check of a retained monitor through normal execution admission.
+Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
+recovery stays paused until the task resumes. A check that
+cannot start reports that result instead of claiming it was queued.
+
 The experimental Cases feature also supports persistent work records and
 prompt-driven agent handoffs. Native case creation requires kickoff and creates
 one primary task; later handoffs move that same task

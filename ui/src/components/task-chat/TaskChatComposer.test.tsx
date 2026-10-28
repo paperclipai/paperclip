@@ -18,6 +18,15 @@ import {
   saveDraftSubmission,
 } from "../../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { queryKeys } from "../../lib/queryKeys";
+import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
+
+// The session lookup never answers on its own; tests set the account directly.
+vi.mock("../../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: () => new Promise(() => {}) } };
+});
 
 /**
  * MDXEditor-in-jsdom weight (mirrors MarkdownEditor.test.tsx): the real editor
@@ -365,8 +374,34 @@ describe("TaskChatComposer", () => {
     expect(loadDraftSubmission(key)).toBeNull();
     expect(localStorage.getItem(key)).toBeNull();
     render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} />);
-    expect(container.textContent).not.toContain("couldn’t confirm");
+    expect(container.textContent).not.toContain("Sending when reconnected…");
     expect(editable().textContent).toBe("");
+  });
+
+  it.each([
+    { reassignment: { assigneeAgentId: "old-agent", assigneeUserId: null } },
+    { runSettings: { model: "old-model" } },
+    { reopen: true },
+  ])("keeps an uncertain composite send for reconciliation without resending task changes: %j", async (changes) => {
+    const key = "uncertain-composite";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Keep the comment");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Keep the comment", ...changes }, requestOwner: "user-1" });
+    const onAdd = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} /></QueryClientProvider>);
+    await flushAsync();
+    expect(container.textContent).toContain("We couldn’t confirm whether this message was sent.");
+    expect(container.textContent).not.toContain("Resend now");
+    expect(onAdd).not.toHaveBeenCalled();
+    const cancel = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Cancel")!;
+    flushSync(() => cancel.click());
+    await flushAsync();
+    expect(editable().textContent).toBe("Keep the comment");
+    expect(loadDraftSubmission(key)).toBeNull();
+    expect(onAdd).not.toHaveBeenCalled();
+    client.clear();
   });
 
   it("automatically reconciles a restored submission by its server receipt, not its text", async () => {
@@ -384,6 +419,87 @@ describe("TaskChatComposer", () => {
     expect(loadDraftSubmission(key)).toBeNull();
     expect(editable().textContent).toBe("");
     expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("keeps the original key after account cancellation of an accepted initial send", async () => {
+    const key = "accepted-account-roundtrip";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let accepted!: () => void;
+    const post = vi.fn<(body: string, requestId?: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(resolve => { accepted = resolve; })).mockResolvedValue(undefined);
+    function OwnedComposer() {
+      const mutation = useAccountBoundMutation({ mutationFn: ({ body, requestId }: { body: string; requestId?: string }) => post(body, requestId) });
+      return <TaskChatComposer draftKey={key} workMode="standard"
+        onAdd={(body, _reopen, _reassign, _files, requestId) => mutation.mutateAsync({ body, requestId })} />;
+    }
+    render(<QueryClientProvider client={client}><OwnedComposer /></QueryClientProvider>);
+    typeText("Accepted before the account changed");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    const requestId = post.mock.calls[0][1]!;
+    flushSync(() => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    });
+    accepted();
+    await flushAsync();
+    expect(loadDraftSubmission(key)?.attemptId).toBe(requestId);
+    expect(editable().textContent).toBe("Accepted before the account changed");
+    const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => retry.click());
+    await flushAsync();
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.mock.calls[1][1]).toBe(requestId);
+    expect(loadDraftSubmission(key)).toBeNull();
+    client.clear();
+  });
+
+  it.each([false, true])("does not retry from a stale account render (returns to original=%s)", async (returns) => {
+    const key = "stale-account-retry";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Original account text");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Original account text" }, requestOwner: "user-1" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} /></QueryClientProvider>);
+    await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+      if (returns) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      resend.click();
+    });
+    await flushAsync();
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(loadDraftSubmission(key)?.attemptId).toBe(attemptId);
+    client.clear();
+  });
+
+  it.each(["success", "rejection"])("settles a receipt before its in-flight resend %s without cutting the next draft", async (outcome) => {
+    const key = "receipt-and-resend";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "First request\n\nKeep this next draft");
+    saveDraftSubmission(key, { attemptId, reviewed: false, nextDraftOffset: 15, request: { body: "First request" }, requestOwner: "user-1" });
+    let finish!: () => void;
+    let fail!: (error: Error) => void;
+    const onAdd = vi.fn(() => new Promise<void>((resolve, reject) => { finish = resolve; fail = reject; }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const show = (confirmedSubmissionIds = new Set<string>()) => render(<QueryClientProvider client={client}><TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} confirmedSubmissionIds={confirmedSubmissionIds} /></QueryClientProvider>);
+    show(); await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+    flushSync(() => resend.click()); await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    show(new Set([attemptId])); await flushAsync();
+    expect(editable().textContent).toBe("Keep this next draft");
+    if (outcome === "success") finish(); else fail(new Error("Late rejected resend"));
+    await flushAsync();
+    expect(container.textContent).not.toContain("Late rejected resend");
+    expect(editable().textContent).toBe("Keep this next draft");
+    expect(localStorage.getItem(key)).toBe("Keep this next draft");
+    client.clear();
   });
 
   it("preserves the next draft when an uncertain submission is later confirmed after reload", async () => {
@@ -493,7 +609,7 @@ describe("TaskChatComposer", () => {
     },
   );
 
-  it("fences an unknown save in memory with disabled storage until a successful explicit review and local discard", async () => {
+  it("keeps an unconfirmed send in memory with disabled storage and resends it with the same request ID", async () => {
     const storage = vi
       .spyOn(Storage.prototype, "setItem")
       .mockImplementation(() => {
@@ -501,53 +617,145 @@ describe("TaskChatComposer", () => {
       });
     const onAdd = vi
       .fn()
-      .mockRejectedValue(new CommentSubmissionUnknownError());
-    const review = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Refresh unavailable"))
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
       .mockResolvedValue(undefined);
     try {
       renderComposer({
         onAdd: onAdd,
         workMode: "standard",
         draftKey: "storage-disabled",
-        onReviewConversation: review,
       });
-      typeText("Do not replay this unknown save");
+      typeText("Send this exactly once");
       pressKey("Enter", { metaKey: true });
       await flushAsync();
       await flushAsync();
       expect(sendButton().disabled).toBe(true);
-      expect(container.textContent).toContain(
-        "couldn’t confirm whether this comment was saved",
-      );
+      expect(container.textContent).toContain("Sending when reconnected…");
+      expect(container.textContent).not.toContain("Discard draft");
       pressKey("Enter", { metaKey: true });
       await flushAsync();
       expect(onAdd).toHaveBeenCalledTimes(1);
-      const reviewButton = () =>
-        Array.from(container.querySelectorAll("button")).find(
-          (button) => button.textContent === "Review conversation",
-        )!;
-      flushSync(() => reviewButton().click());
-      await flushAsync();
-      expect(container.textContent).toContain(
-        "Couldn’t refresh the conversation",
-      );
-      expect(container.textContent).not.toContain(
-        "Discard draft and start new",
-      );
-      flushSync(() => reviewButton().click());
-      await flushAsync();
-      expect(review).toHaveBeenCalledTimes(2);
-      const discard = Array.from(container.querySelectorAll("button")).find(
-        (button) => button.textContent === "Discard draft and start new",
+      const resend = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent === "Resend now",
       )!;
-      flushSync(() => discard.click());
+      flushSync(() => resend.click());
+      await flushAsync();
+      await flushAsync();
+      expect(onAdd).toHaveBeenCalledTimes(2);
+      // Same body and same client request ID, so the server dedupes.
+      expect(onAdd.mock.calls[1]?.[0]).toBe(onAdd.mock.calls[0]?.[0]);
+      expect(onAdd.mock.calls[1]?.[4]).toBe(onAdd.mock.calls[0]?.[4]);
+      expect(container.textContent).not.toContain("Sending when reconnected…");
       expect(editable().textContent).toBe("");
-      expect(onAdd).toHaveBeenCalledTimes(1);
     } finally {
       storage.mockRestore();
     }
+  });
+
+  it("gives an unconfirmed send back to the editor on Cancel without resending it", async () => {
+    const onAdd = vi.fn().mockRejectedValue(new CommentSubmissionUnknownError());
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="cancel-pending" />);
+    typeText("Keep my words");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    expect(loadDraftSubmission("cancel-pending")?.request?.body).toBe("Keep my words");
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Cancel",
+    )!;
+    flushSync(() => cancel.click());
+    await flushAsync();
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    expect(editable().textContent).toBe("Keep my words");
+    expect(loadDraftSubmission("cancel-pending")).toBeNull();
+    expect(sendButton().disabled).toBe(false);
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the text back with readable copy when a resend is rejected", async () => {
+    const { ApiError } = await import("../../api/client");
+    const onAdd = vi
+      .fn()
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
+      .mockRejectedValueOnce(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="rejected-resend" />);
+    typeText("Rejected later");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    const resend = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Resend now",
+    )!;
+    flushSync(() => resend.click());
+    await flushAsync();
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    expect(editable().textContent).toBe("Rejected later");
+    expect(container.textContent).toContain("Forbidden");
+    expect(loadDraftSubmission("rejected-resend")).toBeNull();
+  });
+
+  it("resends a comment sent before the session loaded once the account is known", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onAdd = vi
+      .fn()
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
+      .mockResolvedValue(undefined);
+    render(
+      <QueryClientProvider client={client}>
+        <TaskChatComposer onAdd={onAdd} workMode="standard" draftKey="owner-late" />
+      </QueryClientProvider>,
+    );
+    typeText("Sent before the session");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    await flushAsync();
+    // Until the account is known the send cannot be replayed.
+    const resendButton = () => Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Resend now",
+    );
+    expect(resendButton()).toBeUndefined();
+
+    act(() => {
+      client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    });
+    await flushAsync();
+    await flushAsync();
+    expect(loadDraftSubmission("owner-late")?.requestOwner).toBe("user-1");
+    expect(container.textContent).toContain("Sending when reconnected…");
+    flushSync(() => resendButton()!.click());
+    await flushAsync();
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    expect(onAdd.mock.calls[1]?.[4]).toBe(onAdd.mock.calls[0]?.[4]);
+    expect(container.textContent).not.toContain("Sending when reconnected…");
+    client.clear();
+  });
+
+  it("never binds an account to a stored send that has no owner", async () => {
+    const key = "owner-unknown-stored";
+    saveDraft(key, "Stored without owner");
+    saveDraftSubmission(key, {
+      attemptId: "baf8228f-0be7-45ae-a104-6fbe0af6f1d3",
+      reviewed: false,
+      request: { body: "Stored without owner" },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onAdd = vi.fn();
+    render(
+      <QueryClientProvider client={client}>
+        <TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key} />
+      </QueryClientProvider>,
+    );
+    await flushAsync();
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent === "Resend now",
+    )).toBe(false);
+    expect(loadDraftSubmission(key)?.requestOwner).toBeUndefined();
+    expect(onAdd).not.toHaveBeenCalled();
+    client.clear();
   });
 
   it("restores an in-flight submission as uncertain only for its exact task key", async () => {
@@ -606,6 +814,29 @@ describe("TaskChatComposer", () => {
     await flushAsync();
     expect(onAdd.mock.calls[1]?.[3]).toEqual([id]);
     expect(onAttachImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed upload and retries it only when asked", async () => {
+    const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    const { ApiError } = await import("../../api/client");
+    const onAttachImage = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("Unavailable", 503, { error: "tenant_app_unavailable" }))
+      .mockResolvedValue({ id, contentPath: `/api/attachments/${id}/content`, originalFilename: "notes.txt" });
+    render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onAttachImage={onAttachImage} />);
+    pasteFiles([new File(["bytes"], "notes.txt", { type: "text/plain" })]);
+    await flushAsync();
+    expect(container.textContent).toContain("Paperclip is restarting or updating");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(onAttachImage).toHaveBeenCalledTimes(1);
+    const retry = container.querySelector<HTMLButtonElement>('button[aria-label="Retry notes.txt"]')!;
+    flushSync(() => retry.click());
+    await flushAsync();
+    expect(onAttachImage).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('button[aria-label="Retry notes.txt"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting or updating");
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("holds submission while an inline image upload is pending and binds its receipt", async () => {

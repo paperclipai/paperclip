@@ -1,5 +1,4 @@
 import type { Db } from "@paperclipai/db";
-import { githubResponseCommentService } from "../../chat-github-response-comments.js";
 import { githubReviewCheckService } from "../../chat-github-checks.js";
 
 export function createGitHubMaintenance(db: Db, fetchImpl: typeof globalThis.fetch, options: {
@@ -13,8 +12,7 @@ export function createGitHubMaintenance(db: Db, fetchImpl: typeof globalThis.fet
     options.scheduleMessageProcessing(async () => {
       try {
         // Provider I/O must not block Slack, Teams, or ordinary message receipts.
-        await githubResponseCommentService(db, fetchImpl).processPending();
-        await githubReviewCheckService(db, fetchImpl).processPending();
+        await githubReviewCheckService(db, fetchImpl).repairSupersededReviews();
       } finally {
         githubMaintenancePending = false;
       }

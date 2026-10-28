@@ -64,7 +64,9 @@ for eligible agents.
 Scoped source-only evidence: [adapter discovery](../../server/src/routes/adapters.ts)
 reports supported runners/effective default for the selected company/environment;
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
-server-owned immutable sandbox facts without provisioning. New Codex defaults
+server-owned immutable sandbox facts without provisioning. Managed Cloud images
+skip saved qualification after company access checks; custom environments and
+active captured custom images retain the existing policy. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
 Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
@@ -171,7 +173,8 @@ remain separate from live latency and permitted/denied agent acceptance.
 Scoped OpenCode assigned-tool source evidence: local and remote native sessions
 use the server-owned authenticated relay. The provider sees bounded
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` schemas,
-then uses pinned aliases. Search intersects fresh grants and work modes; calls
+then uses pinned aliases. Search describes its 1–20 page limit and default of 5
+in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
 audit path. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode

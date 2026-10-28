@@ -4,7 +4,7 @@ import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
-import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
@@ -36,6 +36,7 @@ import {
   taskView,
   type TaskViewKey,
 } from "../lib/task-views";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -172,7 +173,6 @@ function OrganizationIssues({
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const queryClient = useQueryClient();
   const fetchNextPageInFlightRef = useRef(false);
 
   const urlSearch = searchParams.get("q") ?? "";
@@ -293,13 +293,8 @@ function OrganizationIssues({
     });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
-    },
-  });
+  // Optimistic, rolls back with a readable toast, and resends after an outage.
+  const updateIssue = useUpdateIssueMutation({ companyId: selectedCompanyId });
 
   if (!selectedCompanyId) {
     return (

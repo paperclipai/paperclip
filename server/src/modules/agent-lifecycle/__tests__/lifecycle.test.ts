@@ -1,3 +1,6 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { createAgentLifecycle as createLifecycleCommands } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
@@ -26,14 +29,13 @@ import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
-import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
@@ -635,6 +637,48 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await approvalService(db).approve(approval.id, "approving-member");
       expect((await current(agent.id)).lifecycleOperation?.responsibleUserId).toBe(savedOwner ?? "requesting-member");
     }
+  });
+
+  it("settles notice reactivation only with the outer lifecycle transaction", async () => {
+    const work = worker();
+    const agent = await hire();
+    await work.process(agent.id);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    await work.stop();
+    await createAgentLifecycle(db).resumeAgent(agent.id);
+    const store = createLifecycleStore(db);
+    const owner = "resume-notice-test";
+    const claimed = await store.claim(agent.id, owner, new Date());
+    expect(claimed).not.toBeNull();
+    await store.setRequiredPlugins(claimed!, owner, []);
+    await store.completeHost(claimed!, owner);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatFailedRetryNotices, (event, scopes) => {
+      if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === companyId)) events.push(event);
+    });
+    try {
+      await expect(db.transaction(async tx => {
+        expect(await createLifecycleStore(tx as unknown as Db).change(agent.id, "complete", { owner }))
+          .toMatchObject({ status: "idle", lifecycleState: "ready" });
+        expect(events).toEqual(["intent"]);
+        expect(await current(agent.id)).toMatchObject({ status: "paused", lifecycleState: "resuming" });
+        throw new Error("rollback resumed agent");
+      })).rejects.toThrow("rollback resumed agent");
+      expect(events).toEqual(["intent", "settled"]);
+      expect(await current(agent.id)).toMatchObject({ status: "paused", lifecycleState: "resuming" });
+      events.length = 0;
+      await db.transaction(async tx => {
+        await createLifecycleStore(tx as unknown as Db).change(agent.id, "complete", { owner });
+        expect(events).toEqual(["intent"]);
+        expect((await current(agent.id)).status).toBe("paused");
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect(await current(agent.id)).toMatchObject({ status: "idle", lifecycleState: "ready" });
+      events.length = 0;
+      await store.change(agent.id, "reconcile");
+      expect(events).toEqual([]);
+    } finally { unsubscribe(); }
   });
 
   it("rejects transaction injection and generic state writes", async () => {
