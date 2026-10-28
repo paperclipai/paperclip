@@ -20,10 +20,12 @@ import {
   toolProfileEntries,
   toolProfiles,
 } from "@paperclipai/db";
+import { conflict } from "../errors.js";
+import { runningProcesses } from "../adapters/index.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { refreshReadyConnectionTools } from "../services/connection-tool-refresh.js";
-import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import { buildPaperclipRuntimeMcpServers, heartbeatService } from "../services/heartbeat.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -112,6 +114,7 @@ describeEmbeddedPostgres("ready connection tool refresh", () => {
     const wakeup = persistingWakeup();
     const first = await refreshReadyConnectionTools(db, { wakeup } as never, claims, ready);
     expect(first).toMatchObject({ state: "ready", toolRefresh: "requested" });
+    expect(first.instruction.startsWith(ready.instruction)).toBe(true);
     expect(first.instruction).toContain("continuation with updated tools is queued");
     expect(wakeup).toHaveBeenCalledTimes(1);
     expect(wakeup.mock.calls[0]![0]).toBe(agentId);
@@ -145,6 +148,37 @@ describeEmbeddedPostgres("ready connection tool refresh", () => {
     const result = await refreshReadyConnectionTools(db, { wakeup } as never, claims, ready);
     expect(result).toMatchObject({ toolRefresh: "unavailable" });
     expect(result.instruction).not.toContain("queued");
+    expect(wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a successor behind the running task run through the real wake path", async () => {
+    const claims = await startRun();
+    await db.update(issues).set({ executionRunId: claims.run_id, executionAgentNameKey: "reviewer", executionLockedAt: new Date() }).where(eq(issues.id, issueId));
+    runningProcesses.set(claims.run_id, { child: {} as never, graceSec: 0, processGroupId: null });
+    try {
+      const ready = await connectionIntentService(db).request(claims, "notion");
+      const result = await refreshReadyConnectionTools(db, heartbeatService(db), claims, ready);
+      expect(result).toMatchObject({ state: "ready", toolRefresh: "requested" });
+      expect(result.instruction.startsWith(ready.instruction)).toBe(true);
+      const [successor] = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId)))
+        .filter(row => row.idempotencyKey?.startsWith(`connection-intent:tools:${claims.run_id}:`));
+      expect(successor).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(successor!.payload).toMatchObject({ issueId, _paperclipWakeContext: { issueId, refreshTools: true, source: "connection_tools.refreshed" } });
+      const [current] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, claims.run_id));
+      expect(current!.contextSnapshot).not.toHaveProperty("refreshTools");
+    } finally {
+      runningProcesses.delete(claims.run_id);
+      await db.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("reports an unavailable refresh when the wake is refused", async () => {
+    const claims = await startRun();
+    const ready = await connectionIntentService(db).request(claims, "notion");
+    const wakeup = vi.fn(async () => { throw conflict("Agent budget exhausted"); });
+    const result = await refreshReadyConnectionTools(db, { wakeup } as never, claims, ready);
+    expect(result).toMatchObject({ state: "ready", toolRefresh: "unavailable" });
+    expect(result.instruction.startsWith(ready.instruction)).toBe(true);
     expect(wakeup).toHaveBeenCalledTimes(1);
   });
 
