@@ -1,3 +1,4 @@
+import { hasReviewerAssignmentContinuation } from "../domain/receipt-namespace.js";
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
 import {
@@ -168,6 +169,10 @@ async function runReleaseDrain(
       );
     }
     processedWakeIds.add(candidate.id);
+    if (hasReviewerAssignmentContinuation(candidate.payload)) {
+      preservedWakeIds.push(candidate.id);
+      continue;
+    }
 
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original

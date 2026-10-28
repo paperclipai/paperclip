@@ -1,3 +1,4 @@
+export { hasReviewerAssignmentContinuation, ordinaryWakeRequestPredicate } from "./receipt-namespace.js";
 import type { Db } from "@paperclipai/db";
 import {
   createAdmissionTransactionScope as buildAdmissionTransactionScope,

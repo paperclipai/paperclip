@@ -1,3 +1,4 @@
+import { ordinaryWakeRequestPredicate } from "../receipt-namespace.js";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -65,7 +66,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
       const row = await tx
         .update(agentWakeupRequests)
         .set({ payload: withQueuedCommentIdsInWakePayload(payload, ids), updatedAt })
-        .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
+        .where(and(ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
       return toWakeRow(row);
@@ -94,7 +95,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
       await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
-        .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+        .where(and(ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
     },
 
     async cancelQueueRun({ queueRunId, reason, now }) {
@@ -222,7 +223,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           .from(agentWakeupRequests)
           .where(
             and(
-              eq(agentWakeupRequests.id, input.queueId),
+              ordinaryWakeRequestPredicate(), eq(agentWakeupRequests.id, input.queueId),
               eq(agentWakeupRequests.companyId, companyId),
               input.issue.assigneeAgentId ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId) : undefined,
             ),

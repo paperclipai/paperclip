@@ -146,6 +146,21 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([null, "invalid", { version: 99 }])("preserves reserved candidates returned by an alternate adapter (%j)", async namespace => {
+    const reserved = wakeCandidate({ id: "reserved", payload: { _paperclipReviewerAssignmentContinuation: namespace } });
+    const ordinary = wakeCandidate({ id: "ordinary" });
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async input => input.excludedWakeIds?.includes(reserved.id) ? ordinary : reserved),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction), recovery: createFakeRecovery(),
+    });
+    expect((await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() })).outcome.kind).toBe("promoted");
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: ordinary.id }));
+    expect(transaction.finalizePromotedWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: ordinary.id }));
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.failDeferredWake).not.toHaveBeenCalled();
+  });
   it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
     const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
     const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
