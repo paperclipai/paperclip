@@ -29,6 +29,10 @@ separate. It does not cover other property operations or agent authorization.
 
 ## How to get to it (user POV)
 
+Terminal task updates retire unfinished reviewer assignment intent through the
+common issue service. Reopening does not replay that retired receipt. Service
+coverage: [retirement tests](../../server/src/__tests__/heartbeat-reviewer-terminal-retirement.test.ts).
+
 Cold collection loads use a lightweight index and batched hierarchy context,
 then fetch diagnostic details for visible rows. Delay the index, hierarchy, and
 visible-row details independently when verifying `tasks/organize`: row heights,

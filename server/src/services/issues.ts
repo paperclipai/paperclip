@@ -1,3 +1,4 @@
+import { retireReviewerIntents } from "./heartbeat/reviewer-assignment-continuation.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetWork, notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
 import { assertOnboardingFirstTaskCreationAllowed } from "./onboarding-first-task-admission.js";
@@ -11423,6 +11424,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (updated.status === "done" || updated.status === "cancelled") {
+          await retireReviewerIntents(tx, { companyId: updated.companyId, issueId: updated.id,
+            reason: `Task was marked ${updated.status}` });
+        }
         if (updated.status === "done") {
           await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
             publications: activityPublications });

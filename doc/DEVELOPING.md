@@ -3620,3 +3620,13 @@ in `_test` for `PAPERCLIP_MCP_SLEEP_TEST_DATABASE_URL`,
 `PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL`. The interaction-service regression suite
 also accepts `PAPERCLIP_INTERACTIONS_TEST_DATABASE_URL`. The suites migrate and write to those
 URLs; the sleep suite truncates company data between tests.
+
+### Terminal reviewer continuation receipts
+
+The common issue service delegates true `done` and `cancelled` outcomes to
+`heartbeat/reviewer-assignment-continuation.ts` inside the issue transaction.
+The owner retires unfinished, unlinked receipts identified by the presence of
+`_paperclipReviewerAssignmentContinuation`. It records a finish time and reason,
+keeps original context and finished history, and leaves temporary holds intact.
+Reopening a task does not revive its retired receipts. This lifecycle slice does
+not enable a receipt producer or delivery worker.

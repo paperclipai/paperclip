@@ -351,6 +351,12 @@ Verification: `not-run` — Actual native accepted report→provider stop→work
 
 Gaps: Governed review/approval engines remain [questions/approvals](questions-and-approvals.md); protocol report acceptance is not immediate status commit.
 
+Reviewer intent: A persisted terminal task update retires unfinished reviewer
+duty through the common issue service. Review handoff that keeps the task open
+does not count as terminal. See the
+[service/PostgreSQL coverage](../../server/src/__tests__/heartbeat-reviewer-terminal-retirement.test.ts);
+this does not qualify a live agent completion journey.
+
 ### `start-backlog-cas`
 
 API: `present` — PATCH /api/issues/{id} exactly{status:todo,expectedStatusVersion:N}, N>=0.
