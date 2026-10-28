@@ -907,15 +907,18 @@ describe("agent issue mutation checkout ownership", () => {
         query.from = vi.fn((table: Parameters<typeof getTableName>[0]) => {
           const source = from(table);
           if (getTableName(table) !== "projects") return source;
-          const where = source.where;
-          source.where = vi.fn((condition: SQL) => {
+          const projectSource = source as unknown as { where: (condition: SQL) => Record<string, unknown> };
+          const where = projectSource.where;
+          projectSource.where = vi.fn((condition: SQL) => {
             const result = where(condition);
+            result.then = async (resolve: (rows: unknown[]) => unknown) =>
+              resolve([{ id: scopedProjectId, companyId, visibility: "private" }]);
             result.limit = vi.fn(() => ({
               then: async (resolve: (rows: unknown[]) => unknown) =>
                 resolve(projectReadable ? [{ id: scopedProjectId }] : []),
-            })) as typeof result.limit;
+            }));
             return result;
-          }) as typeof where;
+          });
           return source;
         }) as typeof from;
         return query;
@@ -942,9 +945,9 @@ describe("agent issue mutation checkout ownership", () => {
 
     beforeEach(() => {
       vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
-      mockProjectService.getById.mockImplementation(async (id: string) => ({
+      mockProjectService.getById.mockImplementation((async (id: string) => ({
         id, companyId, visibility: "open",
-      }) as never);
+      })) as never);
       mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
         const allowed = input.action !== "project:read";
         return {
@@ -1013,34 +1016,55 @@ describe("agent issue mutation checkout ownership", () => {
       },
     );
 
-    it("still hides a project outside the key's project scope", async () => {
+    it.each([
+      ["a project outside the key's projectIds", { projectIds: [scopedProjectId] }, otherProjectId],
+      ["a project outside the key's projectId", { projectId: scopedProjectId }, otherProjectId],
+      ["an explicit project for a key that only has a parent issue boundary", { parentIssueIds: [issueId] }, scopedProjectId],
+      ["an explicit project for a key with an empty scope", {}, scopedProjectId],
+      ["an explicit project for a key with empty project lists", { projectId: "", projectIds: [] }, scopedProjectId],
+    ])("still hides %s", async (_name, keyScope, projectId) => {
       const res = await createInProject(
-        await createApp(bridgeActor({ projectIds: [scopedProjectId] })),
-        otherProjectId,
+        await createBridgeApp(bridgeActor(keyScope), dbWithProjectPrivacy(true)),
+        projectId,
       );
 
       expect(res.status, JSON.stringify(res.body)).toBe(404);
       expect(res.body.error).toBe("Project not found");
-      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
-        action: "project:read",
-        resource: { type: "project", companyId, projectId: otherProjectId },
-      }));
       expect(mockIssueService.create).not.toHaveBeenCalled();
     });
 
-    it("still hides an explicit project from a key that only has a parent issue boundary", async () => {
+    it("keeps an agent that is not an agent key on the project:read decision even when its scope lists the project", async () => {
       const res = await createInProject(
-        await createApp(bridgeActor({ parentIssueIds: [issueId] })),
+        await createBridgeApp(
+          { ...bridgeActor({ projectIds: [scopedProjectId] }), source: "agent_jwt" },
+          dbWithProjectPrivacy(true),
+        ),
         scopedProjectId,
       );
 
       expect(res.status, JSON.stringify(res.body)).toBe(404);
       expect(res.body.error).toBe("Project not found");
-      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
-        action: "project:read",
-        resource: { type: "project", companyId, projectId: scopedProjectId },
-      }));
       expect(mockIssueService.create).not.toHaveBeenCalled();
+    });
+
+    it("logs the privacy denial for a scoped private project in shadow mode", async () => {
+      vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "shadow");
+      const { logger } = await vi.importActual<typeof import("../middleware/logger.js")>("../middleware/logger.js");
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+        const res = await createInProject(
+          await createBridgeApp(bridgeActor({ projectIds: [scopedProjectId] }), dbWithProjectPrivacy(false)),
+          scopedProjectId,
+        );
+
+        expect(res.status, JSON.stringify(res.body)).toBe(201);
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ projectId: scopedProjectId, action: "project:read", reason: "deny_project_private" }),
+          "project privacy would deny read",
+        );
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 
