@@ -375,6 +375,11 @@ test("store setup and task connection intent share one fake provider through con
       { trustPreset: "low_trust_review" },
     );
     await json(
+      await request.patch(`/api/agents/${scout.id}/permissions`, {
+        data: { canCreateAgents: false, canAssignTasks: false, trustPreset: "standard" },
+      }),
+    );
+    await json(
       await request.patch(`/api/agents/${scout.id}`, {
         data: {
           adapterType: "process",
