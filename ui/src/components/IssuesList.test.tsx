@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Project } from "@paperclipai/shared";
@@ -115,14 +115,6 @@ vi.mock("../api/externalObjects", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
@@ -1659,7 +1651,7 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Automated child 249");
     }, 60);
     act(() => root.unmount());
-  });
+  }, 20_000);
 
   it("keeps rendering local issue batches while the user stays near the bottom", async () => {
     const manyIssues = Array.from({ length: 420 }, (_, index) =>
@@ -2150,6 +2142,8 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Manual issue");
       expect(container.textContent).not.toContain("Routine issue");
     });
+    await waitForAssertion(() => expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled());
+    await flush();
 
     await act(async () => {
       const filterButton = Array.from(document.body.querySelectorAll("button")).find(

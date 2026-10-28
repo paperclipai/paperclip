@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
 import { webcrypto } from "node:crypto";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -134,9 +135,11 @@ vi.mock("../components/MarkdownEditor", () => ({
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function act(callback: () => void | Promise<void>) {
-  await callback();
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
 }
 
 async function flushReact() {
@@ -144,6 +147,21 @@ async function flushReact() {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+async function waitForInAct(assertion: () => void, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 10));
+    });
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      if (Date.now() >= deadline) throw error;
+    }
+  }
 }
 
 // The async import runs submit → poll → onSuccess, several awaits deep. Drain a
@@ -514,7 +532,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await chooseLocalZip(buildLargeZipFile());
     await clickButton((text) => text === "Preview import");
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(mockCompaniesApi.importTransferUploadPart).toHaveBeenCalledTimes(2);
     });
     await flushReact();
@@ -525,7 +543,7 @@ describe("CompanyImport", () => {
     await act(async () => {
       resolveLastPart({ ok: true, index: 1, alreadyCompleted: false });
     });
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(mockCompaniesApi.importTransferPreview).toHaveBeenCalledTimes(1);
     });
     await settle();
@@ -559,7 +577,7 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import preview");
 
     await clickButton((text) => text.startsWith("Import 3 file"));
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(mockCompaniesApi.importTransferApply).toHaveBeenCalledTimes(1);
     });
     await settle();
@@ -588,7 +606,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await chooseLocalZip(buildLargeZipFile());
     await clickButton((text) => text === "Preview import");
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(container.textContent).toContain("Preview failed: socket hang up");
     });
 
@@ -608,7 +626,7 @@ describe("CompanyImport", () => {
     mockCompaniesApi.importTransferUploadPart.mockClear();
 
     await clickButton((text) => text === "Preview import");
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(mockCompaniesApi.importTransferPreview).toHaveBeenCalledTimes(1);
     });
     await settle();
@@ -627,7 +645,7 @@ describe("CompanyImport", () => {
     await renderPage();
     await chooseLocalZip(buildLargeZipFile());
     await clickButton((text) => text === "Preview import");
-    await vi.waitFor(() => {
+    await waitForInAct(() => {
       expect(mockCompaniesApi.importTransferPreview).toHaveBeenCalledTimes(1);
     });
     await settle();

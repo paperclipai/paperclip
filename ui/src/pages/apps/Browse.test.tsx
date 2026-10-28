@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -109,14 +109,6 @@ vi.mock("@/context/ToastContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   for (let index = 0; index < 5; index += 1) {
@@ -270,7 +262,7 @@ describe("Connectors landing page", () => {
     expect(messages.textContent).toContain("messages account");
     const bedrock = container.querySelector('[data-app-slug="bedrock"]')!;
     const connect = Array.from(bedrock.querySelectorAll('button')).find(button => button.textContent?.includes("Connect"))!;
-    await act(() => connect.click());
+    await act(async () => connect.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=bedrock");
   });
 
@@ -278,7 +270,7 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     const button = container.querySelector<HTMLButtonElement>('[aria-label="Set up Assistant Connection (MCP)"]');
     expect(button).not.toBeNull();
-    await act(() => button!.click());
+    await act(async () => button!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
     expect(chatSetupMock).not.toHaveBeenCalled();
   });
@@ -306,7 +298,7 @@ describe("Connectors landing page", () => {
     const manage = container.querySelector<HTMLButtonElement>('[aria-label="Manage Assistant Connection (MCP)"]');
     expect(manage).not.toBeNull();
     expect(container.querySelector('[data-app-slug="assistant-connection"]')?.textContent).toContain("Claude");
-    await act(() => manage!.click());
+    await act(async () => manage!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
     assistantConnectionsMock.mockResolvedValue([{ ...assistantGrant, revokedAt: "2026-10-06T01:00:00Z" }]);
     await act(async () => { await client.invalidateQueries({ queryKey: ["mcp-connections"] }); });
@@ -332,7 +324,7 @@ describe("Connectors landing page", () => {
     await clickButton("Installed", container);
     expect(container.textContent).toContain("Checking your connection status");
     expect(container.textContent).not.toContain("No connectors match");
-    await act(() => resolve([assistantGrant]));
+    await act(async () => resolve([assistantGrant]));
     await flushReact();
     expect(container.querySelector('[aria-label="Manage Assistant Connection (MCP)"]')).not.toBeNull();
   });
@@ -358,7 +350,7 @@ describe("Connectors landing page", () => {
 
   async function search(value: string) {
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Search connectors"]')!;
-    await act(() => {
+    await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
@@ -379,23 +371,23 @@ describe("Connectors landing page", () => {
   async function clickButton(text: string, scope: ParentNode = document) {
     const button = Array.from(scope.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent?.trim() === text)!;
     expect(button).toBeTruthy();
-    await act(() => button.click());
+    await act(async () => button.click());
     await flushReact();
   }
 
   async function accountMenu(action: string, name = "Meeting notes") {
     const trigger = document.querySelector<HTMLButtonElement>(`button[aria-label="Manage ${name}"]`)!;
-    await act(() => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
     const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === action)!;
-    await act(() => item.click());
+    await act(async () => item.click());
     await flushReact();
   }
 
   async function connectionMenu(name = "Meeting notes") {
     const trigger = container.querySelector<HTMLButtonElement>(`[data-app-slug="circleback"] button[aria-label="Manage ${name} connection"]`)!;
     expect(trigger).toBeTruthy();
-    await act(() => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
     return Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]'));
   }
@@ -403,7 +395,7 @@ describe("Connectors landing page", () => {
   async function openComposioAccountMenu(name = "Composio account") {
     const trigger = container.querySelector<HTMLButtonElement>(`[data-app-slug="composio"] button[aria-label="Manage ${name} connection"]`)!;
     expect(trigger).toBeTruthy();
-    await act(() => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
     return document.querySelector<HTMLElement>('[role="menu"]')!;
   }
@@ -499,7 +491,7 @@ describe("Connectors landing page", () => {
     composioFixture();
     await renderBrowse();
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Manage Meeting notes connection"]')!;
-    await act(() => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Open in Composio");
     expect(document.querySelector('[role="menu"]')?.textContent).not.toContain("Remove connection");
@@ -543,7 +535,7 @@ describe("Connectors landing page", () => {
     expect(circleback.textContent).toContain("Waiting for sign-in");
     expect(circleback.textContent).toContain("Finish connecting this account.");
     expect(circleback.querySelector('[title="Connected"]')).toBeNull();
-    await act(() => circleback.querySelector<HTMLButtonElement>('button[aria-label="Manage Meeting notes"]')!.click());
+    await act(async () => circleback.querySelector<HTMLButtonElement>('button[aria-label="Manage Meeting notes"]')!.click());
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Manage Circleback");
   });
 
@@ -556,8 +548,8 @@ describe("Connectors landing page", () => {
     await vi.waitFor(() => expect(container.querySelector('[data-app-slug="circleback"]')?.getAttribute("data-connected")).toBe("true"));
     listComposioAppsMock.mockResolvedValue({ apps: [] });
     syncComposioAppsMock.mockResolvedValue({ apps: [] });
-    await act(() => focusManager.setFocused(false));
-    await act(() => focusManager.setFocused(true));
+    await act(async () => focusManager.setFocused(false));
+    await act(async () => focusManager.setFocused(true));
     await vi.waitFor(() => expect(container.querySelector('button[aria-label="Connect Circleback"]')).toBeTruthy());
     focusManager.setFocused(undefined);
     expect(setupComposioAppMock).not.toHaveBeenCalled();
@@ -590,7 +582,7 @@ describe("Connectors landing page", () => {
     expect(container.textContent).toContain("Last known account · Refresh to verify");
     expect(container.textContent).toContain("Unavailable");
     const menu = await openComposioAccountMenu();
-    await act(() => Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")!.click());
+    await act(async () => Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")!.click());
     await flushReact();
     expect(syncComposioAppsMock).toHaveBeenCalledWith("conn-notion", true);
   });
@@ -606,13 +598,13 @@ describe("Connectors landing page", () => {
     await clickButton("2 connections", container.querySelector('[data-app-slug="composio"]')!);
     let menu = await openComposioAccountMenu("Work Composio");
     expect(Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")?.getAttribute("aria-disabled")).toBe("true");
-    await act(() => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await act(async () => { menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
     await flushReact();
     menu = await openComposioAccountMenu("Personal Composio");
     const refresh = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Refresh Composio")!;
     expect(refresh.getAttribute("aria-disabled")).not.toBe("true");
     syncComposioAppsMock.mockClear();
-    await act(() => refresh.click());
+    await act(async () => refresh.click());
     await flushReact();
     expect(syncComposioAppsMock.mock.calls.filter(([, force]) => force === true)).toEqual([["conn-personal", true]]);
   });
@@ -652,7 +644,7 @@ describe("Connectors landing page", () => {
     expect(container.querySelectorAll('[data-connected="false"][data-app-slug]:not([data-app-slug="custom-mcp"]):not([data-app-slug="assistant-connection"])')).toHaveLength(50);
     expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]:not([data-app-slug="assistant-connection"])')?.getAttribute("data-app-slug")).toBe("notion");
     const next = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Next")!;
-    await act(() => next.click());
+    await act(async () => next.click());
     expect(container.textContent).toContain("Page 2 of");
     expect(container.querySelector('[aria-label="Connector list"] > [data-app-slug]:not([data-app-slug="assistant-connection"])')?.getAttribute("data-app-slug")).toBe("notion");
     await search("Indexed App 59");
@@ -666,10 +658,10 @@ describe("Connectors landing page", () => {
   it("offers each provider once and carries the exact selected toolkit to setup", async () => {
     aggregatorCatalogMock.push(indexedApp("HubSpot", ["composio", "arcade"]));
     await renderBrowse();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect HubSpot"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect HubSpot"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Which service would you like to use?");
-    await act(() => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent?.includes("Arcade"))!.click());
+    await act(async () => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent?.includes("Arcade"))!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/connect?source=arcade&targetToolkit=hubspot");
   });
 
@@ -678,7 +670,7 @@ describe("Connectors landing page", () => {
     app.routes[0].toolkit = "circle_back";
     aggregatorCatalogMock.push(app);
     await renderBrowse();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
     expect(navigateMock).toHaveBeenCalledWith(`/apps/connect?source=${provider}&targetToolkit=circle_back`);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
@@ -689,7 +681,7 @@ describe("Connectors landing page", () => {
     listApplicationsMock.mockResolvedValue({ applications: [application({ id: "gateway-app", name: "Composio", metadata: { sourceTemplateKey: "composio" } })] });
     listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", config: { sourceTemplateKey: "composio" } })] });
     await renderBrowse();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Connect Circleback through Composio");
     expect(dialog.textContent).not.toContain("Which service would you like to use?");
@@ -705,7 +697,7 @@ describe("Connectors landing page", () => {
     expect(dialog.querySelector('a[href="https://dashboard.composio.dev/~/org/connect/apps"]')).toBeNull();
     expect(listAgentsMock).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalled();
-    await act(() => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
+    await act(async () => Array.from(dialog.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
@@ -718,19 +710,19 @@ describe("Connectors landing page", () => {
     listConnectionsMock.mockResolvedValue({ connections: [connection({ applicationId: "gateway-app", name: "Composio account", config: { sourceTemplateKey: "composio" } })] });
     await renderBrowse();
     expect(container.querySelector('[data-app-slug="hubspot"]')?.getAttribute("data-connected")).toBe("false");
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect HubSpot"]')!.click());
-    await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent?.includes("Composio"))!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect HubSpot"]')!.click());
+    await act(async () => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent?.includes("Composio"))!.click());
     expect(document.querySelector<HTMLSelectElement>('#composio-app-account')?.value).toBe("conn-notion");
     expect(navigateMock).not.toHaveBeenCalled();
-    await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "Continue")!.click());
+    await act(async () => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "Continue")!.click());
     await vi.waitFor(() => expect(setupComposioAppMock).toHaveBeenCalledWith("conn-notion", "hubspot", { action: "start" }));
     await vi.waitFor(() => expect(document.querySelector('a[href="https://connect.composio.dev/link/test"]')).not.toBeNull());
     expect(openNewIssueMock).not.toHaveBeenCalled();
-    await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "I’ve connected it")!.click());
+    await act(async () => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "I’ve connected it")!.click());
     await vi.waitFor(() => expect(setupComposioAppMock).toHaveBeenCalledWith("conn-notion", "hubspot", { action: "complete" }));
     await vi.waitFor(() => expect(document.querySelector('[role="alert"]')?.textContent).toContain("Finish connecting"));
     expect(document.querySelector('a[href="https://connect.composio.dev/link/test"]')).not.toBeNull();
-    await act(() => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "I’ve connected it")!.click());
+    await act(async () => Array.from(document.querySelector('[role="dialog"]')!.querySelectorAll("button")).find((button) => button.textContent === "I’ve connected it")!.click());
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
     expect(pushToastMock).toHaveBeenCalledWith({ title: "HubSpot is connected through Composio.", tone: "success" });
     expect(openNewIssueMock).not.toHaveBeenCalled();
@@ -749,15 +741,15 @@ describe("Connectors landing page", () => {
     listAgentsMock.mockRejectedValue(new Error("Agents are unavailable"));
     setupComposioAppMock.mockReset().mockResolvedValueOnce({ status: "authorization_required", authorizationUrl: "https://connect.composio.dev/link/personal" }).mockResolvedValueOnce({ status: "connected" });
     await renderBrowse();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
     const select = document.querySelector<HTMLSelectElement>('#composio-app-account')!;
     expect(Array.from(select.options).map(option => option.textContent)).toEqual(["Work Composio", "Personal Composio", "Connect a new account…"]);
-    await act(() => { select.value = "conn-personal"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { select.value = "conn-personal"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await flushReact();
     await clickButton("Continue", document.querySelector('[role="dialog"]')!);
     expect(setupComposioAppMock).toHaveBeenCalledWith("conn-personal", "circleback", { action: "start" });
     expect(document.querySelector('a[href="https://connect.composio.dev/link/personal"]')).toBeTruthy();
-    await act(() => { select.value = "conn-notion"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { select.value = "conn-notion"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await flushReact();
     expect(document.querySelector('a[href="https://connect.composio.dev/link/personal"]')).toBeNull();
     await clickButton("Continue", document.querySelector('[role="dialog"]')!);
@@ -774,9 +766,9 @@ describe("Connectors landing page", () => {
     refreshComposioAppsMock.mockResolvedValue({ apps: [] });
     setupComposioAppMock.mockReset();
     await renderBrowse();
-    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Connect Circleback"]')!.click());
     const select = document.querySelector<HTMLSelectElement>('#composio-app-account')!;
-    await act(() => { select.value = "__new__"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { select.value = "__new__"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await flushReact();
     expect(navigateMock).not.toHaveBeenCalled();
     await clickButton("Connect new account", document.querySelector('[role="dialog"]')!);
@@ -1003,10 +995,10 @@ describe("Connectors landing page", () => {
     const client = await renderBrowse();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
     expect(container.querySelector('[data-app-slug="notion"]')).not.toBeNull();
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: true }); });
+    await act(async () => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: true }); });
     await flushReact();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
-    await act(() => {
+    await act(async () => {
       client.setQueryData(queryKeys.tools.connections("company-1"), { connections: [connection({ id: "saved", applicationId: "saved-app", config: { sourceTemplateKey: "mem0", connectionMethodKey: "mcp" }, transport: "mcp_remote" })] });
       client.setQueryData(queryKeys.tools.applications("company-1"), { applications: [application({ id: "saved-app", name: "Mem0", metadata: { sourceTemplateKey: "mem0" } })] });
       client.setQueryData(queryKeys.instance.experimentalSettings, { enableMemoryConnectors: false });
@@ -1021,7 +1013,7 @@ describe("Connectors landing page", () => {
     listGalleryMock.mockResolvedValue({ apps: [...providers, "notion"].map(getAppStoreDefinition) });
     const client = await renderBrowse();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false }); });
+    await act(async () => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableMcpAggregators: false }); });
     await flushReact();
     for (const slug of providers) expect(container.querySelector(`[data-app-slug="${slug}"]`)).not.toBeNull();
   });
@@ -1040,10 +1032,10 @@ describe("Connectors landing page", () => {
     }
     expect(container.textContent).not.toContain("Private bot");
     expect(container.querySelector('[data-app-slug="agentmail"]')).not.toBeNull();
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect AgentMail"]')!.click());
+    await act(async () => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect AgentMail"]')!.click());
     expect(navigateMock.mock.lastCall?.[0]).toContain("/apps/chat/connect?provider=agentmail");
     expect(container.textContent).not.toContain("Chat with agents");
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
+    await act(async () => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
     const copilot = [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Connect Copilot")!;
     expect(copilot).toBeTruthy();
@@ -1092,17 +1084,17 @@ describe("Connectors landing page", () => {
     expect(bots.textContent).toContain("Draft agent");
     expect(bots.textContent).not.toContain("My GitHub");
     expect(container.textContent).not.toContain("Legacy bot");
-    await act(() => void tools.querySelector<HTMLButtonElement>('button[aria-label="Add account GitHub"]')!.click());
+    await act(async () => void tools.querySelector<HTMLButtonElement>('button[aria-label="Add account GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github&applicationId=github-tools&name=GitHub&new=1");
-    await act(() => void bots.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub Code Review Bot"]')!.click());
+    await act(async () => void bots.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub Code Review Bot"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat");
     const finish = [...bots.querySelectorAll("button")].find((button) => button.textContent === "Finish setup")!;
-    await act(() => finish.click());
+    await act(async () => finish.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat&resume=endpoint-2");
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: true }); });
+    await act(async () => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: true }); });
     await flushReact();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
-    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: true, enableGitHubReviewBots: false }); });
+    await act(async () => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: true, enableGitHubReviewBots: false }); });
     await flushReact();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).toBeNull();
     expect(container.textContent).not.toContain("Review agent");
@@ -1114,9 +1106,9 @@ describe("Connectors landing page", () => {
     await renderBrowse();
     expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
     expect(container.querySelector('[data-app-slug="github-code-review-bot"]')).not.toBeNull();
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
+    await act(async () => void container.querySelector<HTMLButtonElement>('button[aria-label="Add key GitHub"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
-    await act(() => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Code Review Bot"]')!.click());
+    await act(async () => void container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub Code Review Bot"]')!.click());
     expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&purpose=chat");
   });
 
@@ -1430,13 +1422,13 @@ describe("Connectors landing page", () => {
     poolListMock.mockResolvedValue([{ id: "conn-notion", name: "Research", revision: 7 }]);
     poolRemoveMock.mockRejectedValue(new Error("Pool changed; reload before deleting"));
     await renderBrowse();
-    await act(() => { container.querySelector<HTMLButtonElement>('button[aria-label="Manage Research connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Manage Research connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
     await flushReact();
-    await act(() => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Remove connection")!.click());
+    await act(async () => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Remove connection")!.click());
     await flushReact();
     expect(document.body.textContent).toContain("The connections in this pool are kept.");
     poolListMock.mockResolvedValue([{ id: "conn-notion", name: "Edited elsewhere", revision: 8 }]);
-    await act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.trim() === "Remove connection")!.click());
+    await act(async () => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.trim() === "Remove connection")!.click());
     await flushReact();
     expect(poolRemoveMock).toHaveBeenCalledWith("company-1", "conn-notion", 7);
     expect(poolListMock).toHaveBeenCalledTimes(1);
@@ -1449,12 +1441,12 @@ describe("Connectors landing page", () => {
     chatListMock.mockResolvedValue([{ id: "chat-draft", provider: "agentmail", status: "draft", assignedAgentName: "Ralph" }]);
     await renderBrowse();
     const add = container.querySelector<HTMLButtonElement>('button[aria-label="Add connection AgentMail"]')!;
-    await act(() => add.click());
+    await act(async () => add.click());
     const first = new URL(navigateMock.mock.lastCall![0], "http://localhost");
     expect(first.pathname).toBe("/apps/chat/connect");
     expect(first.searchParams.get("provider")).toBe("agentmail");
     expect(first.searchParams.get("setupId")).toMatch(/^[0-9a-f-]{36}$/);
-    await act(() => add.click());
+    await act(async () => add.click());
     expect(navigateMock.mock.lastCall![0]).not.toBe(first.pathname + first.search);
   });
 
@@ -1470,13 +1462,13 @@ describe("Connectors landing page", () => {
       expect(container.textContent).not.toContain("Removed agent");
       expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Manage")).toBe(false);
       const finish = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Finish setup");
-      await act(() => finish!.click());
+      await act(async () => finish!.click());
       expect(navigateMock).toHaveBeenLastCalledWith(`/apps/chat/connect?provider=${provider}&purpose=chat&resume=chat-draft`);
       expect(container.querySelector('button[aria-label^="Manage Draft agent"]')).toBeTruthy();
-      await act(() => void container.querySelector('button[aria-label^="Manage Active agent"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+      await act(async () => void container.querySelector('button[aria-label^="Manage Active agent"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
       await flushReact();
       const manage = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Manage");
-      await act(() => manage!.click());
+      await act(async () => manage!.click());
       expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/chat-active/settings");
     },
   );
@@ -1502,16 +1494,16 @@ describe("Connectors landing page", () => {
     chatListMock.mockResolvedValue([{ id: "chat-1", provider, status, assignedAgentName: "CEO" }]);
     const client = await renderBrowse();
     const invalidate = vi.spyOn(client, "invalidateQueries");
-    await act(() => void container.querySelector(`button[aria-label="Manage CEO ${providerName} connection"]`)!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await act(async () => void container.querySelector(`button[aria-label="Manage CEO ${providerName} connection"]`)!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
     await flushReact();
     const remove = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Remove connection");
-    await act(() => remove!.click());
+    await act(async () => remove!.click());
     await flushReact();
     expect(chatSetupMock).not.toHaveBeenCalled();
     expect(emailControlMock).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("Existing Paperclip tasks and conversation history remain available.");
     chatListMock.mockResolvedValue([]);
-    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
+    await act(async () => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
     await flushReact();
     if (provider === "agentmail") {
       expect(emailControlMock).toHaveBeenCalledWith("chat-1", "remove");
@@ -1530,15 +1522,15 @@ describe("Connectors landing page", () => {
     chatListMock.mockResolvedValue([{ id: "chat-1", provider: "slack", status: "draft", assignedAgentName: "CEO" }]);
     chatSetupMock.mockRejectedValueOnce(new Error("Connection is busy. Try again."));
     await renderBrowse();
-    await act(() => void container.querySelector('button[aria-label="Manage CEO Slack connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    await act(async () => void container.querySelector('button[aria-label="Manage CEO Slack connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
     await flushReact();
-    await act(() => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Remove connection")!.click());
+    await act(async () => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Remove connection")!.click());
     await flushReact();
-    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
+    await act(async () => Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Remove connection")!.click());
     await flushReact();
     expect(document.querySelector('[role="alertdialog"]')).toBeTruthy();
     expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "error", body: "Connection is busy. Try again." }));
-    await act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
+    await act(async () => Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Cancel")!.click());
     await flushReact();
     expect(chatSetupMock).toHaveBeenCalledTimes(1);
     expect(document.querySelector('[role="alertdialog"]')).toBeNull();

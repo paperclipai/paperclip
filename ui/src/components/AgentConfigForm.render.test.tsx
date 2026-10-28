@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { act, useCallback, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
@@ -207,14 +206,6 @@ vi.mock("./MarkdownEditor", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
 
 async function flushReact() {
   await act(async () => {
@@ -1832,18 +1823,18 @@ describe("AgentConfigForm environment selector", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     try {
-      await act(() => root.render(<TooltipProvider>
+      await act(async () => root.render(<TooltipProvider>
         <ModelDropdown models={curated} value="" onChange={() => {}} open onOpenChange={() => {}} allowDefault={false} required groupByProvider={false} preserveOrder />
       </TooltipProvider>));
       const search = document.body.querySelector("input")!;
-      await act(() => { search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+      await act(async () => { search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
       expect(document.activeElement?.textContent).toBe(curated[0].label);
-      await act(() => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
       expect(document.activeElement?.textContent).toBe(curated.at(-1)?.label);
-      await act(() => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
+      await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
       expect(document.activeElement?.textContent).toBe(curated[0].label);
     } finally {
-      await act(() => root.unmount());
+      await act(async () => root.unmount());
       container.remove();
     }
   });
@@ -2051,6 +2042,10 @@ describe("AgentConfigForm environment selector", () => {
 
     function LiftedFeedbackHarness() {
       const [login, setLogin] = useState<AdapterLoginDescriptor | null>(null);
+      const onTestFeedbackChange = useCallback(
+        (feedback: { login: AdapterLoginDescriptor | null }) => setLogin(feedback.login),
+        [],
+      );
       return (
         <>
           <AgentConfigForm
@@ -2064,7 +2059,7 @@ describe("AgentConfigForm environment selector", () => {
             hidePromptTemplate
             showAdapterTypeField={false}
             showAdapterTestEnvironmentButton
-            onTestFeedbackChange={(feedback) => setLogin(feedback.login)}
+            onTestFeedbackChange={onTestFeedbackChange}
           />
           {login && (
             <AdapterLoginPanel
@@ -2259,8 +2254,9 @@ describe("AgentConfigForm environment selector", () => {
     const start = Date.now();
     while (mockAgentsApi.getAdapterAuthLoginStatus.mock.calls.length < 2) {
       if (Date.now() - start > 6000) throw new Error("the status poll did not run a second time");
-      await flushReact();
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
     }
     await flushReact();
 
@@ -2651,14 +2647,14 @@ describe("AgentConfigForm environment selector", () => {
     await act(async () => renderFormView(root, queryClient, <Harness />));
     await flushReact();
     const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!;
-    setInputValue(nameInput, "Unsaved name");
+    await act(async () => setInputValue(nameInput, "Unsaved name"));
     await flushReact();
     let finishPoll!: (agent: Agent) => void;
     mockAgentsApi.get.mockReturnValueOnce(new Promise<Agent>(resolve => { finishPoll = resolve; }));
     let poll!: Promise<void>;
     await act(async () => { poll = queryClient.refetchQueries({ queryKey: [...queryKeys.agents.detail(saved.id), "lifecycle"] }); });
     // Editing can continue while the request is in flight.
-    setInputValue(nameInput, "Edited during poll");
+    await act(async () => setInputValue(nameInput, "Edited during poll"));
     await flushReact();
     await act(async () => {
       finishPoll({ ...saved, name: "Another saved name", lifecycleState: "verifying", lifecycleVersion: 2 });
@@ -2737,7 +2733,7 @@ describe("AgentConfigForm environment selector", () => {
     // Rename the agent while the bind save is still in flight.
     const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]');
     expect(nameInput).toBeTruthy();
-    setInputValue(nameInput!, "Renamed during bind");
+    await act(async () => setInputValue(nameInput!, "Renamed during bind"));
     await flushReact();
 
     // An UNRELATED refresh lands while the save is still pending — a poll or
@@ -3065,7 +3061,7 @@ describe("AgentConfigForm environment selector", () => {
     const input = result.container.querySelector<HTMLInputElement>(
       'input[aria-label="Browser code"]',
     );
-    setInputValue(input!, "BROWSERCODE-9");
+    await act(async () => setInputValue(input!, "BROWSERCODE-9"));
     await flushReact();
     await clickByText(result.container, "Submit");
     await flushReact();

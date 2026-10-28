@@ -1,3 +1,6 @@
+import { afterAll } from "vitest";
+import { drainQueuedTimers } from "./src/lib/test-timer-drain";
+
 const storageEntries = new Map<string, string>();
 
 function installStorageMock(target: Record<string, unknown>) {
@@ -38,3 +41,5 @@ if (typeof window !== "undefined" && window.localStorage !== globalThis.localSto
 if (typeof Element !== "undefined" && typeof Element.prototype.scrollIntoView !== "function") {
   Element.prototype.scrollIntoView = function scrollIntoView() {};
 }
+
+afterAll(drainQueuedTimers);

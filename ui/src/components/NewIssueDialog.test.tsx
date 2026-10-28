@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
+import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -276,16 +276,6 @@ vi.mock("@/components/ui/popover", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
-function act(callback: () => void | Promise<void>): void | Promise<void> {
-  let result: unknown;
-  flushSync(() => {
-    result = callback();
-  });
-  return result && typeof (result as Promise<void>).then === "function"
-    ? (result as Promise<void>).then(() => undefined)
-    : undefined;
-}
 
 async function flush() {
   await act(async () => {
@@ -1811,6 +1801,7 @@ describe("NewIssueDialog", () => {
     const submitButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "Create sub-task");
     expect(submitButton).not.toBeUndefined();
+    await waitForAssertion(() => expect(submitButton!.disabled).toBe(false));
 
     await act(async () => {
       submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1892,6 +1883,9 @@ describe("NewIssueDialog", () => {
     visualViewport.offsetTop = 24;
     await act(async () => {
       visualViewport.dispatchEvent(new Event("resize"));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    await act(async () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     });
 

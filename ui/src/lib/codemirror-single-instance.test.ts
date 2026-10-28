@@ -33,17 +33,17 @@ const rootManifest = JSON.parse(
 ) as { pnpm?: { overrides?: Record<string, string> } };
 
 /**
- * Every physical copy of `target` reachable from the ui package's
- * installed graph. Walks the graph the way pnpm lays it out — each
- * package's dependencies are linked either in its own node_modules
- * (workspace packages) or beside it in its .pnpm bucket — and realpaths
- * every link, so each resolved version collapses to one path. Walking
- * from the ui roots keeps orphaned .pnpm buckets from older installs out
- * of the census.
+ * Every physical copy of each `targets` package reachable from the ui
+ * package's installed graph, from one walk. Walks the graph the way pnpm
+ * lays it out — each package's dependencies are linked either in its own
+ * node_modules (workspace packages) or beside it in its .pnpm bucket — and
+ * realpaths every link, so each resolved version collapses to one path.
+ * Walking from the ui roots keeps orphaned .pnpm buckets from older
+ * installs out of the census.
  */
-function reachableCopies(target: string): string[] {
-  const copies = new Set<string>();
-  const visited = new Set<string>();
+function reachableCopies(targets: readonly string[]): Map<string, string[]> {
+  const copies = new Map(targets.map((target) => [target, new Set<string>()]));
+  const visited = new Set<string>([uiRoot]);
   const queue: string[] = [uiRoot];
 
   const packageEntries = (nodeModulesDir: string): string[] => {
@@ -62,13 +62,8 @@ function reachableCopies(target: string): string[] {
     return entries;
   };
 
-  while (queue.length > 0) {
-    const packageDir = queue.shift()!;
-    if (visited.has(packageDir)) continue;
-    visited.add(packageDir);
-    if (visited.size > 20_000) {
-      throw new Error("dependency walk exceeded its safety bound");
-    }
+  for (let next = 0; next < queue.length; next++) {
+    const packageDir = queue[next];
 
     // A package's dependencies live in its own node_modules (workspace
     // packages) and, for store-installed packages, beside it in the
@@ -87,19 +82,32 @@ function reachableCopies(target: string): string[] {
       for (const entry of packageEntries(dependencyDir)) {
         let entryDir: string;
         try {
-          entryDir = realpathSync(path.join(dependencyDir, entry));
+          entryDir = realpathSync.native(path.join(dependencyDir, entry));
         } catch {
           continue; // dangling symlink
         }
-        if (entry === target) copies.add(entryDir);
+        copies.get(entry)?.add(entryDir);
+        if (visited.has(entryDir)) continue;
+        visited.add(entryDir);
+        if (visited.size > 20_000) {
+          throw new Error("dependency walk exceeded its safety bound");
+        }
         queue.push(entryDir);
       }
     }
   }
-  return [...copies];
+  return new Map([...copies].map(([target, dirs]) => [target, [...dirs]]));
 }
 
 describe("codemirror single-instance invariant", () => {
+  let installedCopies: Map<string, string[]> | undefined;
+  const copiesOf = (pkg: string): string[] => {
+    installedCopies ??= reachableCopies(
+      SINGLE_INSTANCE_PACKAGES.map(([name]) => name),
+    );
+    return installedCopies.get(pkg) ?? [];
+  };
+
   for (const [pkg, major] of SINGLE_INSTANCE_PACKAGES) {
     it(`keeps the ${pkg} override in the root manifest and its workspace mirror`, () => {
       // Removing the override is the only way a second copy can come
@@ -119,7 +127,7 @@ describe("codemirror single-instance invariant", () => {
     });
 
     it(`installs exactly one physical copy of ${pkg}`, () => {
-      const copies = reachableCopies(pkg);
+      const copies = copiesOf(pkg);
       expect(
         copies.length,
         `${pkg} is not installed anywhere in the ui graph`,
@@ -132,7 +140,7 @@ describe("codemirror single-instance invariant", () => {
           "pnpm.overrides entry in the root package.json instead of " +
           "allowing a second copy.",
       ).toHaveLength(1);
-    });
+    }, 15_000);
   }
 
   // Exercise the installed editor graph directly. Separate @lezer/common

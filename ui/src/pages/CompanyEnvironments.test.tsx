@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -238,21 +239,26 @@ class FakeWebSocket {
 }
 
 async function act(callback: () => void | Promise<void>) {
-  await callback();
-  await Promise.resolve();
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
+  await reactAct(async () => {
+    await callback();
+    await Promise.resolve();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  });
 }
 
 async function flushReact() {
-  for (let i = 0; i < 3; i += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
+  await reactAct(async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+  });
 }
 
-async function waitForAssertion(assertion: () => void) {
+async function waitForAssertion(assertion: () => void, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
-  for (let i = 0; i < 20; i += 1) {
+  do {
     await flushReact();
     try {
       assertion();
@@ -260,7 +266,7 @@ async function waitForAssertion(assertion: () => void) {
     } catch (error) {
       lastError = error;
     }
-  }
+  } while (Date.now() < deadline);
   throw lastError;
 }
 
@@ -547,7 +553,7 @@ describe("CompanyEnvironments — test provider button", () => {
   });
 
   afterEach(() => {
-    root?.unmount();
+    reactAct(() => root?.unmount());
     root = null;
     container.remove();
     document.body.innerHTML = "";
