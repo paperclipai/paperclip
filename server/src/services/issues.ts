@@ -1,4 +1,4 @@
-import { retireReviewerIntents } from "./heartbeat/reviewer-assignment-continuation.js";
+import { retireReviewerIntents, reviewerIntentPredicate } from "./heartbeat/reviewer-assignment-continuation.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetWork, notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
 import { assertOnboardingFirstTaskCreationAllowed } from "./onboarding-first-task-admission.js";
@@ -11389,6 +11389,7 @@ export function issueService(db: Db) {
           await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
             .where(and(eq(agentWakeupRequests.companyId, receiptExisting.companyId),
               eq(agentWakeupRequests.requestedByActorType, "user"),
+              sql`NOT (${reviewerIntentPredicate})`,
               sql`coalesce(${agentWakeupRequests.payload}->>'issueId', ${agentWakeupRequests.payload}->>'taskId',
                 ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId',
                 ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId') = ${id}`));

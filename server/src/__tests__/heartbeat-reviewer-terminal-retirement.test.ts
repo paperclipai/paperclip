@@ -72,9 +72,10 @@ suite("terminal task reviewer receipt retirement", () => {
       { ...receipt, id: randomUUID(), status: "coalesced", runId: run.id, finishedAt: new Date() },
       { ...receipt, id: randomUUID(), status: "claimed", runId: run.id },
       { ...receipt, id: randomUUID(), payload: { ...receipt.payload, issueId: sibling.id } },
-    ]).returning();
-    await issueService(db).update(issueId, { status: "cancelled" });
-    for (const row of [...rows, other.receipt]) expect(await readReceipt(row.id)).toEqual(row);
+    ].map(row => ({ ...row, requestedByActorType: "user", requestedByActorId: "original-requester" }))).returning();
+    await issueService(db).update(issueId, { status: "cancelled", assigneeAgentId: null });
+    for (const row of [...rows.slice(1), other.receipt]) expect(await readReceipt(row.id)).toEqual(row);
+    expect((await readReceipt(rows[0].id)).status).toBe("cancelled");
     expect((await readReceipt(receipt.id)).status).toBe("cancelled");
   });
 
