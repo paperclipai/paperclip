@@ -494,3 +494,34 @@ it("still times out a stalled event read and reserves time to persist saved feed
     expect(eventReads).toBe(1);
   } finally { clock.mockRestore(); }
 });
+
+
+it("keeps time for event coverage after an earlier feedback endpoint stalls", async () => {
+  let now = 0, eventReads = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  let retained: FeedbackEvidence | undefined;
+  const stalledListApi = { get: async (url: string, options: { timeout: number }) => {
+    if (url.includes("agent-commentary?")) {
+      now += options.timeout;
+      throw new Error("request timeout");
+    }
+    if (url === "/api/companies/company/heartbeat-runs?limit=1000") return [{ id: "run", status: "succeeded" }];
+    if (url === "/api/heartbeat-runs/run") return { id: "run", status: "succeeded", runtimeMode: "native" };
+    if (url.includes("/events?")) {
+      eventReads++;
+      now += Math.min(8_000, options.timeout);
+      if (options.timeout < 8_000) throw new Error("request timeout");
+      return [];
+    }
+    throw new Error("Unexpected read");
+  } } as Pick<RunnerApi, "get">;
+  try {
+    const summary = await collectAttemptFeedback({ companyId: "company", deadlineAt: 30_000, api: stalledListApi,
+      persist: async evidence => { retained = structuredClone(evidence); },
+    });
+    expect(summary).toMatchObject({ collection: "unavailable", invocationCollection: "complete", runsInspected: 1 });
+    expect(retained!.diagnostics).toEqual(["feedback_read_failed"]);
+    expect(eventReads).toBe(1);
+    expect(now).toBe(13_000);
+  } finally { clock.mockRestore(); }
+});

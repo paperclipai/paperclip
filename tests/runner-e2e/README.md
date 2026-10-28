@@ -2834,9 +2834,10 @@ runs and before fixture teardown, even when cancellation or grading fails. This
 includes feedback from child and background runs. Full paginated bodies and
 native tool invocation outcomes are checkpointed in the access-controlled
 `snapshots/agent-feedback.json` artifact. Collection has a 30-second deadline.
-Each API read uses the remaining shared read budget, with up to five seconds
-reserved for the final checkpoint; a slow event response is not cut off by a
-separate five-second request limit. Reads are not retried.
+Event reads use the remaining shared read budget, with up to five seconds
+reserved for the final checkpoint. Other reads keep a five-second request cap
+so a stalled earlier endpoint leaves time to inspect run events. All reads
+remain bounded by the shared read cutoff and are not retried.
 Missing detail pages, truncated run lists, active work, and unavailable APIs
 remain explicit partial/unavailable observations. Legacy shell helpers do not
 have complete native invocation coverage. An empty saved-feedback list does not

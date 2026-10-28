@@ -137,10 +137,10 @@ export async function collectAttemptFeedback(input: {
   const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], runCoverage, diagnostics: [], summary };
   let retainedBytes = 0, checkpointBytes = 0, eventBytes = 0, eventCount = 0;
   const diagnose = (code: FeedbackEvidence["diagnostics"][number]) => { if (!evidence.diagnostics.includes(code)) evidence.diagnostics.push(code); };
-  const get = <T>(url: string) => {
+  const get = <T>(url: string, options?: { useRemainingBudget: boolean }) => {
     const remaining = readDeadlineAt - Date.now();
     if (remaining <= 0) { diagnose("deadline_reached"); throw new Error("Feedback collection deadline reached"); }
-    return input.api.get<T>(url, { timeout: remaining });
+    return input.api.get<T>(url, { timeout: options?.useRemainingBudget ? remaining : Math.min(5_000, remaining) });
   };
   const persist = async (force = false) => {
     summary.bodiesCollected = evidence.entries.length;
@@ -252,7 +252,7 @@ export async function collectAttemptFeedback(input: {
     let eventsComplete = false;
     try {
       for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=100`);
+        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=100`, { useRemainingBudget: true });
         if (!Array.isArray(page) || page.length > 100) throw new Error("Invalid events");
         for (const event of page) {
           if (!Number.isSafeInteger(event.seq) || Number(event.seq) <= afterSeq) throw new Error("Invalid event sequence");
