@@ -10,7 +10,9 @@ export function reportHtml(value: unknown) {
 
 export function reportHistoryHref(history: RunnerE2EHistoryIndex | undefined, campaignId: string | undefined) {
   const url = history?.campaigns.find(campaign => campaign.campaignId === campaignId)?.publicUrl;
-  return url?.replace(/campaigns\/[^/]+\/(?:index\.html)?$/, "") ?? "../../";
+  return url && /campaigns\/[^/]+\/(?:index\.html)?$/.test(url)
+    ? url.replace(/campaigns\/[^/]+\/(?:index\.html)?$/, "")
+    : "https://pages.paperclip.ing/evals/";
 }
 
 export function renderReportShell(input: {
@@ -30,7 +32,7 @@ export function renderReportShell(input: {
   return `<div class="report-shell" data-report-scope="${campaign ? "campaign" : "global"}" data-campaign-label="${h(label)}">
     <button class="report-drawer-backdrop" type="button" data-nav-close aria-label="Close navigation" hidden></button>
     <aside class="report-sidebar" id="report-navigation" aria-label="Report navigation">
-      <a class="brand-lockup report-brand" href="${h(root)}" aria-label="Paperclip evaluations">${paperclipReportLogo}<small>Evaluations</small></a>
+      <a class="brand-lockup report-brand" href="https://pages.paperclip.ing/evals/" aria-label="Paperclip evaluations">${paperclipReportLogo}<small>Evaluations</small></a>
       <div class="report-sidebar-scroll"><nav class="report-global-nav" aria-label="Evaluations">
         <a href="${campaign ? "?view=all" : "?view=overview"}" data-nav-view="${campaign ? "all" : "overview"}" aria-current="page"><span aria-hidden="true">◫</span>${campaign ? "All results" : "Overview"}</a>
         <a href="?view=attention" data-nav-view="attention"><span aria-hidden="true">○</span>Needs attention</a>
@@ -65,7 +67,7 @@ export const reportNavigationStyles = `
   .report-surface { margin-left: var(--report-sidebar-width); min-width: 0; }
   .report-surface main { width: 100%; max-width: 1320px; margin: 0 auto; padding: 32px 36px 72px; }
   .report-sidebar { position: fixed; inset: 0 auto 0 0; width: var(--report-sidebar-width); display: flex; flex-direction: column; background: var(--card, var(--raised)); border-right: 1px solid var(--border); z-index: 20; }
-  .report-brand { min-height: 68px; padding: 20px; display: flex; align-items: center; gap: 9px; font-size: 14px; text-decoration: none; }
+  .report-brand { min-height: 68px; padding: 20px 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 9px; font-size: 14px; text-decoration: none; }
   .report-brand small { font-size: 10px; font-weight: 400; margin-left: auto; color: var(--muted-foreground); }
   .report-brand svg { width: auto; height: 24px; flex: none; }
   .report-sidebar-scroll { min-height: 0; flex: 1; overflow: auto; padding: 0 10px 24px; scrollbar-width: thin; }

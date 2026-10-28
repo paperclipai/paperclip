@@ -103,6 +103,124 @@ it.each([{ runtimeMode: "legacy", status: "succeeded" }, { runtimeMode: "native"
   expect(summary.invocationCollection).toBe("partial");
 });
 
+function workspaceDeferral(): Record<string, unknown> {
+  return {
+    id: "run", companyId: "company", agentId: "agent", issueId: "child", status: "cancelled", runtimeMode: "legacy",
+    errorCode: "workspace_busy", startedAt: "2026-10-28T03:35:01.660Z", finishedAt: "2026-10-28T03:35:02.268Z",
+    runtimeModeResolvedAt: null, processStartedAt: null, processPid: null, processStartTicks: null,
+    runnerInstanceId: null, nativeSessionId: null, sessionIdAfter: null, lastOutputSeq: 0, costUsd: null,
+    usageJson: { ledgerScope: { issueId: "child" } },
+    runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+    resultJson: {
+      executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+      cancellation: { source: "control_plane", expected: true, initiator: { type: "system" } },
+      workspaceBusy: { holderRunId: "parent-run", holderIssueId: "parent", deferralAttempt: 0 },
+    },
+  };
+}
+
+async function collectWorkspaceDeferral(run: Record<string, unknown>, events: Record<string, unknown>[] = []) {
+  let retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async value => { retained = structuredClone(value); }, api: api(path => {
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) return events;
+    if (path === "/api/heartbeat-runs/run") return run;
+    return [{ id: "run", status: run.status }];
+  }) });
+  return { summary, retained: retained! };
+}
+
+it("records complete no-provider coverage for a proven workspace deferral without claiming native execution", async () => {
+  const { summary, retained } = await collectWorkspaceDeferral(workspaceDeferral(), [
+    { seq: 1, eventType: "lifecycle", stream: "system", payload: { retryScheduled: true } },
+  ]);
+  expect(summary).toMatchObject({ collection: "complete", invocationCollection: "complete", runsInspected: 1,
+    invocations: { completed: 0, failed: 0, unknown: 0 }, toolAvailability: "unknown" });
+  expect(retained.runCoverage).toEqual([{ runId: "run", classification: "provider_not_started" }]);
+});
+
+it.each([
+  ["pending successor", { status: "scheduled_retry", startedAt: null, finishedAt: null }],
+  ["actual legacy work", { status: "succeeded", errorCode: null, resultJson: {} }],
+  ["provider work", { resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: true } } }],
+  ["native process", { runnerInstanceId: "runner" }],
+  ["native selection", { runtimeMode: "native", runtimeModeResolvedAt: "2026-10-28T03:35:01.700Z" }],
+  ["local process", { processPid: 123 }],
+  ["usage", { usageJson: { inputTokens: 1 } }],
+  ["charge", { costUsd: "0.01" }],
+] as const)("keeps invocation coverage partial for %s despite a workspace marker", async (_label, overrides) => {
+  const { summary, retained } = await collectWorkspaceDeferral({ ...workspaceDeferral(), ...overrides });
+  expect(summary.invocationCollection).toBe("partial");
+  expect(retained.runCoverage).toEqual([{ runId: "run", classification: "incomplete" }]);
+});
+
+it.each([
+  event(1, "tool.execution.started", { name: "submit_complaint", executionId: "call" }),
+  event(1, "turn.started", {}),
+  { seq: 1, eventType: "adapter.invoke", stream: "system", payload: {} },
+  { seq: 1, eventType: "stdout", stream: "stdout", payload: {} },
+  { seq: 1, eventType: "lifecycle", stream: "system", sourceEventId: "native-event", payload: {} },
+  { seq: 1, eventType: "lifecycle", stream: "system", runId: "foreign-run", payload: {} },
+  { seq: 1, eventType: "unknown", stream: "system", payload: {} },
+])("rejects contradictory or unknown events when classifying a workspace deferral: %o", async contradictory => {
+  const { summary, retained } = await collectWorkspaceDeferral(workspaceDeferral(), [contradictory]);
+  expect(summary.invocationCollection).toBe("partial");
+  expect(retained.runCoverage).toEqual([{ runId: "run", classification: "incomplete" }]);
+});
+
+it("requires an exhaustive event scan before recording no-provider coverage", async () => {
+  let retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async value => { retained = structuredClone(value); }, api: api(path => {
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) throw new Error("unavailable");
+    if (path === "/api/heartbeat-runs/run") return workspaceDeferral();
+    return [{ id: "run", status: "cancelled" }];
+  }) });
+  expect(summary).toMatchObject({ invocationCollection: "partial", runsInspected: 0 });
+  expect(retained!.runCoverage).toEqual([{ runId: "run", classification: "incomplete" }]);
+  expect(retained!.diagnostics).toContain("events_read_failed");
+});
+
+it("examines all event pages before accepting no-provider coverage", async () => {
+  let pages = 0, retained: FeedbackEvidence | undefined;
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async value => { retained = structuredClone(value); }, api: api(path => {
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) {
+      pages++;
+      return pages === 1 ? Array.from({ length: 100 }, (_, index) => ({ seq: index + 1, eventType: "lifecycle", stream: "system" }))
+        : [event(101, "tool.execution.started", { name: "submit_suggestion", executionId: "call" })];
+    }
+    if (path === "/api/heartbeat-runs/run") return workspaceDeferral();
+    return [{ id: "run", status: "cancelled" }];
+  }) });
+  expect(pages).toBe(2);
+  expect(summary).toMatchObject({ invocationCollection: "partial", invocations: { unknown: 1 } });
+  expect(retained!.runCoverage).toEqual([{ runId: "run", classification: "incomplete" }]);
+});
+
+it("does not complete feedback while a workspace deferral's replacement remains scheduled", async () => {
+  let retained: FeedbackEvidence | undefined;
+  const runs = [
+    { id: "parent-opening", status: "succeeded", runtimeMode: "native" },
+    { id: "parent-resumed", status: "succeeded", runtimeMode: "native" },
+    workspaceDeferral(),
+    { id: "replacement", status: "scheduled_retry", runtimeMode: "legacy", retryOfRunId: "run", startedAt: null },
+  ];
+  const summary = await collectAttemptFeedback({ companyId: "company", persist: async value => { retained = structuredClone(value); }, api: api(path => {
+    if (path.includes("agent-commentary")) return { items: [], total: 0 };
+    if (path.includes("/events?")) return [];
+    if (path.startsWith("/api/heartbeat-runs/")) return runs.find(run => run.id === path.split("/").at(-1));
+    return runs;
+  }) });
+  expect(summary).toMatchObject({ collection: "partial", invocationCollection: "partial", runsInspected: 4 });
+  expect(retained!.runCoverage).toEqual([
+    { runId: "parent-opening", classification: "native_events" },
+    { runId: "parent-resumed", classification: "native_events" },
+    { runId: "run", classification: "provider_not_started" },
+    { runId: "replacement", classification: "incomplete" },
+  ]);
+});
+
 it("captures feedback after cancellation failure but before destructive teardown, and still tears down if persistence fails", async () => {
   const calls: string[] = [];
   const result = await runCleanupWithObservers({

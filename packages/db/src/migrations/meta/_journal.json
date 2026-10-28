@@ -2756,8 +2756,15 @@
     {
       "idx": 395,
       "version": "7",
-      "when": 1793165311346,
-      "tag": "0395_married_the_hand",
+      "when": 1793159398533,
+      "tag": "0395_tranquil_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1793191988458,
+      "tag": "0396_tan_paladin",
       "breakpoints": true
     }
   ]

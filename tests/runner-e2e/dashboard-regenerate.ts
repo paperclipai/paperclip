@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
-import { renderRunnerE2EDashboard } from "./dashboard.js";
+import { renderRunnerE2EDashboard, type RunnerDashboardInput } from "./dashboard.js";
 import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
 import {
   buildRunnerCampaign,
@@ -30,6 +30,25 @@ interface PublishedCampaign {
   operations?: RunnerE2ECampaign["operations"];
   feedbackReview?: RunnerE2ECampaign["feedbackReview"];
   braintrustExperiment?: RunnerE2ECampaign["braintrustExperiment"];
+  presentation?: RunnerDashboardInput["presentation"];
+}
+
+function validatePresentation(value: unknown) {
+  if (value === undefined) return;
+  const invalid = () => {
+    throw new Error("Published bundle has invalid presentation metadata in normalized-results.json");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const presentation = value as Record<string, unknown>;
+  for (const field of ["title", "description"]) {
+    if (presentation[field] !== undefined && typeof presentation[field] !== "string") invalid();
+  }
+  if (presentation.notes !== undefined &&
+      (!Array.isArray(presentation.notes) || presentation.notes.some(note => typeof note !== "string"))) invalid();
+  if (presentation.links !== undefined &&
+      (!Array.isArray(presentation.links) || presentation.links.some(link =>
+        !link || typeof link !== "object" || Array.isArray(link) ||
+        typeof link.label !== "string" || typeof link.href !== "string"))) invalid();
 }
 
 async function relativeFiles(root: string, current = root): Promise<string[]> {
@@ -89,6 +108,7 @@ export async function regenerateRunnerDashboard(input: {
   ) {
     throw new Error("Published bundle has an invalid normalized-results.json");
   }
+  validatePresentation(normalized.presentation);
 
   const results = normalized.results.map(upgradeRunnerResult);
   const expected = normalized.expected.map(canonicalExecutionId);
@@ -162,16 +182,18 @@ export async function regenerateRunnerDashboard(input: {
     }),
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: "Runner Full-Stack E2E",
+    title: normalized.presentation?.title ?? "Runner Full-Stack E2E",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,
     entries,
     campaign,
     history,
+    presentation: normalized.presentation,
   });
   const upgraded = {
     ...campaign,
+    ...(normalized.presentation ? { presentation: normalized.presentation } : {}),
     results: campaign.results.map((result, index) => ({
       ...result,
       evidenceValid:

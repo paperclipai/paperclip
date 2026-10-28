@@ -2,12 +2,13 @@ import { campaignAttemptTimeLabel, campaignTimingScope, renderWorkerPhaseTiming,
 import { html, durationLabel, tokenLabel, llmCostLabel, usdLabel } from "./report-format.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
 import { reportBrowserScript } from "./report-browser.js";
+import { reportEvidenceHref, reportTargetUrl } from "./report-target.js";
 import { isIncompleteFirstTaskResult, renderCaseOutcome } from "./case-outcome.js";
 import { latencyIntervalLabel } from "./latency-timing.js";
 import { campaignSuiteSummaryStyles, renderCampaignSuiteSummary, renderSuiteCaseIndex } from "./campaign-summary.js";
 import { journeyCapabilities, journeyFeatureIds } from "./journey-features.js";
 import { journeyFeatureStyles, renderJourneyFeatureCoverage, renderJourneyFeatureOptions } from "./feature-coverage.js";
-import { STARTUP_REUSE_LAYERS, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
+import { STARTUP_REUSE_LAYERS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { renderFirstTaskDetails } from "./first-task-report.js";
 import { summarizeCampaignFeedback } from "./feedback.js";
 import { renderCampaignFeedbackReview } from "./feedback-dispositions.js";
@@ -45,6 +46,12 @@ export interface RunnerDashboardInput {
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
   history?: RunnerE2EHistoryIndex;
+  presentation?: {
+    title?: string;
+    description?: string;
+    notes?: readonly string[];
+    links?: readonly { label: string; href: string }[];
+  };
 }
 
 interface ResolvedScreenshot {
@@ -147,6 +154,7 @@ function renderCase(
       : item,
   );
   const billing = entry ? summarizeExecutionBilling(entry.result) : null;
+  const targetUrl = reportTargetUrl(entry?.result);
   const capabilities = journeyCapabilities(execution);
   const features = [...new Map(capabilities.map((capability) => [capability.feature.id, capability.feature])).values()];
   const outcome = entry ? renderCaseOutcome(entry.result, entry.valid, entry.errors) : "";
@@ -233,9 +241,9 @@ function renderCase(
     <td>${html(latencyIntervalLabel(probe))}</td><td>${html(`${probe.target.operator} ${probe.target.ms} ms`)}</td>
     <td>${html(probe.resolutionMs === null ? "unknown" : `${probe.resolutionMs} ms`)}</td>
     </tr>`).join("");
-  const startupReuseRows = (entry?.result.startupReuse ?? (entry?.result.runIds ?? []).map(runId => ({
-    runId, ...summarizeStartupReuse([]),
-  }))).map(reuse => `<tr>
+  const startupReuseRows = (entry?.result.startupReuse ?? []).filter(reuse =>
+    reuse.providerLaunchCount !== null || STARTUP_REUSE_LAYERS.some(layer => reuse.layers[layer].state !== "unknown"),
+  ).map(reuse => `<tr>
     <td><code>${html(reuse.runId)}</code></td><td>${html(reuse.warmth)}</td>
     ${STARTUP_REUSE_LAYERS.map(layer => `<td>${html(reuse.layers[layer].state)} (${html(reuse.layers[layer].reason)})</td>`).join("")}
     <td>${html(reuse.providerLaunchCount === null ? "unknown" : reuse.providerLaunchCount)}</td>
@@ -250,6 +258,7 @@ function renderCase(
             data-gallery-href="${html(item.href)}"
             data-gallery-label="${html(item.label)}"
             data-gallery-execution="${html(execution.id)}"
+            data-gallery-target-url="${html(targetUrl)}"
             data-gallery-case="${html(execution.task.label)}"
             data-gallery-profile="${html(execution.profile.label)}"
             data-gallery-generation="${html(execution.profile.generation)}"
@@ -262,7 +271,7 @@ function renderCase(
             data-gallery-status="${html(label)}"
             data-gallery-duration="${html(entry ? durationLabel(entry.result.durationMs) : "Not run")}"
             data-gallery-tokens="${html(billing ? `${tokenLabel(billing.llm.inputTokens, billing.llm)} in · ${tokenLabel(billing.llm.outputTokens, billing.llm)} out` : "Unavailable")}"
-            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} matchers passed${notReached ? ` · ${notReached} not reached` : ""}` : "No matchers recorded")}"
+            data-gallery-matchers="${html(matcherResults.length > 0 ? `${passedMatchers}/${matcherResults.length} checks passed${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded")}"
             aria-label="Open ${html(item.label)} for ${html(execution.id)} in gallery"
           >
             <span class="screenshot-frame"><img src="${html(item.href)}" loading="lazy" alt="${html(item.label)} for ${html(execution.id)}"></span>
@@ -276,7 +285,7 @@ function renderCase(
         <div><span>Tokens</span><strong>${html(tokenLabel(billing.llm.inputTokens, billing.llm))} in · ${html(tokenLabel(billing.llm.outputTokens, billing.llm))} out</strong><small>${html(tokenLabel(billing.llm.cachedInputTokens, billing.llm))} cached · ${billing.llm.runsWithTokenUsage}/${billing.llm.runCount} runs covered</small></div>
         <div><span>LLM spend</span><strong>${html(llmCostLabel(billing.reportedCostUsd, billing.llm))}</strong><small>${billing.llm.runsWithReportedCost}/${billing.llm.runCount} runs provider-priced</small></div>
         ${(billing.llm.runsWithEstimatedCost ?? 0) > 0 ? `<div><span>LLM estimate</span><strong>${html(billingCoverageLabel(usdLabel(billing.llm.estimatedCostUsd ?? 0), billing.llm.runsWithEstimatedCost ?? 0, billing.llm.runCount))}</strong><small>Estimated from captured usage</small></div>` : ""}
-        <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Cost unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong><small>${html(durationLabel(billing.runtime.agentRunDurationMs))} agent${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small></div>
+        <div><span>Execution</span><strong>${billing.runtime.estimatedListCostUsd === undefined ? html(billing.runtime.costStatus === "not_metered" ? "Local · not metered" : "Unavailable") : `${html(usdLabel(billing.runtime.estimatedListCostUsd))} est.`}</strong>${billing.runtime.agentRunDurationMs === null && billing.runtime.leaseDurationMs === null ? "" : `<small>${billing.runtime.agentRunDurationMs === null ? "" : `${html(durationLabel(billing.runtime.agentRunDurationMs))} agent`}${billing.runtime.leaseDurationMs === null ? "" : ` · ${html(durationLabel(billing.runtime.leaseDurationMs))} lease`}</small>`}</div>
         ${billing.assistant ? `<div><span>External assistant</span><strong>${html(usdLabel(billing.assistant.estimatedCostUsd))} est.</strong><small>${html(billing.assistant.model)} · ${billing.assistant.requests} requests · ${html(tokenLabel(billing.assistant.inputTokens + billing.assistant.cachedInputTokens))} in / ${html(tokenLabel(billing.assistant.outputTokens))} out</small></div>` : ""}
       </div>`
     : "";
@@ -306,13 +315,22 @@ function renderCase(
     ${gallery}
     <details class="case-context case-diagnostics">
       <summary><span>Test details</span><span class="case-detail-summary">${matcherResults.length ? `${passedMatchers}/${matcherResults.length} checks${notReached ? ` · ${notReached} not reached` : ""}` : "No checks recorded"}${entry ? ` · ${html(durationLabel(entry.result.durationMs))}` : ""}</span></summary>
-    ${passed ? outcome : ""}
+    ${entry ? `<dl class="case-facts">
+      <div><dt>Tested URL</dt><dd>${targetUrl ? `<a href="${html(targetUrl)}" target="_blank" rel="noreferrer">${html(targetUrl)} <span aria-hidden="true">↗</span></a>` : "Not recorded"}</dd></div>
+      <div><dt>Environment</dt><dd>${html(execution.environment.label)}</dd></div>
+      ${entry.result.model ? `<div><dt>Model</dt><dd>${html(entry.result.model)}</dd></div>` : ""}
+      <div><dt>Runtime</dt><dd>${html(entry.result.runtimeMode === "none" ? "Browser only" : `${entry.result.runtimeMode} · ${entry.result.provider ?? execution.profile.provider}`)}</dd></div>
+    </dl>` : ""}
+    ${matcherResults.length || notReached ? `<ul class="case-checks" aria-label="Recorded checks">${matcherResults.map(result => `<li><span class="check-state ${result.passed ? "check-passed" : "check-failed"}">${result.passed ? "Pass" : "Fail"}</span><span>${html(result.detail)}</span></li>`).join("")}${firstTaskChecks?.filter(check => check.notReached).map(check => `<li><span class="check-state">Not reached</span><span>${html(check.detail)} · ${html(check.notReached)}</span></li>`).join("") ?? ""}</ul>` : ""}
     ${billingStrip}
+    ${renderFirstTaskDetails(entry?.result)}
+    ${links}
+    <details class="case-context case-advanced">
+    <summary>Diagnostics</summary>
+    ${passed ? outcome : ""}
     ${entry ? `<p class="detail">Worker phase timing: ${entry.result.workerTiming ? html(entry.result.workerTiming.status === "unavailable" ? `unavailable (${entry.result.workerTiming.reason})` : entry.result.workerTiming.status) : "not captured"}. ${entry.result.workerTiming?.status === "partial" ? "Only completed phases have observed durations." : ""}</p>` : ""}
     ${entry?.result.feedback ? `<p class="detail">Feedback: ${entry.result.feedback.complaints} complaints · ${entry.result.feedback.suggestions} suggestions · ${entry.result.feedback.review.length} distinct items; see campaign feedback review. Saved-feedback collection: ${html(entry.result.feedback.collection)}; invocation coverage: ${html(entry.result.feedback.invocationCollection)}. Tool receipts: ${entry.result.feedback.invocations.failed} failed · ${entry.result.feedback.invocations.unknown} unresolved. Full bodies: access-controlled snapshots/agent-feedback.json or snapshots/agent-feedback-recovered.json.</p>` : entry ? `<p class="detail">Feedback was not captured for this attempt.</p>` : ""}
     ${entry?.result.tracing ? `<p class="detail">Braintrust worker export: ${html(entry.result.tracing.status)}; native configuration: ${html(entry.result.tracing.nativeConfiguration)}. ${entry.result.tracing.finalization ? `Supervisor outcome: ${html(entry.result.tracing.finalization.outcome)}; finalization export: ${html(entry.result.tracing.finalization.status)}.` : "Supervisor finalization was not captured."} Trace ${html(entry.result.tracing.traceId)} in project ${html(entry.result.tracing.projectId)}. Indexing and native-span correlation require independent verification.</p>` : ""}
-    ${links}
-    ${renderFirstTaskDetails(entry?.result)}
     <code class="execution-id">${html(execution.id)}</code>
     ${capabilities.length ? `<ul class="case-capabilities" aria-label="Capabilities tested">${capabilities.map((capability) => `<li>${html(capability.feature.title)} · ${html(capability.label)}</li>`).join("")}</ul>` : ""}
     ${
@@ -329,12 +347,13 @@ function renderCase(
           </dl>`
         : ""
     }
-    <p class="detail">${html(detail)}</p>
+    ${entry?.errors.length ? `<p class="detail">${html(detail)}</p>` : ""}
     ${turnTimingRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Turn</th><th>Run</th><th>Lease</th><th>Scheduler</th><th>Run duration</th><th>Final settlement (legacy response field)</th></tr></thead><tbody>${turnTimingRows}</tbody></table></div>` : ""}
     ${latencyRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Event</th><th>Timing verdict</th><th>Possible latency</th><th>Target</th><th>Resolution</th></tr></thead><tbody>${latencyRows}</tbody></table></div>` : ""}
     ${startupReuseRows ? `<div class="matcher-wrap"><table class="matchers"><caption>Startup reuse evidence</caption><thead><tr><th>Run</th><th>Warmth</th><th>Environment/lease</th><th>Workspace</th><th>Runner</th><th>Provider process</th><th>Provider session</th><th>Provider launches</th></tr></thead><tbody>${startupReuseRows}</tbody></table></div>` : ""}
-    ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : `<p class="detail">No matcher result was recorded.</p>`}
-    ${entry ? `<details class="usage"><summary>Usage, billing and timing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null, workerTiming: entry.result.workerTiming ?? null }, null, 2))}</pre></details>` : ""}
+    ${matcherRows ? `<div class="matcher-wrap"><table class="matchers"><thead><tr><th>Result</th><th>Matcher</th><th>Expectation</th><th>Detail</th></tr></thead><tbody>${matcherRows}</tbody></table></div>` : ""}
+    ${entry ? `<details class="usage"><summary>Usage, billing and timing metadata</summary><pre>${html(JSON.stringify({ billing, rawUsage: entry.result.usage ?? null, workerTiming: entry.result.workerTiming ?? null, startupReuse: entry.result.startupReuse ?? null }, null, 2))}</pre></details>` : ""}
+    </details>
     </details>
   </article>`;
 }
@@ -379,6 +398,10 @@ function renderSuiteResults(input: {
 }
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  const presentationLinks = (input.presentation?.links ?? []).flatMap(link => {
+    const href = reportEvidenceHref(link.href);
+    return href ? [{ ...link, href }] : [];
+  });
   const expected = new Set(input.expected);
   const catalog = discoverReportCatalog({
     catalog: input.catalog,
@@ -662,6 +685,17 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .case-diagnostics > summary::before { content: "›"; color: var(--muted-foreground); font-size: 16px; line-height: 1; }
     .case-diagnostics[open] > summary::before { transform: rotate(90deg); }
     .case-detail-summary { margin-left: auto; color: var(--muted-foreground); font: 400 11px/1.5 var(--font-mono); }
+    .case-facts { display: grid; gap: 10px; margin: 18px 0; font-size: 12px; }
+    .case-facts > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: baseline; gap: 12px; }
+    .case-facts dd { min-width: 0; overflow-wrap: anywhere; font: inherit; }
+    .case-facts a { text-underline-offset: 3px; }
+    .case-checks { display: grid; gap: 9px; list-style: none; padding: 14px 0; margin: 0; border-top: 1px solid var(--border); font-size: 12px; }
+    .case-checks li { display: flex; align-items: baseline; gap: 10px; overflow-wrap: anywhere; }
+    .check-state { flex: none; min-width: 32px; color: var(--muted-foreground); font-size: 10px; font-weight: 600; }
+    .check-passed { color: var(--pass-text); }
+    .check-failed { color: var(--fail-text); }
+    .case-advanced { margin-top: 18px; }
+    .case-advanced > summary { color: var(--muted-foreground); font-weight: 400; }
     .case-capabilities { padding-left: 16px; color: var(--muted-foreground); font-size: 11px; }
     .case-outcome { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); font-size: 12px; }
     .case-incomplete > .case-outcome { border-color: var(--missing-border); }
@@ -735,6 +769,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     .gallery-context span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
     .gallery-context strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
     .gallery-context em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; white-space: nowrap; }
+    .gallery-context .gallery-target { flex-basis: 100%; }
+    .gallery-target a { color: #fafafa; font-size: 12px; overflow-wrap: anywhere; text-underline-offset: 3px; }
     .gallery-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-top: 8px; }
     .gallery-facts > span { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
     .gallery-facts em { color: #b8b8b5; font: 10px/1.4 var(--font-mono); font-style: normal; text-transform: uppercase; }
@@ -833,8 +869,8 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     <header class="report-header">
       <div>
         <p class="eyebrow">Full-stack acceptance campaign</p>
-        <h1 tabindex="-1">${html(input.title)}</h1>
-        <p class="lede">Results across runner profiles and execution environments. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.</p>
+        <h1 tabindex="-1">${html(input.presentation?.title ?? input.title)}</h1>
+        <p class="lede">${html(input.presentation?.description ?? "Results across runner profiles and execution environments. Declared PNG screenshots and normalized results are retained with every published campaign; additional diagnostic evidence remains in the access-controlled workflow artifact.")}</p>
         ${input.campaign ? `<p class="report-source"><span>${html(input.generatedAt)}</span>${input.campaign.source.sha ? `<code>${html(input.campaign.source.sha.slice(0,8))}</code>` : ""}${input.campaign.source.workflowRunUrl ? `<a href="${html(input.campaign.source.workflowRunUrl)}">Source run ↗</a>` : ""}</p>` : ""}
       </div>
       <div class="report-actions">
@@ -847,6 +883,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         <button class="gallery-launch" type="button" data-gallery-open ${screenshotCount === 0 ? "disabled" : ""}>${screenshotCount === 0 ? "Visual evidence · workflow artifact only" : `View gallery · ${screenshotCount}`}</button>
       </div>
     </header>
+    ${input.presentation?.notes?.length || presentationLinks.length ? `<details class="campaign-billing-details campaign-notes"><summary>About this run</summary>${input.presentation?.notes?.map(note => `<p class="detail">${html(note)}</p>`).join("") ?? ""}${presentationLinks.length ? `<nav class="evidence-links" aria-label="Campaign evidence">${presentationLinks.map(link => `<a href="${html(link.href)}">${html(link.label)}</a>`).join("")}</nav>` : ""}</details>` : ""}
     ${renderCampaignSuiteSummary(input.campaign?.suites ?? [], catalog, "", false)}
     <details class="campaign-billing-details"><summary>Campaign usage and spend</summary>
     <section class="billing-overview" aria-label="Campaign billing summary">
@@ -894,6 +931,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
             <span><strong data-gallery-profile></strong><em data-gallery-profile-detail></em></span>
             <span><em>Environment:</em><strong data-gallery-environment></strong><em data-gallery-environment-detail></em></span>
             <span><strong data-gallery-case></strong><em data-gallery-runtime></em></span>
+            <span class="gallery-target"><em>Tested URL:</em><a data-gallery-target-url target="_blank" rel="noreferrer"></a></span>
           </div>
           <div class="gallery-facts">
             <span class="gallery-status" data-gallery-status></span>
@@ -953,6 +991,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
       const profileDetail = dialog.querySelector("[data-gallery-profile-detail]");
       const environment = dialog.querySelector("[data-gallery-environment]");
       const environmentDetail = dialog.querySelector("[data-gallery-environment-detail]");
+      const targetUrl = dialog.querySelector("[data-gallery-target-url]");
       const caseLabel = dialog.querySelector("[data-gallery-case]");
       const runtime = dialog.querySelector("[data-gallery-runtime]");
       const status = dialog.querySelector("[data-gallery-status]");
@@ -983,6 +1022,9 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
         profileDetail.textContent = item.dataset.galleryGeneration + " · " + item.dataset.galleryProvider + " · " + item.dataset.galleryModel;
         environment.textContent = item.dataset.galleryEnvironment;
         environmentDetail.textContent = "Provider: " + item.dataset.galleryEnvironmentProvider + " · Target: " + item.dataset.galleryExecutionTarget;
+        targetUrl.textContent = item.dataset.galleryTargetUrl || "Not recorded";
+        if (item.dataset.galleryTargetUrl) targetUrl.href = item.dataset.galleryTargetUrl;
+        else targetUrl.removeAttribute("href");
         caseLabel.textContent = item.dataset.galleryCase;
         runtime.textContent = item.dataset.galleryRuntime + " runtime";
         status.textContent = item.dataset.galleryStatus;

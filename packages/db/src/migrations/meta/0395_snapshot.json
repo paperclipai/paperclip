@@ -1,5 +1,5 @@
 {
-  "id": "dc3c725a-e8b5-416d-b091-876346d54355",
+  "id": "66fe02b3-6672-4c19-b447-57acad43bf16",
   "prevId": "633afb6b-4b89-44ea-81d5-a477a3696eb5",
   "version": "7",
   "dialect": "postgresql",
@@ -1347,6 +1347,34 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_user_issue_actor_idx": {
+          "name": "activity_log_company_user_issue_actor_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"activity_log\".\"actor_type\" = 'user' AND \"activity_log\".\"entity_type\" = 'issue'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -14160,24 +14188,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "provider_account_id": {
-          "name": "provider_account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cleanup_confirmed_at": {
-          "name": "cleanup_confirmed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cleanup_next_attempt_at": {
-          "name": "cleanup_next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp with time zone",
@@ -14200,22 +14210,6 @@
         }
       },
       "indexes": {
-        "chat_voice_inbound_cleanup_idx": {
-          "name": "chat_voice_inbound_cleanup_idx",
-          "columns": [
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"chat_voice_inbound_calls\".\"cleanup_confirmed_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_voice_inbound_expiry_idx": {
           "name": "chat_voice_inbound_expiry_idx",
           "columns": [

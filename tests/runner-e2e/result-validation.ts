@@ -270,6 +270,7 @@ const fields = {
   provider: nullable(string),
   model: nullable(string),
   runtimeMode: oneOf("legacy", "native", "none"),
+  targetUrl: optional(url),
   issueId: optional(string),
   issueIdentifier: optional(nullable(string)),
   runIds: optional(array(string)),

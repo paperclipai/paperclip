@@ -87,6 +87,26 @@ export function voiceInboundCleanup(db: Db, terminate: (call: Admission) => Prom
         eq(chatVoiceSessions.companyId, call.companyId), eq(chatVoiceSessions.endpointId, call.endpointId),
         eq(chatVoiceSessions.providerSessionId, call.providerSessionId))).for("update");
       if (session) {
+        if (terminal(session)) {
+          if (call.sessionId && call.sessionId !== session.id) throw conflict("Incoming call cleanup has conflicting session ownership");
+          await notifyVoiceInbound(tx, { kind: "admission", id });
+          await tx.update(chatVoiceInboundCalls).set({ ...(!rejected(call) ? { state: "ended" as const } : {}), cleanupConfirmedAt: session.endedAt, cleanupNextAttemptAt: null, updatedAt: new Date() }).where(eq(chatVoiceInboundCalls.id, id));
+          return null;
+        }
+        if (rejected(call)) {
+          if (call.sessionId !== session.id) {
+            if (call.sessionId || session.mode !== "inbound_phone" || session.idempotencyKey !== `inbound:${call.id}`
+              || session.generation !== call.generation || session.credentialFingerprint !== call.credentialFingerprint
+              || session.toolTokenHash !== call.toolTokenHash) throw conflict("Incoming call cleanup has conflicting session ownership");
+            await notifyVoiceInbound(tx, { kind: "admission", id });
+            await tx.update(chatVoiceInboundCalls).set({ sessionId: session.id, updatedAt: new Date() }).where(eq(chatVoiceInboundCalls.id, id));
+          }
+          if (session.state !== "ending") {
+            await notifyVoiceRecovery(tx, { kind: "session", id: session.id });
+            await tx.update(chatVoiceSessions).set({ state: "ending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
+          }
+          return null;
+        }
         if (call.sessionId !== session.id || (call.state === "approving" && session.callerAuthority !== "guest_intake")) {
           // Repair older commits that inserted/promoted an authorized session
           // before the separate admission binding write. Never infer approval
@@ -100,13 +120,6 @@ export function voiceInboundCleanup(db: Db, terminate: (call: Admission) => Prom
           await notifyVoiceInbound(tx, { kind: "admission", id });
           await tx.update(chatVoiceInboundCalls).set({ state: "approved", sessionId: session.id, updatedAt: new Date() }).where(eq(chatVoiceInboundCalls.id, id));
           call.state = "approved"; call.sessionId = session.id;
-        }
-        if (terminal(session)) {
-          await notifyVoiceInbound(tx, { kind: "admission", id });
-          await tx.update(chatVoiceInboundCalls).set({ ...(!rejected(call) ? { state: "ended" as const } : {}), cleanupConfirmedAt: session.endedAt, cleanupNextAttemptAt: null, updatedAt: new Date() }).where(eq(chatVoiceInboundCalls.id, id));
-        } else if (rejected(call) && session.state !== "ending") {
-          await notifyVoiceRecovery(tx, { kind: "session", id: session.id });
-          await tx.update(chatVoiceSessions).set({ state: "ending", updatedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
         }
         return null;
       }

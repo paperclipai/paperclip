@@ -530,7 +530,6 @@ async function recordMigrationHistoryEntry(
 // These idempotent migrations require top-level statements for batch commits
 // or concurrent index builds. History is recorded only after completion.
 const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
-  "0395_married_the_hand.sql",
   "0313_private_task_access.sql",
   "0314_private_task_draft_assets.sql",
   "0332_little_night_nurse.sql",
@@ -547,6 +546,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0391_third_roulette.sql",
   "0392_small_frightful_four.sql",
   "0393_open_grandmaster.sql",
+  "0395_tranquil_firestar.sql",
+  "0396_tan_paladin.sql",
 
 
   "0384_funny_adam_warlock.sql",

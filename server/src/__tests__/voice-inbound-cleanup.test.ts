@@ -8,7 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
-import { voiceInboundCleanup } from "../services/voice/voice-inbound-cleanup.js";
+import { assertVoiceInboundCleanupSettled, voiceInboundCleanup } from "../services/voice/voice-inbound-cleanup.js";
 import { notifyVoiceInbound } from "../services/voice/voice-inbound-notifications.js";
 import { notifyVoiceChange } from "../services/voice/voice-recovery-notifications.js";
 
@@ -134,7 +134,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("backfills only provable legacy termination and preserves rejected cleanup debt", async () => {
     const confirmed = await admission({ state: "ended" });
     const uncertain = await admission({ state: "ended", approvedByUserId: randomUUID(), callerAuthority: "member" });
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0395_married_the_hand.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0396_tan_paladin.sql", import.meta.url), "utf8");
     const backfill = migration.split("--> statement-breakpoint").at(-1)!;
     await db.$client.unsafe(backfill); await db.$client.unsafe(backfill);
     expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, confirmed.id)))[0].cleanupConfirmedAt).not.toBeNull();
@@ -208,6 +208,51 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await settled();
     expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0].cleanupConfirmedAt).not.toBeNull();
     await quiet(); expect(terminate).not.toHaveBeenCalled();
+  });
+  it.each(["ended", "expired"] as const)("settles terminal legacy %s admissions without a session binding", async state => {
+    const call = await admission({ state, approvedByUserId: randomUUID(), callerAuthority: "member", requestedIssueId: issueId });
+    const endedAt = new Date(Date.now() - 20_000);
+    await owner(call, { state: "ended", endedAt });
+    const service = voiceInboundCleanup(db, terminate);
+    await expect(assertVoiceInboundCleanupSettled(db, companyId)).rejects.toMatchObject({ status: 409 });
+    expect(await service.check(call.id)).toBeNull();
+    expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0])
+      .toMatchObject({ state, cleanupConfirmedAt: endedAt, cleanupNextAttemptAt: null });
+    await start(service); await settled(); await quiet();
+    expect(terminate).not.toHaveBeenCalled();
+    await assertVoiceInboundCleanupSettled(db, companyId);
+  });
+  it.each(["denied", "expired", "ended"] as const)("hands rejected legacy %s admissions without a binding to live recovery", async state => {
+    const call = await admission({ state, approvedByUserId: randomUUID(), callerAuthority: "member", requestedIssueId: issueId });
+    const session = await owner(call);
+    const service = voiceInboundCleanup(db, terminate);
+    expect(await service.check(call.id)).toBeNull();
+    expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0])
+      .toMatchObject({ state, sessionId: session.id, cleanupConfirmedAt: null });
+    expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, session.id)))[0].state).toBe("ending");
+    await start(service); await settled(); await quiet();
+    await db.transaction(async tx => {
+      await notifyVoiceChange(tx, { kind: "session", id: session.id });
+      await tx.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, session.id));
+    });
+    await settled();
+    expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0].cleanupConfirmedAt).not.toBeNull();
+    await quiet(); expect(terminate).not.toHaveBeenCalled();
+  });
+  it.each([
+    { mode: "outbound_phone" as const },
+    { idempotencyKey: "another-admission" },
+    { generation: 2 },
+    { credentialFingerprint: "another-credential" },
+    { toolTokenHash: "b".repeat(64) },
+  ])("retains rejected legacy cleanup debt when session evidence conflicts: %j", async patch => {
+    const call = await admission({ state: "expired" });
+    const session = await owner(call, patch);
+    await expect(voiceInboundCleanup(db, terminate).check(call.id)).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, call.id)))[0])
+      .toMatchObject({ state: "expired", sessionId: null, cleanupConfirmedAt: null });
+    expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, session.id)))[0].state).toBe("active");
+    expect(terminate).not.toHaveBeenCalled();
   });
   it("retains first work committed during drain without passive SQL", async () => {
     await start(); await settled(); enabled = false;

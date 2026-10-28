@@ -8,7 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 const external = process.env.PAPERCLIP_MIGRATION_TEST_DATABASE_URL;
 if (external && !new URL(external).pathname.endsWith("_test")) throw new Error("Migration test URL must name a test database");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
-const migrationFile = "0395_married_the_hand.sql";
+const migrationFile = "0396_tan_paladin.sql";
 const indexName = "chat_voice_inbound_cleanup_idx";
 
 (support.supported ? describe : describe.skip)("inbound voice cleanup migration", () => {

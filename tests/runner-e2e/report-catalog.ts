@@ -98,7 +98,10 @@ export function discoverReportCatalog(input: {
       expectedMatrixSize: suiteIds.length,
     };
     const knownProfile = input.catalog.find(
-      (execution) => execution.profile.id === identity.profileId,
+      (execution) => execution.suite.id === identity.suiteId && execution.profile.id === identity.profileId,
+    )?.profile ?? input.catalog.find(
+      (execution) => execution.profile.id === identity.profileId &&
+        (!result || execution.profile.provider === result.provider && execution.profile.model === result.model),
     )?.profile;
     const knownEnvironment = input.catalog.find(
       (execution) => execution.environment.id === identity.environmentId,
