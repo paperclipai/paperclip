@@ -539,5 +539,7 @@ API and download oracles; no live qualification is implied by fixture registrati
 
 The explicit-only [feedback persistence case](../tests/runner-e2e/README.md#feedback-persistence-explicit-only)
 checks real native complaint/suggestion submissions and retained bodies with
-run-attributed tool receipts. It is manual, uses the normal Product E2E report,
+run-attributed tool receipts on local and Daytona execution. Its four native
+Claude/Codex cells are explicit-only. Remote registrations remain unqualified
+until retained live attempts prove them. It uses the normal Product E2E report
 and keeps synthetic feedback distinct from actionable product findings.

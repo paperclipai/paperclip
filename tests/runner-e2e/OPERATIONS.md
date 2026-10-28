@@ -11,11 +11,13 @@ Eval audit, and remaining activation gaps.
 
 ## Supported admission
 
-The initial path admits local `core-compatibility` and `feedback-persistence` cells for `runner-codex`,
-`runner-acpx-claude`, `legacy-codex`, and `legacy-claude`. Each cell must have one
-provider credential and an exact priced model. Other suites, remote environments,
-subscription profiles, hosted tools, multimodal inputs, premium service modes,
-and separate judges fail admission. This whitelist is implementation scope, not
+The bounded path admits local `core-compatibility` and `feedback-persistence` cells
+for `runner-codex`, `runner-acpx-claude`, `legacy-codex`, and `legacy-claude`.
+Daytona admits the two native profiles in those suites when the manifest declares
+`remoteGateway: "cloudflare"`. Each cell needs one exact priced model and its
+provider credential; Daytona also needs its provider key. Other suites and remote
+routes, subscription profiles, hosted tools, multimodal inputs, premium service
+modes, and separate judges fail admission. This whitelist is implementation scope, not
 evidence that every admitted harness has passed live qualification.
 
 Before creating the journal or requesting credentials, manifest validation checks
@@ -510,6 +512,13 @@ existing Braintrust subscription with a reference to that policy and current
 plan evidence. Any newly incurred subscription or capacity charge needs its own
 incremental allocation; the existing fee must remain visible separately.
 
+Unscheduled local controllers use `runner: "local"` to retain their actual
+execution origin. The same component, cap, expiry and receipt rules apply. This
+label supplies no default zero charge and releases no reservation. Scheduled
+allowances still require `github-hosted`; a local allowance fails that gate. The
+separate hosted Runner controller enforces the same origin when admitting work.
+Historical manifest reads preserve their original label; they grant no new admission.
+
 The catalog checks that this allowance matches the selected runner, covers at
 least the next four hours, and leaves room for a full conservative model-request
 reservation. This happens before the build and test runners start. The workflow passes
@@ -899,8 +908,9 @@ launch manifests must use the adopted cap. The migration cannot extend an expire
 deadline, change an existing cap, or replenish an allowance. An interrupted append
 remains an accounting failure and must be recovered before more paid work.
 
-The explicit local `feedback-persistence` native Claude/Codex cells also accept
-an operations manifest. They use the same metered connection, prices, campaign
+The explicit `feedback-persistence` native Claude/Codex cells on local and Daytona
+execution also accept an operations manifest. Remote cells require the Cloudflare
+gateway declaration and immutable image. They use the same metered connection, prices, campaign
 journal, setup boundary, and durable attempt allowance as core compatibility.
 Collection and the independent saved-evidence oracle require no additional
 model call. The synthetic items need review as test data, not product incidents.

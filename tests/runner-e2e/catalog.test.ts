@@ -219,10 +219,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 2, 28, 18, 2, 6, 6, 13, 10, 2, 48, 16, 10, 2, 1, 1, 4, 116, 2, 2,
+      2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 2, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(769);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(769);
+    expect(validateRunnerCatalog()).toHaveLength(771);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(771);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
@@ -251,6 +251,22 @@ describe("runner E2E catalog", () => {
       runnerTasks.find((task) => task.id === "plan-revise-accept")
         ?.attemptTimeoutMs,
     ).toEqual({ local: 8 * 60_000, daytona: 12 * 60_000 });
+  });
+
+  it("bounds ephemeral Daytona lifetime beyond each declared attempt and acquire budget", () => {
+    const environment = runnerEnvironments.find(entry => entry.id === "daytona")!;
+    const payload = environment.buildEnvironment({
+      executionId: "bounded-lifetime", daytonaImage: `runner@sha256:${"a".repeat(64)}`,
+      secretRefs: { DAYTONA_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } },
+    });
+    const config = payload.config as Record<string, unknown>;
+    const lifetimeMs = Number(config.ttlMinutes) * 60_000;
+    expect(Number.isFinite(lifetimeMs)).toBe(true);
+    const cells = runnerMatrix.filter(entry => entry.environment === environment);
+    expect(cells.length).toBeGreaterThan(0);
+    for (const cell of cells) {
+      expect(lifetimeMs, cell.id).toBeGreaterThan(cell.task.attemptTimeoutMs.daytona + Number(config.timeoutMs));
+    }
   });
 
   it("defines the warm Daytona continuity fixture as exactly two Codex cells", () => {
