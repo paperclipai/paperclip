@@ -60,14 +60,12 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
   const set = vi.fn(() => ({ where: updateWhere }));
   const update = vi.fn(() => ({ set }));
 
-  return {
-    db: { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => {
-      inTransaction = true;
-      try { return await callback({ select, update }); } finally { inTransaction = false; }
-    }) },
-    selectWhere,
-    returning,
-  };
+  const db = { select, update, transaction: vi.fn(async (callback: (db: unknown) => Promise<unknown>) => {
+    const outerTransaction = inTransaction;
+    inTransaction = true;
+    try { return await callback(db); } finally { inTransaction = outerTransaction; }
+  }) };
+  return { db, selectWhere, returning };
 }
 
 describe("approvalService resolution idempotency", () => {

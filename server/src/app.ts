@@ -1,3 +1,4 @@
+import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
 import { voiceSessionRoutes, voiceWebhookRoutes } from "./routes/voice-sessions.js";
 import { eq } from "drizzle-orm";
@@ -194,7 +195,8 @@ import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
-import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
+import { nativeChatProgressWork } from "./services/chat-native-progress-work.js";
+import { chatRunMilestoneWork } from "./services/chat-run-milestone-work.js";
 import {
   createCoalescedAsyncTrigger,
   isChatPublicationCommitSignal,
@@ -320,10 +322,8 @@ export function shouldEnablePrivateHostnameGuard(opts: {
 }
 
 type ChatReconciliationLane =
-  | "provider runtimes"
   | "deliveries"
   | "GitHub webhook recovery"
-  | "run milestones"
   | "publications"
   | "Slack file receipts"
   | "Slack session status";
@@ -334,10 +334,8 @@ type ChatReconciliationLane =
  * next publication sweep for every endpoint.
  */
 export function createChatReconciliationCoordinator(input: {
-  reconcileProviderRuntimes: () => Promise<unknown>;
   processPendingDeliveries: () => Promise<unknown>;
   processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
-  projectRunMilestones: () => Promise<number>;
   flushPublications: () => Promise<unknown>;
   processPendingSlackFileUploadReceipts?: () => Promise<unknown>;
   processPendingSlackSessionSyncs?: () => Promise<unknown>;
@@ -348,16 +346,6 @@ export function createChatReconciliationCoordinator(input: {
   const publicationReconciliation = createCoalescedAsyncTrigger({
     run: input.flushPublications,
     onError: (error) => input.onError("publications", error),
-  });
-  const milestoneReconciliation = createCoalescedAsyncTrigger({
-    run: async () => {
-      const inserted = await input.projectRunMilestones();
-      // Existing final/question publications never wait on this optional
-      // projection. Newly committed milestones get a bounded dispatch wake;
-      // an empty/contended pass does not create a self-sustaining loop.
-      if (inserted > 0) publicationReconciliation.notify();
-    },
-    onError: (error) => input.onError("run milestones", error),
   });
   const start = (
     lane: ChatReconciliationLane,
@@ -376,7 +364,6 @@ export function createChatReconciliationCoordinator(input: {
   return {
     reconcile() {
       if (stopped) return;
-      start("provider runtimes", input.reconcileProviderRuntimes);
       start("deliveries", input.processPendingDeliveries);
       if (input.processFailedGitHubWebhookDeliveries) {
         start(
@@ -384,27 +371,21 @@ export function createChatReconciliationCoordinator(input: {
           input.processFailedGitHubWebhookDeliveries,
         );
       }
-      milestoneReconciliation.poll();
       publicationReconciliation.poll();
       if (input.processPendingSlackFileUploadReceipts) start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
       if (input.processPendingSlackSessionSyncs) start("Slack session status", input.processPendingSlackSessionSyncs);
     },
     notifyPublications() {
-      milestoneReconciliation.notify();
       publicationReconciliation.notify();
     },
     stop() {
       stopped = true;
-      milestoneReconciliation.stop();
       publicationReconciliation.stop();
     },
     async drain() {
       await Promise.allSettled([
         ...inFlight.values(),
-        milestoneReconciliation.drain(),
       ]);
-      // Projecting the final batch can notify dispatch after an earlier drain
-      // would have returned. Join dispatch only after its producer has drained.
       await publicationReconciliation.drain();
     },
   };
@@ -704,16 +685,16 @@ export async function createApp(
   app.get("/api/chat-github/manifest/callback", async (req, res) => {
     res.set("Cache-Control", "no-store");
     res.set("Referrer-Policy", "no-referrer");
-    const redirect = await chatChannels.githubWizard.directCallback(String(req.query.state ?? ""), String(req.query.code ?? ""));
+    const redirect = await chatChannels.githubWizard.directCallback(String(req.query.state ?? ""), String(req.query.code ?? ""), req.actor);
     res.redirect(303, redirect);
   });
   app.get("/api/chat-github/cloud/callback", async (req, res) => {
     res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
-    res.redirect(303, await chatChannels.githubWizard.cloudCallback(String(req.query.state ?? ""), String(req.query.registration ?? ""), typeof req.query.claim === "string" ? req.query.claim : undefined));
+    res.redirect(303, await chatChannels.githubWizard.cloudCallback(String(req.query.state ?? ""), String(req.query.registration ?? ""), typeof req.query.claim === "string" ? req.query.claim : undefined, req.actor));
   });
   app.get("/api/chat-github/identity/callback", async (req, res) => {
     res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
-    res.redirect(303, await chatChannels.githubWizard.identityCallback(String(req.query.state ?? ""), String(req.query.code ?? "")));
+    res.redirect(303, await chatChannels.githubWizard.identityCallback(String(req.query.state ?? ""), String(req.query.code ?? ""), req.actor));
   });
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
@@ -1094,7 +1075,6 @@ export async function createApp(
     api.use(publicMcpManagementRoutes(publicMcpOAuth, dotOAuth));
     api.use(dotRunnerRoutes(db, publicMcpOAuth.config.origin + "/mcp/runner"));
     api.use(grokBotRoutes(db, publicMcpOAuth.config.origin + "/mcp/runner"));
-    grokDispatcher.start();
   }
 
   api.use(museBoardRoutes(db, opts.authPublicBaseUrl));
@@ -1268,7 +1248,6 @@ export async function createApp(
   app.use(errorHandler);
 
   jobCoordinator.start();
-  scheduler.start();
   const deliveryWork = createDeliveryWorkCoordinator({
     owner: db,
     canRun: () => !isWarmStandby() && !isIdleTaskDrainActive(),
@@ -1276,6 +1255,7 @@ export async function createApp(
     onError: (err, queue) => logger.error({ err, queue }, "Delivery reconciliation failed"),
   });
   app.locals.deliveryWork = deliveryWork;
+  await scheduler.start(deliveryWork);
   const agentLifecycleDelivery = deliveryWork.register(DELIVERY_QUEUES.agentLifecycle, {
     retryMs: 1_000,
     run: () => agentLifecycle.sweep(),
@@ -1285,6 +1265,7 @@ export async function createApp(
   agentLifecycle.setWake(agentLifecycleDelivery.wake);
   publicMcpEvents?.start(deliveryWork);
   dotMcpEvents?.start(deliveryWork);
+  if (publicMcpOAuth) grokDispatcher.start(deliveryWork);
   const stopMuseMaintenance = startMuseMaintenance(db, deliveryWork);
   const resourceLifecycleDelivery = registerPluginLifecycleDelivery(deliveryWork, db, workerManager, lifecycle);
   await resourceLifecycleDelivery.ready;
@@ -1297,24 +1278,29 @@ export async function createApp(
   }
   registerChatDeliveryWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
   registerChatActionWork(deliveryWork, chatChannels, () => !isIdleTaskDrainActive());
+  chatChannels.voice.registerReportWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.voice.registerRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.voice.registerReplyWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.voice.inbound.registerCleanupWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.voice.inbound.registerRetentionWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerReceiverWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerTeamsConsentExpiryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerTeamsAttemptRecoveryWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatChannels.registerCommandWork(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  nativeChatProgressWork(db).register(deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive());
+  chatRunMilestoneWork(db, opts.authPublicBaseUrl).register(
+    deliveryWork, () => !isWarmStandby() && !isIdleTaskDrainActive(),
+  );
   emailChannels.start();
   const reconcileChatPublicationMaintenance = async () => {
     await chatChannels.processPublicationMaintenance();
   };
   const chatReconciliation = createChatReconciliationCoordinator({
-    reconcileProviderRuntimes: async () => {
-      await chatChannels.reconcileProviderRuntimes();
-      await chatChannels.voice.reconcile();
-    },
     // Chat delivery, action, and Telegram discovery workers now own these
     // duties. Keep the coordinator's other maintenance lanes independent.
     processPendingDeliveries: async () => undefined,
     processFailedGitHubWebhookDeliveries: () =>
       chatChannels.processFailedGitHubWebhookDeliveries(),
-    projectRunMilestones: () =>
-      enqueueChatRunMilestones(db, {
-        publicBaseUrl: opts.authPublicBaseUrl,
-      }),
     flushPublications: () => reconcileChatPublicationMaintenance(),
     onError: (lane, err) => {
       logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
@@ -1326,7 +1312,8 @@ export async function createApp(
         chatReconciliation.notifyPublications();
     },
   );
-  // Provider/action maintenance and milestone projection still use this cadence.
+  // Remaining publication maintenance still uses this cadence. Lifecycle and
+  // native progress projection have independent commit/deadline workers.
   // Inbox, outbox, and file receipt queues have independent commit/deadline wakes.
   let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
     () => {
@@ -1455,13 +1442,10 @@ export async function createApp(
   let appServicesShutdown: Promise<void> | null = null;
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
-    appServicesShutdown = (async () => {
-      // The scheduler tick queries the database. Stop it here, inside the
-      // awaited teardown, so no tick runs after the caller ends the pool.
-      scheduler.stop();
+    appServicesShutdown = finishServiceShutdown(() => scheduler.stop(), async () => {
       await agentLifecycle.stop();
       await publicMcpEvents?.stop();
-      await dotMcpEvents?.stop(); grokDispatcher.stop();
+      await dotMcpEvents?.stop();
       jobCoordinator.stop();
       resourceLifecycleDelivery.dispose();
       await deliveryWork.stop();
@@ -1493,7 +1477,7 @@ export async function createApp(
       // caller stops the database and the provider. A lease release that
       // fails stays a durable record for the startup reaper.
       await setupTokenLoginService?.shutdown();
-    })();
+    });
     return appServicesShutdown;
   };
   app.locals.paperclipShutdown = shutdownAppServices;

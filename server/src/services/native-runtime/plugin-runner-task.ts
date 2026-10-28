@@ -7,6 +7,22 @@ import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHan
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 
+export async function verifyPluginRunnerTaskReattachment(
+  task: (operation: unknown) => Promise<unknown>, identity: unknown,
+): Promise<void> {
+  const operation = environmentTaskOperationSchema.parse({ kind: "read_state", identity });
+  if (operation.kind !== "read_state") throw new Error("Plugin Runner recovery identity unavailable");
+  const status = environmentTaskResultSchema.parse(await task({ kind: "status" }));
+  if (status.kind !== "status" || status.executionStopped || status.phase !== "running") {
+    throw new Error("Plugin Runner is not running");
+  }
+  const result = environmentTaskResultSchema.parse(await task(operation));
+  if (result.kind !== "state" || result.state.schema !== "paperclip.runner.durable.state.v1"
+    || Object.entries(operation.identity).some(([key, value]) => result.state[key] !== value)) {
+    throw new Error("Plugin Runner adoption identity mismatch");
+  }
+}
+
 /** Adapts a lease-bound task provider to the existing native process owner.
  * No provider pid is treated as a local pid. Only executionStopped settles it.
  */
@@ -66,12 +82,19 @@ export function createPluginRunnerTaskOwner(input: {
     if (validation.kind !== "project_auth" || !validation.allowed || validation.configurationId !== configurationId
       || validation.provider !== provider) throw new Error("Plugin Runner project authentication conflicts with the selected managed account");
   };
+  const authorizeRunnerAdoption = async (configurationId: string, identity: DurableRecoveryIdentity) => {
+    if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
+    if (!input.adoptIdentity || Object.entries(input.adoptIdentity).some(([key, value]) => identity[key as keyof DurableRecoveryIdentity] !== value)) {
+      throw new Error("Plugin Runner adoption identity mismatch");
+    }
+    await checkProjectAuth(configurationId);
+    preparedLaunchId = configurationId;
+  };
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
     if (recovery && input.adoptIdentity && Object.entries(input.adoptIdentity).every(([key,value]) => requirements.identity[key as keyof DurableRecoveryIdentity] === value)) {
-      await checkProjectAuth(recovery.configurationId);
-      preparedLaunchId = recovery.configurationId;
+      await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
@@ -220,7 +243,9 @@ export function createPluginRunnerTaskOwner(input: {
       startupFailureCode: "runner_ingress_unavailable" as const,
       activate: () => {
         activation = (async () => {
-          await running;
+          if (input.adoptIdentity) {
+            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+          } else await running;
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
           const ingress = await endpoint();
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
@@ -262,7 +287,7 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
-    prepareLaunch, readRunnerState, runnerProcessLauncher: launcher,
+    prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
     archiveExternalRunnerState: async archive => {
@@ -274,7 +299,7 @@ export function createPluginRunnerTaskOwner(input: {
     controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal),
     ...(input.adoptIdentity ? { adoptExistingRunner: {
       // Provider ownership is attested by Launcher, never by a controller-local PID.
-      pid: 0, processGroupId: null, startedAt: new Date().toISOString(),
+      pid: null, processGroupId: null, startedAt: null,
       isAlive: async () => {
         if (!adoptionVerified) { if ((await readStatus()).executionStopped === true) return false; adoptionVerified = true; }
         // Authenticated PRP detects disconnects; this cache never asserts termination.

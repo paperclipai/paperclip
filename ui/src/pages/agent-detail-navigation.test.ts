@@ -20,10 +20,13 @@ describe("agent detail navigation", () => {
       "permissions",
       "api-keys",
       "revisions",
+      "advanced",
     ]);
   });
 
   it("canonicalizes legacy local paths", () => {
+    expect(parseAgentDetailView("advanced")).toBe("advanced");
+    expect(agentDetailHref("codie", "advanced")).toBe("/agents/codie/advanced");
     expect(parseAgentDetailView("dashboard")).toBe("overview");
     expect(parseAgentDetailView("configuration")).toBe("runtime");
     expect(parseAgentDetailView("prompts")).toBe("instructions");

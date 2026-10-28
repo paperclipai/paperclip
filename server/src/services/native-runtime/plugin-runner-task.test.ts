@@ -51,6 +51,90 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  it("rechecks revoked grants for unchanged project IDs before adopting retained resources", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let allowed = true;
+    task.mockImplementation(async op => op.kind === "check_project_auth"
+      ? { ...await perform(op) as object, allowed } : perform(op));
+    const input = { task, projectIds: ["project-retained"], harness: "codex", projectAuthCheckVersion: 1 as const,
+      adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    await owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity);
+    allowed = false;
+    owner.rebind({ ...input });
+    await expect(owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity)).rejects.toThrow("project authentication conflicts");
+    expect(task.mock.calls.map(([op]) => op)).toEqual(Array(2).fill({ kind: "check_project_auth",
+      configurationId: "retained-configuration", provider: "openai", projectIds: ["project-retained"] }));
+  });
+  it.each(["identity", "unsupported", "released", "late-release"])("refuses adoption authorization after %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    task.mockImplementation(async op => { if (mode === "late-release" && op.kind === "check_project_auth") await gate; return perform(op); });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: ["project-current"], harness: "codex",
+      projectAuthCheckVersion: mode === "unsupported" ? undefined : 1, adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run");
+    if (mode === "released") await registration.release("detach");
+    const attempt = owner.driver.authorizeRunnerAdoption!("retained-configuration",
+      mode === "identity" ? { ...requirements.identity, runId: "unrelated" } : requirements.identity);
+    const rejection = expect(attempt).rejects.toThrow(mode === "identity" ? "identity mismatch"
+      : mode === "unsupported" ? "validation unavailable" : "preparation cancelled");
+    if (mode === "late-release") { await registration.release("detach"); finish(); }
+    await rejection;
+    await registration.release("detach");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(mode === "late-release" ? ["check_project_auth"] : []);
+  });
+  it("adopts the saved task and detaches without preparing, submitting, or stopping it", async () => {
+    const { task } = provider();
+    const close = vi.fn(async () => {});
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(true);
+    expect(owner.driver.adoptExistingRunner!.pid).toBeNull();
+    expect(() => owner.launcher(launchSpec())).toThrow("replacement requires a new task lease");
+    await registration.release("detach");
+    expect(close).toHaveBeenCalledOnce();
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["status", "read_state", "connection", "status"]);
+  });
+  it.each(["stopped", "wrong-identity", "revoked", "cancelled"])("refuses adoption when the saved task is %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    const abort = new AbortController();
+    task.mockImplementation(async op => {
+      if (mode === "revoked" && op.kind === "read_state") throw new Error("execution lease is not active");
+      const result = await perform(op) as any;
+      if (mode === "stopped" && op.kind === "status") result.executionStopped = true;
+      if (mode === "wrong-identity" && op.kind === "read_state") result.state.runId = "other-run";
+      if (mode === "cancelled" && op.kind === "read_state") abort.abort();
+      return result;
+    });
+    ingress.connect.mockClear();
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run", abort.signal);
+    registration.activate();
+    await expect(registration.ready()).rejects.toThrow();
+    await registration.release("detach");
+    expect(ingress.connect).not.toHaveBeenCalled();
+    expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
+  });
+  it("settles an adopted task through confirmed termination and retained-session ownership", async () => {
+    const { task } = provider();
+    const retained = vi.fn(async () => {});
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity, onSessionRetained: retained });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    await registration.release(); await registration.checkpoint("settled");
+    expect(retained).toHaveBeenCalledWith(expect.objectContaining(requirements.identity));
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["status", "read_state", "connection", "stop", "status", "read_state", "complete"]);
+  });
   it("submits only a prepared identity and configuration ID", async () => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });

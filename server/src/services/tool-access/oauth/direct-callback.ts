@@ -1,3 +1,4 @@
+import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { credentialScope } from "./client-settings.js";
 import { withoutOAuthRefreshLease } from "./refresh-leases.js";
 import type { ActorInfo } from "../types.js";
@@ -270,6 +271,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
               // different scopes. The connection-level list is whichever callback ran last,
               // so it is the wrong baseline for anyone else's refresh.
               requestedScopes: authorizedScopes,
+              consentedAt: connectedAt.toISOString(),
               tokenType: token.tokenType,
               refreshedAt: connectedAt.toISOString(),
             },
@@ -331,6 +333,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
             },
           },
         };
+        await notifyToolConnectionHealth(tx, connection);
         const [updatedConnection] = await tx
           .update(toolConnections)
           .set({
@@ -610,6 +613,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
           },
         },
       };
+      await notifyToolConnectionHealth(tx, connection);
       const [updatedConnection] = await tx
         .update(toolConnections)
         .set({

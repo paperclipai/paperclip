@@ -2647,6 +2647,132 @@
       "when": 1793049353756,
       "tag": "0379_white_giant_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 380,
+      "version": "7",
+      "when": 1793060791724,
+      "tag": "0380_broken_aqueduct",
+      "breakpoints": true
+    },
+    {
+      "idx": 381,
+      "version": "7",
+      "when": 1793060791725,
+      "tag": "0381_mean_scream",
+      "breakpoints": true
+    },
+    {
+      "idx": 382,
+      "version": "7",
+      "when": 1793060791726,
+      "tag": "0382_narrow_the_executioner",
+      "breakpoints": true
+    },
+    {
+      "idx": 383,
+      "version": "7",
+      "when": 1793060791727,
+      "tag": "0383_tool_review_company_expiry",
+      "breakpoints": true
+    },
+    {
+      "idx": 384,
+      "version": "7",
+      "when": 1793060791728,
+      "tag": "0384_funny_adam_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 385,
+      "version": "7",
+      "when": 1793060791729,
+      "tag": "0385_open_madame_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 386,
+      "version": "7",
+      "when": 1793135146893,
+      "tag": "0386_steady_epoch",
+      "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1793136115698,
+      "tag": "0387_boring_professor_monster",
+      "breakpoints": true
+    },
+    {
+      "idx": 388,
+      "version": "7",
+      "when": 1793137983484,
+      "tag": "0388_ambitious_micromax",
+      "breakpoints": true
+    },
+    {
+      "idx": 389,
+      "version": "7",
+      "when": 1793138457589,
+      "tag": "0389_brave_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 390,
+      "version": "7",
+      "when": 1793139659776,
+      "tag": "0390_salty_killraven",
+      "breakpoints": true
+    },
+    {
+      "idx": 391,
+      "version": "7",
+      "when": 1793142971791,
+      "tag": "0391_third_roulette",
+      "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1793143372644,
+      "tag": "0392_small_frightful_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1793145214502,
+      "tag": "0393_open_grandmaster",
+      "breakpoints": true
+    },
+    {
+      "idx": 394,
+      "version": "7",
+      "when": 1793152860397,
+      "tag": "0394_conscious_whizzer",
+      "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1793159398533,
+      "tag": "0395_tranquil_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1793191988458,
+      "tag": "0396_tan_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1793195976732,
+      "tag": "0397_known_madrox",
+      "breakpoints": true
     }
   ]
 }

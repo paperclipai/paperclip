@@ -108,6 +108,14 @@ Review: `operation-reviewed`.
 
 Supported restoration and automatic attempts retain source/owner/attempt authority.
 
+Main-server replacement uses a private, encrypted Postgres controller journal
+and the runner's existing authenticated PRP connection. It adds no agent-facing
+mutation API. Controller generations and expiring execution leases fence writes;
+the runner retains its admitted artifact and active turn. Saved tool receipts
+can restore responses, safe reads recheck current authority, and uncertain
+mutations remain pending. The [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+separates real-process/scripted-provider evidence from hosted Daytona qualification.
+
 ### `observe-automatic-attempt`
 
 API: `present` — GET /api/issues/{id}/recovery-actions; GET /api/issues/{id}; GET /api/heartbeat-runs/{runId}. Automatic recovery has no generic agent-enqueue endpoint.

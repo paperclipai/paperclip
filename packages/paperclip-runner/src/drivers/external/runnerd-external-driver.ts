@@ -7,7 +7,7 @@ import type { NativeExecutionInputV6, NativeExecutionInputV8 } from "../../contr
 import type { ExternalProviderPort } from "../../contracts/external-provider.js";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
-import { DurablePrpControlPlane, spawnRunner, type RunnerProcessHandle } from "../../control-plane/durable-prp-control-plane.js";
+import { DurablePrpControlPlane, spawnRunner, type RunnerProcessHandle, type DurablePrpControlPlaneOptions } from "../../control-plane/durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import { authorizedToolSetForProvider, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, type CapabilityRunnerdCodexTransportOptions } from "../../live/runnerd-codex-transport.js";
 import { codexSemanticToolSpecs } from "../codex/codex-driver-values.js";
@@ -21,6 +21,9 @@ export interface RunnerdExternalDriverOptions {
   identity: DurableRecoveryIdentity;
   port: ExternalProviderPort;
   runnerBinary?: string;
+  runnerArtifact?: { version: string; digest: string };
+  runnerReconnectGraceMs?: number;
+  recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   runnerStateDirectory?: string;
   runnerProcessLauncher?: CapabilityRunnerdCodexTransportOptions["runnerProcessLauncher"];
   /** Reads the checkpoint from the execution target. Missing state cannot authorize replay. */
@@ -172,7 +175,32 @@ class RunnerdExternalSession implements HarnessSession {
     const runnerState = o.runnerStateDirectory ?? resolve(o.stateDirectory, "runner");
     if (!o.runnerProcessLauncher) mkdirSync(runnerState, { recursive: true, mode: 0o700 });
     const binary = o.runnerBinary ?? defaultCapabilityRunnerdBinary();
-    const artifact = readRunnerdArtifactBinding(binary);
+    const artifact = o.runnerArtifact ?? readRunnerdArtifactBinding(binary);
+    const handleSemanticInput: NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]> = async call => {
+      if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
+        let completionInput: unknown;
+        try {
+          completionInput = await resolveCompletionContinuation(call.input, o.identity.runId,
+            o.dynamicToolHandler ? () => o.dynamicToolHandler!({
+              tool: "get_task_context", callId: `${call.callId}:continuation`,
+              threadId: o.identity.normalizedSessionId, turnId: o.identity.turnId, arguments: {},
+            }) : undefined);
+        } catch (error) {
+          return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true };
+        }
+        const result = validatePrpStructuredRunResult(completionInput);
+        if (!result.ok || (call.operationId === "paperclip_block") !== (result.ok && result.result.reportedWorkDisposition === "blocked")) {
+          return { result: { error: "Invalid completion report. Use the admitted completion contract and the correct completion tool." }, isError: true };
+        }
+        try { return { result: { accepted: true, completionReport: result.result, feedback: await o.completionFeedback?.(result.result) ?? "Completion accepted; finish the external turn." } }; }
+        catch (error) { return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true }; }
+      }
+      if (!o.dynamicToolHandler) throw new Error("dot_semantic_authority_unavailable");
+      const result = await o.dynamicToolHandler({ tool: call.operationId, callId: call.callId,
+        threadId: o.identity.normalizedSessionId, turnId: o.identity.turnId, arguments: call.input });
+      const outcome = result && typeof result === "object" ? (result as Record<string, unknown>).outcome : undefined;
+      return { result, isError: typeof outcome === "string" && !["completed", "succeeded", "success"].includes(outcome) };
+    };
     const core = this.#core = new DurablePrpControlPlane({
       identity: o.identity, stateDirectory: resolve(o.stateDirectory, "control-plane"),
       expectedRunnerVersion: artifact.version, expectedRunnerDigest: artifact.digest,
@@ -188,31 +216,10 @@ class RunnerdExternalSession implements HarnessSession {
         if (!this.#events.some(e => e.sourceEventId === event.sourceEventId)) this.#events.push(event);
         this.#wake();
       },
-      onSemanticToolInput: async call => {
-        if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
-          let completionInput: unknown;
-          try {
-            completionInput = await resolveCompletionContinuation(call.input, o.identity.runId,
-              o.dynamicToolHandler ? () => o.dynamicToolHandler!({
-                tool: "get_task_context", callId: `${call.callId}:continuation`,
-                threadId: o.identity.normalizedSessionId, turnId: o.identity.turnId, arguments: {},
-              }) : undefined);
-          } catch (error) {
-            return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true };
-          }
-          const result = validatePrpStructuredRunResult(completionInput);
-          if (!result.ok || (call.operationId === "paperclip_block") !== (result.ok && result.result.reportedWorkDisposition === "blocked")) {
-            return { result: { error: "Invalid completion report. Use the admitted completion contract and the correct completion tool." }, isError: true };
-          }
-          try { return { result: { accepted: true, completionReport: result.result, feedback: await o.completionFeedback?.(result.result) ?? "Completion accepted; finish the external turn." } }; }
-          catch (error) { return { result: { error: error instanceof Error ? error.message : "Completion rejected" }, isError: true }; }
-        }
-        if (!o.dynamicToolHandler) throw new Error("dot_semantic_authority_unavailable");
-        const result = await o.dynamicToolHandler({ tool: call.operationId, callId: call.callId,
-          threadId: o.identity.normalizedSessionId, turnId: o.identity.turnId, arguments: call.input });
-        const outcome = result && typeof result === "object" ? (result as Record<string, unknown>).outcome : undefined;
-        return { result, isError: typeof outcome === "string" && !["completed", "succeeded", "success"].includes(outcome) };
-      },
+      onSemanticToolInput: handleSemanticInput,
+      recoverSemanticToolInput: async call =>
+        call.operationId === "paperclip_finish" || call.operationId === "paperclip_block"
+          ? handleSemanticInput(call) : o.recoverSemanticToolInput?.(call) ?? null,
     });
     // Rehydrate the projection from the authenticated transport journal. Broker
     // persistence happens before ACK, so these events have durable projections.
@@ -222,15 +229,17 @@ class RunnerdExternalSession implements HarnessSession {
     if (!registration) await core.start();
     signal?.throwIfAborted();
     if (!o.adoptExistingRunner) {
+      const ticket = core.issueBootstrapTicket(60_000);
+      await core.flushCheckpoint();
       this.#process = spawnRunner({
         processLauncher: o.runnerProcessLauncher, connectUrl: registration?.connectUrl ?? (registration?.connection ? undefined : core.connectUrl),
         connection: registration?.connection, stateDirectory: runnerState, identity: o.identity,
-        ticket: core.issueBootstrapTicket(60_000), runnerBinaryPath: binary,
+        ticket, runnerBinaryPath: binary,
         runnerVersion: artifact.version, runnerDigest: artifact.digest,
         maxOutboxBytes: 16 * 1024 * 1024, p0ReserveBytes: 1024 * 1024,
         // A managed controller rollout can outlast a minute. Task authority
         // remains gated by the current controller lease throughout the gap.
-        maxRuntimeMs: 0, reconnectGraceMs: o.runnerProcessLauncher ? 300_000 : 60_000,
+        maxRuntimeMs: 0, reconnectGraceMs: o.runnerReconnectGraceMs ?? (o.runnerProcessLauncher ? 300_000 : 60_000),
         // No agent, OAuth, ChatGPT or provider API credentials are inherited.
         environment: { PATH: process.env.PATH },
       });
@@ -275,6 +284,7 @@ class RunnerdExternalSession implements HarnessSession {
         criterionIds: o.execution.completionContract.contract.criteria.map(c => c.id) },
     }, `${this.codec.commandPrefix}_prepare`);
     await this.#command("session.open", {}, `${this.codec.commandPrefix}_open`);
+    await core.recoverPendingSemanticInputs();
     signal?.throwIfAborted();
   }
 

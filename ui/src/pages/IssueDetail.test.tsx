@@ -3468,6 +3468,45 @@ describe("IssueDetail", () => {
     });
   });
 
+  it("keeps a queued turn's starting input in history after reopen", async () => {
+    const opener = createIssueComment({ id: "reopen-input" });
+    const followUp = createIssueComment({ id: "later-input", createdAt: new Date("2026-04-21T00:00:07.000Z") });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "todo", assigneeAgentId: "agent-1", executionRunId: null }));
+    mockIssuesApi.listComments.mockResolvedValue([opener, followUp]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [opener, followUp], latestCommentId: followUp.id, hasMore: false });
+    const queuedRuns = [{
+      runId: "reopened-run", status: "queued", contextIssueId: "issue-1", agentId: "agent-1",
+      adapterType: "paperclip_runner", startedAt: null, finishedAt: null,
+      createdAt: "2026-04-21T00:00:06.000Z", invocationSource: "automation",
+      wakeupRequestId: "reopen-wake", wakeCommentIds: [opener.id, followUp.id],
+    }];
+    mockActivityApi.recentRunsForIssue.mockResolvedValue(queuedRuns);
+    mockActivityApi.runsForIssue.mockResolvedValue(queuedRuns);
+    const queue = createQueuedCommentQueue({
+      queueId: "reopen-wake", state: "queued", targetRunId: null,
+      steeringDisposition: "temporarily_unavailable",
+      entries: [opener, followUp].map((comment, position) => ({ comment, position, canEdit: true, canDiscard: true })),
+    });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockIssuesApi.reorderQueuedComments.mockResolvedValue(queue);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(mockIssuesApi.getQueuedComments).toHaveBeenCalled();
+      expect(props?.comments.find((comment: IssueComment) => comment.id === opener.id))
+        .toMatchObject({ body: opener.body });
+      expect(props?.comments.find((comment: IssueComment) => comment.id === opener.id)?.consumedByRunId).toBeFalsy();
+      expect(props?.comments.find((comment: IssueComment) => comment.id === opener.id)?.queueState).toBeUndefined();
+      expect(props?.queuedCommentQueue?.entries.map((entry: { comment: IssueComment }) => entry.comment.id))
+        .toEqual([followUp.id]);
+    });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    await act(async () => props.onReorderQueuedComments([followUp.id], queue.revision));
+    expect(mockIssuesApi.reorderQueuedComments).toHaveBeenCalledWith("issue-1", {
+      orderedCommentIds: [opener.id, followUp.id], queueId: queue.queueId, revision: queue.revision,
+    });
+  });
+
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({

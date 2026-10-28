@@ -49,7 +49,13 @@ start execution. This preference does not change the org chart or permissions.
 
 ### Agent Execution
 
-Existing Claude and Codex agents can upgrade from the legacy runner on their
+Agents have an **Advanced** tab for editing their settings across all configuration tabs
+as a versioned YAML document. Instructions, skills, tools, channels, trust,
+secret operations, API keys, and revision restore use their existing domain APIs.
+It edits the same configuration as the regular settings pages, validates before saving, preserves masked secrets, and rejects
+stale edits. See [Agent configuration YAML](agent-configuration-yaml.md).
+
+Existing Claude, Codex, and Grok Build agents can upgrade from the legacy runner on their
 Harness / Runtime page when Paperclip Runner is the qualified default for their
 environment. One action saves pending edits and translates compatible settings
 while keeping the harness, selected model, account bindings, instructions, and
@@ -391,3 +397,13 @@ operation logs retain their app authorization. Workspace `_issuePrivacySources` 
 operation privacy metadata protect app-record disclosure; they do not grant or deny
 filesystem execution or task-bound file browsing. Current trust and sandbox policy,
 publication receipts, binding checks, and lifecycle locks remain authoritative.
+
+## Agent connection administration (2026-10-13)
+
+Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.
+
+The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

@@ -83,7 +83,8 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   await input.phase("agent");
   const completed = await onboardingFirstTask({ context, agent: { id: agent.id }, connectionId: connection.id,
     proof: createConnectionProof(), campaignId, maxRuns: input.maxRuns, deadlineAt: input.deadlineAt,
-    own: input.own, observeRun: input.observeRun, onArtifact: artifact => { evidence.artifact = artifact; } });
+    own: input.own, observeRun: input.observeRun, onArtifact: artifact => { evidence.artifact = artifact; },
+    onPreAcceptanceFailure: receipt => { evidence.onboardingPreAcceptance = receipt; } });
   await input.verifyExecution(context, [completed.artifact.originatingRunId]);
   evidence.checks.push({ id: "first-task-complete", passed: true },
     { id: "downloadable-artifact-verified", passed: true }, { id: "native-trace-verified", passed: true });

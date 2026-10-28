@@ -134,7 +134,7 @@ export function executionWorkspaceRepositoryService(db: Db) {
     let localTrusted = input.actor.source === "local_implicit";
     if (input.actor.type === "agent") {
       if (input.actor.source !== "agent_jwt" || !input.actor.agentId || !input.actor.runId || input.actor.companyId !== input.companyId) throw forbidden("Repository preparation requires an authenticated task run");
-      const identity = await captureRunIdentity(db, { companyId: input.companyId, agentId: input.actor.agentId, runId: input.actor.runId });
+      const identity = await captureRunIdentity(db, { companyId: input.companyId, agentId: input.actor.agentId, runId: input.actor.runId }, { readScope: "task_authorization" });
       const runIssueId = identity.run.nativeIssueId ?? identity.run.contextSnapshot?.issueId;
       if (runIssueId !== input.issueId) throw forbidden("Repository preparation is scoped to the current task");
       userId = identity.run.responsibleUserId;

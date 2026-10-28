@@ -87,10 +87,18 @@ that relayed a message from another channel.
 
 ## Contextual feedback
 
-Keep the runner turn's avatar, name, Working header and current-activity slot
+Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
+Saving the human comment does not end startup feedback. Keep the identity mounted
+until its run appears or a newer execution outcome ends admission.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
+
+A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
+admission. Reserve `Working` and `Thinking` for execution. A saved message that
+starts this queued turn stays in history, including when it reopens an older
+task. This placement is not a consumption receipt. Later follow-ups remain in
+the composer queue with their existing edit, order and discard controls.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -866,6 +874,8 @@ tokenize motion. Principles — reasoning only; values live in `ui/src/index.css
   in addition to each animation's own component-level guard.
 
 Agent Chat and regular task chats keep pending questions and requests as compact, reopenable entries at their original position in history. Dismissing any composer request—including completion reviews, confirmations, choices, suggested tasks, item verdicts, and runtime input—removes its form and pending reminder. Saved interactions record human dismissal on the server; raw runtime requests retain a browser-local preference. Dismissal is not an answer, approval, or rejection. Sending a newer user message also clears an ordinary question from the composer without resolving it. Questions never contribute to composer pending counts or navigation. Opening the history entry restores the original form and its draft; submitting later uses the same durable question response path. Actual permission reviews retain their permission checks.
+
+Desktop properties panels keep a zero-width, noninteractive host while their content is unknown. Late content expands the panel and moves the thread in the same width transition. Removing content on navigation clears the pane immediately, including maximized geometry. The motion uses `--motion-pane-reveal` and `--motion-ease-pane-reveal`; reduced motion disables it. A saved hidden preference stays hidden, and pointer resizing stays immediate.
 
 ## Canonical proposal toolbars
 

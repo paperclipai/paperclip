@@ -41,6 +41,11 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
 
+Automated: [historical chat](../../ui/src/pages/AgentChat.test.tsx) keeps an older
+conversation reachable after a cached roster refresh ends in HTTP 429. It checks
+lookup Retry and preserves permission and company boundaries. This is component
+evidence with real query state, not live provider proof.
+
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,
 while initial history for an existing conversation stays deferred. The

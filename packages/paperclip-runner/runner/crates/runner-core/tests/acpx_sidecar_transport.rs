@@ -220,6 +220,34 @@ fn keeps_valid_command_rejections_separate_from_protocol_failures() {
 }
 
 #[test]
+fn preserves_closed_admission_categories_over_the_sidecar_pipe() {
+    let mut transport = transport("remote-error", Duration::from_secs(1));
+    for (code, category) in [
+        ("ACPX_ADMISSION_INSTALLATION", "admission_installation"),
+        ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+        (
+            "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+            "grok_effort_acknowledgement_missing",
+        ),
+        ("GROK_MODEL_MISMATCH", "grok_model_mismatch"),
+        ("ACPX_ADMISSION_CREDENTIAL_SECRET", "unclassified"),
+        ("GROK_MODEL_MISMATCH_SECRET", "unclassified"),
+    ] {
+        let error = transport
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({"errorCode":code}),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains(&format!("classification={category}")));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert!(!message.contains("SECRET"));
+    }
+    transport.shutdown().unwrap();
+}
+
+#[test]
 fn redacts_sidecar_stderr_when_the_process_exits() {
     let mut transport = transport("exit-secret", Duration::from_secs(1));
     let error = transport

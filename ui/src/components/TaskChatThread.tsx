@@ -1,5 +1,5 @@
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
-import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -951,7 +951,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     hydratedRunIds: hydratedNativeRunIds,
     terminalHydratedRunIds,
     retry: retryNativeEvents,
-  } = useNativeRunTranscripts(nativeRuns);
+  } = useNativeRunTranscripts(nativeRuns, { companyId });
   const logRuns = useMemo(() => runs.filter((run) =>
     (!nativeRuns.some((nativeRun) => nativeRun.id === run.id && nativeRun.conversationOnly) ||
       nativeTranscriptErrorsByRun.has(run.id) ||
@@ -2647,55 +2647,45 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
   const hasAgentAssignee = Boolean(issueAssigneeAgentId);
-  const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
-  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
-  const submissionRequestId = useRef<string | null>(null);
-  useEffect(() => {
-    const confirmed = submissionRequestId.current && comments.some(comment =>
-      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    // The previous intent's projection cannot acknowledge this submission.
-    if (tailRunId || confirmed) {
-      setRunnerSubmissionPending(false);
-      setSubmissionTakingLonger(false);
-    }
-  }, [tailRunId, comments, runnerSubmissionPending]);
-  useEffect(() => {
-    if (!runnerSubmissionPending || tailRunId) return;
-    const timeout = window.setTimeout(
-      () => {
-        setSubmissionTakingLonger(true);
-        void props.onRefreshLatestComments?.();
-      },
-      10_000,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [runnerSubmissionPending, tailRunId]);
+  const {
+    pending: runnerSubmissionPending,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      if (hasAgentAssignee) {
-        submissionRequestId.current = args[4] ?? null;
-        setRunnerSubmissionPending(true);
-        setSubmissionTakingLonger(false);
-      }
+      args[4] ??= crypto.randomUUID();
+      const attempt = beginSubmission(args[4]);
       try {
         await onAdd(...args);
-        setRunnerSubmissionPending(false);
-        setSubmissionTakingLonger(false);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
           dismissInput(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
           setTakeoverMode("normal");
         }
       } catch (error) {
-        setRunnerSubmissionPending(error instanceof CommentSubmissionUnknownError);
-        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
+        rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [hasAgentAssignee, onAdd, selectedPendingInput, dismissInput],
+    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
+    !startupBlocked &&
     !tailRunId &&
     (props.retryPreparing || props.interruption?.state === "working" || runnerSubmissionPending ||
       commentItems.some(
@@ -3291,7 +3281,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           onInterrupt={
                             onInterruptQueued && queuedMessageQueue?.queueId
                               ? async () => {
-                                  await onInterruptQueued(
+                                  return onInterruptQueued(
                                     queuedMessageQueue.targetRunId,
                                   );
                                 }

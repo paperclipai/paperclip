@@ -29,7 +29,13 @@ Message the configured bot/address from its external provider and follow the cor
 
 ### `endpoint-management`
 
+Delegated setup can save ordinary bot tokens and API keys. Provider verification keys require the addressed human credential-entry step or verified provider provisioning. Generic setup returns the saved handoff without changing those keys, and generic connection updates cannot replace channel credential references. A replacement card waits for an actual protected-value change and restored verification; old health, unchanged entry and unrelated bot-token repair do not complete it. Fresh GitHub handoffs open the import form; configured endpoints retain reconnect. Credential-entry field sets and completion modes stay distinct while matching retries reuse their saved baseline. Complete human replacements can repair disabled, deleted or unreadable old vault values. Saved links name the requested fields and completion mode; configured GitHub forms support targeted replacements while keeping other saved credentials. Provisioned Slack challenge proof survives runtime storage only for the same signing key and callback URL. The actual-auth Slack/GitHub fixtures cover these boundaries, retries, revocation and permitted bot-token repair; live provider repair remains separately qualified.
+
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
+
+For GitHub external contributors, open the connection's Access tab and look up a username. The lookup uses that endpoint's active GitHub App installation with a metadata-only token. Verify that a person or bot resolves to its numeric identity and that unavailable accounts, rate limits, and installation failures show distinct errors. [Lookup regressions](../../server/src/services/chat-github-management.test.ts) use provider fixtures; live installation lookup remains separate evidence.
+
+For delegated Slack test messages and identity invitations, apply a Block or Ask first rule to the calling agent while allowing the endpoint's assigned agent. Verify no message is sent. Exercise caller, target and shared rate limits: one shared quota admits one send and the next distinct request is denied. For a saved GitHub identity handoff on an otherwise healthy endpoint, verify the card stays pending before identity confirmation and after an OAuth callback alone. Confirm the addressed user's identity through their human session, then verify continuation becomes available. Revoked, expired, wrong-user and wrong-installation links must keep the handoff blocked. These cases pass through the assembled API with real key/JWT/session middleware and deterministic providers; live Slack/GitHub consent remains separate evidence.
 
 ### `outbound-agentmail`
 
@@ -177,6 +183,15 @@ covers these views, pending/failure/success, mobile, and light theme with simula
 provider responses. Verify actual credential validity and restored delivery
 separately against GitHub; a Storybook success does not establish live recovery.
 
+For an agent-requested GitHub credential handoff, open the saved link as the
+addressed human and verify it asks for exactly the requested fields and all/any
+completion mode. A fresh App opens import; a configured App opens replacement
+through reconnect and retains credentials omitted from the request. Interrupt
+the response after a successful rotation, reload, and verify the saved rotation
+resumes without replacing the key again. Wrong-user access, unchanged credentials
+and missing verification must not complete the request. After OAuth, confirm the
+addressed user's exact endpoint identity before expecting task continuation.
+
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
@@ -256,3 +271,16 @@ verified controller and environment cleanup; an unknown executor remains held.
 After successful admission, reload and verify that the prior skipped receipt does
 not strand a later real provider reply or tree resume. Provider fixtures support
 this behavior; live fixed-source runtime and destination proof remain separate.
+
+Also defer Retry behind cleanup, queue an independent board message, then
+complete cleanup. Verify one run receives the exact GitHub batch and the board
+message enters its own turn. For an older mixed batch rejected before provider
+startup, ordinary task Retry must recover only certified undelivered receipts.
+Changed input, active ownership, allocations and prior delivery must keep the
+refusal effective. Check the restoration audit and unchanged failed-run history.
+
+### `delegated-configuration`
+
+Endpoint activity hides private-task events while retaining a next-page cursor across private-only windows, so older readable history stays reachable. Actual-JWT fixtures verify this separately from live provider delivery.
+
+See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

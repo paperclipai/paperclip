@@ -5,6 +5,10 @@ import os from "node:os";
 import { pathToFileURL } from "node:url";
 import { createConnectionProof } from "../connection-evidence.js";
 import { retainOnboardingArtifact, validateOnboardingArtifact } from "./artifact-evidence.js";
+import { validateOnboardingPreAcceptanceEvidence, type OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
+const preAcceptanceEvidence: OnboardingPreAcceptanceEvidence = { version: 1, checkpoint: "awaiting-proposal", violations: ["attachment_present"],
+  taskCount: 1, attachmentCount: 1, documentCount: 0, nonPlanningDocumentCount: 0,
+  firstTaskMatchesCanonicalParent: true, firstTaskStatus: "in_review", canonicalParentStatus: "in_review" };
 const persistenceFault = vi.hoisted(() => ({ kind: null as "write" | "rename" | null, active: false, latestReport: null as any }));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -33,7 +37,7 @@ import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 const roots: string[]=[];
 afterEach(async()=>{vi.useRealTimers(); vi.restoreAllMocks(); persistenceFault.kind=null; persistenceFault.active=false; persistenceFault.latestReport=null; process.exitCode=0; await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 type Hook = "collect" | "release" | "stop" | "finalizeEvidence" | "checkpointEvidence";
-async function run(options:{authFailure?:boolean;onboardingFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
+async function run(options:{authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
   const root=await mkdtemp(path.join(os.tmpdir(),"journey-campaign-test-")); roots.push(root);
   const module=path.join(root,"provider.mjs");
   const proof = createConnectionProof();
@@ -44,7 +48,7 @@ let onboarded=false;
 const context={identity,company:{id:'company-1',issuePrefix:'QA'},api:{post:async()=>({id:'issue-fixture-1',identifier:'QA-1'})},startingState:'onboarding',capabilities:['company','board-user','task-write'],page:{async screenshot(){} }};
 export const provider={version:1, async acquire(input){return {
 async authenticate(){${options.authFailure ? "throw {outcome:'failed',code:'login_code_expired'};" : ""}},
-async onboard(evidence){${options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},
+async onboard(evidence){${options.preAcceptanceFailure ? `evidence.onboardingPreAcceptance=${JSON.stringify(preAcceptanceEvidence)};throw {outcome:'failed',code:'onboarding_work_before_acceptance'};` : options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},
 async prepare(){throw Error('onboarding receipt was not reused')},
 async identity(){return {...identity,commit:'${(options.drift?"b":"a").repeat(40)}'}},
 async collect(){${options.collectionFailure ? "throw Error('private collection error');" : options.missingReceipt ? "return [];" : `return onboarded?[{journeyId:'cloud-onboarding',runIds:['run-1'],usage:{runs:[{runId:'run-1',usage:{costUsd:0.01}}]},operations:{campaignId:input.campaignId,attemptId:input.campaignId+':cloud-onboarding:1',modelCostUsd:0.01,setupCostUsd:0.005,requestCount:${options.zeroRequests ? 0 : 2},feedback:{collection:'complete',complaints:0,suggestions:0},traceIds:['a'.repeat(32)]}}]:[];`}}, async own(){}, async release(){${options.cleanupFailure ? "throw Error('private raw error');" : "return 'released';"}}, async stop(){}
@@ -108,6 +112,17 @@ describe("product journey campaign boundary outcomes",()=>{
     const campaign=await run({onboardingFailure:true});
     expect(campaign.results.map((r:any)=>r.productJourney.outcome)).toEqual(["failed","blocked"]);
     expect(campaign.results[0].productJourney.phases.find((p:any)=>p.phase==="journey").outcome).toBe("failed");
+  });
+  it("preserves failed pre-acceptance evidence in normalized results and blocks dependent reuse", async () => {
+    const campaign = await run({ preAcceptanceFailure: true });
+    const [onboarding, dependent] = campaign.results;
+    expect(campaign.results.map((row:any) => row.productJourney.outcome)).toEqual(["failed", "blocked"]);
+    expect(onboarding).toMatchObject({ status: "failed", failureClass: "candidate_failure", error: "onboarding_work_before_acceptance" });
+    expect(onboarding.productJourney.onboardingPreAcceptance).toEqual(preAcceptanceEvidence);
+    expect(() => validateOnboardingPreAcceptanceEvidence(onboarding.productJourney.onboardingPreAcceptance)).not.toThrow();
+    expect(onboarding.productJourney.phases).toContainEqual({ phase: "journey", outcome: "failed", code: "onboarding_work_before_acceptance" });
+    expect(dependent.error).toBe("prerequisite_journey_failed");
+    expect(dependent.productJourney.onboardingPreAcceptance).toBeUndefined();
   });
   it("reuses a verified onboarding context for the same shared story",async()=>{
     const campaign=await run();

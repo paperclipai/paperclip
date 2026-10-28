@@ -121,6 +121,13 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `GET /api/health`.
+- `GET /api/instance/task-drain?upgradeReadiness=1` — instance-admin or signed
+  Cloud control only. Returns aggregate restart eligibility, never checkpoint
+  contents, task identities or credentials. Company members and agent keys are
+  denied. The explicit request performs bounded read-only SQL; ordinary drain
+  status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
+  and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
+  establish this local boundary; hosted active-run continuity requires separate proof.
 - `GET /api/liveness` and `HEAD /api/liveness` — public process startup status
   and build commit only; no database readiness or workspace identity.
 

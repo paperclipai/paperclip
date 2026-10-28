@@ -764,7 +764,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed saved agent" });
   });
 
-  it.each(["codex_local", "claude_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
+  it.each(["codex_local", "claude_local", "grok_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
     mockAdaptersApi.list.mockResolvedValueOnce([{ type: adapterType, supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
     const result = await renderForm([], { adapterType, adapterConfig: { model: "existing-model", effort: "high" } });
     roots.push(result.root);
@@ -976,8 +976,8 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("is ignored. The agent can still run.");
   });
 
-  it.each(["codex", "claude"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
-    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" };
+  it.each(["codex", "claude", "grok"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
+    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: harness, model: harness === "grok" ? "grok-4.7" : "claude-opus-5-5" };
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
     roots.push(result.root);
     const effort = result.container.querySelector('[aria-label="Thinking effort"]');
@@ -1279,8 +1279,8 @@ describe("AgentConfigForm environment selector", () => {
     }
   });
 
-  it("saves Grok 4.7 reasoning effort using the runtime key", async () => {
-    const result = await renderForm([], { adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high" } });
+  it.each(["grok_local", "paperclip_runner"])("saves Grok 4.7 reasoning effort using the runtime key on %s", async adapterType => {
+    const result = await renderForm([], { adapterType, adapterConfig: { ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok" } : {}), model: "grok-4.7", reasoningEffort: "high" } });
     roots.push(result.root);
     const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
     expect(effort).toBeTruthy();

@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, projects } from "@paperclipai/db";
+import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, environments, heartbeatRuns, plugins, projects } from "@paperclipai/db";
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
 import { createRequest, parseMessage, serializeMessage, isJsonRpcSuccessResponse, isJsonRpcErrorResponse } from "../../../packages/plugins/sdk/src/protocol.js";
@@ -19,11 +19,10 @@ import { environmentRunOrchestrator } from "../services/environment-run-orchestr
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import { createPluginRunnerTaskOwner } from "../services/native-runtime/plugin-runner-task.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const ingress = vi.hoisted(() => ({ connect: vi.fn() }));
 vi.mock("../realtime/runner-prp-outbound.js", () => ({ connectRunnerPrpIngress: ingress.connect }));
-const support = await getEmbeddedPostgresTestSupport();
 const databaseSuite = support.supported ? describe : describe.skip;
 
 /** Real SDK serialization and dispatch with synthetic provider resources. */
@@ -59,9 +58,9 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
   let db!: ReturnType<typeof createDb>;
   let stopDb: (() => Promise<void>) | undefined;
   beforeAll(async () => {
-    const started = await startEmbeddedPostgresTestDatabase("plugin-runner-task");
-    stopDb = started.stop; db = createDb(started.connectionString);
-  });
+    const started = await startRecoveryPostgres("plugin-runner-task");
+    stopDb = started.cleanup; db = createDb(started.connectionString);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await stopDb?.(); });
 
   it("does not allocate agent-dependent setup leases before the agent is prepared", async () => {
@@ -108,6 +107,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       version: "1.0.0", apiVersion: 1, categories: ["automation"], manifestJson: manifest, status: "ready" });
     const calls: PluginEnvironmentTaskOperation[] = [];
     let executionStopped = false, stopRequested = false, acquisition = 0, releaseFailure = false;
+    let projectAuthAllowed = true;
     const released = vi.fn(), complete = vi.fn();
     const plugin = definePlugin({
       async setup() {},
@@ -126,7 +126,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
             }),
           } };
           case "check_project_auth": return { kind: "project_auth", taskId: params.taskId,
-            configurationId: params.operation.configurationId, provider: params.operation.provider, allowed: true };
+            configurationId: params.operation.configurationId, provider: params.operation.provider, allowed: projectAuthAllowed };
           case "read_state": return { kind: "state", taskId: params.taskId, state: {
             schema: "paperclip.runner.durable.state.v1", ...params.operation.identity, lifecycle: "suspended",
           } };
@@ -233,6 +233,35 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
       expect(saved.metadata?.runnerTaskDispatched).toBe(true);
       expect(JSON.stringify(saved.metadata)).not.toMatch(/synthetic-account-key|synthetic-launch-key|synthetic-bootstrap-ticket|synthetic-fixture/);
+      const acquisitionBefore = acquisition;
+      const callsBefore = calls.length;
+      const recovered = await environmentRunOrchestrator(db, { environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workers }) }).acquireForRun({
+        companyId, selectedEnvironmentId: environmentId, localEnvironmentId: randomUUID(), agentId,
+        issueId: null, heartbeatRunId: runId, persistedExecutionWorkspace: null,
+        executionWorkspaceSettings: null, adapterType: "paperclip_runner",
+        reattachRemoteLease: { kind: "plugin_task", leaseId: saved.id },
+      });
+      expect(recovered.lease.id).toBe(saved.id);
+      const adopted = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+        projectAuthCheckVersion: 1, adoptIdentity: identity });
+      await adopted.driver.authorizeRunnerAdoption!(prepared.configurationId, identity);
+      const adoptedRegistration = await adopted.registration({} as never, runId);
+      adoptedRegistration.activate(); await adoptedRegistration.ready();
+      await adoptedRegistration.release("detach");
+      expect(acquisition).toBe(acquisitionBefore);
+      expect(calls.slice(callsBefore).some(op => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
+      expect(executionStopped).toBe(false);
+      projectAuthAllowed = false;
+      const revoked = createPluginRunnerTaskOwner({ task: target.runnerTask, projectIds: [projectId], harness: "codex",
+        projectAuthCheckVersion: 1, adoptIdentity: identity });
+      const connectionsBeforeRevocation = calls.filter(op => op.kind === "connection").length;
+      await expect(revoked.driver.authorizeRunnerAdoption!(prepared.configurationId, identity)).rejects.toThrow("project authentication conflicts");
+      expect(calls.filter(op => op.kind === "connection")).toHaveLength(connectionsBeforeRevocation);
+      expect(calls.slice(callsBefore).filter(op => op.kind === "check_project_auth")).toEqual(Array(2).fill({
+        kind: "check_project_auth", configurationId: prepared.configurationId, provider: "openai", projectIds: [projectId],
+      }));
+      projectAuthAllowed = true;
+      close.mockClear();
       await expect(runtime.task({ companyId: randomUUID(), leaseId: acquired.lease.id, operation: { kind: "stop" } })).rejects.toThrow("lease unavailable");
       const before = calls.filter(value => value.kind === "submit").length;
       await expect(runtime.task({ companyId, leaseId: acquired.lease.id, operation: { ...submit!, projectIds: [randomUUID()] } as never })).rejects.toThrow("project unavailable");
@@ -279,7 +308,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
       expect(cleaned).toMatchObject({ status: "expired", cleanupStatus: "success", environmentId: null,
         metadata: { runnerTaskDispatched: false, remoteExecutionTermination: { state: "stopped" } } });
     } finally { executionStopped = true; handle.child.kill(); await handle.completion.catch(() => {}); harness.stop(); }
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each([false, true])("replaces a same-run task only after the provider confirms termination (%s)", async stopped => {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), pluginId = randomUUID(), environmentId = randomUUID(), oldLeaseId = randomUUID();

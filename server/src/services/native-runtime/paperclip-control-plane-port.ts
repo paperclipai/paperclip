@@ -25,7 +25,7 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
+import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
@@ -286,14 +286,23 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
     this.#assertActive(options);
     if (persisted.disposition === "committed") {
-      publishChatPublicationCommitSignal({
-        companyId: this.#binding.companyId,
-        issueId: this.#binding.issueId,
-        runId: this.#binding.runId,
-        agentId: this.#binding.agentId,
-        seq: persisted.row.seq,
-        eventType: event.eventType,
-      });
+      try {
+        publishLiveEvent({
+          companyId: this.#binding.companyId,
+          type: "heartbeat.run.event",
+          payload: {
+            runId: this.#binding.runId,
+            agentId: this.#binding.agentId,
+            issueId: this.#binding.issueId,
+            seq: persisted.row.seq,
+            eventType: persisted.row.eventType,
+            stream: persisted.row.stream,
+            level: persisted.row.level,
+            payload: persisted.row.payload,
+          },
+        });
+      } catch {
+      }
       await this.#onCommittedEvent?.(event);
     } else {
       // A recovered runner may replay the event whose durable side effects

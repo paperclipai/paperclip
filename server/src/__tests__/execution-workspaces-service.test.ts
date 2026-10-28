@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as localServiceSupervisor from "../services/local-service-supervisor.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile } from "node:child_process";
@@ -11,6 +12,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
+  applyPendingMigrations,
   agents,
   companies,
   createDb,
@@ -160,7 +162,8 @@ describe("execution workspace config helpers", () => {
   });
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_WORKSPACES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -258,8 +261,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   }>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
+    await resetDatabase();
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
@@ -272,7 +277,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterEach(async () => {
+  async function resetDatabase() {
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
@@ -286,6 +291,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
+  }
+
+  afterEach(async () => {
+    await resetDatabase();
     pullRequestDetailsByKey.clear();
 
     for (const dir of tempDirs) {
@@ -295,6 +304,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -1124,6 +1134,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         .set({ sourceIssueId: openIssueId, updatedAt: new Date(Date.UTC(2020, 0, index + 1)) })
         .where(eq(executionWorkspaces.id, workspaceId));
     }
+    await db.execute(sql`update execution_workspaces set updated_at = updated_at + interval '456 microseconds'
+      where id in (${sql.join(skippedWorkspaceIds.map(id => sql`${id}::uuid`), sql`, `)})`);
     // The eligible workspace is newest, so it sorts after the whole skipped page.
     const eligible = await seedAncestryTerminalWorkspace({ updatedAt: new Date(Date.UTC(2020, 0, 9)) });
 

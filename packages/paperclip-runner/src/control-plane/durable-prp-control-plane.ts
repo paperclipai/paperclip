@@ -54,6 +54,7 @@ const protocolVersion = RUNNER_PRP_PROTOCOL_MAX;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const externalCoreStateSchema = "paperclip.runner.external-control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
 const maxFrameBytes = 1024 * 1024;
@@ -142,6 +143,8 @@ interface ConnectionLeaseRecord {
 interface StoredCoreState {
   schema: typeof coreStateSchema | typeof transitionCoreStateSchema;
   identity: DurableRecoveryIdentity;
+  /** External checkpoints contain control state, not a duplicate output log. */
+  checkpointEventPolicy?: "control-v1";
   warmTransition?: {
     receipt: DurableWarmRunTransition;
     phase: "awaiting_result" | "prepared" | "activated";
@@ -161,6 +164,8 @@ interface StoredCoreState {
    * reconstruct another warm attachment.
    */
   runAttachTemplate?: Record<string, unknown> | null;
+  /** Opaque environment configuration bindings; bounded across a warm handoff. */
+  preparedLaunchConfigurations?: Array<{ identity: DurableRecoveryIdentity; configurationId: string }>;
   tickets: Record<string, BootstrapTicketRecord>;
   leases: Record<string, ConnectionLeaseRecord>;
   commands: DurableRecoveryCoreCommand[];
@@ -226,6 +231,7 @@ interface PendingChallenge {
   warmTransitionVersion?: 1;
   warmTransitionId?: string;
   requestedIdentity?: DurableRecoveryIdentity;
+  acknowledgedSourceSeq?: number;
 }
 
 interface SecureChannel {
@@ -269,11 +275,173 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  recoverSemanticToolInput?: (
+    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
+  ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
   /** Stop this exact owner after a proven, authenticated permanent integrity fault. */
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
   connectionLeaseTtlMs?: number;
+}
+
+export interface DurablePrpCheckpoint {
+  /** Read-only protocol evidence. Does not grant attachment or execution authority. */
+  readonly recoveryEvidence: {
+    readonly runnerInstanceId: string;
+    readonly normalizedSessionId: string;
+    readonly authenticatedConnectionCount: number;
+    readonly highestRecordedSourceSeq: number;
+  };
+  readonly runnerVersion: string;
+  readonly runnerDigest: string;
+  readonly runId: string;
+  readonly predecessor: { readonly runId: string; readonly normalizedSessionId: string } | null;
+  readonly records: ReadonlyMap<string, string>;
+  /** Atomic write set relative to the last successful callback for this run. */
+  readonly changedRecords: ReadonlyMap<string, string>;
+  readonly removedRecords: readonly string[];
+  /** First write for a run, or retry after a failed write, replaces the checkpoint atomically. */
+  readonly reset: boolean;
+  readonly workCommandIds: readonly string[];
+  restoreSessionDirectory(root: string): void;
+}
+
+type CheckpointHeader = {
+  schema: "paperclip.runner.controller-checkpoint.v2";
+  runnerVersion: string;
+  runnerDigest: string;
+  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries">;
+};
+
+function checkpointRunId(state: StoredCoreState): string {
+  if (state.warmTransition) return state.warmTransition.receipt.newIdentity.runId;
+  const attachment = state.commands.findLast(command => command.type === "run.attach");
+  const next = attachment?.payload.paperclipNextAuthority as { identity?: { runId?: string } } | undefined;
+  return next?.identity?.runId ?? state.identity.runId;
+}
+
+function isStreamingEvent(event: Pick<DurableRecoveryCommittedEvent, "eventType" | "priority">): boolean {
+  return event.priority !== 0 && ["item.delta", "usage.reported"].includes(event.eventType);
+}
+
+function evictionCandidate(state: StoredCoreState): number {
+  // Keep the latest identity/turn/result anchors through arbitrarily long text
+  // streams. Unsettled semantic inputs retain their existing stronger fence.
+  const anchors = new Set(["harness.ready", "session.started", "session.resumed", "turn.started",
+    "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "run.result.proposed", "usage.reported"]);
+  const latest = new Map<string, DurableRecoveryCommittedEvent>();
+  for (const event of state.committedEvents) if (anchors.has(event.eventType)) latest.set(event.eventType, event);
+  return state.committedEvents.findIndex(event => latest.get(event.eventType) !== event && !unsettledSemanticInput(event, state));
+}
+
+function checkpointChanges(records: ReadonlyMap<string, string>, runId: string, previous?: DurablePrpCheckpoint) {
+  const reset = !previous || previous.runId !== runId;
+  return {
+    changedRecords: new Map([...records].filter(([key, value]) => reset || previous.records.get(key) !== value)),
+    removedRecords: reset ? [] : [...previous.records.keys()].filter(key => !records.has(key)),
+    reset,
+  };
+}
+
+function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string): DurablePrpCheckpoint {
+  const runId = checkpointRunId(state);
+  const records = new Map<string, string>();
+  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, ...metadata } = state;
+  const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
+  const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
+  for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
+  for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
+  const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
+    runnerVersion, runnerDigest, state: { ...metadata, checkpointEventPolicy: "control-v1" } };
+  records.set("header", JSON.stringify(header));
+  records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
+    commandCount: commands.length, eventCount: recoveryEvents.length }));
+  const maintenance = new Set(["runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
+  return {
+    runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
+    recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
+      authenticatedConnectionCount: state.connectionCount,
+      highestRecordedSourceSeq: state.committedEvents.reduce((highest, event) => Math.max(highest, event.sourceSeq), state.ackedSourceSeq) },
+    predecessor: state.identity.runId === runId ? null
+      : { runId: state.identity.runId, normalizedSessionId: state.identity.normalizedSessionId },
+    workCommandIds: commands.filter(command => !maintenance.has(command.type)).map(command => command.commandId),
+    restoreSessionDirectory(root) {
+      mkdirSync(root, { recursive: true, mode: 0o700 });
+      verifyPrivateDirectory(root);
+      const directory = resolve(root, "control-plane");
+      mkdirSync(directory, { recursive: true, mode: 0o700 });
+      verifyPrivateDirectory(directory);
+      atomicPrivateWrite(resolve(directory, "control-plane-state.json"), JSON.stringify(checkpointState(records).state));
+    },
+  };
+}
+
+function parseCheckpointHeader(contents: string): Record<string, unknown> & {
+  runnerVersion: string; runnerDigest: string;
+  state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
+} {
+  const header: unknown = JSON.parse(contents);
+  if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2"].includes(String(header.schema))
+    || typeof header.runnerVersion !== "string" || !header.runnerVersion
+    || typeof header.runnerDigest !== "string" || !runnerDigestPattern.test(header.runnerDigest)
+    || !isRecord(header.state) || !exactIdentity(header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  return { ...header, runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest,
+    state: { ...header.state, identity: header.state.identity } };
+}
+
+/** Bounded header evidence for rollout policy, not permission to restore or attach.
+ * Full restoration still validates every record through decodeDurablePrpCheckpoint. */
+export function inspectDurablePrpCheckpointHeader(contents: string): DurableRecoveryIdentity | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+      || header.state.checkpointEventPolicy !== "control-v1"
+      || ![coreStateSchema, transitionCoreStateSchema].includes(String(header.state.schema))) return null;
+    return { ...header.state.identity };
+  } catch { return null; }
+}
+
+function checkpointState(records: ReadonlyMap<string, string>) {
+  const header = parseCheckpointHeader(records.get("header") ?? "null");
+  const read = (key: string): unknown => {
+    const value = records.get(key);
+    if (value === undefined) throw new Error("native_runner_checkpoint_incomplete");
+    return JSON.parse(value);
+  };
+  const v2 = header.schema === "paperclip.runner.controller-checkpoint.v2";
+  const keys = (prefix: string) => [...records.keys()].filter(key => key.startsWith(prefix))
+    .sort((a, b) => Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)));
+  const commandKeys = v2 ? keys("command:") : header.commands;
+  const eventKeys = v2 ? keys("event:") : header.events;
+  if (!Array.isArray(commandKeys) || commandKeys.length > maxCommands
+    || !Array.isArray(eventKeys) || eventKeys.length > maxCommittedEventWindow
+    || commandKeys.some(key => typeof key !== "string" || !/^command:\d+$/.test(key))
+    || eventKeys.some(key => typeof key !== "string" || !/^event:\d+$/.test(key))
+    || new Set(commandKeys).size !== commandKeys.length || new Set(eventKeys).size !== eventKeys.length) {
+    throw new Error("native_runner_checkpoint_invalid");
+  }
+  const cursor = v2 ? read("cursor") : header.state;
+  if (!isRecord(cursor) || (v2 && (cursor.commandCount !== commandKeys.length || cursor.eventCount !== eventKeys.length
+    || records.size !== commandKeys.length + eventKeys.length + 2))) throw new Error("native_runner_checkpoint_incomplete");
+  const state = { ...header.state, ackedSourceSeq: cursor.ackedSourceSeq, replayDeliveries: cursor.replayDeliveries,
+    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) };
+  if (!isStoredCoreState(state, header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  if (state.commands.some((command, index) => commandKeys[index] !== `command:${command.controllerSeq}`)
+    || state.committedEvents.some((event, index) => eventKeys[index] !== `event:${event.sourceSeq}`)) {
+    throw new Error("native_runner_checkpoint_invalid");
+  }
+  return { state, runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest };
+}
+
+export function decodeDurablePrpCheckpoint(records: ReadonlyMap<string, string>): DurablePrpCheckpoint {
+  try {
+    const decoded = checkpointState(records);
+    return captureCheckpoint(decoded.state, decoded.runnerVersion, decoded.runnerDigest);
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new Error("native_runner_checkpoint_invalid", { cause: error });
+    throw error;
+  }
 }
 
 export interface RunnerProcessResult {
@@ -645,6 +813,7 @@ function isStoredCoreState(
     (value.schema !== coreStateSchema &&
       value.schema !== transitionCoreStateSchema) ||
     canonicalJson(value.identity) !== canonicalJson(identity) ||
+    (value.checkpointEventPolicy !== undefined && value.checkpointEventPolicy !== "control-v1") ||
     !isRecord(value.tickets) ||
     !isRecord(value.leases) ||
     !Array.isArray(commands) ||
@@ -706,6 +875,13 @@ function isStoredCoreState(
   ) {
     return false;
   }
+  if (value.preparedLaunchConfigurations !== undefined && (
+    !Array.isArray(value.preparedLaunchConfigurations) || value.preparedLaunchConfigurations.length > 2 ||
+    !value.preparedLaunchConfigurations.every(binding => isRecord(binding) && exactIdentity(binding.identity)
+      && typeof binding.configurationId === "string" && binding.configurationId.trim().length > 0
+      && binding.configurationId.length <= 1024) ||
+    new Set(value.preparedLaunchConfigurations.map(binding => canonicalJson(binding.identity))).size !== value.preparedLaunchConfigurations.length
+  )) return false;
   if (
     !commands.every(
       (command, index) =>
@@ -1203,7 +1379,9 @@ class DurableCoreStore {
   readonly path: string;
   #state: StoredCoreState;
   #writeIndeterminate = false;
-  #revision = 0;
+  #writeRevision = 0;
+  #externallyPersisted = false;
+  revision = 0;
   #pendingEvent: {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
     isCurrentOwner: () => boolean;
@@ -1228,6 +1406,9 @@ class DurableCoreStore {
     const stored = readPrivateFile(this.path);
     if (stored !== null) {
       const parsed = JSON.parse(stored) as unknown;
+      if (isRecord(parsed) && parsed.schema === externalCoreStateSchema) {
+        throw new Error("Restore the external checkpoint before opening this controller.");
+      }
       if (!isStoredCoreState(parsed, identity)) {
         throw new Error(
           "Control-plane state is invalid or does not match the requested PRP identity.",
@@ -1244,9 +1425,29 @@ class DurableCoreStore {
     return this.#state;
   }
 
+  useExternalPersistence(): void {
+    this.assertWritable();
+    this.#pendingEvent = null;
+    ++this.#writeRevision;
+    // Leave a fail-closed marker, never a stale recovery snapshot. The external
+    // checkpoint must be restored before another controller opens this root.
+    try {
+      atomicPrivateWrite(this.path, JSON.stringify({
+        schema: externalCoreStateSchema,
+        identity: this.#state.identity,
+      }));
+    } catch (error) {
+      this.#writeIndeterminate = true;
+      throw error;
+    }
+    this.#state.checkpointEventPolicy = "control-v1";
+    this.#externallyPersisted = true;
+    this.revision += 1;
+  }
+
   save(): void {
     this.assertWritable();
-    ++this.#revision;
+    ++this.#writeRevision;
     try {
       const pending = this.#pendingEvent;
       // A command already needs a synchronous write. Include the admitted
@@ -1254,36 +1455,48 @@ class DurableCoreStore {
       const withEvent = pending && !pending.committed && pending.isCurrentOwner()
         ? pending.buildCandidate(this.#state) : null;
       const candidate = withEvent ?? this.#state;
-      atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      if (!this.#externallyPersisted) {
+        atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      }
       this.#state = candidate;
       if (pending && withEvent) pending.committed = true;
+      this.revision += 1;
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
     }
   }
 
-  /** Stage event state privately; publish it only after its durable commit. */
+  /** File-backed events publish after the staged commit. External delivery
+   * waits for its checkpoint callback in the controller. */
   async commitEvent(
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null,
     isCurrentOwner: () => boolean,
+    checkpointRequired: boolean,
   ): Promise<boolean> {
     if (!isCurrentOwner()) return false;
     const pending = { buildCandidate, isCurrentOwner, committed: false };
     this.#pendingEvent = pending;
     try {
       this.assertWritable();
-      const revision = this.#revision;
+      const revision = this.#writeRevision;
       const candidate = buildCandidate(this.#state);
       if (candidate === null) return false;
+      if (this.#externallyPersisted) {
+        this.#state = candidate;
+        ++this.#writeRevision;
+        if (checkpointRequired) this.revision += 1;
+        return true;
+      }
       await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
         this.assertWritable();
-        if (pending.committed || !isCurrentOwner() || this.#revision !== revision) return;
+        if (pending.committed || !isCurrentOwner() || this.#writeRevision !== revision) return;
         renameSync(temporary, this.path);
         syncParentDirectory(this.path);
         this.#state = candidate;
-        ++this.#revision;
+        ++this.#writeRevision;
         pending.committed = true;
+        if (checkpointRequired) this.revision += 1;
       });
       // Explicit authority commits do not absorb pending events. On conflict,
       // leave the event unacknowledged for replay instead of rewriting in a loop.
@@ -1303,16 +1516,20 @@ class DurableCoreStore {
       );
   }
 
-  /** Persist a complete candidate before publishing any new authority in memory. */
-  commit(candidate: StoredCoreState): void {
+  /** Replace authority without allowing an older staged event to overwrite it. */
+  commit(candidate: StoredCoreState, checkpointRequired = true): void {
     this.assertWritable();
     // An explicit authority transaction owns its complete snapshot. Later
     // command writes must not absorb an event admitted before that boundary.
     this.#pendingEvent = null;
-    ++this.#revision;
+    ++this.#writeRevision;
+    candidate.checkpointEventPolicy ??= this.#state.checkpointEventPolicy;
     try {
-      atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      if (!this.#externallyPersisted) {
+        atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      }
       this.#state = candidate;
+      if (checkpointRequired) this.revision += 1;
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -1558,10 +1775,23 @@ export class DurablePrpControlPlane {
   #port: number | null = null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
+  #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
   #connectionLeaseTtlMs: number;
+  #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
+  #persistedRevision = -1;
+  #queuedRevision = -1;
+  #lastCheckpoint?: DurablePrpCheckpoint;
+  #publishedState?: StoredCoreState;
+  #publishedStore?: DurablePrpControlPlaneStore;
+  #publicationCommands = new Map<string, { record: string; command: DurableRecoveryCoreCommand }>();
+  #visibleStateCache?: { working: StoredCoreState; published: StoredCoreState; revision: number; state: StoredCoreState };
+  #checkpointPersistenceFailed = false;
+  #persistenceTail = Promise.resolve();
+  #sendQueues = new Map<AuthorityConnection, Promise<void>>();
+  #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -1582,6 +1812,9 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    if (this.#store.state.checkpointEventPolicy === "control-v1") {
+      this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
+    }
     this.#expectedRunnerVersion = options.expectedRunnerVersion;
     this.#expectedRunnerDigest = options.expectedRunnerDigest;
     const transition = this.#store.state.warmTransition;
@@ -1596,16 +1829,135 @@ export class DurablePrpControlPlane {
     }
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
+    this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
   get store(): DurablePrpControlPlaneStore {
-    return this.#store;
+    return this.#publishedStore ?? this.#store;
+  }
+
+  #capturePublishedState(snapshot: DurablePrpCheckpoint): StoredCoreState {
+    const header = JSON.parse(snapshot.records.get("header")!) as CheckpointHeader;
+    const cursor = JSON.parse(snapshot.records.get("cursor")!) as { ackedSourceSeq: number; replayDeliveries: number };
+    const cached = new Map<string, { record: string; command: DurableRecoveryCoreCommand }>();
+    for (const [part, record] of snapshot.records) {
+      if (!part.startsWith("command:")) continue;
+      const prior = this.#publicationCommands.get(part);
+      cached.set(part, prior?.record === record ? prior : { record, command: JSON.parse(record) });
+    }
+    this.#publicationCommands = cached;
+    return { ...header.state, ...cursor, commands: [...cached.values()].map(value => value.command),
+      // Event records are immutable after insertion. Retain their array, not
+      // another deep copy of the streaming payload window.
+      committedEvents: this.#store.state.committedEvents };
+  }
+
+  #visibleState(): StoredCoreState {
+    const published = this.#publishedState!;
+    const working = this.#store.state;
+    const cached = this.#visibleStateCache;
+    if (cached?.working === working && cached.published === published && cached.revision === this.#store.revision) {
+      return cached.state;
+    }
+    // A warm handoff cannot expose its new authority before persistence.
+    if (canonicalJson(working.identity) !== canonicalJson(published.identity)) return published;
+    const barrier = this.#persistedRevision === this.#store.revision ? -1
+      : working.committedEvents.findIndex(event => event.sourceSeq > published.ackedSourceSeq && !isStreamingEvent(event));
+    const state = { ...published,
+      committedEvents: barrier < 0 ? working.committedEvents : working.committedEvents.slice(0, barrier),
+      ackedSourceSeq: barrier < 0 ? working.ackedSourceSeq : Math.min(working.ackedSourceSeq, working.committedEvents[barrier].sourceSeq - 1),
+    };
+    this.#visibleStateCache = { working, published, revision: this.#store.revision, state };
+    return state;
+  }
+
+  /** Sparse, already-acknowledged history; never permits gaps in new delivery. */
+  get recoveredSourceSeq(): number {
+    return this.#recoveredCursor?.runId === this.#identity.runId ? this.#recoveredCursor.sourceSeq : 0;
+  }
+
+  /**
+   * Make the callback the durable authority. Local state becomes a marker;
+   * restart must restore its checkpoint before constructing the controller.
+   * Outbound frames and semantic dispatch still await the callback's commit.
+   */
+  setCheckpointPersistence(persist: (checkpoint: DurablePrpCheckpoint) => Promise<void>): void {
+    if (this.#connections.size > 0 || this.#persistCheckpoint !== null) {
+      throw new Error("runner_controller_persistence_already_active");
+    }
+    this.#store.useExternalPersistence();
+    this.#persistCheckpoint = persist;
+    this.#publishedState = this.#capturePublishedState(captureCheckpoint(this.#store.state,
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest));
+    const core = this;
+    this.#publishedStore = { path: this.#store.path, get state() { return core.#visibleState(); } };
+  }
+
+  flushCheckpoint(): Promise<void> {
+    if (!this.#persistCheckpoint || this.#persistedRevision === this.#store.revision
+      || this.#queuedRevision === this.#store.revision) {
+      return this.#persistenceTail;
+    }
+    const snapshot = captureCheckpoint(this.#store.state,
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest);
+    const published = this.#capturePublishedState(snapshot);
+    const revision = this.#store.revision;
+    this.#queuedRevision = revision;
+    const persist = this.#persistCheckpoint;
+    const pending = this.#persistenceTail.catch(() => undefined).then(async () => {
+      // The previous write may have failed after committing. Rebuild the delta
+      // at execution time, and reset after uncertainty instead of assuming it failed.
+      const checkpoint = { ...snapshot, ...checkpointChanges(snapshot.records, snapshot.runId,
+        this.#checkpointPersistenceFailed ? undefined : this.#lastCheckpoint) };
+      try {
+        await persist(checkpoint);
+        this.#lastCheckpoint = checkpoint;
+        this.#publishedState = published;
+        this.#persistedRevision = revision;
+        this.#checkpointPersistenceFailed = false;
+      } catch (error) {
+        this.#checkpointPersistenceFailed = true;
+        throw error;
+      }
+    });
+    this.#persistenceTail = pending;
+    void pending.then(() => {
+      if (this.#persistenceTail === pending) this.#queuedRevision = -1;
+    }, () => {
+      if (this.#persistenceTail === pending) this.#queuedRevision = -1;
+      this.disconnectActiveRunner();
+    });
+    return pending;
+  }
+
+  #sendJson(connection: AuthorityConnection, value: unknown): void {
+    if (!this.#persistCheckpoint) {
+      connection.sendJson(value);
+      return;
+    }
+    const checkpoint = this.flushCheckpoint();
+    const frame = structuredClone(value);
+    const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
+      .then(() => checkpoint)
+      .then(() => connection.sendJson(frame))
+      .catch(() => connection.close());
+    this.#sendQueues.set(connection, sending);
+    void sending.finally(() => {
+      if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
+    });
   }
 
   getCommand(commandId: string): DurableRecoveryCoreCommand | undefined {
+    const state = this.store.state;
+    return state.commands.find(command => command.commandId === commandId)
+      ?? (state.warmTransition?.command.commandId === commandId ? state.warmTransition.command : undefined)
+      ?? (state.completedWarmTransition?.command.commandId === commandId ? state.completedWarmTransition.command : undefined);
+  }
+
+  #getCommand(commandId: string): DurableRecoveryCoreCommand | undefined {
     return (
       this.#store.state.commands.find(
         (command) => command.commandId === commandId,
@@ -1618,6 +1970,36 @@ export class DurablePrpControlPlane {
         ? this.#store.state.completedWarmTransition.command
         : undefined)
     );
+  }
+
+  async recoverPendingSemanticInputs(): Promise<void> {
+    if (!this.#recoverSemanticToolInput) return;
+    const identity = this.#identity;
+    for (const saved of [...this.#store.state.committedEvents]) {
+      if (!unsettledSemanticInput(saved, this.#store.state)) continue;
+      const event = saved.envelope.payload as PrpEvent;
+      const semantic = (event.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
+      if (!semantic || event.runId !== identity.runId || event.normalizedSessionId !== identity.normalizedSessionId) continue;
+      if (typeof semantic.callId !== "string" || typeof semantic.operationId !== "string") continue;
+      const commandId = `command_tool_${createHash("sha256").update(`${identity.runId}\0${semantic.callId}`).digest("hex").slice(0, 32)}`;
+      if (this.#pendingSemanticCalls.has(commandId) || this.#getCommand(commandId)) continue;
+      this.#pendingSemanticCalls.add(commandId);
+      try {
+        const call = { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
+          sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
+          correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+            turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
+        const outcome = await this.#recoverSemanticToolInput(call);
+        if (this.#identity !== identity || this.#semanticCallbacksRetired) return;
+        if (!outcome || this.#getCommand(commandId)) continue;
+        const { input, ...metadata } = call;
+        this.queueCommand("semantic_tool.result", { ...metadata, inputDigest: canonicalDigest(input),
+          result: outcome.result, isError: outcome.isError === true }, commandId, true);
+        await this.flushCheckpoint();
+      } finally {
+        this.#pendingSemanticCalls.delete(commandId);
+      }
+    }
   }
 
   get connectUrl(): string {
@@ -1884,6 +2266,28 @@ export class DurablePrpControlPlane {
     this.#store.save();
   }
 
+  preparedLaunchConfigurationId(identity: DurableRecoveryIdentity): string | undefined {
+    return this.#store.state.preparedLaunchConfigurations?.find(binding =>
+      canonicalJson(binding.identity) === canonicalJson(identity))?.configurationId;
+  }
+
+  /** Called only after the environment has validated a prepared launch. */
+  persistPreparedLaunchConfiguration(identity: DurableRecoveryIdentity, configurationId: string): void {
+    this.#store.assertWritable();
+    if (!exactIdentity(identity) || typeof configurationId !== "string" || !configurationId.trim() || configurationId.length > 1024) {
+      throw new Error("runner_prepared_launch_configuration_invalid");
+    }
+    const existing = this.preparedLaunchConfigurationId(identity);
+    if (existing !== undefined) {
+      if (existing !== configurationId) throw new Error("runner_prepared_launch_configuration_changed");
+      return;
+    }
+    const current = this.#store.state.preparedLaunchConfigurations?.filter(binding =>
+      canonicalJson(binding.identity) === canonicalJson(this.#identity)) ?? [];
+    this.#store.state.preparedLaunchConfigurations = [...current, { identity: structuredClone(identity), configurationId }];
+    this.#store.save();
+  }
+
   issueBootstrapTicket(ttlMs = 5_000): string {
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
@@ -2053,6 +2457,7 @@ export class DurablePrpControlPlane {
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
     this.#store.save();
+    void this.flushCheckpoint().catch(() => undefined);
     if (deliverImmediately) {
       for (const connection of this.#connections) {
         if (connection.secureChannel !== null) {
@@ -2235,6 +2640,7 @@ export class DurablePrpControlPlane {
       )
         connection.replayOnly = true;
       this.#commandResult(connection, envelope);
+      await this.flushCheckpoint();
       return;
     }
     if (kind === "warm_transition_activated") {
@@ -2275,7 +2681,7 @@ export class DurablePrpControlPlane {
         this.#store.commit(candidate);
         connection.lease = this.#store.state.leases[transition.credentialId]!;
       }
-      connection.sendJson(
+      this.#sendJson(connection,
         this.#controlEnvelope(
           connection,
           `activation_ack_${receipt.transitionId}`,
@@ -2335,7 +2741,7 @@ export class DurablePrpControlPlane {
       this.#store.commit(candidate);
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `lease_renewed_${expectedExpiry}`,
@@ -2567,6 +2973,16 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    const requiresRecoveryCursor = this.#persistCheckpoint !== null || this.#store.state.checkpointEventPolicy === "control-v1";
+    const resume = payload.resume;
+    const acknowledgedSourceSeq = payload.recoveryCursorVersion === 1 && isRecord(resume)
+      && Number.isSafeInteger(resume.ackedSourceSeq) && (resume.ackedSourceSeq as number) >= 0
+      && Number.isSafeInteger(resume.nextSourceEventSeq) && (resume.nextSourceEventSeq as number) > (resume.ackedSourceSeq as number)
+      ? resume.ackedSourceSeq as number : undefined;
+    if ((requiresRecoveryCursor || payload.recoveryCursorVersion !== undefined) && acknowledgedSourceSeq === undefined) {
+      connection.close();
+      return;
+    }
     const serverNonce = randomUUID();
     const selectedVersion =
       authorization.kind === "lease"
@@ -2598,6 +3014,9 @@ export class DurablePrpControlPlane {
       ...(typeof payload.warmTransitionId === "string"
         ? { warmTransitionId: payload.warmTransitionId }
         : {}),
+      ...(acknowledgedSourceSeq !== undefined
+        ? { recoveryCursorVersion: 1, recoveryAckedSourceSeq: acknowledgedSourceSeq }
+        : {}),
     };
     const canonicalChallenge = canonicalJson(challengePayload);
     const serverProof = domainHmac(
@@ -2623,8 +3042,9 @@ export class DurablePrpControlPlane {
         ? { warmTransitionId: payload.warmTransitionId }
         : {}),
       requestedIdentity: structuredClone(authorization.identity),
+      acknowledgedSourceSeq,
     };
-    connection.sendJson({
+    this.#sendJson(connection, {
       protocol,
       version: selectedVersion,
       kind: "auth_challenge",
@@ -2777,6 +3197,7 @@ export class DurablePrpControlPlane {
       }
       if (transition.phase === "prepared") {
         const candidate = initialCoreState(transition.receipt.newIdentity);
+        candidate.preparedLaunchConfigurations = structuredClone(this.#store.state.preparedLaunchConfigurations);
         candidate.schema = transitionCoreStateSchema;
         candidate.warmTransition = {
           ...structuredClone(transition),
@@ -2789,6 +3210,16 @@ export class DurablePrpControlPlane {
         this.#identity = structuredClone(candidate.identity);
         lease = this.#store.state.leases[lease.credentialId]!;
       }
+    }
+    // The authenticated peer's durable ACK covers only events this authority
+    // previously released. Every control event was checkpointed before that ACK;
+    // only display/usage streaming may be absent from the restored event window.
+    if (pending.acknowledgedSourceSeq !== undefined
+      && (this.#persistCheckpoint !== null || this.#store.state.checkpointEventPolicy === "control-v1")
+      && canonicalJson(requestedIdentity) === canonicalJson(this.#store.state.identity)) {
+      const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
+      this.#store.state.ackedSourceSeq = cursor;
+      this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
@@ -2844,7 +3275,7 @@ export class DurablePrpControlPlane {
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
     this.#store.save();
-    connection.sendJson({
+    this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
       envelopeId: `welcome_${this.#store.state.connectionCount}`,
@@ -2955,7 +3386,7 @@ export class DurablePrpControlPlane {
     this.#store.state.commandDeliveryCounts[command.commandId] =
       (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     this.#store.save();
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_${command.commandId}_${this.#store.state.commandDeliveryCounts[command.commandId]}`,
@@ -3093,7 +3524,7 @@ export class DurablePrpControlPlane {
     connection: AuthorityConnection,
     receipt: DurableWarmRunTransition,
   ): void {
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_result_ack_${receipt.controllerSeq}`,
@@ -3122,7 +3553,7 @@ export class DurablePrpControlPlane {
     if (!this.#isTerminalLifecycleCommand(command)) {
       return;
     }
-    connection.sendJson(
+    this.#sendJson(connection,
       this.#controlEnvelope(
         connection,
         `command_result_ack_${command.controllerSeq}`,
@@ -3272,10 +3703,7 @@ export class DurablePrpControlPlane {
     const eventToEvict =
       existing === undefined &&
       this.#store.state.committedEvents.length >= maxCommittedEventWindow
-        ? this.#store.state.committedEvents.findIndex(
-            (candidate) =>
-              !unsettledSemanticInput(candidate, this.#store.state),
-          )
+        ? evictionCandidate(this.#store.state)
         : null;
     if (eventToEvict === -1) {
       connection.close();
@@ -3323,9 +3751,7 @@ export class DurablePrpControlPlane {
       if (committedEvents.length >= maxCommittedEventWindow) {
         // A command can settle an input while this snapshot is staged. Use
         // the current response ledger to select an event that can be evicted.
-        const currentEviction = committedEvents.findIndex(
-          (candidate) => !unsettledSemanticInput(candidate, state),
-        );
+        const currentEviction = evictionCandidate(state);
         if (currentEviction < 0) return null;
         committedEvents.splice(currentEviction, 1);
       }
@@ -3345,49 +3771,34 @@ export class DurablePrpControlPlane {
         connection.close();
         return;
       }
-      this.#store.commit(candidate);
-    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner)) {
+      this.#store.commit(candidate, !isStreamingEvent(event));
+    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
       if (isCurrentOwner()) connection.close();
       return;
     }
     if (!isCurrentOwner()) return;
 
-    if (
-      isSemanticInput &&
-      this.#onSemanticToolInput &&
-      semantic !== undefined &&
-      typeof semantic.callId === "string" &&
-      typeof semantic.operationId === "string"
-    ) {
-      const call = {
-        callId: semantic.callId,
-        operationId: semantic.operationId,
-        input: semantic.input,
-        sourceEventId,
-        sourceEventType: eventType,
-        correlation: {
-          runId: this.#identity.runId,
-          normalizedSessionId: this.#identity.normalizedSessionId,
-          turnId: this.#identity.turnId,
-          itemId:
-            typeof event.itemId === "string"
-              ? event.itemId
-              : this.#identity.itemId,
-        },
-      };
-      const commandId = `command_tool_${createHash("sha256")
-        .update(`${this.#identity.runId}\0${call.callId}`)
-        .digest("hex")
-        .slice(0, 32)}`;
-      const alreadyQueued = this.#store.state.commands.some(
-        (command) => command.commandId === commandId,
-      );
-      // A committed input without a result after restart may already have
-      // changed the outside world. Never redispatch it on event replay. Only
-      // the original admitted callback may publish its result; missing outcome
-      // evidence stays pending for authoritative reconciliation.
-      if (existing === undefined && !alreadyQueued && !this.#pendingSemanticCalls.has(commandId)) {
-        this.#pendingSemanticCalls.add(commandId);
+    const liveCall = isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+      && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
+      ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
+          sourceEventId, sourceEventType: eventType,
+          correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+            turnId: identity.turnId, itemId: typeof event.itemId === "string" ? event.itemId : identity.itemId } }
+      : null;
+    const liveCommandId = liveCall ? `command_tool_${createHash("sha256")
+      .update(`${identity.runId}\0${liveCall.callId}`).digest("hex").slice(0, 32)}` : null;
+    const ownsLiveDispatch = existing === undefined && liveCommandId !== null
+      && !this.#getCommand(liveCommandId) && !this.#pendingSemanticCalls.has(liveCommandId);
+    // Reserve the original callback before exposing its checkpoint wait to
+    // recovery. A missing saved outcome must never suppress first dispatch.
+    if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
+    let dispatched = false;
+    try {
+      await this.flushCheckpoint();
+      if (this.#eventOwner !== connection || this.#identity !== identity) return;
+      if (ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
+        const call = liveCall;
+        const commandId = liveCommandId;
         const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {
           this.#semanticResultPersistenceFailed = true;
           // Keep diagnostics bounded and content-free. Exception messages can
@@ -3420,7 +3831,9 @@ export class DurablePrpControlPlane {
             recordFailure("persist_result", error);
           }
         };
-        void this.#onSemanticToolInput(call)
+        const outcome = this.#onSemanticToolInput(call);
+        dispatched = true;
+        void outcome
           .then((outcome) =>
             queueResult(outcome.result, outcome.isError === true),
           )
@@ -3439,18 +3852,19 @@ export class DurablePrpControlPlane {
           })
           .finally(() => this.#pendingSemanticCalls.delete(commandId));
       }
+      this.#sendJson(connection,
+        this.#controlEnvelope(
+          connection,
+          `ack_${this.#store.state.ackedSourceSeq}`,
+          "ack",
+          {
+            ackedSourceSeq: this.#store.state.ackedSourceSeq,
+          },
+        ),
+      );
+    } finally {
+      if (ownsLiveDispatch && !dispatched) this.#pendingSemanticCalls.delete(liveCommandId!);
     }
-
-    connection.sendJson(
-      this.#controlEnvelope(
-        connection,
-        `ack_${this.#store.state.ackedSourceSeq}`,
-        "ack",
-        {
-          ackedSourceSeq: this.#store.state.ackedSourceSeq,
-        },
-      ),
-    );
   }
 }
 
@@ -3503,6 +3917,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
   "PAPERCLIP_OPENCODE_PERMISSION_MODE",
   "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+  "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -3721,6 +4136,8 @@ export function spawnRunner(options: {
   const environment = runnerEnvironment(options.ticket, options.identity.normalizedSessionId, options.environment);
   const withRestart = (handle: RunnerProcessHandle): RunnerProcessHandle => handle.restart === null ? handle : ({
     ...handle,
+    // Remote owners publish this identity after dispatch; keep it live through the wrapper.
+    get startedAt() { return handle.startedAt; },
     restart: (ticket) => {
       if (handle.isExitConfirmed?.() === false) {
         throw new Error("runner_process_termination_unconfirmed");

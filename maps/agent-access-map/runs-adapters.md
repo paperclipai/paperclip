@@ -1,17 +1,19 @@
 # Runs, harnesses, and model accounts — agent access
 
-Product map: [Runs, harnesses, and model accounts](../feature-map/runs-adapters.md).
+Product map: [runs-adapters](../feature-map/runs-adapters.md).
 
 Feature ID: `runs-adapters`.
 
-Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
-Native REST transport reconciled in this change; see the
-[shared transport contract](README.md#native-rest-transport).
+Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
 
-This is a source-reviewed baseline of representative operations and known gaps.
-Each capability needs operation-level review before its entire scope can be
-qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
-for format, permission checks, evidence and maintenance.
+Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
+
+Connection operations reviewed in this working tree. The inventory was reconciled
+against production UI clients, REST registrations and service entry points; it is
+a review checklist, not a runtime registry. [Authorization and evidence contract](../../doc/plans/2026-10-13-connection-api-parity.md).
+Fixture evidence is separate from live provider qualification and from empirical
+LLM success. Source-only entries have a reviewed agent path or an explicit boundary,
+but do not claim an individually executed HTTP test.
 
 Scoped runner-default source review: 2026-10-12 at
 `eee0534154eaf5d0d3f2bbc97c1e24d86f34a5a5`, limited to runner discovery,
@@ -35,10 +37,13 @@ API: `present` — representative operation IDs:
 - `GET /api/companies/{companyId}/adapters/{type}/models`.
 
 Agent access: `partial` — Agent company-model REST / native `call_api` discovery and
-bound runtime context; adapter/account inventories remain board-only.
+bound runtime context; instance adapter inventory remains board-only; model-account management is enumerated below.
 
-Policy: Run/cost visibility and agent configuration policy; adapter installation/account
-login/session control require board/admin.
+Policy: Company model discovery requires company access; account-backed discovery
+also enforces its account/pool and target-agent rules. Instance adapter inventory
+and installation retain board/admin gates. Delegated managed
+AI-account login operations are enumerated under `model-accounts`; they do not
+grant raw host administration or execution-session reset.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -98,10 +103,11 @@ API: `present` — representative operation IDs:
 - `POST /api/companies/{companyId}/adapters/{type}/test-environment`.
 
 Agent access: `partial` — Permitted agent-creation validation through REST / native
-`call_api` / CLI; account login requires its operator.
+`call_api` / CLI; supported account-login initiation has the delegated path below.
 
-Policy: Run/cost visibility and agent configuration policy; adapter installation/account
-login/session control require board/admin.
+Policy: Environment tests follow agent creation/configuration authority. Supported
+managed-account login initiation follows `model-accounts` below; human codes and
+consent, raw host login and adapter installation retain their specific gates.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -240,9 +246,10 @@ Policy: Same company, company-scope read authority and run/task visibility still
 apply. Task-bound history and recovery records require task read authority.
 Each run-linked task is filtered by the caller's task-read predicate; a readable
 company run cannot expose inaccessible private task titles. Existing content
-and credential redaction apply. Adapter installation, account login, session
-control, recovery writes and raw provider-trace administration retain their
-existing board/admin or dedicated-tool gates.
+and credential redaction apply. Adapter installation, raw host login, execution
+session control, recovery writes and raw provider-trace administration retain
+their board/admin or dedicated-tool gates. Delegated managed AI-account setup
+is separately enumerated under `model-accounts`.
 
 Evidence: `source-only` — diagnostic scope reviewed at
 `f10210990a3c9cad1a4359318388f237de3169dd` in the
@@ -264,6 +271,27 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Plugin suspension receipts remain required through recovery and admission, then
+are removed when the admitted session becomes live. A later warm run therefore
+does not inherit an obsolete stopped-run identity. Repository-free fresh plugin
+directories retain their saved company, task, workspace, provider owner and
+attempt bindings on follow-up. This does not grant session-reset authority or
+discard an explicit repository strategy. See the
+[session recipe](../feature-map/runs-adapters.md#session) for the continuation
+checks; source regressions do not establish live provider acceptance.
+
+Scoped source evidence: completed warm-runner retirement can persist maintenance
+under the same process's live, task-bound preparation lease before native
+coordinator admission. Original controller generation, committed-result and
+no-new-work checks remain required. This changes no actor permission or session
+reset authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+for configuration invalidation and expired or foreign owner rejection.
+
+Fresh-session admission with external checkpoints reads current canonical state
+from the registered controller. A local marker does not grant bootstrap or
+session-reset authority. Exact run/session/runner/lease binding, no prior activity,
+backup checks and atomic remote directory admission retain their existing gates.
+
 Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.
@@ -276,8 +304,19 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board session controls; native server-owned session
 continuation.
 
-Policy: Run/cost visibility and agent configuration policy; adapter installation/account
-login/session control require board/admin.
+Policy: Task-session listing and execution-context reset require board agent
+management at their HTTP routes. These controls are separate from delegated
+managed AI-account authentication attempts under `model-accounts`.
+
+Ordinary remote `per_turn` continuation restores an external controller marker
+through the existing company/task-bound checkpoint store, with the expected
+normalized session. Prior-owner, lifecycle and backup admission checks remain
+authoritative. Prior-run projections refresh when that checkpoint exists; legacy
+file-backed admission remains available when it does not. This changes no agent
+grant or session-control endpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+provide source-level restoration and denial evidence; live provider continuity
+is a separate verification step.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -344,3 +383,280 @@ release. Unconfirmed termination stays blocked. Existing fake-peer and delayed
 read controls are source evidence; this changes no actor, company, account or
 session-reset permission. Operation-level verification remains `not-run` and
 the failed Test setup does not qualify successful live cleanup.
+
+
+## `model-accounts`
+
+Capability ID: `runs-adapters/model-accounts`.
+
+Review: `operation-reviewed`.
+
+### `get-companies-ai-connection-pools`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connection-pools`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-ai-connection-pools-inspection`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connection-pools/{poolId}/inspection`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-ai-connection-pools`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connection-pools`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections` and `tools:manage_profiles`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
+
+### `delete-companies-ai-connection-pools`
+
+API: `present` — `DELETE /api/companies/{companyId}/ai-connection-pools/{poolId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections` and `tools:manage_profiles`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
+
+### `post-companies-ai-connections-local-attempts`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connections/local/attempts`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-ai-connections-local-check`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connections/local/check`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/ai-connections.ts) and [actual-auth native receipt fixture](../../server/src/__tests__/connection-management.integration.test.ts), with real database persistence.
+Verification: `passed` — production native call_api with actual run JWT and a deterministic browser-login process returns device URL/code inline, encrypts the mutation receipt, replays exactly, redacts history, and creates no runner response asset. Login start/check/cancel use the real service and persisted addressed-user attempt.
+Gaps: The browser process is a fixture; no real provider consent, CLI credentials or live setup is qualified.
+
+### `delete-companies-ai-connections-local-attempts`
+
+API: `present` — `DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-ai-connections-local-attempts-code`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}/code`; JSON REST.
+Agent access: `restricted` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
+Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
+
+### `get-companies-ai-connections`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware, including account/pool filtering by agent connection scope with both persistent keys and run JWTs. Pool visibility checks every member account.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
+
+### `get-companies-ai-connections-usage`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections/{connectionId}/usage`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-ai-connections-active-runs`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-ai-connections`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connections`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
+Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Gaps: Provider fixtures do not qualify live provider setup or availability.
+
+### `post-companies-ai-connections-local`
+
+API: `present` — `POST /api/companies/{companyId}/ai-connections/local`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `put-companies-ai-connections-default`
+
+API: `present` — `PUT /api/companies/{companyId}/ai-connections/default`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-ai-connections-login-setup`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections/login/{sessionId}/setup`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-ai-connections-login`
+
+API: `present` — `GET /api/companies/{companyId}/ai-connections/login/{sessionId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/ai-connections.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-adapters-models`
+
+API: `present` — `GET /api/companies/{companyId}/adapters/{type}/models`; JSON REST.
+Agent access: `available` — existing REST/native runtime tool or scoped gateway client, as documented by the linked route.
+Policy: Existing run-bound tool, scoped credential lease, execution policy, or assigned-email-agent checks; connection-management grants do not bypass these controls.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-adapters-login-sessions`
+
+API: `present` — `POST /api/companies/{companyId}/adapters/{type}/login-sessions`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-adapters-login-sessions-active`
+
+API: `present` — `GET /api/companies/{companyId}/adapters/{type}/login-sessions/active`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts), with a saved database session and deterministic registered adapter capability.
+Verification: `passed` — actual persistent-key/run-JWT management reads, cancellation, and denial for another saved owner. Session ownership is the responsible human; no device provider or sandbox process was launched in this fixture.
+Gaps: Live device authentication remains unqualified. The start route retains strict managed-account, approved adapter command, sandbox, and provider availability checks; human consent completes authentication.
+
+### `get-companies-adapters-login-sessions`
+
+API: `present` — `GET /api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts), with a saved database session and deterministic registered adapter capability.
+Verification: `passed` — actual persistent-key/run-JWT management reads, cancellation, and denial for another saved owner. Session ownership is the responsible human; no device provider or sandbox process was launched in this fixture.
+Gaps: Live device authentication remains unqualified. The start route retains strict managed-account, approved adapter command, sandbox, and provider availability checks; human consent completes authentication.
+
+### `post-companies-adapters-login-sessions-cancel`
+
+API: `present` — `POST /api/companies/{companyId}/adapters/{type}/login-sessions/{sessionId}/cancel`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts), with a saved database session and deterministic registered adapter capability.
+Verification: `passed` — actual persistent-key/run-JWT management reads, cancellation, and denial for another saved owner. Session ownership is the responsible human; no device provider or sandbox process was launched in this fixture.
+Gaps: Live device authentication remains unqualified. The start route retains strict managed-account, approved adapter command, sandbox, and provider availability checks; human consent completes authentication.
+
+### `post-agents-claude-login`
+
+API: `present` — `POST /api/agents/{id}/claude-login`; JSON REST.
+Agent access: `operator-only` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
+Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
+
+### `post-companies-setup-token-login-sessions`
+
+API: `present` — `POST /api/companies/{companyId}/setup-token-login-sessions`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; explicitly supplying ownership, `agentIds`, or `allAgents` also requires `tools:manage_profiles`. [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-setup-token-login-sessions-active`
+
+API: `present` — `GET /api/companies/{companyId}/setup-token-login-sessions/active`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-setup-token-login-sessions`
+
+API: `present` — `GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-companies-setup-token-login-sessions-prompt`
+
+API: `present` — `GET /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/prompt`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-setup-token-login-sessions-code`
+
+API: `present` — `POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/code`; JSON REST.
+Agent access: `restricted` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
+Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
+
+### `post-companies-setup-token-login-sessions-completion`
+
+API: `present` — `POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/completion`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `post-companies-setup-token-login-sessions-cancel`
+
+API: `present` — `POST /api/companies/{companyId}/setup-token-login-sessions/{sessionId}/cancel`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Evidence: `source-only` — [route](../../server/src/routes/agents.ts); reviewed in the working tree based on the source commit above.
+Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `update-agent-ai-binding`
+
+API: `present` — `PATCH /api/agents/{id}` with a managed AI binding in runtime configuration; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: existing agent configuration permission plus `tools:manage_profiles`, current responsible-user authority, resolved account/pool access and target-agent authority. Pool members retain their credential audience.
+Evidence: `verified` — the production-authenticated [integration suite](../../server/src/__tests__/connection-management.integration.test.ts) saves a personal account and binds it to the fresh standard agent; provider response is a fixture.
+Verification: `passed` — binding persistence and loss of profile-management authority tested with actual agent credentials. Other adapter/provider combinations remain source-reviewed.
+Gaps: live provider setup is outside this delivery.

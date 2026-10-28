@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
@@ -891,13 +892,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           };
         }
 
-        await db
-          .update(heartbeatRuns)
-          .set({
+        await db.transaction(async tx => {
+          await notifyChatRunMilestones(tx, { companyId: livenessRun.companyId, issueId: issueId ?? undefined });
+          await tx.update(heartbeatRuns).set({
             resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
             updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, livenessRun.id));
+          }).where(eq(heartbeatRuns.id, livenessRun.id));
+        });
         await appendRunEvent(livenessRun, {
           eventType: "run.presentation.resolved",
           stream: "system",

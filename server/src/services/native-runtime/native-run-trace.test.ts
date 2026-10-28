@@ -9,6 +9,7 @@ import {
   createNativeRunTrace,
   nativeRunPreparationStarts,
   recordFailedSkillPreparation,
+  recordNativeProviderPerformanceSpans,
   NATIVE_RUN_SPAN_EVENT_TYPE,
   NATIVE_RUN_TRACE_SCHEMA_VERSION,
 } from "./native-run-trace.js";
@@ -66,6 +67,39 @@ function createRecordingTraceContext(): {
 }
 
 describe("native runner performance trace", () => {
+  it("projects a full durable diagnostic batch without waiting on duplicate run-log writes", async () => {
+    const {traceContext, spans}=createRecordingTraceContext();
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release=resolve; });
+    const write=vi.fn(async()=>barrier);
+    const trace=createNativeRunTrace({runId:"provider-perf-blocked-log",startedAtMs:1000,traceContext,onEvent:write});
+    const names=["provider.model.stream","provider.context.environment","provider.tools.resolve","provider.model.resolve",
+      "provider.workspace.snapshot.track","provider.workspace.snapshot.patch","provider.workspace.snapshot.diff","provider.skills.discovery"];
+    let completed=false;
+    const work=recordNativeProviderPerformanceSpans(trace,Array.from({length:128},(_,index)=>({
+      name:names[index%names.length],startedAtMs:1100+index,endedAtMs:1200+index,
+    }))).then(()=>{completed=true;});
+    try {
+      await new Promise<void>(resolve=>setImmediate(resolve));
+      expect(completed).toBe(true);
+      expect(write).not.toHaveBeenCalled();
+      expect(spans.filter(span=>span.parentName==="provider.runtime")).toHaveLength(128);
+    } finally {release();await work;await trace.finish("ok");}
+  });
+  it("groups normalized provider phases under their real native execution parent", async () => {
+    const {traceContext, spans}=createRecordingTraceContext();
+    const trace=createNativeRunTrace({runId:"provider-perf",startedAtMs:1000,traceContext});
+    const execute=trace.start("native.session.execute",{startedAtMs:1000});
+    await recordNativeProviderPerformanceSpans(trace,[
+      {name:"provider.context.environment",startedAtMs:1100,endedAtMs:1200},
+      {name:"provider.model.stream",startedAtMs:1200,endedAtMs:1700},
+    ]);
+    await trace.end(execute,{endedAtMs:1800});
+    await trace.finish("ok");
+    expect(spans.find(s=>s.name==="provider.runtime")).toMatchObject({parentName:"native.session.execute",endedAtMs:1700});
+    expect(spans.filter(s=>s.name==="provider.model.stream"||s.name==="provider.context.environment").map(s=>s.parentName))
+      .toEqual(["provider.runtime","provider.runtime"]);
+  });
   it.each([7_200_000, 10_800_000])(
     "times the current answer after %i ms without charging prior questions or human wait",
     async (answeredAtMs) => {

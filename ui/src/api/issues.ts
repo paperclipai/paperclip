@@ -26,6 +26,7 @@ import type {
   IssueDocument,
   IssueLabel,
   IssueRecoveryAction,
+  WorkspaceSourceInspection,
   IssueRetryNowResponse,
   StalledReviewDecision,
   StalledReviewDecisionResponse,
@@ -317,8 +318,12 @@ export const issuesApi = {
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
     missingWork: string; actionOutcome: "completed" | "not_performed" | "mixed"; outcomeEvidence: string; acknowledgeLostWork: true }) =>
     api.post<{ runId: string; actionId: string; status: "queued"; replayed: boolean }>(`/issues/${id}/recovery-actions/reconstruct-workspace`, data),
-  recoveryActions: (id: string) =>
-    api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[] }>(`/issues/${id}/recovery-actions`),
+  recoveryActions: (id: string, source?: { runId: string; actionId?: string }) => {
+    const query = source ? new URLSearchParams({ inspectSourceRunId: source.runId,
+      ...(source.actionId ? { inspectSourceActionId: source.actionId } : {}) }) : null;
+    return api.get<{ active: IssueRecoveryAction | null; actions: IssueRecoveryAction[];
+      sourceInspection?: WorkspaceSourceInspection }>(`/issues/${id}/recovery-actions${query ? `?${query}` : ""}`);
+  },
   resolveRecoveryAction: (
     id: string,
     data: {

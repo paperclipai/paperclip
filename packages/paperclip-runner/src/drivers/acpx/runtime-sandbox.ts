@@ -443,6 +443,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     // Native project rules merge with global rules. Ask rules win over project
     // allows, keeping operation approval at the runner's authenticated boundary.
     await writePrivateFile(join(agentHomeDirectory, "config.toml"), [
+      `disable_web_search = ${input.binding.grokDisableWebSearch === true}`,
       "[permission]",
       'ask = ["Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch", "WebSearch"]',
       "[ui]", 'permission_mode = "ask"',
@@ -458,7 +459,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     // Always-approve may otherwise be enabled by compatible project settings.
     // Even approve-all runs use one host decision per requested operation.
     await writePrivateFile(join(agentHomeDirectory, "requirements.toml"),
-      "[ui]\ndisable_bypass_permissions_mode = true\n");
+      `${input.binding.grokDisableWebSearch === true ? "disable_web_search = true\n" : ""}[ui]\ndisable_bypass_permissions_mode = true\n`);
   }
   if (input.agent === "pi") {
     await writePrivateFile(

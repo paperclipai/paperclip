@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 const CODEX_ACPX_DIGEST: &str =
     "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:e80c6dc7bde12790371345ee5a12f0201d30941d26f1a780aec3d090545b2a06";
+    "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -1160,7 +1160,7 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
     assert_eq!(snapshot["status"], "closed");
     assert_eq!(snapshot["activeProviderTurnId"], Value::Null);
     assert!(executor.poll_events().unwrap().is_empty());
-    executor.shutdown().unwrap();
+    shutdown_recovered_acpx_fixture(&mut executor, &directory);
     fs::remove_dir_all(directory).unwrap();
 }
 

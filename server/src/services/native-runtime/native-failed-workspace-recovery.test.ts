@@ -6,7 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { getExecutionBlocker } from "../execution-blocker.js";
 import { markExecutionReconciliation, settleUnrecoverableExecutions, validateExecutionReconciliation } from "../execution-recovery-resolution.js";
 import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
-import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
+import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, preserveOrphanedNativeWorkspace } from "./native-failed-workspace-recovery.js";
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
@@ -50,6 +50,40 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
   const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
   const actions = async (issueId: string) => db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+
+  it("keeps another orphan recoverable while a task lock delays preservation", async () => {
+    const busy = await seed(), free = await seed();
+    let unlock!: () => void, ready!: () => void;
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const acquired = new Promise<void>(resolve => { ready = resolve; });
+    const holding = db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, busy.issueId)).for("update");
+      ready(); await released;
+    });
+    await acquired;
+    try {
+      expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(false);
+      expect(await preserveOrphanedNativeWorkspace(db, free.lease)).toBe(true);
+      expect((await readLease(busy.lease.id)).status).toBe("active");
+      expect(await readLease(free.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+      expect(await actions(busy.issueId)).toHaveLength(0);
+    } finally { unlock(); await holding; }
+    expect(await preserveOrphanedNativeWorkspace(db, busy.lease)).toBe(true);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, busy.companyId))).toHaveLength(1);
+  });
+
+  it("rolls back orphan registration with its enclosing transaction", async () => {
+    const f = await seed();
+    await expect(db.transaction(async tx => {
+      expect(await preserveOrphanedNativeWorkspace(tx as unknown as typeof db, f.lease)).toBe(true);
+      throw new Error("rollback preservation");
+    })).rejects.toThrow("rollback preservation");
+    expect(await readRun(f.runId)).toEqual(f.run);
+    expect(await readLease(f.lease.id)).toEqual(f.lease);
+    expect(await actions(f.issueId)).toHaveLength(0);
+    expect(await preserveOrphanedNativeWorkspace(db, f.lease)).toBe(true);
+    expect(await actions(f.issueId)).toHaveLength(1);
+  });
 
   it.each(["settled", "historical", "live_owner", "retry", "nonterminal", "wrong_wake", "wrong_hold_run", "no_hold"])("retires only an exact superseded native resume obligation: %s", async scenario => {
     const f = await seed(), actionId = randomUUID();
@@ -336,7 +370,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (kind === "generation") restartRecovery.controllerGeneration += 1;
     if (kind === "attempt") restartRecovery.providerAttempt += 1;
     if (kind === "run") restartRecovery.runId = randomUUID();
-    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner") restartRecovery.remote.remoteCwd = "/other";
+    if (kind === "remote" && restartRecovery.kind === "reattach_remote_runner" && restartRecovery.remote.kind !== "plugin_task") restartRecovery.remote.remoteCwd = "/other";
     if (kind === "expired") await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
     if (kind === "released") await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     await expect(preserveNativeFailedWorkspace(db, await readRun(f.runId), { allowPreterminal: true, restartRecovery }))

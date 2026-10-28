@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import express from "express";
@@ -48,7 +49,8 @@ import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -62,8 +64,8 @@ describeEmbeddedPostgres("attention service", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-attention-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 30_000);
 
   afterEach(async () => {
@@ -99,6 +101,7 @@ describeEmbeddedPostgres("attention service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

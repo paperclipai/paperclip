@@ -1,3 +1,4 @@
+import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import type { AiConnectionBinding } from "../../packages/shared/src/ai-connections.js";
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { NATIVE_COMPLETION_BUDGET_CENTS } from "./native-completion-defaults.js";
@@ -280,8 +281,9 @@ export async function setupLiveFixtures(input: {
   const gatewayUrl = process.env.PAPERCLIP_E2E_GATEWAY_BASE_URL;
   const gatewayToken = process.env.PAPERCLIP_E2E_GATEWAY_TOKEN;
   const budgetedGateway = Boolean(gatewayUrl || gatewayToken);
-  if (budgetedGateway && (!gatewayUrl || !gatewayToken || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gatewayUrl)
-      || execution.environment.id !== "local" || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id))) throw new Error("Unqualified fixture gateway route");
+  if (budgetedGateway && (!gatewayUrl || !gatewayToken || !(execution.environment.id === "local" ? /^http:\/\/127\.0\.0\.1:[0-9]+$/.test(gatewayUrl)
+        : isEvalRemoteOrigin(gatewayUrl) && gatewayUrl === process.env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN)
+      || !["local", "daytona"].includes(execution.environment.id) || !["core-compatibility", "feedback-persistence"].includes(execution.suite.id))) throw new Error("Unqualified fixture gateway route");
   if (managedHiring || savedCopilot || budgetedGateway) {
     registry.register<ManagedAccountFixture>({
       id: "ai-connection",
@@ -383,6 +385,7 @@ export async function setupLiveFixtures(input: {
       if (managedHiring || savedCopilot || budgetedGateway) {
         const account = value<ManagedAccountFixture>(resolved, "ai-connection");
         const config = agent.adapterConfig as Record<string, unknown>;
+        if (budgetedGateway && execution.environment.id === "daytona") config.helloProbeTimeoutSec = 300;
         delete config.env;
         agent.runtimeConfig = {
           ...(agent.runtimeConfig as Record<string, unknown>),

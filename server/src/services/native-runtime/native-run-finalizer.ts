@@ -1,4 +1,6 @@
 import { pendingNativeGovernance } from "./native-governance.js";
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
 import { assertNativeCaseHandoffResult } from "./native-case-handoff.js";
@@ -376,6 +378,7 @@ async function recordRetryableFailure(input: {
           : input.failureCode;
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -665,6 +668,7 @@ async function projectCommittedRun(input: {
     const tx = transaction as unknown as Db;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
+    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     return tx
       .update(heartbeatRuns)
       .set({
@@ -964,6 +968,7 @@ export async function repairCommittedNativeChatResponse(
         const authorizationReason = await resolveChatRunPresentationAuthorizationReason(tx, input);
         const resolved = resolveHeartbeatRunResponse({ resultJson: monitorResult });
         if (!resolved.text) return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id }, { authorizationReason, completionReply: true }, tx);
         await tx.update(heartbeatRuns).set({
@@ -1018,6 +1023,7 @@ export async function repairCommittedNativeChatResponse(
           finalAgentMessage,
         });
         if (!resolved.text || resolved.decision.commentAction !== "create") return false;
+        await notifyChatRunMilestones(tx, input);
         const comment = await issueService(db).addComment(input.issueId, resolved.text,
           { agentId: run.agentId, runId: run.id },
           { authorizationReason: "internal_agent_write", completionReply: true }, tx);
@@ -1061,6 +1067,7 @@ export async function repairCommittedNativeChatResponse(
       });
       if (!resolved.text || resolved.decision.commentAction !== "create")
         return false;
+      await notifyChatRunMilestones(tx, input);
       const comment = await issueService(db).addComment(
         input.issueId,
         resolved.text,
@@ -1429,7 +1436,7 @@ export async function finalizeNativeRun(input: {
       authoritativeIssue.executionRunId !== run.id && authoritativeIssue.checkoutRunId !== run.id
       ? await readNativeMonitorDelivery(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id })
       : null;
-    const proposedDecision = resolveNativeFinalizerStatus({
+    let proposedDecision = resolveNativeFinalizerStatus({
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,
@@ -1471,6 +1478,14 @@ export async function finalizeNativeRun(input: {
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
     });
+    // Already accepted results still require the server-owned first-task decision.
+    // Keep the task open without inventing an interaction or rerunning the work.
+    if (proposedDecision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(input.db, {
+      companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id,
+    })) {
+      proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
+        reasonCode: "onboarding_first_task_decision_required", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    }
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,
@@ -1669,6 +1684,7 @@ export async function finalizeNativeRun(input: {
         const tx = transaction as unknown as Db;
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
+        await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         return projectRun(tx);
       });
       if (

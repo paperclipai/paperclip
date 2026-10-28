@@ -6,6 +6,7 @@ import {
 } from "node:crypto";
 import {
   chmodSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -29,6 +30,9 @@ import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
+  decodeDurablePrpCheckpoint,
+  inspectDurablePrpCheckpointHeader,
+  type DurablePrpCheckpoint,
   durableRecoveryInternals,
   SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
@@ -48,6 +52,609 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("continues externally persisted commands after losing the local controller directory", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-external-store-"));
+  const options = { stateDirectory: resolve(root, "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async saved => { checkpoint = saved; });
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    rmSync(options.stateDirectory, { recursive: true });
+    core.queueCommand("session.snapshot", {}, "external-only-command", true);
+    expect(await receiveSecure(client)).toMatchObject({ kind: "command", payload: { commandId: "external-only-command" } });
+    await core.flushCheckpoint();
+    expect(existsSync(options.stateDirectory)).toBe(false);
+    client.socket.destroy();
+    await core.stop();
+    checkpoint.restoreSessionDirectory(root);
+    restored = new DurablePrpControlPlane(options);
+    expect(restored.getCommand("external-only-command")).toMatchObject({ type: "session.snapshot" });
+  } finally {
+    await restored?.stop();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("requires the external checkpoint instead of accepting a stale local controller file", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-external-store-restart-"));
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  core.setCheckpointPersistence(async () => {});
+  try {
+    core.queueCommand("session.snapshot", {}, "external-command");
+    await core.flushCheckpoint();
+    await core.stop();
+    expect(() => new DurablePrpControlPlane(options)).toThrow(/external checkpoint/i);
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("restores authentication and commands from opaque checkpoint records", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-codec-"));
+  const options = { stateDirectory: resolve(root, "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const first = new DurablePrpControlPlane(options);
+  let checkpoint!: DurablePrpCheckpoint;
+  first.setCheckpointPersistence(async saved => { checkpoint = saved; });
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    const ticket = first.issueBootstrapTicket();
+    first.queueCommand("session.snapshot", {}, "maintenance");
+    first.queueCommand("turn.start", {}, "execution");
+    first.persistPreparedLaunchConfiguration(identity, "retained-configuration");
+    await first.flushCheckpoint();
+    expect(checkpoint.workCommandIds).toEqual(["execution"]);
+    await first.stop();
+    rmSync(options.stateDirectory, { recursive: true });
+    decodeDurablePrpCheckpoint(new Map(checkpoint.records)).restoreSessionDirectory(root);
+    restored = new DurablePrpControlPlane(options);
+    expect(restored.preparedLaunchConfigurationId(identity)).toBe("retained-configuration");
+    expect(restored.preparedLaunchConfigurationId({ ...identity, runId: "unrelated" })).toBeUndefined();
+    expect(() => restored!.persistPreparedLaunchConfiguration(identity, "substituted-configuration")).toThrow("configuration_changed");
+    expect(restored.getCommand("execution")).toMatchObject({ type: "turn.start" });
+    await restored.start();
+    const client = (await authenticate(restored, ticket))!;
+    expect(client.welcome.kind).toBe("welcome");
+    client.socket.destroy();
+  } finally {
+    await restored?.stop();
+    await first.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["missing record", "invalid state", "wrong sequence", "invalid preparation identity", "duplicate preparation", "malformed header", "malformed cursor"])("rejects %s at checkpoint decoding", async fault => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-invalid-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async saved => { checkpoint = saved; });
+  try {
+    core.queueCommand("session.snapshot", {}, "saved-command");
+    await core.flushCheckpoint();
+    const records = new Map(checkpoint.records);
+    if (fault === "missing record") records.delete("command:1");
+    if (fault === "malformed header") records.set("header", "{");
+    if (fault === "malformed cursor") records.set("cursor", "{");
+    if (fault === "invalid state") {
+      const cursor = JSON.parse(records.get("cursor")!);
+      cursor.ackedSourceSeq = -1;
+      records.set("cursor", JSON.stringify(cursor));
+    }
+    if (fault === "wrong sequence") {
+      const command = JSON.parse(records.get("command:1")!);
+      command.controllerSeq = 2;
+      records.set("command:1", JSON.stringify(command));
+    }
+    if (fault === "invalid preparation identity" || fault === "duplicate preparation") {
+      const header = JSON.parse(records.get("header")!);
+      const binding = { identity, configurationId: "retained-configuration" };
+      header.state.preparedLaunchConfigurations = fault === "duplicate preparation" ? [binding, binding]
+        : [{ ...binding, identity: { runId: identity.runId } }];
+      records.set("header", JSON.stringify(header));
+    }
+    expect(() => decodeDurablePrpCheckpoint(records)).toThrow(/native_runner_checkpoint_/);
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("restores the previous checkpoint format and upgrades it on the next capture", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-v1-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async saved => { checkpoint = saved; });
+  try {
+    core.queueCommand("session.snapshot", {}, "old-command");
+    await core.flushCheckpoint();
+    const records = new Map(checkpoint.records);
+    const header = JSON.parse(records.get("header")!);
+    expect(inspectDurablePrpCheckpointHeader(records.get("header")!)).toEqual(identity);
+    expect(inspectDurablePrpCheckpointHeader("{}")).toBeNull();
+    expect(inspectDurablePrpCheckpointHeader("{")).toBeNull();
+    expect(inspectDurablePrpCheckpointHeader(JSON.stringify({ ...header, schema: "paperclip.runner.controller-checkpoint.v1" }))).toBeNull();
+    const cursor = JSON.parse(records.get("cursor")!);
+    records.delete("cursor");
+    records.set("header", JSON.stringify({ ...header, schema: "paperclip.runner.controller-checkpoint.v1",
+      state: { ...header.state, ackedSourceSeq: cursor.ackedSourceSeq, replayDeliveries: cursor.replayDeliveries },
+      commands: ["command:1"], events: [] }));
+    const upgraded = decodeDurablePrpCheckpoint(records);
+    expect(upgraded.records.get("command:1")).toContain("old-command");
+    expect(JSON.parse(upgraded.records.get("header")!).schema).toBe("paperclip.runner.controller-checkpoint.v2");
+    expect(upgraded.reset).toBe(true);
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function ordinaryOutput(sourceSeq: number): Record<string, unknown> {
+  const envelope = semanticInputEvent(sourceSeq);
+  Object.assign(envelope.payload as Record<string, unknown>, {
+    sourceEventId: `output-${sourceSeq}`, eventType: "item.delta", priority: 2,
+    payload: { text: "streaming output" },
+  });
+  return envelope;
+}
+
+it("streams output without checkpoint writes and recovers its authenticated cursor on empty disk", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-control-checkpoint-"));
+  const options = { stateDirectory: resolve(root, "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  const snapshots: DurablePrpCheckpoint[] = [];
+  core.setCheckpointPersistence(async saved => { snapshots.push(saved); });
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const before = snapshots.length;
+    const localState = readFileSync(core.store.path, "utf8");
+    for (let seq = 1; seq <= 64; seq++) {
+      sendSecure(client, ordinaryOutput(seq));
+      expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: seq } });
+    }
+    await core.flushCheckpoint();
+    expect(snapshots).toHaveLength(before);
+    expect(readFileSync(core.store.path, "utf8")).toBe(localState);
+    const saved = snapshots.at(-1)!;
+    expect(saved.recoveryEvidence).toEqual({ runnerInstanceId: identity.runnerInstanceId,
+      normalizedSessionId: identity.normalizedSessionId, authenticatedConnectionCount: 1, highestRecordedSourceSeq: 0 });
+    expect(decodeDurablePrpCheckpoint(saved.records).recoveryEvidence).toEqual(saved.recoveryEvidence);
+    expect(JSON.parse(saved.records.get("cursor")!).ackedSourceSeq).toBe(0);
+    expect([...saved.records.keys()].filter(key => key.startsWith("event:"))).toEqual([]);
+    const token = client.leaseToken!;
+    client.socket.destroy();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(options.stateDirectory, { recursive: true });
+    decodeDurablePrpCheckpoint(saved.records).restoreSessionDirectory(root);
+    restored = new DurablePrpControlPlane(options);
+    restored.setCheckpointPersistence(async saved => { snapshots.push(saved); });
+    await restored.start();
+    const replacement = (await authenticate(restored, token, identity, expectedRunnerDigest, undefined, false, 1, 64))!;
+    expect(replacement.welcome.payload).toMatchObject({ ackedSourceSeq: 64 });
+    expect(restored.recoveredSourceSeq).toBe(64);
+    expect(snapshots.at(-1)!.recoveryEvidence).toMatchObject({ authenticatedConnectionCount: 2, highestRecordedSourceSeq: 64 });
+    sendSecure(replacement, ordinaryOutput(65));
+    expect(await receiveSecure(replacement)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 65 } });
+    // Commands remain an immediate durable barrier, without copying text.
+    const count = snapshots.length;
+    restored.queueCommand("session.snapshot", {}, "after-reconnect");
+    await restored.flushCheckpoint();
+    expect(snapshots).toHaveLength(count + 1);
+    expect([...snapshots.at(-1)!.records.values()].join("\n")).not.toContain("streaming output");
+    replacement.socket.destroy();
+  } finally {
+    await restored?.stop();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("excludes streamed output from checkpoints even when the live window is full", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-window-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  core.store.state.committedEvents = Array.from({ length: 4096 }, (_, index) => ({
+    sourceSeq: index + 1, sourceEventId: `output-${index + 1}`, eventType: "item.delta", priority: 2 as const,
+    envelope: ordinaryOutput(index + 1), deliveryCount: 1, logicalEffectCount: 1 as const,
+  }));
+  const anchor = core.store.state.committedEvents[0]!;
+  anchor.eventType = "turn.started";
+  (anchor.envelope.payload as Record<string, unknown>).eventType = "turn.started";
+  core.store.state.ackedSourceSeq = 4096;
+  core.store.save();
+  const snapshots: DurablePrpCheckpoint[] = [];
+  core.setCheckpointPersistence(async saved => { snapshots.push(saved); });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const before = snapshots.length;
+    sendSecure(client, ordinaryOutput(4097));
+    expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 4097 } });
+    expect(snapshots).toHaveLength(before);
+    const checkpoint = snapshots.at(-1)!;
+    expect(core.store.state.committedEvents[0]!.eventType).toBe("turn.started");
+    expect(checkpoint.records.size).toBe(3); // authority + cursor + turn anchor, zero output rows.
+    expect(decodeDurablePrpCheckpoint(checkpoint.records).records).toEqual(checkpoint.records);
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["unsupported", "invalid cursor", "invalid proof"])("does not advance recovery from an unauthenticated cursor: %s", async fault => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-recovery-cursor-auth-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  core.setCheckpointPersistence(async () => {});
+  try {
+    await core.start();
+    const material = credentialMaterial(core.issueBootstrapTicket());
+    const { socket, reader } = await upgradeSocket(core.connectUrl);
+    const hello = authHello(material.credentialId);
+    const payload = hello.payload as Record<string, unknown>;
+    payload.resume = { ackedSourceSeq: 50, nextSourceEventSeq: 51 };
+    if (fault === "unsupported") delete payload.recoveryCursorVersion;
+    if (fault === "invalid cursor") payload.resume = { ackedSourceSeq: 50, nextSourceEventSeq: 50 };
+    sendMaskedJson(socket, hello);
+    if (fault === "invalid proof") {
+      const challenge = (await reader.next())!.payload as Record<string, unknown>;
+      expect(challenge.recoveryAckedSourceSeq).toBe(50);
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      sendMaskedJson(socket, { protocol: "paperclip.runner", version: 1, kind: "auth_response", payload: {
+        credentialId: material.credentialId, clientNonce: challenge.clientNonce,
+        serverNonce: challenge.serverNonce, clientProof: "0".repeat(64),
+      } });
+    }
+    expect(await reader.next()).toBeNull();
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    expect(core.recoveredSourceSeq).toBe(0);
+    socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("persists authentication and commands before the runner can observe them", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-external-journal-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let release!: () => void;
+  let pending: Promise<void> = Promise.resolve();
+  const snapshots: DurablePrpCheckpoint[] = [];
+  core.setCheckpointPersistence(async snapshot => { await pending; snapshots.push(snapshot); });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    expect(snapshots.at(-1)).toMatchObject({ runnerVersion: expectedRunnerVersion, runId: identity.runId });
+    expect(snapshots.at(-1)!.records.get("header")).toContain(client.welcome.connectionLeaseId);
+    pending = new Promise<void>(resolveCommit => { release = resolveCommit; });
+    core.queueCommand("session.snapshot", {}, "checkpoint-command", true);
+    let received = false;
+    const command = receiveSecure(client).then(value => { received = true; return value; });
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(received).toBe(false);
+    release();
+    expect(await command).toMatchObject({ kind: "command", payload: { commandId: "checkpoint-command" } });
+    expect([...snapshots.at(-1)!.records.values()].join("\n")).toContain("checkpoint-command");
+    client.socket.destroy();
+  } finally {
+    release?.();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("does not dispatch a semantic effect when external journal persistence fails", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-external-journal-failure-"));
+  const dispatch = vi.fn(async () => ({ result: "written" }));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion,
+    expectedRunnerDigest, onSemanticToolInput: dispatch });
+  core.setCheckpointPersistence(async snapshot => {
+    if (JSON.parse(snapshot.records.get("cursor")!).ackedSourceSeq > 0) throw new Error("database unavailable");
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    sendSecure(client, semanticInputEvent());
+    await vi.waitFor(() => expect(core.activeRunnerConnectionCount()).toBe(0));
+    expect(dispatch).not.toHaveBeenCalled();
+    await expect(core.flushCheckpoint()).rejects.toThrow("database unavailable");
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([false, true])("recovers checkpoint persistence and the same connection lease after a failed write (committed=%s)", async committed => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-retry-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const stored = new Map<string, string>();
+  const attempts: DurablePrpCheckpoint[] = [];
+  let fail = false;
+  core.setCheckpointPersistence(async snapshot => {
+    attempts.push(snapshot);
+    if (!fail || committed) {
+      if (snapshot.reset) stored.clear();
+      for (const key of snapshot.removedRecords) stored.delete(key);
+      for (const [key, value] of snapshot.changedRecords) stored.set(key, value);
+    }
+    if (fail) throw new Error("checkpoint response lost");
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    fail = true;
+    core.queueCommand("session.snapshot", {}, "retry-command", true);
+    await expect(core.flushCheckpoint()).rejects.toThrow("checkpoint response lost");
+    expect(await receiveSecure(client)).toBeNull();
+    fail = false;
+    await core.flushCheckpoint();
+    expect(attempts.at(-1)!.reset).toBe(true);
+    expect(stored).toEqual(attempts.at(-1)!.records);
+    const settledAttempts = attempts.length;
+    await core.flushCheckpoint();
+    expect(attempts).toHaveLength(settledAttempts);
+    const resumed = (await authenticate(core, client.leaseToken!))!;
+    expect(resumed).not.toBeNull();
+    expect(resumed.welcome.payload).toMatchObject({ pendingCommands: [{ commandId: "retry-command" }] });
+    expect(attempts.at(-1)!.reset).toBe(false);
+    expect(stored).toEqual(attempts.at(-1)!.records);
+    resumed.socket.destroy();
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("rebuilds a queued checkpoint after the preceding write fails", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-queued-retry-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let reject!: (error: Error) => void;
+  let pending: Promise<void> = Promise.resolve();
+  const snapshots: DurablePrpCheckpoint[] = [];
+  core.setCheckpointPersistence(async snapshot => { await pending; snapshots.push(snapshot); });
+  try {
+    await core.flushCheckpoint();
+    pending = new Promise<void>((_resolve, rejectWrite) => { reject = rejectWrite; });
+    core.queueCommand("session.snapshot", {}, "first-command");
+    const first = core.flushCheckpoint();
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    core.queueCommand("session.snapshot", {}, "second-command");
+    const second = core.flushCheckpoint();
+    const failed = expect(first).rejects.toThrow("first write failed");
+    reject(new Error("first write failed"));
+    pending = Promise.resolve();
+    await failed;
+    await second;
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots.at(-1)).toMatchObject({ reset: true });
+    expect([...snapshots.at(-1)!.changedRecords.values()].join("\n")).toContain("first-command");
+    expect([...snapshots.at(-1)!.changedRecords.values()].join("\n")).toContain("second-command");
+    await core.flushCheckpoint();
+    expect(snapshots).toHaveLength(2);
+  } finally {
+    reject?.(new Error("cleanup"));
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([true, false])("reconciles a saved semantic input only from an authoritative outcome (known=%s)", async known => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-recovered-semantic-"));
+  const dispatch = vi.fn(() => new Promise<{ result: unknown }>(() => undefined));
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  const first = new DurablePrpControlPlane({ ...options, onSemanticToolInput: dispatch });
+  let recovered: DurablePrpControlPlane | undefined;
+  try {
+    await first.start();
+    const client = (await authenticate(first, first.issueBootstrapTicket()))!;
+    sendSecure(client, semanticInputEvent());
+    expect((await receiveSecure(client))!.kind).toBe("ack");
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await first.stop();
+    const recovery = vi.fn(async () => known ? { result: { savedReceipt: "exact-effect" } } : null);
+    const redispatch = vi.fn(async () => ({ result: "must not execute again" }));
+    recovered = new DurablePrpControlPlane({ ...options, onSemanticToolInput: redispatch,
+      recoverSemanticToolInput: recovery });
+    await recovered.start();
+    const next = (await authenticate(recovered, client.leaseToken!))!;
+    await recovered.recoverPendingSemanticInputs();
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(redispatch).not.toHaveBeenCalled();
+    if (known) {
+      expect(await receiveSecure(next)).toMatchObject({ kind: "command", payload: {
+        type: "semantic_tool.result", payload: { result: { savedReceipt: "exact-effect" } },
+      } });
+    } else {
+      expect(recovered.store.state.commands).toHaveLength(0);
+      expect(recovered.semanticToolResultsSettled()).toBe(false);
+    }
+    next.socket.destroy();
+  } finally {
+    await recovered?.stop();
+    await first.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("resolves a saved semantic input only once across overlapping recovery calls", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-saved-semantic-race-"));
+  const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+  const original = new DurablePrpControlPlane({ ...options,
+    onSemanticToolInput: () => new Promise<{ result: unknown }>(() => undefined) });
+  let resolveOutcome!: (value: { result: unknown }) => void;
+  const outcome = new Promise<{ result: unknown }>(resolveResult => { resolveOutcome = resolveResult; });
+  const recover = vi.fn(async () => outcome);
+  let replacement: DurablePrpControlPlane | undefined;
+  const pending: Promise<void>[] = [];
+  try {
+    await original.start();
+    const client = (await authenticate(original, original.issueBootstrapTicket()))!;
+    sendSecure(client, semanticInputEvent());
+    expect((await receiveSecure(client))!.kind).toBe("ack");
+    client.socket.destroy();
+    await original.stop();
+    replacement = new DurablePrpControlPlane({ ...options, recoverSemanticToolInput: recover });
+    pending.push(replacement.recoverPendingSemanticInputs());
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledOnce());
+    pending.push(replacement.recoverPendingSemanticInputs());
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(recover).toHaveBeenCalledOnce();
+    resolveOutcome({ result: { receipt: "one-authoritative-outcome" } });
+    await Promise.all(pending);
+    await replacement.recoverPendingSemanticInputs();
+    expect(recover).toHaveBeenCalledOnce();
+    expect(replacement.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(1);
+  } finally {
+    resolveOutcome({ result: { receipt: "one-authoritative-outcome" } });
+    await Promise.allSettled(pending);
+    await replacement?.stop();
+    await original.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([false, true])("dispatches a fresh semantic input once when recovery overlaps its checkpoint (saved outcome: %s)", async known => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-fresh-semantic-race-"));
+  let releaseWrite!: () => void;
+  const writeBarrier = new Promise<void>(resolveWrite => { releaseWrite = resolveWrite; });
+  let releaseRecovery!: () => void;
+  const recoveryBarrier = new Promise<void>(resolveRecovery => { releaseRecovery = resolveRecovery; });
+  let releaseDispatch!: () => void;
+  const dispatchBarrier = new Promise<void>(resolveDispatch => { releaseDispatch = resolveDispatch; });
+  const recover = vi.fn(async () => { await recoveryBarrier; return known ? { result: "stale recovery outcome" } : null; });
+  const dispatch = vi.fn(async () => { await dispatchBarrier; return { result: "original live outcome" }; });
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion,
+    expectedRunnerDigest, onSemanticToolInput: dispatch, recoverSemanticToolInput: recover });
+  let writeHeld = false;
+  core.setCheckpointPersistence(async saved => {
+    if (JSON.parse(saved.records.get("cursor")!).ackedSourceSeq > 0) { writeHeld = true; await writeBarrier; }
+  });
+  const pending: Promise<void>[] = [];
+  let client: Awaited<ReturnType<typeof authenticate>>;
+  try {
+    await core.start();
+    client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    sendSecure(client, semanticInputEvent());
+    await vi.waitFor(() => expect(writeHeld).toBe(true));
+    expect(core.store.state.committedEvents).toHaveLength(0);
+    pending.push(core.recoverPendingSemanticInputs());
+    await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+    expect(dispatch).not.toHaveBeenCalled(); // The durability barrier still applies.
+    releaseWrite();
+    expect((await receiveSecure(client))!.kind).toBe("ack");
+    releaseRecovery();
+    await Promise.all(pending);
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(recover).not.toHaveBeenCalled();
+    await core.recoverPendingSemanticInputs();
+    expect(recover).not.toHaveBeenCalled();
+    releaseDispatch();
+    expect(await receiveSecure(client)).toMatchObject({ kind: "command", payload: {
+      type: "semantic_tool.result", payload: { result: "original live outcome" },
+    } });
+    expect(core.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(1);
+  } finally {
+    releaseWrite(); releaseRecovery(); releaseDispatch();
+    await Promise.allSettled(pending);
+    client?.socket.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+it.each(["turn.completed", "run.result.proposed", "tool.execution.progressed", "command_result"] as const)(
+  "publishes %s to transport readers only after its external checkpoint commits", async mode => {
+    for (const rejectWrite of [false, true]) {
+      const root = mkdtempSync(resolve(tmpdir(), "runner-published-checkpoint-"));
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+      let release!: () => void;
+      const gate = new Promise<void>(resolveGate => { release = resolveGate; });
+      let entered = false;
+      let hold = false;
+      let lastSaved!: DurablePrpCheckpoint;
+      core.setCheckpointPersistence(async checkpoint => {
+        if (hold) {
+          entered = true;
+          await gate;
+          if (rejectWrite) throw new Error("controlled checkpoint rejection");
+        }
+        lastSaved = checkpoint;
+      });
+      let client: AuthenticatedClient | null = null;
+      let pump: ReturnType<typeof setInterval> | undefined;
+      let polls = 0;
+      const observed = vi.fn();
+      try {
+        await core.start();
+        client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        core.queueCommand("session.snapshot", {}, "publication-command", true);
+        expect(await receiveSecure(client)).toMatchObject({ kind: "command" });
+        await core.flushCheckpoint();
+        hold = true;
+        pump = setInterval(() => {
+          polls++;
+          const visible = mode === "command_result"
+            ? core.getCommand("publication-command")?.status === "completed"
+              || core.store.state.commands.some(command => command.commandId === "publication-command" && command.status === "completed")
+            : core.store.state.committedEvents.some(event => event.eventType === mode);
+          if (visible && observed.mock.calls.length === 0) observed();
+        }, 5);
+        if (mode === "command_result") {
+          sendSecure(client, { protocol: "paperclip.runner", version: 1, kind: "command_result",
+            payload: { commandId: "publication-command", commandType: "session.snapshot", controllerSeq: 1,
+              status: "completed", result: { snapshot: true } } });
+        } else {
+          const event = semanticInputEvent();
+          const payload = event.payload as Record<string, unknown>;
+          payload.eventType = mode;
+          payload.priority = mode === "tool.execution.progressed" ? 1 : 0;
+          payload.payload = mode === "run.result.proposed" ? {
+            schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "complete",
+            completionClaim: { contractRevision: "test-v1", objectiveSatisfied: true, criteria: [], remainingWork: [] },
+            evidence: [], verification: [], attentionRequests: [], artifacts: [],
+          } : mode === "tool.execution.progressed" ? {
+            schema: "paperclip.tool.execution.v1", executionId: "publication-progress", transport: "process", operation: "execute",
+            status: "running", output: "working", outputBytes: 7, outputTruncated: false, outputDigest: null,
+          } : { status: "completed" };
+          expect(validatePrpEvent(payload)).toMatchObject({ ok: true });
+          sendSecure(client, event);
+        }
+        await vi.waitFor(() => expect(entered).toBe(true));
+        await vi.waitFor(() => expect(polls).toBeGreaterThan(2));
+        expect(observed).not.toHaveBeenCalled();
+        release();
+        if (rejectWrite) {
+          await expect(core.flushCheckpoint()).rejects.toThrow("controlled checkpoint rejection");
+          expect(observed).not.toHaveBeenCalled();
+          hold = false;
+          await core.flushCheckpoint();
+        } else await core.flushCheckpoint();
+        await vi.waitFor(() => expect(observed).toHaveBeenCalledOnce());
+        if (mode === "command_result") {
+          expect(JSON.parse(lastSaved.records.get("command:1")!).status).toBe("completed");
+        } else expect(lastSaved.records.has("event:1")).toBe(true);
+      } finally {
+        hold = false;
+        release();
+        if (pump) clearInterval(pump);
+        client?.socket.destroy();
+        await core.stop();
+        await core.drainPendingConnectionProcessing();
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  },
+);
 
 it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "credentials", "newer_command", "command_burst", "command_failure", "authority_conflict", "replacement", "write_failure", "usage_write_failure", "drain", "usage_drain", "semantic_replacement"] as const)(
   "keeps HTTP responsive during a durable event write and preserves %s", async (mode) => {
@@ -605,6 +1212,26 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+
+it("retains process birth identity published after an external launch returns", async () => {
+  let startedAt: string | undefined;
+  const birth = "2026-10-26T12:00:00.000Z";
+  const handle = spawnRunner({
+    connection: { mode: "connect", connectUrl: "ws://127.0.0.1:43127" },
+    stateDirectory: "/tmp/paperclip-runner-deferred-identity", identity, ticket: "bootstrap-ticket",
+    maxOutboxBytes: 256 * 1024, p0ReserveBytes: 64 * 1024,
+    runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    processLauncher: () => ({
+      child: { pid: 42, exitCode: null, kill: () => true },
+      completion: new Promise(() => {}),
+      get startedAt() { return startedAt; },
+    }),
+  });
+  expect(handle.startedAt).toBeUndefined();
+  // The remote process marker arrives after the provider dispatch returns.
+  await Promise.resolve().then(() => { startedAt = birth; });
+  expect(handle.startedAt).toBe(birth);
+});
 
 it("does not release or replace a remote runner until its exit is confirmed", async () => {
   let exited = false;
@@ -1258,6 +1885,8 @@ function authHello(
       protocolMin: 1,
       protocolMax: 1,
       warmTransitionVersion: 1,
+      recoveryCursorVersion: 1,
+      resume: { ackedSourceSeq: 0, nextSourceEventSeq: 1 },
       ...selectedIdentity,
       runnerVersion: expectedRunnerVersion,
       runnerDigest: expectedRunnerDigest,
@@ -1273,11 +1902,13 @@ async function authenticate(
   warmTransitionId?: string,
   withoutWarmCapability = false,
   protocolMax = 1,
+  acknowledgedSourceSeq = 0,
 ): Promise<AuthenticatedClient | null> {
   const { socket, reader } = await upgradeSocket(controlPlane.connectUrl);
   const material = credentialMaterial(token);
   const hello = authHello(material.credentialId, selectedIdentity);
   (hello.payload as Record<string, unknown>).protocolMax = protocolMax;
+  (hello.payload as Record<string, unknown>).resume = { ackedSourceSeq: acknowledgedSourceSeq, nextSourceEventSeq: acknowledgedSourceSeq + 1 };
   (hello.payload as Record<string, unknown>).runnerDigest = runnerDigest;
   if (warmTransitionId !== undefined)
     (hello.payload as Record<string, unknown>).warmTransitionId =
@@ -3194,12 +3825,15 @@ describe("DurablePrpControlPlane", () => {
     const root = mkdtempSync(
       resolve(tmpdir(), "paperclip-prp-attach-transition-"),
     );
+    let externalCheckpoint: DurablePrpCheckpoint | undefined;
     let core = new DurablePrpControlPlane({
-      stateDirectory: root,
+      stateDirectory: resolve(root, "control-plane"),
       identity,
       expectedRunnerVersion,
       expectedRunnerDigest,
     });
+    const usesExternalPersistence = mode === "activate" || mode === "activate-v2";
+    if (usesExternalPersistence) core.setCheckpointPersistence(async checkpoint => { externalCheckpoint = checkpoint; });
     const nextIdentity = {
       ...identity,
       runId: "00000000-0000-4000-8000-000000000002",
@@ -3214,6 +3848,9 @@ describe("DurablePrpControlPlane", () => {
       peer = await authenticateVersion(core, core.issueBootstrapTicket());
       const oldToken = peer!.leaseToken!;
       core.persistRunAttachTemplate({ provider: { kind: "mock", run: "prior" } });
+      core.persistPreparedLaunchConfiguration(identity, "prior-configuration");
+      core.persistPreparedLaunchConfiguration(nextIdentity, "next-configuration");
+      if (usesExternalPersistence) rmSync(resolve(root, "control-plane"), { recursive: true });
       const command = core.queueCommand(
         "run.attach",
         {
@@ -3229,7 +3866,7 @@ describe("DurablePrpControlPlane", () => {
       await expect(receiveSecure(peer!)).resolves.toMatchObject({
         kind: "command",
       });
-      const beforeResult = readFileSync(core.store.path, "utf8");
+      const beforeResult = usesExternalPersistence ? null : readFileSync(core.store.path, "utf8");
       const result = {
         commandId: command.commandId,
         commandType: command.type,
@@ -3271,9 +3908,10 @@ describe("DurablePrpControlPlane", () => {
       peer!.socket.destroy();
       await core.stop();
       if (mode === "bootstrap-before-result")
-        writeFileSync(core.store.path, beforeResult);
+        writeFileSync(core.store.path, beforeResult!);
+      externalCheckpoint?.restoreSessionDirectory(root);
       core = new DurablePrpControlPlane({
-        stateDirectory: root,
+        stateDirectory: resolve(root, "control-plane"),
         identity,
         expectedRunnerVersion,
         expectedRunnerDigest,
@@ -3438,7 +4076,7 @@ describe("DurablePrpControlPlane", () => {
             expect(core.getCommand(command.commandId)?.status).toBe("pending");
             await core.stop();
             core = new DurablePrpControlPlane({
-              stateDirectory: root,
+              stateDirectory: resolve(root, "control-plane"),
               identity,
               expectedRunnerVersion,
               expectedRunnerDigest,
@@ -3562,6 +4200,10 @@ describe("DurablePrpControlPlane", () => {
         );
         expect(successor).not.toBeNull();
         expect(core.store.state.identity).toEqual(nextIdentity);
+        expect(core.preparedLaunchConfigurationId(nextIdentity)).toBe("next-configuration");
+        core.persistPreparedLaunchConfiguration({ ...nextIdentity, runId: "third-run" }, "third-configuration");
+        expect(core.preparedLaunchConfigurationId(identity)).toBeUndefined();
+        expect(core.store.state.preparedLaunchConfigurations).toHaveLength(2);
         expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" } });
         expect(
           (successor!.welcome.payload as Record<string, unknown>)
@@ -3598,6 +4240,9 @@ describe("DurablePrpControlPlane", () => {
         await vi.waitFor(() =>
           expect(core.store.state.warmTransition).toBeUndefined(),
         );
+        if (mode === "activate" || mode === "activate-v2") {
+          expect(core.store.state.checkpointEventPolicy).toBe("control-v1");
+        }
         expect(core.store.state.schema).toBe(
           "paperclip.runner.durable.control-plane-state.v1",
         );
@@ -3665,7 +4310,7 @@ describe("DurablePrpControlPlane", () => {
           successor!.socket.destroy();
           await core.stop();
           core = new DurablePrpControlPlane({
-            stateDirectory: root,
+            stateDirectory: resolve(root, "control-plane"),
             identity: nextIdentity,
             expectedRunnerVersion,
             expectedRunnerDigest,

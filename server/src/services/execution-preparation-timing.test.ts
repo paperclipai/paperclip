@@ -41,7 +41,8 @@ it.each([undefined, "", "  "])("does not consult tracing for endpoint %s", async
   const error = vi.spyOn(console, "error");
   try {
     await expect(createRunPreparationTiming("run", "native.controller")("backend_setup", () => 42)).resolves.toBe(42);
-    for (const phase of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission", "execution.budget_reservation"] as const) {
+    for (const phase of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission", "execution.budget_reservation",
+      "skills.inventory", "skills.inventory.wait", "skills.cache.acquire", "skills.version.materialize", "skills.consume"] as const) {
       const result = {};
       const work = vi.fn(() => {
         recordRepositoryObjectCacheDetail({ outcome: "hit", referenceSupplied: true });

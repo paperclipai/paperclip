@@ -109,6 +109,13 @@ jobs:
       - name: Test feature module boundary check
         run: node "$CI_NODE_TEST" ./scripts/check-module-boundaries.test.mjs
 
+      # Report-only for now (always exits 0); --enforce turns findings into failures.
+      - name: Report raw query-error rendering
+        run: node scripts/check-query-error-rendering.mjs --summary
+
+      - name: Test query-error rendering check
+        run: node --test ./scripts/check-query-error-rendering.test.mjs
+
       - name: Test PR quality-gate scripts
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
 

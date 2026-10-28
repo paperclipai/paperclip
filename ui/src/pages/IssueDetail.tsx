@@ -1,4 +1,5 @@
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
+import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
 import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
@@ -111,6 +112,7 @@ import { useIssueWorkProducts } from "../hooks/useIssueWorkProducts";
 import {
   mergePendingIssueQueuedComments,
   normalizeIssueQueuedCommentQueue,
+  startingQueuedCommentIds,
 } from "../lib/issue-queued-comment-queue";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import {
@@ -279,6 +281,8 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError, isTransientError } from "@/api/errors";
 import {
   Sheet,
   SheetContent,
@@ -400,7 +404,7 @@ function createRunCancelledStatusUpdateError(
 ): StopAndFinalizeRunError {
   const message =
     err instanceof Error
-      ? `Run was stopped, but updating the task failed: ${err.message}`
+      ? `Run was stopped, but updating the task failed: ${describeError(err).body}`
       : "Run was stopped, but updating the task failed. Retry the task status update.";
   const error = new Error(message) as StopAndFinalizeRunError;
   error.runCancelledBeforeStatusUpdateFailed = true;
@@ -981,7 +985,7 @@ function useTaskDetailInterfaceMode(conversationMode = false) {
   };
 }
 
-function IssueDetailLoadingState({
+export function IssueDetailLoadingState({
   headerSeed,
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
@@ -1322,7 +1326,7 @@ type IssueDetailChatTabProps = {
   onReviewConversation: () => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
-  onInterruptQueued: (runId: string | null) => Promise<void>;
+  onInterruptQueued: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onRemoveCommentFromCache: (commentId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
@@ -2170,6 +2174,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     resolvedLiveRuns,
     interruptibleIssueRun,
   ]);
+  const startingCommentIds = useMemo(() =>
+    startingQueuedCommentIds(authoritativeQueuedCommentQueue, resolvedLinkedRuns),
+    [authoritativeQueuedCommentQueue, resolvedLinkedRuns]);
   const effectiveQueuedCommentQueue = useMemo(() => {
     if (!queuedCommentQueueEnabled) return null;
     const deliveredCommentRunIds = new Map<string, string>();
@@ -2235,11 +2242,21 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     locallyQueuedCommentRunIds,
     queuedCommentQueueEnabled,
   ]);
+  const visibleQueuedCommentQueue = useMemo(() => {
+    if (!effectiveQueuedCommentQueue) return null;
+    const entries = effectiveQueuedCommentQueue.entries
+      .filter(entry => !startingCommentIds.has(entry.comment.id))
+      .map((entry, position) => ({ ...entry, position }));
+    return entries.length ? { ...effectiveQueuedCommentQueue, entries } : null;
+  }, [effectiveQueuedCommentQueue, startingCommentIds]);
   const commentsForThread = useMemo(
     () =>
-      commentsWithRunMeta.flatMap((comment) => {
+      [...commentsWithRunMeta, ...(authoritativeQueuedCommentQueue?.entries ?? [])
+        .filter(entry => startingCommentIds.has(entry.comment.id) &&
+          !commentsWithRunMeta.some(comment => comment.id === entry.comment.id))
+        .map((entry): IssueDetailComment => entry.comment)].flatMap((comment) => {
         if (discardedQueuedCommentIds.has(comment.id)) return [];
-        if (!consumedQueuedCommentIds.has(comment.id)) return [comment];
+        if (!consumedQueuedCommentIds.has(comment.id) && !startingCommentIds.has(comment.id)) return [comment];
         return [
           {
             ...comment,
@@ -2261,6 +2278,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       consumedQueuedCommentIds,
       discardedQueuedCommentIds,
       localInterruptPlacements,
+      authoritativeQueuedCommentQueue,
+      startingCommentIds,
     ],
   );
 
@@ -2324,9 +2343,12 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued messages are awaiting server acknowledgement.",
         );
       try {
+        let nextPosition = 0;
+        const fullOrder = effectiveQueuedCommentQueue.entries.map(entry =>
+          startingCommentIds.has(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
         storeQueuedCommentQueue(
           await issuesApi.reorderQueuedComments(issueId, {
-            orderedCommentIds,
+            orderedCommentIds: fullOrder,
             queueId,
             revision,
           }),
@@ -2336,7 +2358,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     },
     [
-      effectiveQueuedCommentQueue?.queueId,
+      effectiveQueuedCommentQueue,
+      startingCommentIds,
       issueId,
       refreshQueueAfterConflict,
       storeQueuedCommentQueue,
@@ -2432,7 +2455,15 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         return next;
       });
       try {
-        await onInterruptQueued(runId);
+        const updatedQueue = await onInterruptQueued(runId);
+        if (updatedQueue?.state === "deferred") {
+          const remaining = new Set(updatedQueue.entries.map(entry => entry.comment.id));
+          setConsumedQueuedCommentIds(current => new Set([...current].filter(id => !remaining.has(id))));
+          setLocalInterruptPlacements(current => new Map([...current].filter(([id]) => !remaining.has(id))));
+          storeQueuedCommentQueue(updatedQueue);
+          if (classicTaskInterfaceEnabled) setClassicQueuedDeliveryError(updatedQueue.executionWait?.message ?? "Messages are still queued.");
+        }
+        return updatedQueue;
       } catch (error) {
         setConsumedQueuedCommentIds((current) => {
           const next = new Set(current);
@@ -2449,12 +2480,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           return;
         }
         await refreshQueueAfterConflict(error);
+        throw error;
       }
     },
     [
       effectiveQueuedCommentQueue,
       commentsWithRunMeta,
       onInterruptQueued,
+      storeQueuedCommentQueue,
       refreshQueueAfterConflict,
       classicTaskInterfaceEnabled,
     ],
@@ -2702,7 +2735,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             imageUploadHandler={onImageUpload}
             onAttachImage={onAttachImage}
             onInterruptQueued={interruptQueuedComments}
-            queuedCommentQueue={effectiveQueuedCommentQueue}
+            queuedCommentQueue={visibleQueuedCommentQueue}
             onEditQueuedComment={editQueuedComment}
             onReorderQueuedComments={reorderQueuedComments}
             onSteerQueuedComment={steerQueuedComment}
@@ -2763,7 +2796,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             }
             footer={grokWork || stopGrokWork.error || classicQueuedDeliveryError ? <>
               {grokWork && <p className="text-xs text-muted-foreground">Runs in Grok Bot · Usage not reported. Stop Paperclip work revokes this session’s authority; remote execution may continue. Open the Grok Bot desktop app to inspect it.</p>}
-              {stopGrokWork.error && <p role="alert" className="text-sm text-destructive">{stopGrokWork.error.message}</p>}
+              {stopGrokWork.error && <p role="alert" className="text-sm text-destructive">{describeError(stopGrokWork.error).body}</p>}
               {classicQueuedDeliveryError && <p role="status" className="text-sm text-destructive">{classicQueuedDeliveryError}</p>}
               {footer}
             </> : footer}
@@ -2863,7 +2896,6 @@ function IssueDetailActivityTab({
         throw error;
       }
     },
-    retry: false,
     placeholderData: keepPreviousDataForSameQueryTail<Awaited<
       ReturnType<typeof issuesApi.getDocument>
     > | null>(issueId),
@@ -3302,13 +3334,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     Boolean(conversation || classicTaskInterfaceEnabled || location.hash || detailTab !== "chat"),
     coreIssueQuery.data,
   );
-  const {
-    data: queriedIssue,
-    isLoading,
-    isPlaceholderData,
-    error,
-    refetch: refetchIssueDetail,
-  } = useQuery({
+  const issueQuery = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
         ? {
@@ -3319,6 +3345,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }),
     enabled: !!issueId && (coreIssueQuery.isFetched || !!queryClient.getQueryData(queryKeys.issues.detail(issueId))),
   });
+  const {
+    data: queriedIssue,
+    isLoading,
+    isPlaceholderData,
+    error,
+    refetch: refetchIssueDetail,
+  } = issueQuery;
+  // A header seed is a placeholder, not loaded data: it must not count as
+  // content worth keeping on screen through a failure.
+  const issueView = useQueryView(isPlaceholderData ? { ...issueQuery, data: undefined } : issueQuery);
+  const coreIssueView = useQueryView(coreIssueQuery);
   useEffect(() => {
     if (issueId && historyExpanded) void prefetchIssueThread(queryClient, issueId);
   }, [issueId, historyExpanded, queryClient]);
@@ -3339,9 +3376,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   };
   // A cached header seed can paint during navigation, but must not redirect
   // or upload against the previous task while the requested task is loading.
+  // A failed refetch of an already loaded task does not unload it.
   const loadedIssue =
     !isPlaceholderData &&
-    (!error || !!coreIssueQuery.data) &&
+    !(error && !queriedIssue && !coreIssueQuery.data) &&
     issue &&
     issueId &&
     (issue.id.toLowerCase() === issueId.toLowerCase() ||
@@ -3666,7 +3704,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: !!session?.user?.id,
-    retry: false,
   });
   const canManageTreeControl = Boolean(
     selectedCompanyId && boardAccess?.companyIds?.includes(selectedCompanyId),
@@ -3690,13 +3727,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
     enabled: !!issueId,
-    retry: false,
   });
   const { data: instanceExperimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: !!issueId,
-    retry: false,
   });
   // Experimental Cases: linkify `PAP-C7` chips in this issue's comment bodies.
   const casesChipsEnabled = instanceExperimentalSettings?.enableCases === true;
@@ -3749,13 +3784,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }),
     enabled: treeControlOpen && !!issueId && canManageTreeControl,
     staleTime: 0,
-    retry: false,
   });
   const { data: treeControlState, error: treeControlStateError } = useQuery({
     queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
     queryFn: () => issuesApi.getTreeControlState(issueId!),
     enabled: !!issueId,
-    retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
     queryKey: [
@@ -6735,7 +6768,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const handleInterruptQueuedRun = useCallback(
     async (runId: string | null) => {
-      await interruptQueuedComment.mutateAsync(runId);
+      return interruptQueuedComment.mutateAsync(runId);
     },
     [interruptQueuedComment],
   );
@@ -7181,9 +7214,28 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [activePauseHold, issue]);
 
-  if (!issue && !accessError && (isLoading || coreIssueQuery.isPending))
+  // The loaded task stays on screen while a refetch fails (the connection
+  // banner explains the outage); the skeleton covers an outage before the
+  // first load; only a real failure replaces the pane.
+  if (
+    (!issue && !accessError && (isLoading || coreIssueQuery.isPending || coreIssueView.kind === "reconnecting")) ||
+    (issueView.kind === "reconnecting" && (!issue || (isPlaceholderData && !coreIssueQuery.data)))
+  )
     return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
-  if (!issue && (error || coreIssueQuery.error)) return <p className="text-sm text-destructive">{(error || coreIssueQuery.error)?.message}</p>;
+  if (!issue || (issueView.kind === "error" && isPlaceholderData && !coreIssueQuery.data)) {
+    const pageError = accessError ?? error ?? coreIssueQuery.error;
+    if (pageError) {
+      return (
+        <QueryErrorState
+          size="page"
+          error={pageError}
+          action="load this task"
+          onRetry={coreIssueQuery.error ? coreIssueView.retry : issueView.retry}
+          retrying={issueView.isFetching || coreIssueView.isFetching}
+        />
+      );
+    }
+  }
   if (!issue) return null;
   // Do not expose a file chooser on the outgoing UUID/company/interface
   // branch: its input can be detached before the chosen file is returned.
@@ -7836,7 +7888,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         onCancelMonitor={() => cancelIssueMonitor.mutateAsync()}
         issue={issue}
         workProducts={workProducts}
-        checkError={checkIssueMonitorNow.error?.message}
+        checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
         onCheckNow={() => checkIssueMonitorNow.mutate()}
         checkingNow={checkIssueMonitorNow.isPending}
       />
@@ -7938,7 +7990,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               : "max-w-3xl space-y-6"
           }
         >
-          {error && coreIssueQuery.data ? (
+          {error && coreIssueQuery.data && !isTransientError(error) ? (
             <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
               Some task details could not be loaded.
               <Button type="button" variant="ghost" size="sm" onClick={() => void refetchIssueDetail()}>Retry</Button>
@@ -8001,7 +8053,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 role="alert"
                 className={cn("text-sm text-destructive", shellSectionClass)}
               >
-                {executeTreeControl.error.message}
+                {describeError(executeTreeControl.error).body}
               </p>
             )}
 
@@ -8416,7 +8468,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                       <IssueMonitorComposerStrip
                         issue={issue}
                         workProducts={workProducts}
-                        checkError={checkIssueMonitorNow.error?.message}
+                        checkError={checkIssueMonitorNow.error ? describeError(checkIssueMonitorNow.error, { action: "check the monitor" }).body : null}
                         onCheckNow={() => checkIssueMonitorNow.mutate()}
                         checkingNow={checkIssueMonitorNow.isPending}
                       />
@@ -8650,7 +8702,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             error={
               treeControlPreviewError
                 ? treeControlPreviewErrorCopy(treeControlPreviewError)
-                : executeTreeControl.error?.message
+                : executeTreeControl.error
+                  ? describeError(executeTreeControl.error).body
+                  : undefined
             }
             pending={executeTreeControl.isPending}
             valid={canApplyTreeControl}

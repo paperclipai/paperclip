@@ -563,16 +563,59 @@ owns committed updates.
 
 ## Hot-Restart Deploys
 
-During a restart, the board's health, session, and access checks retry temporary
-network/gateway failures and non-JSON API responses every five seconds. A new
-page shows **Reconnecting to Paperclip** with a **Try again** action and waits
-for startup health to become ready. Valid startup metadata remains available to
-sign-in and invitation pages. An already
-open page stays mounted during temporary background failures so unsaved edits
-survive. Successful checks resume the same route and refresh other failed reads;
-this recovery does not reload the browser or replay mutations. Authorization
-failures still require sign-in or an explicit retry. Storybook **App / Connection
-recovery** shows the startup recovery states.
+During a restart, the UI's connectivity store (`ui/src/lib/connectivity.ts`)
+confirms an outage with a `/api/health` probe, then polls health with backoff
+(1s, 2s, 5s, 10s, then every 15s; a longer `Retry-After` wins). While the server
+is unreachable, React Query pauses reads and `meta.replay = "idempotent"`
+mutations instead of failing them; on recovery they resume and live queries
+refresh once. Other mutations fail fast with readable copy and are not replayed.
+Transient errors (network drops, non-JSON responses, 408/425/429/502/503/504,
+and gateway codes such as `tenant_app_unavailable` in any status) are classified
+in `ui/src/api/errors.ts`.
+
+A new page shows **Reconnecting to Paperclip** with a **Try again** action and
+waits for startup health to become ready. Valid startup metadata remains
+available to sign-in and invitation pages. An already open page stays mounted
+during temporary background failures so unsaved edits survive; after about two
+seconds of continuous trouble, one app-level **Connection interrupted** banner
+appears, followed briefly by **Back online**. Recovery does not reload the
+browser. Authorization failures still require sign-in or an explicit retry.
+Storybook **App / Connection recovery** shows the startup screens and banner.
+
+To reproduce a deploy blip in a dev or QA build, set the outage simulator in the
+browser console and remove it to end the outage:
+
+```js
+localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable"    // until removed
+localStorage.paperclipSimulateOutage = "503:tenant_app_unavailable@20" // for 20 seconds
+localStorage.paperclipSimulateOutage = "network"                       // dropped connection
+localStorage.removeItem("paperclipSimulateOutage")
+```
+
+Reads render through `useQueryView(query)` or `<QueryView>`
+(`ui/src/components/QueryView.tsx`). The view state is one of `loading`,
+`ready`, `stale` (data plus a transient failure: render the data, no red
+text), `reconnecting` (no data yet while the app-wide connectivity state is
+not `online`: a quiet placeholder that fills in by itself when the probe loop
+recovers), or `error` (a real failure: `describeError` copy with a Retry
+button). A transient failure with no data while the server is reachable (a
+429, one plugin worker restarting, a 504 on one slow route) is also `error`
+once the retry policy gives up, because no recovery loop would refetch it.
+"Not found" renders only when `classifyError` says `not_found`, never for an
+outage. `<QueryErrorState>` is the error presentation on its own, in `page`,
+`panel`, and `inline` sizes. Plugin chrome (`usePluginSlots`,
+`usePluginLaunchers`) is the one exception: it never reports a transient
+failure and stays collapsed instead.
+
+`node scripts/check-query-error-rendering.mjs --summary` reports UI code that renders raw query errors
+(`{error.message}`, `isError ?`) or sets `retry: false`. It is report-only for
+the long tail; pass `--enforce` to fail on every finding. Files listed in
+`ENFORCED_FILES` in the script have already migrated, and a finding in one of
+them fails the check in every mode. Add a file to that list when you migrate
+it. For an intentional exception (a mutation result rendered inline, a
+prop that is already outage-aware), end the line with `// query-error-ok:
+<reason>`. Reads that must fail fast use `retry: retryTransientOnly(0)`
+instead of `retry: false`.
 
 Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
 
@@ -837,6 +880,41 @@ pnpm exec vitest run server/src/__tests__/task-search-quality.test.ts
 Set `SEARCH_EVAL_SCALE=1` to additionally measure a disposable 10,000-task,
 30,000-comment dataset. `SEARCH_EVAL_REPORT=/tmp/search-quality.json` saves
 per-query results and latency measurements; scale measurements are opt-in.
+
+### Native skill preparation benchmark
+
+Measure native skill preparation through the production service, real PostgreSQL,
+and an in-memory OpenTelemetry exporter:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-native-skill-preparation.ts
+```
+
+The default fixture has a 208-file repository of about 10.8 MB. The report includes
+cold and warm resolution, a fresh service instance, detailed phase timings, and
+regular-pool SQL statement counts (excluding the separate cache-lock connection).
+Every delivered file is checked outside the timed section. No provider is started.
+`--snapshot-file=/absolute/path/snapshot.json --entrypoint=skills/example/SKILL.md`
+uses a captured repository file inventory instead. `--network-delay-ms=25` adds
+25 ms in each direction through a local TCP relay; this is simulated transport
+latency, not a measurement of a hosted database.
+
+`--actor=agent` adds a real agent, run, and responsible user, then records version
+pins through the same callback boundary as execution. `--staging-shape=true`
+seeds 14 projects, 10 sources, 8 bindings, and 156 other skills. These match one
+observed staging inventory's counts; their content is synthetic. Combine these
+options to include authorization and unselected library rows in the measurement.
+
+By default, spans stay in memory. `--export-otlp=true` also exports them using
+the operator's `OTEL_EXPORTER_OTLP_ENDPOINT`, protocol, and headers. Keep header
+values out of command arguments and reports. The report records source hashes,
+the export mode, and trace IDs. Exported traces identify this local diagnostic
+in their service version; they are not evidence of staging performance.
+
+If creating another embedded cluster is impractical, `--postgres-port=55448
+--postgres-user=paperclip` uses an existing **local** server. It creates and migrates
+a uniquely named disposable database and drops that database afterward; it does
+not reuse an application database.
 
 ### Repository workspace admission benchmark
 
@@ -1769,6 +1847,13 @@ overrides, scoped credentials, managed AI identity, and runtime skill delivery.
 The executor receives credential ownership and failure-redaction updates as soon
 as they are available, so later setup failures still clean up acquired resources.
 Busy-account deferral returns explicitly before session/workspace preparation.
+
+On Cloud-managed sandbox connections, an ACPX platform check can defer runtime
+preparation to the normal Runner launch. After the selected account completes
+its provider hello probe or live API-key check, that specific deferred check is
+informational. Authentication failures, unsupported platforms, other warnings,
+and self-hosted or SSH runtime checks retain their status. A passed connection
+test does not replace Runner package verification before execution.
 Public-path tests are in `server/src/__tests__/heartbeat-execution-configuration.test.ts`.
 
 Concurrent skill preparations join the company inventory refresh before taking
@@ -1837,6 +1922,32 @@ binding, then applies the existing run and operation permission checks.
 `heartbeat.ts` keeps run execution and re-exports the
 existing public helpers. Keep session policy changes separate from run
 orchestration changes.
+
+Explicit continuation admission reads only task/comment identity and dispatch
+evidence from the saved context. Its preflight reads the historical adapter type
+and workspace sync receipt. The coordinator and run locks retain their order.
+The locked reread retains the complete Runner profile because suspended-session
+and quarantined-cleanup proofs parse the exact saved execution input. Other run
+and dispatch paths retain their existing reads.
+
+Measure these two admission queries with
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-continuation-run-reads.ts --baseline-ref=<pre-fix-commit>`.
+The synthetic PostgreSQL fixture compares the admission result and reports exact
+text-format DataRow frame bytes, SQL samples, and execution plans. It excludes
+TLS and protocol metadata. To use an isolated external database, set
+`PAPERCLIP_CONTINUATION_BENCHMARK_DATABASE_URL` to a disposable database ending
+in `_test`. The harness applies migrations there and adds synthetic fixtures.
+
+Continuation history reads select completed tool receipts and the typed
+conversation/workspace recovery fields used to choose the prior terminal run.
+Every completed receipt keeps its full result. Receipt order, company/agent/task
+scope, and the complete retained history stay unchanged. Saved results remain
+available to detail, recovery, and execution paths.
+Use `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-continuation-history.ts --baseline-ref=<pre-fix-commit>`
+to compare generated SQL, complete continuation envelopes, and DataRow bytes.
+The benchmark includes a large required-receipt control. Its external database
+option is `PAPERCLIP_CONTINUATION_HISTORY_BENCHMARK_DATABASE_URL`, with the same
+disposable `_test` database restriction.
 
 Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
 retry schedules, connection and workspace contention deferrals, shared-workspace
@@ -1969,7 +2080,7 @@ agent conversion are outside this playbook.
 
 ## Paperclip Runner Adapter Conversion
 
-Paperclip Runner offers native Codex, OpenCode, **ACPX Claude**, and **ACPX Pi**. New
+Paperclip Runner offers native Codex, OpenCode, **ACPX Claude**, **ACPX Grok Build**, and **ACPX Pi**. New
 Claude Code agents default to ACPX Claude on Apple Silicon, Intel Mac, Linux x64
 and Linux ARM64 with supported glibc. New OpenCode and Pi agents default to their native
 runtimes on Apple Silicon, Intel Mac, and Linux x64 with supported glibc;
@@ -1980,11 +2091,15 @@ requires matching remote assets. The runner override is in Advanced. Ordinary Cl
 and provider routing remain authoritative. Existing agents keep their saved runner. Converting an existing Claude, Codex, OpenCode, or Pi agent selects its
 corresponding provider, preserves compatible models, credentials, workspace,
 and instructions, and resets execution sessions while retaining run history.
+Grok Build uses its qualified macOS ARM64 and Linux x64 targets. Its conversion
+preserves the selected model, account, and explicit reasoning effort through ACP.
+Custom commands, extra arguments, legacy permission modes, search flags, and
+nonzero turn limits require Legacy; conversion rejects them before saving.
 Other adapters require an explicit provider choice. Legacy ACPX Codex agent
 settings normalize to native Codex on configuration updates and before fresh
 runs; immutable run descriptors remain readable. The **Paperclip Runner**
 experimental setting applies to other native providers. Native Codex, OpenCode,
-ACPX Claude, and ACPX Pi do not require it. Company access checks still apply.
+ACPX Claude, ACPX Grok Build, and ACPX Pi do not require it. Company access checks still apply.
 
 Native Codex preserves an explicit `adapterConfig.search: false` when converting
 or saving an agent. The disabled hosted-search policy is recorded in the native
@@ -2030,6 +2145,13 @@ and command/extra arguments are folded under **Configuration → Advanced**.
 Lifecycle, timeout, and interrupt grace settings live under **Advanced Run
 Policy**. Permission selectors with a single valid mode are hidden; a saved
 unsupported mode still exposes remediation.
+
+Saving an existing agent compares AI connection bindings by value, independent
+of PostgreSQL JSONB key order. Identity, thinking-effort and run-policy edits
+avoid the connection-adoption runtime probe when the connection and execution
+selection stay the same. Connection, harness, model, provider, engine and
+environment changes still validate adoption. Explicit runtime tests and
+required Copilot metadata checks keep their existing behavior.
 
 Model catalogs and refresh follow the selected provider. ACPX Claude uses the
 normal Claude catalog and accepts custom model IDs; the exact ID is sent to
@@ -2374,6 +2496,36 @@ incomplete bootstrap, repeated crashes with steering, and fail-closed process
 identity mismatches.
 
 ## App-Shipped Skills Catalog
+
+Skill-library reads still reconcile bundled releases, folders, and direct local
+sources on each request. Folder classification reads only its source-kind field,
+and local-source reconciliation reads only local sources. Bundled reconciliation
+keeps current skill access checks but does not resolve unused folder paths.
+Attachment counts read only nonterminated agents' saved desired-skill selections and
+resolve them once against the complete visible skill list. Detail reads and
+stored inputs remain complete.
+
+Run the synthetic HTTP comparison through the production skills router:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-skill-list.ts --samples=5 --network-delay-ms=3.5
+```
+
+The harness starts disposable PostgreSQL, synthetic skills and agents, and a
+loopback HTTP server. It checks both normal and conditional responses and records
+inventory phases, SQL calls, and PostgreSQL result-value bytes. These bytes omit
+protocol framing and do not measure provider billing. The actor is an authenticated
+board fixture; the harness does not test login. To use a task-owned local PostgreSQL
+server instead of embedded PostgreSQL, pass `--postgres-port=PORT` and
+`--postgres-user=USER`. It creates and removes a separate test database. Keep timing
+runs separate from builds and tests; repeat both source versions when host noise
+is material. Repeat with `--capture-values=false` for acceptance timings without
+the response-value observer. Add `--baseline-ref=COMMIT --capture-values=false`
+to alternate the original and current skill services against the same database
+and actor. This mode checks full response equality through equivalent local HTTP
+handlers. The normal mode uses the production router. Only `company-skills.ts`
+differs in paired mode; imported helpers stay at the current checkout.
+
 
 Plugin environment drivers can declare `skillKeys` that reference their own
 manifest-managed skills. Selecting that environment adds those skills to the
@@ -3316,6 +3468,35 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-prepar
 
 It compares actual preparation guards with synthetic history. Local timings are
 separate from Git materialization, environment acquisition, and provider startup.
+
+### Sidebar badge run-query benchmark
+
+The badge query keeps the newest 200 runs of nonterminated same-company agents.
+It selects each agent's first observed run before status or Mine filters. An
+observation ordinal preserves equal-time input order. Per-agent ranking orders
+by full creation time first, then that ordinal for exact ties. SQL returns only failure
+IDs, issue bindings, and creation times. Dismissals and fresh issue authorization
+still run in the service.
+
+Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
+
+```sh
+PAPERCLIP_LOG_LEVEL=error SIDEBAR_REQUIRE_BYTE_REDUCTION=1 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-sidebar-badges.ts --baseline-ref=bf3ef12f3a78d0b15a32ad57f7e16520fbf6cd5e
+```
+
+The harness starts disposable embedded PostgreSQL by default. To use an existing
+isolated test database with current migrations, set
+`PAPERCLIP_SIDEBAR_TEST_DATABASE_URL` to a dedicated database whose name ends in
+`_test`. The harness removes only its own synthetic company fixtures. Do not use
+a development or hosted company database.
+
+The report includes service-generated SQL, complete badge equality, candidate
+bindings, alternating warm samples, plans, and UTF-8 response-value bytes before
+Drizzle decoding. This byte count excludes protocol framing. The mixed fixture
+covers shared agents, superseding successes, timestamp ties, Mine users,
+dismissal equality, private and deleted issues, and more than 200 runs. The
+all-failed, all-succeeded, and empty controls expose neutral or slower paths.
+Timings describe local SQL work and do not establish hosted request latency.
 
 ### Budget accounting performance
 

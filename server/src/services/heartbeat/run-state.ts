@@ -1,4 +1,4 @@
-import { conversationEventCondition } from "./conversation-events.js";
+import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -1965,7 +1965,7 @@ export function createHeartbeatRunState(db: Db) {
 
     listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
-        .select()
+        .select(conversationOnly ? conversationEventColumns(runId) : getTableColumns(heartbeatRunEvents))
         .from(heartbeatRunEvents)
         .where(
           and(

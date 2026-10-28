@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerTaskDrainExpiryWork } from "../services/task-admission.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -22,6 +27,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
+import express from "express";
+import request from "supertest";
+import { instanceSettingsRoutes } from "../routes/instance-settings.js";
+import { errorHandler } from "../middleware/error-handler.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -232,6 +241,88 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     expect(finished?.status).toBe("succeeded");
+  }, 20_000);
+
+  it.each(["release", "paused agent", "new drain"] as const)("reconsiders queued work after maintenance with current gates: %s", async gate => {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+    const counterDir = mkdtempSync(join(tmpdir(), "drain-executor-"));
+    const counter = join(counterDir, "executions");
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(counter)}, process.env.PAPERCLIP_RUN_ID + "\\n")`] } })
+      .where(eq(agents.id, agentId));
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system", requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+    const [queued] = await db.select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns);
+    expect(queued).toBeDefined();
+    if (gate === "paused agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+      if (gate === "new drain" && event.type === "activity.logged" && event.payload.action === "instance.task_drain.stopped") startTaskDrain({});
+    });
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", instanceSettingsRoutes(db));
+      app.use(errorHandler);
+      const response = await request(app).delete("/api/instance/task-drain");
+      expect(response.status).toBe(200);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, queued!.wakeupRequestId!));
+      expect(runs).toHaveLength(1);
+      const executions = existsSync(counter) ? readFileSync(counter, "utf8").trim().split("\n") : [];
+      if (gate === "release") {
+        expect(runs[0]).toMatchObject({ id: queued!.id, status: "succeeded" });
+        expect(executions.filter(id => id === queued!.id)).toHaveLength(1);
+        await request(app).delete("/api/instance/task-drain").expect(200);
+        await heartbeat.drainActiveRunExecutions();
+        expect(readFileSync(counter, "utf8").trim().split("\n").filter(id => id === queued!.id)).toHaveLength(1);
+      } else {
+        expect(runs[0]?.startedAt).toBeNull();
+        expect(executions).toEqual([]);
+      }
+    } finally {
+      unsubscribe();
+      await heartbeat.drainActiveRunExecutions();
+      rmSync(counterDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("dispatches existing queued work at the drain deadline", async () => {
+    const { agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system", requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+    const [queued] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => { throw error; } });
+    let worker: ReturnType<typeof registerTaskDrainExpiryWork> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker = registerTaskDrainExpiryWork(coordinator, () => {
+          void heartbeat.resumeQueuedRunsAfterDrain().then(resolve, reject);
+        });
+        startTaskDrain({ ttlMs: 5 });
+      });
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
+      expect(run?.status).toBe("succeeded");
+    } finally { await worker?.stop(); await coordinator.stop(); }
   }, 20_000);
 
   it("keeps a wake that arrives during a task drain queued and runs it once the drain lifts", async () => {

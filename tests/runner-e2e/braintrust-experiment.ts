@@ -114,13 +114,15 @@ export interface BraintrustExperimentReceipt {
 }
 
 export function experimentEvidenceHash(campaign: RunnerE2ECampaign) {
+  const operations = campaign.operations ? structuredClone(campaign.operations) : null;
+  if (operations && operations.status !== "unavailable" && operations.modelAccounting) delete operations.modelAccounting.tokenUsage;
   return digest({ campaignId: campaign.campaignId, expected: [...campaign.expected].sort(),
     selected: campaign.results.map(result => ({ executionId: result.executionId, accountingIdentity: result.accountingIdentity,
       attempt: result.attempt, startedAt: result.attempt === 0 ? null : result.startedAt, sourceRevision: result.source?.sha ?? null,
       suiteDefinitionHash: result.suiteDefinitionHash ?? null, suiteId: result.suiteId, profileId: result.profileId,
       caseId: result.caseId, provider: result.provider, model: result.model, environmentId: result.environmentId,
       runtimeMode: result.runtimeMode })).sort((a, b) => digest(a).localeCompare(digest(b))),
-    accounting: campaign.accounting, operations: campaign.operations ?? null, feedbackReview: campaign.feedbackReview ?? null });
+    accounting: campaign.accounting, operations, feedbackReview: campaign.feedbackReview ?? null });
 }
 
 function safeBraintrustUrl(value: unknown): value is string {

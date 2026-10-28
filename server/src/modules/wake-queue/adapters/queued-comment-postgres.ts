@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -45,7 +46,7 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
   syncCommentExternalObjectsSafely(commentId: string, tx: Db): Promise<void>;
 };
 
-function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
+function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
       const updated = await tx
@@ -72,6 +73,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async updateQueueRunCommentIds({ queueRunId, contextSnapshot, ids, updatedAt }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: withQueuedCommentIdsInRunContext(contextSnapshot, ids), updatedAt })
@@ -82,6 +84,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async deleteComment({ issueId, commentId }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .delete(issueComments)
         .where(and(eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)))
@@ -98,6 +101,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async cancelQueueRun({ queueRunId, reason, now }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .update(heartbeatRuns)
         .set({ status: "cancelled", finishedAt: now, error: reason, errorCode: "queued_comment_discarded", updatedAt: now })
@@ -291,7 +295,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
               .then((rows) => rows[0] ?? null)
           : null;
 
-        const transaction = buildTransaction(tx, companyId, deps);
+        const transaction = buildTransaction(tx, companyId, input.issue.id, deps);
         const wake = toWakeRow(wakeRow);
         const queueRun = queueRunRow ? toRunRow(queueRunRow) : null;
         const activeRun = activeRunRow ? toRunRow(activeRunRow) : null;

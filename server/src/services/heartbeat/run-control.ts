@@ -629,10 +629,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   }
 
   async function resumeQueuedCommentInterrupt(companyId: string, queueId: string, opts?: { retryCleanup?: boolean }) {
-    return resumeSavedLegacyComments(companyId, queueId, true, opts);
+    return resumeSavedComments(companyId, queueId, true, opts);
   }
 
-  async function resumeSavedLegacyComments(companyId: string, queueId: string, interrupted = false, opts?: { retryCleanup?: boolean }) {
+  async function resumeSavedComments(companyId: string, queueId: string, interrupted = false, opts?: { retryCleanup?: boolean }) {
     const [wake] = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, companyId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -664,7 +664,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     }
     if (!actorId) return;
     const agent = await getAgent(wake.agentId);
-    if (!agent || agent.companyId !== companyId || (agent.adapterType === "paperclip_runner" && !response?.source.requiresFreshSession)) return;
+    if (!agent || agent.companyId !== companyId || (agent.adapterType === "paperclip_runner" && !interrupted && !response?.source.requiresFreshSession)) return;
     const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.agentId, wake.agentId),
@@ -822,7 +822,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const run = await getRunExecutionWait(wake.companyId, sourceId);
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
       if (canContinueCancelledRun(run)) {
-        await resumeSavedLegacyComments(wake.companyId, wake.id).catch(err => {
+        await resumeSavedComments(wake.companyId, wake.id).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume saved input after provider cancellation");
         });
         continue;
@@ -1134,7 +1134,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     let caseHandoffRetryClaimed = false;
     if (handoffIssueId && supersedesCaseHandoff && options.resultJson?.caseHandoffYieldStop !== true) {
       const publications: ActivityPublication[] = [];
-      const supersessionApplied = await db.transaction(async tx => {
+      const applySupersession = () => db.transaction(async tx => {
         const [issue] = await tx.select({ id: issues.id, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
           assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
           .where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
@@ -1189,7 +1189,27 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId,
           sourceRunId: runId, includeUnboundTerminalIntent: Boolean(fenced && ownsTask), reason, publications });
         return true;
-      }).catch(rethrowNativeCancellationLockConflict);
+      });
+      let supersessionApplied = false;
+      for (let attempt = 0; ; attempt++) {
+        const previousRun = run;
+        try {
+          supersessionApplied = await applySupersession();
+          break;
+        } catch (error) {
+          const value = parseObject(error);
+          const deadlock = value.code === "40P01" || parseObject(value.cause).code === "40P01";
+          if (!deadlock || attempt >= 2) rethrowNativeCancellationLockConflict(error);
+          // PostgreSQL aborted the entire transaction. Discard its local
+          // receipts before re-reading current authority under fresh locks.
+          // Provider Stop and publication happen only after this boundary.
+          run = previousRun;
+          cancellationClaimed = false;
+          caseHandoffRetryClaimed = false;
+          publications.length = 0;
+          await new Promise(resolve => setTimeout(resolve, 25 * (attempt + 1)));
+        }
+      }
       publications.forEach(publishActivity);
       if (!supersessionApplied) return null;
     }
@@ -1700,7 +1720,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     cancelRunInternal,
     resumeExecutionWaitComments,
     resumeQueuedCommentInterrupt,
-    resumeSavedLegacyComments,
+    resumeSavedLegacyComments: resumeSavedComments,
     resumeTaskRetry,
     cancelActiveForAgentInternal,
     cancelInvocationsForAgentsInternal,

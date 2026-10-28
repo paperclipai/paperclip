@@ -634,10 +634,11 @@ Longer polling intervals alone do not complete an item.
   [idle-login-cleanup.md](../idle-login-cleanup.md) for producer coverage,
   verification and remaining provider-orphan boundaries.
 
-- [ ] **JOB-19 — Custom-image setup expiry.** Current: **30s** active-session
-  expiry scans. Change: register `expiresAt` and cleanup attempts. **Complete
-  when:** no sessions means no SQL and expired provider resources are released.
-  Source: [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts).
+- [x] **JOB-19 — Custom-image setup expiry.** Uses committed setup-session
+  changes and the earliest existing active-session expiry. Startup reconstructs
+  deadlines; empty and terminal history disarm. Failed reconciliation and first
+  writes retain their wake through drain. Provider teardown and historical cleanup
+  remain with the existing services. See [idle-environment-cleanup.md](../idle-environment-cleanup.md#custom-image-setup-expiry).
 
 - [ ] **JOB-20 — Tool connection health.** Current: **30s** DB inventory;
   provider probes are conditional. Change: check on use/configuration change,
@@ -646,8 +647,12 @@ Longer polling intervals alone do not complete an item.
   visible within the agreed freshness contract. Source:
   [index.ts](../../server/src/index.ts), `tools.sweepConnectionHealth`.
 
-- [ ] **JOB-21 — Secret proposals and expired action tokens.** Current: **30s**
-  expiry/cleanup queries. Change: enforce expiry synchronously on use and
+- [ ] **JOB-21 — Secret proposals and expired action tokens (partially migrated).**
+  Secret-proposal expiry now uses transaction signals and saved expiry deadlines;
+  see [the lifecycle contract](../idle-secret-proposal-expiry.md). Gateway token
+  and session expiry now also uses saved deadlines and producer signals; see
+  [its lifecycle contract](../idle-gateway-credential-expiry.md). Tool review
+  recovery still uses **30s** queries. Change: enforce expiry synchronously on use and
   register required scrub/cleanup deadlines. **Complete when:** idle cleanup
   does not extend authorization or secret-retention periods. Sources:
   [secret-proposals.ts](../../server/src/services/secret-proposals.ts),

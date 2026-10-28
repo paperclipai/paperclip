@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import os from "node:os";
 import {
@@ -1019,6 +1020,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       const tx = transaction as unknown as Db;
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
       await notifyExecutionRunWork(tx);
+      if (companyId) await notifyChatRunMilestones(tx, { companyId });
       return write(tx);
     });
   }

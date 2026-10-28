@@ -11,6 +11,12 @@ import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 export interface RunnerExecutionDriver {
   /** Own provider configuration and file preparation in the execution environment. */
   prepareLaunch?: RunnerLaunchPreparer;
+  /** Reauthorize retained resources before adoption without preparing them again.
+   * The ID is bound to the exact execution in the durable controller checkpoint.
+   * Omission preserves prepareLaunch's existing recovery/authorization path.
+   * Adoption with this hook requires prepareLaunch and its retained configuration binding.
+   */
+  authorizeRunnerAdoption?: (configurationId: string, identity: DurableRecoveryIdentity) => Promise<void>;
   /** Prepare resources and register or acquire the connection before launch. */
   controlPlaneRegistration?: (
     authority: DurablePrpControlPlane,
@@ -57,9 +63,9 @@ export interface RunnerExecutionDriver {
    * never calls the process launcher while the process remains alive.
    */
   adoptExistingRunner?: {
-    pid: number;
+    pid: number | null;
     processGroupId: number | null;
-    startedAt: string;
+    startedAt: string | null;
     isAlive: () => Promise<boolean> | boolean;
     signal?: (signal: NodeJS.Signals) => Promise<boolean> | boolean;
   };

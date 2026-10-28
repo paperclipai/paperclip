@@ -90,6 +90,11 @@ data transfer is outside task execution. See the
 The [fake-provider integration](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 checks acquisition, SDK dispatch, scope denial, stop proof and deletion recovery.
 Its WebSocket is mocked; it does not qualify a live provider or a real Runner handshake.
+Controller replacement reuses a surviving plugin task's active lease and exact
+Runner identity. The integration checks reconnect without prepare, submit, or
+stop. The [continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+also covers real-process recovery after controller files are removed; deployed
+plugin and Daytona acceptance require their own evidence.
 
 For a same-run retry on a replacement plugin task, verify that the retained
 checkpoint loads before provider startup. The prior execution must have a stop

@@ -1,5 +1,6 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
@@ -62,4 +63,21 @@ export async function materializeIsolatedTaskDirectory(input: {
     }
   }
   return cwd;
+}
+
+export async function isBoundIsolatedTaskDirectory(input: {
+  companyId: string; issueId: string; workspaceId: string | null;
+  workspace: Pick<ExecutionWorkspace, "id" | "companyId" | "sourceIssueId" | "status" | "mode" | "strategyType" | "providerType" | "cwd" | "repoUrl" | "branchName"> | null;
+}): Promise<boolean> {
+  const workspace = input.workspace;
+  if (!workspace || workspace.id !== input.workspaceId || workspace.companyId !== input.companyId ||
+      workspace.sourceIssueId !== input.issueId || workspace.status !== "active" ||
+      workspace.mode !== "isolated_workspace" || workspace.strategyType !== "project_primary" ||
+      workspace.providerType !== "local_fs" || !workspace.cwd || workspace.repoUrl || workspace.branchName) return false;
+  try {
+    await materializeIsolatedTaskDirectory({ companyId: input.companyId, issueId: input.issueId, reuseCwd: workspace.cwd });
+    return true;
+  } catch {
+    return false;
+  }
 }

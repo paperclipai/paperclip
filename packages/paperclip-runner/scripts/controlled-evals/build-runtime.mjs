@@ -10,7 +10,7 @@ const source = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(source, '../../../..');
 const require = createRequire(join(repository, 'server/package.json'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const scripts = ['entrypoint.mjs', 'evidence-files.mjs', 'archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
+const scripts = ['hosted.mjs', 'entrypoint.mjs', 'evidence-files.mjs', 'archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
 
 export async function buildControllerRuntime({ outputDirectory, sourceRevision }) {
   if (!/^[a-f0-9]{40}$/.test(sourceRevision)) throw new Error('Controller runtime requires an exact source revision');
@@ -25,9 +25,12 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
   const result = await build({ entryPoints: [join(source, 'shared-cost-runtime.ts')], outfile: runtime, bundle: true,
     platform: 'node', format: 'esm', target: 'node24', metafile: true, logLevel: 'silent',
     banner: { js: "import { createRequire as __paperclipCreateRequire } from 'node:module'; const require = __paperclipCreateRequire(import.meta.url);" } });
-  if (result.warnings.length) throw new Error('Controller runtime bundle emitted unresolved build warnings');
+  const history = await build({ entryPoints: [join(repository, 'tests/runner-e2e/private-history.ts')],
+    outfile: join(output, 'private-history.mjs'), bundle: true, platform: 'node', format: 'esm', target: 'node24', metafile: true, logLevel: 'silent' });
+  await cp(join(repository, 'tests/runner-e2e/private-history-archive.py'), join(output, 'private-history-archive.py'), { errorOnExist: true, force: false });
+  if (result.warnings.length || history.warnings.length) throw new Error('Controller runtime bundle emitted unresolved build warnings');
   const { isBuiltin } = await import('node:module');
-  if (Object.values(result.metafile.outputs).some(item => item.imports.some(item => !isBuiltin(item.path)))) throw new Error('Controller runtime has unbundled imports');
+  if (Object.values({ ...result.metafile.outputs, ...history.metafile.outputs }).some(item => item.imports.some(item => !isBuiltin(item.path)))) throw new Error('Controller runtime has unbundled imports');
   async function packageManifest(name, parentRequire) {
     try { return await realpath(parentRequire.resolve(`${name}/package.json`)); }
     catch (error) { if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
@@ -62,11 +65,12 @@ export async function buildControllerRuntime({ outputDirectory, sourceRevision }
   await writeFile(join(server, 'package.json'), '{"private":true}\n', { flag: 'wx', mode: 0o600 });
   await copyPackage('protobufjs', require, server);
   await writeFile(join(controller, 'runtime.mjs'), "export * as costRuntime from '../tests/runner-e2e/shared-runtime.mjs';\n", { flag: 'wx', mode: 0o600 });
-  const inputs = {};
-  for (const path of Object.keys(result.metafile.inputs)) {
+  const inputs = { 'pnpm-lock.yaml': sha256(await readFile(join(repository, 'pnpm-lock.yaml'))) };
+  for (const path of Object.keys({ ...result.metafile.inputs, ...history.metafile.inputs })) {
     const absolute = resolve(path);
     inputs[relative(repository, absolute).split('\\').join('/')] = sha256(await readFile(absolute));
   }
+  inputs['tests/runner-e2e/private-history-archive.py'] = sha256(await readFile(join(repository, 'tests/runner-e2e/private-history-archive.py')));
   for (const file of [...scripts, 'build-runtime.mjs', 'runtime.mjs']) inputs[relative(repository, join(source, file))] = sha256(await readFile(join(source, file)));
   const files = {}; let payloadBytes = 0;
   async function inventory(directory) {

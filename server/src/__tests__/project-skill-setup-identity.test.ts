@@ -13,7 +13,7 @@ it('keeps responsibility without searching personal GitHub grants when the run h
 it('pins only the connection and grant already authorized for the active run', async () => {
   capture.mockResolvedValue({ run: { responsibleUserId: 'person' }, context: { github: { status: 'available', connectionId: 'selected', grantId: 'grant' } } });
   expect(await projectSkillSetupIdentity(db, 'company', actor)).toMatchObject({ refreshUserId: 'person', connectionId: 'selected', refreshGrantId: 'grant' });
-  expect(capture).toHaveBeenCalledWith(db, { companyId: 'company', agentId: 'agent', runId: 'run' });
+  expect(capture).toHaveBeenCalledWith(db, { companyId: 'company', agentId: 'agent', runId: 'run' }, { readScope: 'identity' });
 });
 it('does not reuse an unavailable run credential', async () => {
   capture.mockResolvedValue({ run: { responsibleUserId: 'person' }, context: { github: { status: 'unavailable', connectionId: 'old', grantId: 'old' } } });

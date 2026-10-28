@@ -388,6 +388,13 @@ support disabling reasoning; other runner providers reject an explicit selection
 before starting work. Native sessions expose support through the
 `perTurnReasoning` capability.
 
+For the native `openrouter/` route, the parent-held provider proxy retains the
+upstream OpenRouter key. The child config keeps the selected `openrouter` provider
+and exact model, using a random loopback token restricted to that model's chat
+completions endpoint. The proxy and token expire when the session closes. The
+local token remains a credential and is redacted from diagnostics; this does not
+claim isolation for every child credential or persisted value.
+
 OpenCode's proxy sends agent instructions once per turn through the system prompt. The
 task envelope retains task-specific constraints and the completion contract,
 without repeating the system instructions. This applies to all users of the

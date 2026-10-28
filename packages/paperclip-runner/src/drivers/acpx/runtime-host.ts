@@ -1,5 +1,8 @@
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
+import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
@@ -88,6 +91,8 @@ export interface AcpxRuntimePortIdentity {
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   acpxRecordId: string;
   backendSessionId: string;
   agentSessionId: string;
@@ -169,6 +174,8 @@ export interface AcpxRuntimePortOpenOptions {
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   permissionPolicy: ReturnType<typeof acpxRuntimePermissionPolicy>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** Kernel credential-home quorum inherited by the provider sentinel. */
@@ -244,6 +251,8 @@ export interface OpenAcpxRuntimeHostOptions {
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
@@ -369,12 +378,14 @@ export class AcpxRuntimeHost {
           mode: resolveAcpxProviderMode(options.agent, options.mode),
           piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
           claudeEffort: resolveClaudeEffort(options.agent, options.claudeEffort),
+          grokEffort: resolveGrokEffort(options.agent, options.grokEffort),
+          grokDisableWebSearch: resolveGrokDisableWebSearch(options.agent, options.grokDisableWebSearch),
           ...(preconfigured ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
           ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
@@ -395,7 +406,7 @@ export class AcpxRuntimeHost {
           profile,
         ),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
@@ -441,6 +452,7 @@ export class AcpxRuntimeHost {
       retainedRejectedRuntimeAdmissions.add(retained);
       retainRuntimeHostCleanup(ownedCleanup);
     };
+    let admissionStage: keyof typeof ACPX_ADMISSION_CODES = "sandbox";
     try {
       const sandbox = await runAbortableAdmissionStage(
         options.signal,
@@ -463,6 +475,7 @@ export class AcpxRuntimeHost {
           }),
         dependencies.retainAdmissionCleanup,
       );
+      admissionStage = "credential";
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -498,6 +511,7 @@ export class AcpxRuntimeHost {
         });
       }
       options.signal?.throwIfAborted();
+      admissionStage = "configuration";
       const configurationLifetime = credential;
       await runAbortableAdmissionStage(
         options.signal,
@@ -512,7 +526,9 @@ export class AcpxRuntimeHost {
         },
       );
       options.signal?.throwIfAborted();
+      admissionStage = "credential";
       assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each
@@ -538,6 +554,7 @@ export class AcpxRuntimeHost {
         );
         options.signal?.throwIfAborted();
       }
+      admissionStage = "skills";
       if (options.agent === "pi") {
         const skills = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -572,6 +589,7 @@ export class AcpxRuntimeHost {
         );
         options.signal?.throwIfAborted();
       }
+      admissionStage = "command";
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: () => installation.openCommand({ signal: options.signal }),
@@ -585,6 +603,7 @@ export class AcpxRuntimeHost {
         signal => installation.openCommand({ signal }),
       );
       command = commandOwner.command;
+      admissionStage = "tool_bridge";
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
@@ -603,6 +622,7 @@ export class AcpxRuntimeHost {
       if (admittedLifetime === null) {
         throw new Error("ACPX provider lifetime lease is unavailable");
       }
+      admissionStage = "runtime";
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: async () => {
@@ -624,6 +644,7 @@ export class AcpxRuntimeHost {
             mode: binding.mode,
             piThinkingLevel: binding.piThinkingLevel,
             claudeEffort: binding.claudeEffort,
+            grokEffort: binding.grokEffort, grokDisableWebSearch: binding.grokDisableWebSearch,
             permissionPolicy: acpxRuntimePermissionPolicy(
               binding.permissionMode,
             ),
@@ -672,6 +693,7 @@ export class AcpxRuntimeHost {
           });
         },
       });
+      admissionStage = "identity";
       const runtimeIdentity = await runAbortableAdmissionStage(
         options.signal,
         () =>
@@ -689,6 +711,7 @@ export class AcpxRuntimeHost {
         throw new Error("ACPX runtime Pi thinking level conflicts with session binding");
       }
       if (runtimeIdentity.claudeEffort !== binding.claudeEffort) throw new Error("ACPX runtime Claude effort conflicts with session binding");
+      if (runtimeIdentity.grokEffort !== binding.grokEffort || runtimeIdentity.grokDisableWebSearch !== binding.grokDisableWebSearch) throw new Error("ACPX runtime Grok effort conflicts with session binding");
       const observedIdentity: AcpxExpectedSessionIdentity = {
         kind: "acpx",
         normalizedSessionId: binding.normalizedSessionId,
@@ -722,6 +745,7 @@ export class AcpxRuntimeHost {
       });
     } catch (error) {
       error = classifyAcpxProfileError(options.agent, error) ?? error;
+      recordAcpxAdmissionFailure(error, admissionStage);
       const cleanup = cleanupRuntimeResources(
         runtime,
         toolBridge,

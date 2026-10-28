@@ -1,4 +1,5 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -83,10 +84,11 @@ export function localAiLoginService(db: Db) {
     }
   }
 
-  async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false): Promise<LocalAiLoginAttempt> {
+  async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false, managementContext?: ConnectionManagementContext): Promise<LocalAiLoginAttempt> {
     if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic")
       throw unprocessable("This provider does not use a separate local login home.");
     await reapExpired();
+    await managementContext?.reauthorize();
     const attempt = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-local-login:${companyId}:${userId}:${intent.provider}`}, 0))`);
       const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : "grok_local";
@@ -109,7 +111,7 @@ export function localAiLoginService(db: Db) {
         await tx.update(adapterAuthSessions).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(adapterAuthSessions.id, existing.id));
         await logActivity(tx as unknown as Db, {
-          companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_cancelled",
+          companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }), action: "ai_connection.local_login_cancelled",
           entityType: "adapter_auth_session", entityId: existing.id, details: { provider: intent.provider },
         });
       }
@@ -129,7 +131,7 @@ export function localAiLoginService(db: Db) {
           connectionMethod: LOCAL_LOGIN_METHOD, status: "waiting_for_user", expiresAt,
         });
         await logActivity(tx as unknown as Db, {
-          companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_started",
+          companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }), action: "ai_connection.local_login_started",
           entityType: "adapter_auth_session", entityId: id, details: { provider: intent.provider },
         });
       } catch (error) {
@@ -201,7 +203,8 @@ export function localAiLoginService(db: Db) {
     });
   }
 
-  async function complete(companyId: string, userId: string, id: string, intent: AiConnectionLoginIntent) {
+  async function complete(companyId: string, userId: string, id: string, intent: AiConnectionLoginIntent, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const result = await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -222,7 +225,7 @@ export function localAiLoginService(db: Db) {
       // Nested transaction is a savepoint on this same connection. Holding the
       // attempt lock makes completion/cancellation/restart retries idempotent.
       const saved = await aiConnectionService(tx as unknown as Db)
-        .save(companyId, userId, intent, credential, { id }, session.createdAt);
+        .save(companyId, userId, intent, credential, { id }, session.createdAt, managementContext);
       await tx.update(adapterAuthSessions).set({
         status: "authenticated", connectionMethod: LOCAL_LOGIN_METHOD,
         finishedAt: new Date(), updatedAt: new Date(),
@@ -235,7 +238,8 @@ export function localAiLoginService(db: Db) {
     return result;
   }
 
-  async function cancel(companyId: string, userId: string, id: string) {
+  async function cancel(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     await db.transaction(async (tx) => {
       const [session] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
@@ -250,7 +254,7 @@ export function localAiLoginService(db: Db) {
           status: "cancelled", finishedAt: new Date(), updatedAt: new Date(),
         }).where(eq(adapterAuthSessions.id, id));
         await logActivity(tx as unknown as Db, {
-          companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_cancelled",
+          companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }), action: "ai_connection.local_login_cancelled",
           entityType: "adapter_auth_session", entityId: id,
           details: { provider: session.aiConnection?.provider },
         });

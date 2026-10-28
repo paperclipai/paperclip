@@ -43,6 +43,26 @@ function request(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
+it("rejects a stale qualified Claude SDK before provider creation", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "eval-qualified-profile-"));
+  try {
+    const path = join(workspace, "request.json");
+    const expected = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    await writeFile(path, JSON.stringify(request({
+      provider: "acpx", driver: "acpx_runtime", acpxAgent: "claude", model: "claude-sonnet-5",
+      runnerd: { path: join(workspace, "missing-runnerd"), sha256: "a".repeat(64) },
+      session: { workingDirectory: workspace },
+    })));
+    const serviceFactory = vi.fn();
+    const args = ["--request", path, "--output", join(workspace, "artifact.json"), "--expected-acpx-profile"];
+    await expect(runEvalSessionCli([...args, JSON.stringify({ ...expected, agentRuntimeVersion: "0.3.263" })], { serviceFactory }))
+      .rejects.toThrow("does not match the built runner profile");
+    await expect(runEvalSessionCli([...args, JSON.stringify(expected)], { serviceFactory })).rejects.toThrow("ENOENT");
+    expect(serviceFactory).not.toHaveBeenCalled();
+    expect(await readdir(workspace)).toEqual(["request.json"]);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
+
 function agentCoreProfile(overrides: Record<string, unknown> = {}) {
   return {
     profileId: "agentcore-qualified",

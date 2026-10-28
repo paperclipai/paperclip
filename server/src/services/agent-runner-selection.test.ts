@@ -78,7 +78,7 @@ describe("server-owned Codex runner selection", () => {
     expect(resolveNewAgentRunner(resolved)).toEqual(resolved);
     expect(input.adapterConfig).toHaveProperty("search", false);
   });
-  it.each(["grok_local", "cursor", "process", "external"])("keeps %s default unchanged", adapterType => {
+  it.each(["cursor", "process", "external"])("keeps %s default unchanged", adapterType => {
     expect(resolveNewAgentRunner({ adapterType, target, adapterConfig: { custom: "preserved" } })).toEqual({ adapterType, adapterConfig: { custom: "preserved" } });
   });
   it.each(qualifiedTargets.filter(target => !(target.platform === "linux" && target.architecture === "arm64")))("defaults Pi to native on $platform/$architecture and round trips exact thinking", target => {
@@ -468,13 +468,60 @@ describe("server-owned Codex runner selection", () => {
   });
 });
 
+describe("Grok runner migration", () => {
+  const target = { driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc" as const, glibcVersion: "2.39" };
+  beforeEach(() => { state.disabled = []; state.overridden.clear(); });
+  it("selects Grok's native profile and preserves the model and account", () => {
+    const aiConnection = { mode: "fixed", connectionId: "grok-account" };
+    const adapterConfig = { model: "grok-4.7", reasoningEffort: "high", command: "grok", aiConnection, cwd: "/workspace" };
+    expect(paperclipRunnerProfileForHarness("grok_local")).toEqual({ provider: "acpx", acpxAgent: "grok" });
+    expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", adapterConfig, target }))
+      .toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true, aiConnection, cwd: "/workspace", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } });
+  });
+  it.each([undefined, "", "grok-build"])("resolves legacy default model %s before native admission", model => {
+    expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { model } }).adapterConfig)
+      .toMatchObject({ model: "grok-4.7", disableWebSearch: true });
+  });
+  it.each([undefined, true, false])("preserves effective legacy web search policy %s", disableWebSearch => {
+    const result = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { disableWebSearch } });
+    expect(result.adapterConfig.disableWebSearch).toBe(disableWebSearch ?? true);
+  });
+  it.each([
+    { platform: "darwin", architecture: "x64" },
+    { platform: "linux", architecture: "arm64" },
+    { platform: "win32", architecture: "x64" },
+  ])("keeps unqualified Grok $platform/$architecture on Legacy", platform => {
+    expect(agentRunnerAvailability("grok_local", { ...target, ...platform }).supportedRunners).toEqual(["legacy"]);
+  });
+  it("retains High effort when switching back and rejects restricted native permission loss", () => {
+    const selected = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target,
+      adapterConfig: { model: "grok-4.7", reasoningEffort: "high" } });
+    expect(resolveNewAgentRunner({ ...selected, runner: "legacy", target })).toEqual({
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true },
+    });
+    expect(() => resolveNewAgentRunner({ ...selected, runner: "legacy", target,
+      adapterConfig: { ...selected.adapterConfig, acpxPermissionMode: "deny-all" } })).toThrow("cannot honor");
+  });
+  it.each(["modelReasoningEffort", "effort"])("preserves native %s when switching to Legacy", key => {
+    const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", [key]: "high" } };
+    expect(resolveNewAgentRunner({ ...saved, runner: "legacy", target })).toEqual({
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: false },
+    });
+  });
+  it.each([{ command: "custom-grok" }, { extraArgs: ["--unsafe"] }, { permissionMode: "dontAsk" }, { alwaysApprove: false }, { maxTurns: 5 }])("rejects incompatible settings %j without mutating them", adapterConfig => {
+    const before = structuredClone(adapterConfig);
+    expect(() => resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", adapterConfig, target })).toThrow("cannot honor");
+    expect(adapterConfig).toEqual(before);
+  });
+});
+
 describe("Codex creation runner contract", () => {
   it("graduates qualified harnesses and retains saved provider identity", () => {
     expect(paperclipRunnerProfileForHarness("codex_local")).toEqual({ provider: "codex" });
     expect(paperclipRunnerProfileForHarness("claude_local")).toEqual({ provider: "acpx", acpxAgent: "claude" });
     expect(paperclipRunnerProfileForHarness("opencode_local")).toEqual({ provider: "opencode" });
     expect(paperclipRunnerProfileForHarness("pi_local")).toEqual({ provider: "acpx", acpxAgent: "pi" });
-    for (const harness of ["grok_local", "cursor", "process"]) expect(paperclipRunnerProfileForHarness(harness)).toBeUndefined();
+    for (const harness of ["cursor", "process"]) expect(paperclipRunnerProfileForHarness(harness)).toBeUndefined();
     expect(agentHarnessType("paperclip_runner", { provider: "codex" })).toBe("codex_local");
     expect(agentHarnessType("paperclip_runner", { provider: "acpx", acpxAgent: "claude" })).toBe("claude_local");
     expect(agentHarnessType("paperclip_runner", { provider: "unknown" })).toBe("unknown");

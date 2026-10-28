@@ -143,6 +143,7 @@ export { providerTraceRecords } from "./provider_trace_records.js";
 export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
+export { nativeRunnerCheckpoints } from "./native_runner_checkpoints.js";
 export { workAssessments } from "./work_assessments.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";

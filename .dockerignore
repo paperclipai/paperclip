@@ -74,6 +74,8 @@ packages/grok-acp/bin
 
 # The Copilot build-time identity gate reads these sanitized source declarations.
 !packages/paperclip-runner/test/fixtures/copilot-profile-v*-identity.json
+# Grok's source identity is also an input to the image profile drift check.
+!packages/paperclip-runner/test/fixtures/grok-profile-v*-identity.json
 # Images build their pinned Copilot assets instead of copying host binaries.
 /packages/paperclip-runner/provider-assets/
 /server/provider-assets/
@@ -89,6 +91,7 @@ packages/grok-acp/bin
 
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v28-identity.json
 !packages/paperclip-runner/test-fixtures/pi-acp/profile-v29-identity.json
+!packages/paperclip-runner/test-fixtures/pi-acp/profile-v30-identity.json
 
 !packages/paperclip-runner/test/fixtures/copilot-profile-v23-identity.json
 

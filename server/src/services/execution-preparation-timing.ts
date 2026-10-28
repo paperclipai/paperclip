@@ -34,6 +34,10 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "instruction_changes" | "warm_release" | "instruction_collection";
 
 export type ExecutionPhase =
+  | "skills.inventory" | "skills.inventory.wait" | "skills.inventory.bundled" | "skills.inventory.releases"
+  | "skills.inventory.folders" | "skills.inventory.local_sources" | "skills.rows"
+  | "skills.cache.acquire" | "skills.version.read" | "skills.repository.read"
+  | "skills.version.verify" | "skills.version.materialize" | "skills.consume"
   | "workspace.transaction" | "workspace.transaction.entry" | "workspace.transaction.commit" | "workspace.transaction.rollback"
   | "workspace.identity_read" | "workspace.row_lock" | "workspace.provenance" | "workspace.notification" | "workspace.write"
   | "workspace.sources" | "workspace.sources.canonicalize" | "workspace.sources.inventory" | "workspace.sources.alias_scan"

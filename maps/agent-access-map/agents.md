@@ -108,6 +108,23 @@ qualification remains not run.
 
 ## `instructions`
 
+The operator's Advanced YAML editor uses the existing configuration GET/PATCH
+operations plus the owning instructions, skills, tools, channels, permissions,
+secrets, API key, and revision APIs. It does not add aggregate write authority;
+each request retains its own company and actor checks. Resource reads fail closed.
+Observed inherited access/history is read-only. Multi-resource writes are
+sequential, with preflight comparison and explicit partial-failure recovery;
+Core configuration, managed files, and entry revisions enforce their existing
+atomic revision/hash preconditions. External supporting files and other
+unversioned resource writes retain a race window after preflight. Configuration reads include the complete redacted, revisioned fields
+and `configurationRevision`; writes accept an optional
+`expectedConfigurationRevision`, checked again under the write lock. A stale
+write returns `409`. Revision-guarded writes preserve unchanged redacted values
+at their original paths. Configuration read/configure authority, company scope,
+instruction-path restrictions, environment/account checks, revision history, and
+activity attribution still apply. YAML does not expose a permission-grant or
+lifecycle mutation shortcut. See [the format](../../doc/agent-configuration-yaml.md).
+
 Capability ID: `agents/instructions`.
 
 Review: `baseline`.
@@ -139,9 +156,11 @@ environment, and consent checks as other edits. It adds no agent permission or
 credential fallback. Pool and externally managed agents use their existing
 configuration surfaces. Board browser verification does not qualify agent access.
 
-The existing-agent upgrade notice uses this configuration PATCH. It does not
+The existing-agent upgrade notice for Claude, Codex, and Grok Build uses this configuration PATCH. It does not
 grant configuration, account, or environment access. The server resolves the
-saved settings under normal company/configuration authorization. Obsolete Claude
+saved settings under normal company/configuration authorization. Grok migration preserves
+the effective legacy search setting. Task model/effort overrides retain the
+agent's account binding and tool policy without granting extra account access. Obsolete Claude
 tuning fields are removed with `configurationWarnings`; security incompatibilities
 remain errors. Unqualified sandbox upgrades first use the agent-scoped
 `POST /api/agents/{id}/qualify-runner` under the same `agent_config:update`

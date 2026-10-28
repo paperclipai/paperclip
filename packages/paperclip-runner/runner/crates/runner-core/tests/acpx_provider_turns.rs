@@ -51,6 +51,8 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         permission_mode: AcpxPermissionMode::ApproveReads,
         mode: None,
         claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         pi_thinking_level: if mode.starts_with("controls") {
             Some(paperclip_runner_core::acpx_provider_session::PiThinkingLevel::Low)
         } else {

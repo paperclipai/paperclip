@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
+import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany, lockCompanyLifecycle } from "./company-deletion.js";
@@ -34,7 +35,7 @@ import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { loadConfig } from "../config.js";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { resolveRunLogBasePath } from "./run-log-store.js";
 import { logger } from "../middleware/logger.js";
 
@@ -42,14 +43,19 @@ export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
-async function removeCompanyManagedFiles(companyId: string): Promise<void> {
+async function removeCompanyManagedFiles(companyId: string, agentIds: string[]): Promise<void> {
   if (!SAFE_PATH_SEGMENT.test(companyId)) {
     throw new Error("Invalid company id for managed-file cleanup");
+  }
+
+  if (agentIds.some((id) => !SAFE_PATH_SEGMENT.test(id))) {
+    throw new Error("Invalid agent id for managed-file cleanup");
   }
 
   const instanceRoot = resolvePaperclipInstanceRoot();
   const config = loadConfig();
   const targets = [
+    ...agentIds.map(resolveDefaultAgentWorkspaceDir),
     path.resolve(instanceRoot, "companies", companyId),
     path.resolve(instanceRoot, "projects", companyId),
     path.resolve(instanceRoot, "skills", companyId),
@@ -85,7 +91,7 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
 export function companyService(
   db: Db,
   options: BudgetServiceHooks & {
-    removeManagedFiles?: (companyId: string) => Promise<void>;
+    removeManagedFiles?: (companyId: string, agentIds: string[]) => Promise<void>;
     waitForRunExecutionDrain?: (runId: string) => Promise<void>;
   } = {},
 ) {
@@ -396,6 +402,7 @@ export function companyService(
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyCompanyRetentionWork(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
         }
         const updated = await tx
@@ -548,6 +555,7 @@ export function companyService(
 
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+          await notifyCompanyRetentionWork(tx, id);
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)
@@ -590,15 +598,20 @@ export function companyService(
         }
       }
 
+      let agentIds: string[] = [];
       const company = await deleteCompany(db, id, async (tx) => {
-        if (removeOptions.deleteFiles) await getCompanyFileDeletionRunIds(tx, id);
+        if (removeOptions.deleteFiles) {
+          await getCompanyFileDeletionRunIds(tx, id);
+          agentIds = (await tx.select({ id: agents.id }).from(agents)
+            .where(eq(agents.companyId, id))).map((agent) => agent.id);
+        }
       });
       if (!company) return null;
 
       let fileCleanup: FileCleanupStatus = "not_requested";
       if (removeOptions.deleteFiles) {
         try {
-          await (options.removeManagedFiles ?? removeCompanyManagedFiles)(id);
+          await (options.removeManagedFiles ?? removeCompanyManagedFiles)(id, agentIds);
           fileCleanup = "succeeded";
         } catch (err) {
           fileCleanup = "failed";

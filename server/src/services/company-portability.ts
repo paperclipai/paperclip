@@ -1,5 +1,5 @@
 import { createAgentLifecycle } from "./agent-lifecycle.js";
-import { agentAppearanceSchema, agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentAppearanceSchema, agentHarnessType, paperclipRunnerProfileForHarness, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -5307,7 +5307,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               "OpenAI Dot is experimental and disabled on this instance.",
               { code: "paperclip_runner_dot_disabled" },
             );
-          } else if (config.provider !== "codex" && config.provider !== "opencode" && config.provider !== undefined && !["claude_local", "pi_local"].includes(agentHarnessType("paperclip_runner", config)) && experimental.enableNativeRunner !== true) {
+          } else if (config.provider !== "codex" && config.provider !== "opencode" && config.provider !== undefined && !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", config)) && experimental.enableNativeRunner !== true) {
             throw unprocessable(
               "Paperclip Runner is experimental and disabled on this instance.",
               { code: "paperclip_runner_rollout_disabled" },
@@ -5651,7 +5651,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               runner = agentRunner(existingImportAgent.adapterType);
             }
           }
-          const retainedNative = runner === "paperclip" && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedHarness)
+          const retainedNative = runner === "paperclip" && Boolean(paperclipRunnerProfileForHarness(selectedHarness))
             ? [manifestAgent, existingImportAgent].find((agent) => agent?.adapterType === "paperclip_runner"
               && agentHarnessType(agent.adapterType, agent.adapterConfig) === selectedHarness)
             : undefined;

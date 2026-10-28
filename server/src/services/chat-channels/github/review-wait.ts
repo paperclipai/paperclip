@@ -49,7 +49,7 @@ export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun) {
     id: chatGitHubReviews.id, endpointId: chatGitHubReviews.endpointId,
     state: chatGitHubReviews.state, repository: chatGitHubReviews.repository,
     repositoryId: chatGitHubReviews.repositoryId, headSha: chatGitHubReviews.headSha,
-    assessment: chatGitHubReviews.assessment, reviewRunId: chatGitHubReviews.runId,
+    reviewedCommit: sql<unknown>`${chatGitHubReviews.assessment}->'reviewedCommit'`, reviewRunId: chatGitHubReviews.runId,
     connectionEnabled: toolConnections.enabled, connectionStatus: toolConnections.status,
     reviewAgentId: heartbeatRuns.agentId, reviewCompanyId: heartbeatRuns.companyId,
     resourceRepository: chatEndpointResources.providerResourceId,
@@ -75,7 +75,7 @@ export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun) {
   if (!review) return null;
   if (!review.connectionEnabled || review.connectionStatus !== "active" || review.state !== "completed" ||
       review.reviewCompanyId !== run.companyId || review.reviewAgentId !== run.agentId ||
-      review.assessment?.reviewedCommit !== review.headSha ||
+      review.reviewedCommit !== review.headSha ||
       review.resourceRepository.toLowerCase() !== review.repository.toLowerCase() ||
       review.resourceRepositoryId !== review.repositoryId ||
       review.thread.toLowerCase() !== `github:${review.repository}:${review.pullNumber}`.toLowerCase()) return { kind: "revoked" as const };

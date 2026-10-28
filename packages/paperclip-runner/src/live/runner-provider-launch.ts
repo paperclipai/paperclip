@@ -23,7 +23,7 @@ export interface RunnerProviderLaunchRequirements {
   includeCollaborationModeInstructions: boolean;
   settings: Pick<CapabilityRunnerdCodexTransportOptions,
     "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
-    "piThinkingLevel" | "claudeEffort" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch">;
+    "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch">;
   instructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
 }
@@ -56,7 +56,7 @@ export function runnerProviderLaunchRequirements(
       acpxAgent: options.acpxAgent, acpxMode: options.acpxMode,
       acpxPermissionMode: options.acpxPermissionMode,
       acpxPermissionModePinned: options.acpxPermissionModePinned,
-      piThinkingLevel: options.piThinkingLevel, claudeEffort: options.claudeEffort,
+      piThinkingLevel: options.piThinkingLevel, claudeEffort: options.claudeEffort, grokEffort: options.grokEffort, grokDisableWebSearch: options.grokDisableWebSearch,
       managedProfile: options.managedProfile, agentCoreProfile: options.agentCoreProfile,
       opencodePermissionMode: options.opencodePermissionMode,
       ...(options.disableCodexWebSearch === true ? { disableCodexWebSearch: true } : {}),
@@ -121,6 +121,7 @@ export function validatePreparedRunnerLaunch(
   if (requirements.provider === "acpx") {
     const policy = descriptor.providerPolicy as Record<string, unknown> | undefined;
     if (descriptor.agent !== (requirements.settings.acpxAgent ?? "codex")
+      || descriptor.grokDisableWebSearch !== requirements.settings.grokDisableWebSearch
       || descriptor.permissionMode !== resolveRunnerdAcpxPermissionMode(requirements.settings.acpxPermissionMode)
       || policy?.readOnly !== requirements.readOnly
       || descriptor.runId !== requirements.identity.runId
@@ -156,7 +157,7 @@ export function validatePreparedRunnerLaunch(
  * Providers without a filesystem working directory return null.
  */
 export function preparedRunnerLaunchWorkingDirectory(
-  prepared: PreparedRunnerProviderLaunch,
+  prepared: Pick<PreparedRunnerProviderLaunch, "provider">,
 ): string | null {
   return prepared.provider.cwd === undefined
     ? null : validatePreparedLaunchWorkingDirectory(prepared.provider.cwd);
@@ -246,6 +247,8 @@ export function createRunnerProviderLaunch(
               ...(selectedAcpxMode === undefined ? {} : { mode: selectedAcpxMode }),
               ...(acpxProfile!.agent === "pi" ? { piThinkingLevel: settings.piThinkingLevel } : {}),
               ...(acpxProfile!.agent === "claude" && settings.claudeEffort ? { claudeEffort: settings.claudeEffort } : {}),
+              ...(acpxProfile!.agent === "grok" && settings.grokEffort ? { grokEffort: settings.grokEffort } : {}),
+              ...(acpxProfile!.agent === "grok" && settings.grokDisableWebSearch !== undefined ? { grokDisableWebSearch: settings.grokDisableWebSearch } : {}),
               permissionMode: resolveRunnerdAcpxPermissionMode(
                 settings.acpxPermissionMode,
               ),

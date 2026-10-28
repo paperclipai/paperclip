@@ -70,6 +70,7 @@ export type {
   ConnectionSearchResultItem,
   ConnectionsSearchResult,
   ConnectionRequestResult,
+  ConnectionRequiredUserAction,
   ConnectionIntentSetupOptions,
   ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
@@ -1269,6 +1270,8 @@ export type {
   AgentWakeupRequest,
   InstanceSchedulerHeartbeatAgent,
   LiveEvent,
+  LiveDeliveryClientMessage,
+  LiveDeliveryServerMessage,
   DashboardRunActivityDay,
   DashboardSummary,
   TimelineActorType,
@@ -1610,7 +1613,8 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
-export { WORKSPACE_READINESS_STATES } from "./types/index.js";
+export { WORKSPACE_READINESS_STATES, WORKSPACE_SOURCE_VERIFICATION_REASONS,
+  type WorkspaceSourceVerificationFailure, type WorkspaceSourceInspection } from "./types/index.js";
 export {
   COMPANY_SEARCH_EXTRACT_KINDS,
   COMPANY_SEARCH_EXTRACT_SCOPES,
@@ -2847,3 +2851,4 @@ export * from "./prompt-injection-prevention.js";
 
 export * from "./workspace-provider.js";
 export * from "./workflows.js";
+export * from "./agent-configuration.js";

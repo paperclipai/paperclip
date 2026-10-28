@@ -9,10 +9,10 @@ import { connectionMethodForConnection } from "../connection-methods.js";
 import { GOOGLE_WORKSPACE_DEFAULT_SELECTION, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
+import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
 import type { ConnectionGrantKind, ToolOAuthStartResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, unprocessable } from "../../../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { deriveVercelConnectSubject, vercelConnectCallbackUrl, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -53,6 +53,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       interactionId?: string;
     },
   ): Promise<ToolOAuthStartResult> {
+    await input.actor.managementContext?.reauthorize();
     let connection = await getConnectionRow(connectionId, companyId);
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
@@ -170,12 +171,42 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       (!intentLink ||
         intentLink.kind !== "connection_intent" ||
         intentLink.status !== "pending" ||
-        starterBinding.actorType !== "user" ||
-        starterBinding.actorId !== intentLink.addresseeUserId)
+        (input.actor.managementContext?.responsibleUserId ?? (starterBinding.actorType === "user" ? starterBinding.actorId : null)) !== intentLink.addresseeUserId)
     ) {
       throw forbidden(
         "Only the addressed user can authorize this connection request",
       );
+    }
+    if (input.actor.managementContext?.actor.type === "agent") {
+      // An agent has no browser session. Reuse the saved setup; the addressed
+      // human starts provider authorization in their own authenticated session.
+      // No provider state or credentials are issued by this handoff.
+      if (sourceTemplateKey === "google-workspace" && (input.workspaceServices || input.scopes)) {
+        await input.actor.managementContext.reauthorize();
+        const userId = input.actor.managementContext.responsibleUserId!;
+        await db.transaction(async tx => {
+          const [saved] = await tx.select().from(toolConnections).where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId))).for("no key update");
+          if (!saved) throw notFound("Connection not found");
+          const rawOauth = saved.config.oauth;
+          const oauth = rawOauth && typeof rawOauth === "object" && !Array.isArray(rawOauth) ? rawOauth as Record<string, unknown> : {};
+          const prior = oauth.pendingWorkspaceServiceRequests;
+          const pending = prior && typeof prior === "object" && !Array.isArray(prior) ? prior as Record<string, unknown> : {};
+          const requested = { ...pending, [userId]: { requestedScopes, requestedAt: now().toISOString() } };
+          const config = { ...saved.config, oauth: { ...oauth, pendingWorkspaceServiceRequests: requested } };
+          const transportOauth = saved.transportConfig.oauth;
+          const transportConfig = { ...saved.transportConfig, oauth: { ...(transportOauth && typeof transportOauth === "object" && !Array.isArray(transportOauth) ? transportOauth : {}), pendingWorkspaceServiceRequests: requested } };
+          await tx.update(toolConnections).set({ config, transportConfig, updatedAt: now() }).where(eq(toolConnections.id, saved.id));
+        });
+      }
+      const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+      if (!company) throw notFound("Company not found");
+      const destination = new URL(input.redirectUri);
+      destination.pathname = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`;
+      destination.search = new URLSearchParams({ [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
+        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
+      destination.hash = "";
+      return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
+        authorizationUrl: destination.toString(), expiresAt: null };
     }
     if (connection.credentialSource === "vercel_connect") {
       if (!vercelConnect)

@@ -105,6 +105,13 @@ export function executionBlockerPredicate() {
   );
 }
 
+export function nativeExecutionRecoveryActionPredicate() {
+  return sql`exists (select 1 from ${heartbeatRuns}
+    where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+      and ${heartbeatRuns.id}::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
+      and ${heartbeatRuns.runtimeMode} = 'native')`;
+}
+
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
@@ -145,7 +152,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
     executionBlockerPredicate(),
-    boundary ? gt(issueRecoveryActions.createdAt, boundary.createdAt) : undefined,
+    boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);

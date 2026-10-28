@@ -87,7 +87,9 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
  * user turn only, never permission to replay the old run or infer its outcomes.
  * The caller must hold the run/controller locks and verify local lease cleanup.
  */
-export async function hasHistoricalSuspendedNativeSession(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+export async function hasHistoricalSuspendedNativeSession(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" |
+  "nativeSessionId" | "runnerInstanceId" | "nativeIssueId" | "runnerProfileJson">) {
   if (run.runtimeMode !== "native" || run.processPid || run.processGroupId ||
       !run.nativeSessionId || !run.runnerInstanceId || !run.nativeIssueId) return false;
   const [modernProcessEvidence] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(

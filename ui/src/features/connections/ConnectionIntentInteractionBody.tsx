@@ -64,6 +64,7 @@ export function ConnectionIntentInteractionBody({
   );
   const isPending = interaction.status === "pending";
   const isAi = interaction.payload.purpose === "ai";
+  const isChatHandoff = Boolean(interaction.payload.savedSetup);
   const provider = isAi ? aiProviderSchema.safeParse(interaction.payload.serviceSlug).data : undefined;
   const serviceName = provider ? AI_CONNECTION_CAPABILITIES[provider].name : interaction.payload.serviceName;
   const isEmail = interaction.payload.purpose === "channel" && interaction.payload.serviceSlug === "agentmail";
@@ -472,6 +473,7 @@ export function ConnectionIntentInteractionBody({
                 ? `${interaction.payload.requestingAgentName} needs your own AI connection. Connect here and the task will resume automatically.`
                 : interaction.payload.purpose === "ai"
                 ? "This task can’t run until the agent has a valid AI connection. Connect here and the task will resume automatically."
+                : isChatHandoff ? "Complete the human sign-in step in the saved setup. Your task continues when the connection is ready."
                 : isEmail ? "Connect AgentMail to create an email address for this agent."
                 : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
             </p>
@@ -486,7 +488,10 @@ export function ConnectionIntentInteractionBody({
           </p>
         ) : null}
 
-        {isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
+        {isChatHandoff ? <div className="mt-4 flex items-center justify-between gap-2">
+          <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
+          {setupQuery.data?.chatSetup ? <Button asChild><a href={setupQuery.data.chatSetup.path} target="_blank" rel="noopener noreferrer">Continue authentication</a></Button> : setupContent}
+        </div> : isEmail ? setupQuery.isLoading || setupQuery.isError ? <>
           {setupContent}
           <Button type="button" variant="ghost" disabled={declineMutation.isPending} onClick={() => declineMutation.mutate()}>Not now</Button>
         </> : <AgentMailIntentSetup

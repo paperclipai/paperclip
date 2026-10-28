@@ -1,3 +1,5 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { boundRunIssueId } from "../run-task-binding.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -4340,6 +4342,7 @@ export function recoveryService(
   }
 
   async function persistAdapterFailureRecoveryClassification(
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId">,
     latestRun: NonNullable<LatestIssueRun>,
     classification: NonNullable<AdapterFailureRecoveryClassification>,
   ): Promise<NonNullable<LatestIssueRun>> {
@@ -4351,17 +4354,20 @@ export function recoveryService(
     const classificationMetadata = withAdapterFailureRecoveryClassification(
       { ...latestRun, resultJson: {} }, classification,
     ).resultJson;
-    const [updated] = await db
-      .update(heartbeatRuns)
-      .set({
-        errorCode: classifiedRun.errorCode,
-        // Classification owns retry metadata, not workspace repair receipts
-        // that may have committed after this run was selected.
-        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(classificationMetadata)}::jsonb`,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, latestRun.id))
-      .returning({ resultJson: heartbeatRuns.resultJson, errorCode: heartbeatRuns.errorCode });
+    const [updated] = await db.transaction(async tx => {
+      await notifyChatRunMilestones(tx, { companyId: issue.companyId, issueId: issue.id });
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          errorCode: classifiedRun.errorCode,
+          // Classification owns retry metadata, not workspace repair receipts
+          // that may have committed after this run was selected.
+          resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(classificationMetadata)}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.id, latestRun.id), eq(heartbeatRuns.companyId, issue.companyId)))
+        .returning({ resultJson: heartbeatRuns.resultJson, errorCode: heartbeatRuns.errorCode });
+    });
 
     return updated ? { ...classifiedRun, ...updated } : classifiedRun;
   }
@@ -4960,6 +4966,7 @@ export function recoveryService(
           });
           if (monitored) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               latestRun,
               adapterFailureClassification,
             );
@@ -4981,6 +4988,7 @@ export function recoveryService(
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               latestRun,
               adapterFailureClassification,
             );
@@ -5184,6 +5192,7 @@ export function recoveryService(
           });
           if (monitored) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               participantLatestRun,
               participantAdapterFailureClassification,
             );
@@ -5210,6 +5219,7 @@ export function recoveryService(
           });
           if (updated) {
             latestRun = await persistAdapterFailureRecoveryClassification(
+              issue,
               participantLatestRun,
               participantAdapterFailureClassification,
             );
@@ -6179,70 +6189,80 @@ export function recoveryService(
 
     await deps.beforeOrphanedRunTerminalWrite?.(run.id);
     const now = new Date();
-    const updated = await db
-      .update(heartbeatRuns)
-      .set({
-        status: terminalStatus,
-        finishedAt: run.finishedAt ?? now,
-        error: run.error ?? (terminalStatus === "interrupted" ? message : null),
-        errorCode:
-          run.errorCode ??
-          (terminalStatus === "interrupted" ? errorCode : null),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.status, "running"),
-          eq(heartbeatRuns.runtimeMode, run.runtimeMode),
-          nativeRunnerOwnershipNotHeldCondition(),
-          // Provider exit is expected while the native coordinator resumes a
-          // session or copies its completed workspace back. The coordinator
-          // owns those retries, including expired leases and future attempts.
-          // Check at the write so a newly recorded result cannot be orphaned
-          // using the earlier liveness snapshot. Terminal issue status remains
-          // the stronger authority.
-          !issueTerminalStatus && run.runtimeMode === "native"
-            ? notExists(db.select({ runId: nativeRunFinalizations.runId })
-                .from(nativeRunFinalizations).where(and(
-                  eq(nativeRunFinalizations.runId, heartbeatRuns.id),
-                  eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
-                  or(
-                    and(
-                      isNotNull(nativeRunFinalizations.resultId),
-                      inArray(nativeRunFinalizations.phase, [
-                        "observed", "workspace_finalizing", "ready_for_assessment",
-                        "arbitrating", "retryable_failure",
-                      ]),
-                    ),
-                    and(
-                      isNull(nativeRunFinalizations.resultId),
-                      or(
-                        eq(nativeRunFinalizations.phase, "retryable_failure"),
-                        and(eq(nativeRunFinalizations.phase, "observed"), gt(nativeRunFinalizations.attempt, 0)),
-                      ),
+    const updated = await db.transaction(async tx => {
+      const eligible = and(
+        eq(heartbeatRuns.id, run.id),
+        eq(heartbeatRuns.status, "running"),
+        eq(heartbeatRuns.runtimeMode, run.runtimeMode),
+        nativeRunnerOwnershipNotHeldCondition(),
+        // Provider exit is expected while the native coordinator resumes a
+        // session or copies its completed workspace back. The coordinator
+        // owns those retries, including expired leases and future attempts.
+        // Check at the write so a newly recorded result cannot be orphaned
+        // using the earlier liveness snapshot. Terminal issue status remains
+        // the stronger authority.
+        !issueTerminalStatus && run.runtimeMode === "native"
+          ? notExists(tx.select({ runId: nativeRunFinalizations.runId })
+              .from(nativeRunFinalizations).where(and(
+                eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+                eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+                or(
+                  and(
+                    isNotNull(nativeRunFinalizations.resultId),
+                    inArray(nativeRunFinalizations.phase, [
+                      "observed", "workspace_finalizing", "ready_for_assessment",
+                      "arbitrating", "retryable_failure",
+                    ]),
+                  ),
+                  and(
+                    isNull(nativeRunFinalizations.resultId),
+                    or(
+                      eq(nativeRunFinalizations.phase, "retryable_failure"),
+                      and(eq(nativeRunFinalizations.phase, "observed"), gt(nativeRunFinalizations.attempt, 0)),
                     ),
                   ),
-                )))
-            : undefined,
-          // Recheck ownership in the write: a controller can renew or claim
-          // the run after the liveness read. An old snapshot cannot end a new
-          // controller's run, even if that controller's lease later expires.
-          run.runtimeMode === "legacy"
-            ? and(
-                run.controllerBootId
-                  ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
-                  : isNull(heartbeatRuns.controllerBootId),
-                or(
-                  isNull(heartbeatRuns.controllerBootId),
-                  sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
                 ),
-              )
-            : undefined,
-        ),
-      )
-      .returning()
-      .then((rows) => rows[0] ?? null);
+              )))
+          : undefined,
+        // Recheck ownership in the write: a controller can renew or claim
+        // the run after the liveness read. An old snapshot cannot end a new
+        // controller's run, even if that controller's lease later expires.
+        run.runtimeMode === "legacy"
+          ? and(
+              run.controllerBootId
+                ? eq(heartbeatRuns.controllerBootId, run.controllerBootId)
+                : isNull(heartbeatRuns.controllerBootId),
+              or(
+                isNull(heartbeatRuns.controllerBootId),
+                sql`${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()`,
+              ),
+            )
+          : undefined,
+      );
+      // Do not wake projection for a retained native finalization or a run
+      // whose execution owner changed. Keep the same predicate on the write
+      // to recheck finalization records committed after this lock was taken.
+      const [candidate] = await tx.select().from(heartbeatRuns).where(eligible).for("update");
+      if (!candidate) return null;
+      const boundIssueId = boundRunIssueId(candidate);
+      if (boundIssueId) {
+        await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });
+      }
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: terminalStatus,
+          finishedAt: run.finishedAt ?? now,
+          error: run.error ?? (terminalStatus === "interrupted" ? message : null),
+          errorCode:
+            run.errorCode ??
+            (terminalStatus === "interrupted" ? errorCode : null),
+          updatedAt: now,
+        })
+        .where(eligible)
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
     if (!updated) {
       // Another path finalized the run between the read and this write. Keep
       // that terminal outcome authoritative.

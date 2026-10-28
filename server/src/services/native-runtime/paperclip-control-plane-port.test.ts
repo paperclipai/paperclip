@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { readCompletedAssistantMessageCandidate, resolveHeartbeatRunResponse, selectHeartbeatRunFinalAgentMessage } from "../heartbeat-run-summary.js";
 import {
   activityLog,
@@ -41,16 +42,19 @@ import {
   runControlPlanePortConformance,
 } from "../../vendor/paperclip-runner/testing.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { documentService } from "../documents.js";
 import { claimNativeReviewExecutionLock, getNativeReviewAssignment } from "./native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "./native-review-dispatch.js";
 import { stageNativeRunnerWakeAttachments } from "./native-runner-file-handoff.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
+import { buildOnboardingFirstTaskOpeningQuestion, ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID } from "../onboarding-first-task-assets.js";
 import { assertCurrentWakeCommentsRead } from "./current-wake-comments.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
@@ -62,7 +66,7 @@ import {
 } from "../live-events.js";
 
 describe("PaperclipControlPlanePort conformance", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
   let db: ReturnType<typeof createDb>;
   const contractId = "00000000-0000-4000-8000-000000000004";
   const contractSha = "phase6-conformance-contract";
@@ -83,7 +87,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   const governanceRunnerId = "00000000-0000-4000-8000-000000000021";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-port-");
+    temporary = await startRecoveryPostgres("paperclip-native-port-");
     db = createDb(temporary.connectionString);
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     await db.insert(companies).values({ id: identity.companyId, name: "Phase 6", issuePrefix: "P6C" });
@@ -593,7 +597,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     );
   });
 
-  it("signals committed safe progress after row visibility without forwarding its payload", async () => {
+  it("streams committed native rows and deltas after visibility without repeating receipts", async () => {
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     const issueId = "40000000-0000-4000-8000-000000000042";
     const runId = "41000000-0000-4000-8000-000000000042";
@@ -722,8 +726,10 @@ describe("PaperclipControlPlanePort conformance", () => {
         issueId,
         seq: 1,
         eventType: "tool.execution.started",
+        stream: "system",
+        level: "info",
+        payload: { prpEvent: progressEvent },
       }]);
-      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
 
       await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
         disposition: "duplicate",
@@ -755,10 +761,14 @@ describe("PaperclipControlPlanePort conformance", () => {
         ...progressEvent,
         sourceEventId: "safe-progress-signal:3",
         sourceSeq: 3,
-        eventType: "turn.started",
-        payload: {},
+        eventType: "item.delta",
+        itemId: "streaming-message",
+        payload: { kind: "agentMessage", text: "still writing" },
       })).resolves.toMatchObject({ disposition: "committed" });
-      expect(observed).toHaveLength(1);
+      expect(observed).toHaveLength(2);
+      expect(observed[1]).toMatchObject({ seq: 3, eventType: "item.delta", payload: {
+        prpEvent: { eventType: "item.delta", payload: { text: "still writing" } },
+      } });
       expect(committedCallbacks).toEqual([
         "safe-progress-signal:1",
         "safe-progress-signal:2",
@@ -1707,6 +1717,191 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
     await db.update(heartbeatRuns).set({ wakeupRequestId: null }).where(eq(heartbeatRuns.id, reviewRunId));
 
+  });
+
+  const allowedFirstTaskCompletionScenarios = [
+    "ordinary task", "accepted proposal", "accepted conversational proposal", "accepted current plan", "acknowledged rejection", "acknowledged plan rejection",
+  ] as const;
+  const refusedFirstTaskCompletionScenarios = [
+    "opening answer only", "agent-resolved without human comment", "quarantined human comment", "newest proposal pending", "stale plan acceptance",
+  ] as const;
+  type FirstTaskCompletionScenario = typeof allowedFirstTaskCompletionScenarios[number]
+    | typeof refusedFirstTaskCompletionScenarios[number];
+
+  async function prepareFirstTaskCompletion(scenario: FirstTaskCompletionScenario) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const localContractId = randomUUID();
+    const runnerInstanceId = randomUUID();
+    const userId = `first-task-board-${randomUUID()}`;
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, companyId, agentId, issueId, runId };
+    const onboarding = scenario !== "ordinary task";
+    const rejected = scenario === "acknowledged rejection" || scenario === "acknowledged plan rejection";
+    await db.insert(companies).values({ id: companyId, name: "First-task completion", issuePrefix: `F${companyId.slice(0, 6).toUpperCase()}` });
+    await db.insert(authUsers).values({ id: userId, name: "First-task board", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "First-task agent", adapterType: "codex_local", status: "running" });
+    await db.insert(issues).values({ id: issueId, companyId, title: onboarding ? "Paperclip onboarding" : "Ordinary low-risk task",
+      description: onboarding ? "/first-task\nSingle-task proposal mode: confirmation" : "Complete the requested ordinary task. Mentioning /first-task does not grant the server-owned onboarding origin.",
+      originKind: onboarding ? ONBOARDING_FIRST_TASK_ORIGIN_KIND : "manual", status: "in_progress", assigneeAgentId: agentId,
+      responsibleUserId: userId, workMode: "standard" });
+    await db.insert(completionContracts).values({ id: localContractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "phase6-v3", risk: "low", completionAuthority: "agent_claim_policy",
+      incompleteCriteriaPolicy: "preserve_non_terminal", contractJson: { revision: "first-task-native-finish-v1",
+        objective: onboarding ? "Understand the user request, propose one task, and honor their decision" : "Complete the requested ordinary task",
+        criteria: [{ id: "objective", requirement: "Complete the requested workflow" }] },
+      canonicalSha256: localContractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, responsibleUserId: userId, status: "succeeded", runtimeMode: "native",
+      nativeIssueId: issueId, nativeSessionId: identity.sessionId, runnerInstanceId, completionContractId: localContractId,
+      completionContractSha256: localContractId, contextSnapshot: { issueId,
+        // A claimed acceptance copied into continuation context is not the
+        // persisted human decision; the opening-answer cases must still refuse it.
+        ...(scenario === "opening answer only" ? { executionContinuation: { humanResponses: [{ id: randomUUID(),
+          kind: "request_confirmation", status: "accepted", resolvedByUserId: userId, result: { version: 1, outcome: "accepted" } }] } } : {}),
+      } });
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    if (onboarding) {
+      await db.insert(issueThreadInteractions).values({ companyId, issueId, kind: "ask_user_questions", status: "answered",
+        createdByAgentId: agentId, payload: await buildOnboardingFirstTaskOpeningQuestion(),
+        result: { version: 1, answers: [{ questionId: ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID, optionIds: ["task"], otherText: "Help organize my next task." }] },
+        resolvedByUserId: userId, resolvedAt: new Date() });
+    }
+    if (onboarding && scenario !== "opening answer only") {
+      const proposalAt = new Date(Date.now() - 2_000);
+      const plan = scenario === "accepted current plan" || scenario === "stale plan acceptance" || scenario === "acknowledged plan rejection"
+        ? (await documentService(db).upsertIssueDocument({ issueId, key: "plan", title: "First task plan", format: "markdown",
+          body: "Retain this plan for the user's next task.", createdByAgentId: agentId, createdByRunId: runId })).document
+        : null;
+      const conversational = scenario === "accepted conversational proposal" || scenario === "quarantined human comment";
+      const comment = conversational ? (await db.insert(issueComments).values({ companyId, issueId,
+        authorUserId: userId, authorType: "user", body: "Yes, proceed with that proposal.",
+        createdAt: new Date(proposalAt.getTime() + 1_000),
+        ...(scenario === "quarantined human comment"
+          ? { sourceTrust: { preset: "low_trust_review" as const, disposition: "quarantined" as const } } : {}),
+      }).returning())[0]! : null;
+      const agentResolved = conversational || scenario === "agent-resolved without human comment";
+      const outcome = rejected ? "rejected" as const : "accepted" as const;
+      // Persisted agent interpretations need a real, trusted human reply. The
+      // missing/quarantined variants simulate an untrusted stored result.
+      await db.insert(issueThreadInteractions).values({ companyId, issueId,
+        kind: plan ? "request_checkbox_confirmation" : "request_confirmation", status: outcome,
+        createdByAgentId: agentId, sourceRunId: runId, createdAt: proposalAt,
+        payload: plan ? { version: 1, prompt: "May I retain this plan?",
+          options: [{ id: "retain-plan", label: "Retain the plan" }], defaultSelectedOptionIds: ["retain-plan"], minSelected: 1,
+          target: { type: "issue_document", key: "plan", issueId, documentId: plan.id, revisionId: plan.latestRevisionId! },
+        } : { version: 1, prompt: "May I create one task to organize your agenda?" },
+        result: { version: 1, outcome, ...(plan && outcome === "accepted" ? { selectedOptionIds: ["retain-plan"] } : {}),
+          ...(comment ? { commentId: comment.id } : {}),
+          ...(outcome === "rejected" ? { reason: "Do not do this work." } : {}) },
+        resolvedByUserId: agentResolved ? null : userId,
+        resolvedByAgentId: agentResolved ? agentId : null, resolvedByRunId: agentResolved ? runId : null,
+        resolvedAt: new Date(),
+      });
+      if (scenario === "newest proposal pending") {
+        await db.insert(issueThreadInteractions).values({ companyId, issueId,
+          kind: "request_checkbox_confirmation", status: "pending", createdByAgentId: agentId, sourceRunId: runId,
+          createdAt: new Date(proposalAt.getTime() + 1_000),
+          payload: { version: 1, prompt: "Accept the revised task scope?", options: [{ id: "revised", label: "Use revised scope" }],
+            defaultSelectedOptionIds: ["revised"], minSelected: 1 },
+        });
+      }
+      if (scenario === "stale plan acceptance" || scenario === "acknowledged plan rejection") {
+        await documentService(db).upsertIssueDocument({ issueId, key: "plan", format: "markdown",
+          baseRevisionId: plan!.latestRevisionId, body: "A revised scope that has no persisted human decision.",
+          createdByAgentId: agentId, createdByRunId: runId });
+      }
+    }
+    const port = new PaperclipControlPlanePort(db, { companyId, issueId, runId, agentId, sessionId: identity.sessionId,
+      completionContractId: localContractId, completionContractSha256: localContractId,
+      sourceInstanceId: runnerInstanceId, controlPlaneSourceInstanceId: "first-task-native-finish-control" });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerInstanceId });
+    const result: PrpStructuredRunResult = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT),
+      summary: rejected
+        ? "You declined the proposal. I will stop here and have not created or performed the proposed task."
+        : "The requested workflow is complete.",
+      completionClaim: { contractRevision: "first-task-native-finish-v1", objectiveSatisfied: true,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
+      evidence: [], verification: [{ commandOrCheck: "Check the current task state", status: "passed" }], attentionRequests: [] };
+    return { companyId, agentId, issueId, runId, port, result };
+  }
+
+  it.each(refusedFirstTaskCompletionScenarios)(
+    "refuses native completion feedback without a trusted current first-task decision (%s)", async (scenario) => {
+    const { issueId, runId, result } = await prepareFirstTaskCompletion(scenario);
+    await expect(nativeCompletionFeedback(db, runId, result))
+      .rejects.toThrow("First-task proposal requires a persisted human decision");
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).toEqual([]);
+  });
+
+  it.each([...allowedFirstTaskCompletionScenarios, ...refusedFirstTaskCompletionScenarios])(
+    "honors the first-task human decision during native completion (%s)", async (scenario) => {
+    const { issueId, runId, port, result } = await prepareFirstTaskCompletion(scenario);
+    const allowed = allowedFirstTaskCompletionScenarios.some(candidate => candidate === scenario);
+    if (allowed) await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
+    // Invalid results bypass only early feedback to exercise the backstop for a
+    // report already committed by a disconnected or older controller.
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: "first-task-native-finish-result" });
+    await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    const [completedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
+    if (!allowed) {
+      const expectedReason = scenario === "newest proposal pending" ? "governed_gate_pending" : "onboarding_first_task_decision_required";
+      expect(completedIssue).toMatchObject({ status: "in_review" });
+      expect(decisions).toContainEqual(expect.objectContaining({ toStatus: "in_review", reasonCode: expectedReason }));
+      expect(decisions).not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!.resultJson)
+        .toMatchObject({ finalizationReasonCode: expectedReason });
+    } else {
+      expect(completedIssue).toMatchObject({ status: "done" });
+      expect(decisions).toContainEqual(expect.objectContaining({ toStatus: "done", reasonCode: "completion_claim_policy_accepted" }));
+    }
+  });
+
+  it("rechecks the first-task human decision atomically before native status commit", async () => {
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("accepted proposal");
+    await expect(nativeCompletionFeedback(db, runId, result)).resolves.toContain("Completion report accepted");
+    await port.completeRun({ result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, callerResultId: "first-task-race-result" });
+    expect(await db.select().from(workAssessments).where(eq(workAssessments.runId, runId))).toEqual([]);
+
+    const interactionId = randomUUID();
+    const trigger = `first_task_race_${randomUUID().replace(/-/g, "")}`;
+    // Assessment persistence follows the policy read and precedes status commit.
+    // Insert a newer proposal at that real database boundary, exactly once.
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+      begin
+        if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+          insert into issue_thread_interactions
+            (id, company_id, issue_id, kind, status, created_by_agent_id, source_run_id, payload, created_at)
+          values
+            ('${interactionId}'::uuid, '${companyId}'::uuid, '${issueId}'::uuid,
+             'request_confirmation', 'pending', '${agentId}'::uuid, '${runId}'::uuid,
+             '{"version":1,"prompt":"Accept the revised task scope?"}'::jsonb, clock_timestamp())
+          on conflict (id) do nothing;
+        end if;
+        return NEW;
+      end $$`));
+    try {
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0])
+        .toMatchObject({ status: "pending", issueId });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+      const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
+      expect(decisions).toEqual([expect.objectContaining({ toStatus: "in_review", reasonCode: "governed_gate_pending" })]);
+      expect(decisions).not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0])
+        .toMatchObject({ nativePhase: "committed", resultJson: { finalizationReasonCode: "governed_gate_pending" } });
+    } finally {
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+    }
   });
 
   it.each(["none", "queued", "claimed", "deferred_issue_execution", "coalesced", "current_run", "current_intent"])(

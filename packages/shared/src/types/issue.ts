@@ -1451,6 +1451,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Existing chat setup; the server derives the destination from these IDs. */
+  savedSetup?: { endpointId: string; connectionId: string; action?: "enter_credentials" | "rotate_credentials" | "confirm_identity"; credentialRotation?: { previousId: string | null }; credentialEntry?: { previousGenerations: Record<string, string | null>; requireAll: boolean } };
   version: 1;
   /** Server-authored consent to a fixed set of tools on an existing connection. */
   accessRequest?: {

@@ -117,7 +117,10 @@ describe.skipIf(!support.supported)("durable login cleanup", () => {
   async function settle(ms = 30_000) {
     await vi.advanceTimersByTimeAsync(ms);
     await vi.waitFor(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+      if (idleWorkSnapshot().active > 0) {
+        const deadlines = coordinators.flatMap(c => c.nextWakeAt() === null ? [] : [c.nextWakeAt()!]);
+        if (deadlines.length) await vi.advanceTimersByTimeAsync(Math.max(0, Math.min(...deadlines) - Date.now()));
+      }
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 5000 });
     await vi.advanceTimersByTimeAsync(1);

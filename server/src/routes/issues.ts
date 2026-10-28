@@ -29,6 +29,7 @@ import { reconstructWorkspaceSchema } from "@paperclipai/shared";
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { inspectWorkspaceSource } from "../services/workspace-source-inspection.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
@@ -9590,6 +9591,25 @@ export function issueRoutes(
     );
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (req.query.inspectSourceRunId !== undefined || req.query.inspectSourceActionId !== undefined) {
+      const selected = z.object({ inspectSourceRunId: z.string().uuid(), inspectSourceActionId: z.string().uuid().optional() })
+        .safeParse(req.query);
+      if (!selected.success) throw badRequest("A valid source run and optional recovery action are required.");
+      const { inspectSourceRunId: runId, inspectSourceActionId: actionId } = selected.data;
+      const rows = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
+        sql`${issueRecoveryActions.evidence}->>'runId' = ${runId}`,
+        actionId ? eq(issueRecoveryActions.id, actionId) : undefined,
+      )).orderBy(desc(issueRecoveryActions.createdAt)).limit(actionId ? 1 : 20);
+      if (actionId && !rows[0]) throw notFound("Recovery source not found.");
+      const actions = rows.map(issueRecoveryActionReadModel);
+      const sourceInspection = actionId ? await inspectWorkspaceSource(db, {
+        companyId: issue.companyId, issueId: issue.id, runId, actionId,
+      }) : undefined;
+      res.json({ active: actions.find(action => ["active", "escalated"].includes(action.status)) ?? null,
+        actions, ...(sourceInspection ? { sourceInspection } : {}) });
+      return;
+    }
     const active = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -16514,7 +16534,9 @@ export function issueRoutes(
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
         const freshResponse = locked.queue.entries.some(entry => entry.source?.requiresFreshSession);
-        if ((locked.queue.protocol !== "legacy" && !freshResponse) || locked.state !== "deferred" ||
+        const stoppedNativeQueue = locked.queue.protocol === "paperclip_runner_v1" &&
+          (!locked.activeRun || ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status));
+        if ((locked.queue.protocol !== "legacy" && !freshResponse && !stoppedNativeQueue) || locked.state !== "deferred" ||
             !locked.queue.entries.length ||
             (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
           throw conflict("This queue does not support interruption");
@@ -16531,6 +16553,8 @@ export function issueRoutes(
         await tx.update(agentWakeupRequests).set({
           payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
             actorId: actor.actorId, requestedAt: new Date().toISOString(),
+            ...(freshResponse && locked.queue.protocol === "paperclip_runner_v1" && locked.activeRun?.status === "running"
+              ? { targetRunId: locked.activeRun.id } : {}),
           } },
           updatedAt: new Date(),
         }).where(eq(agentWakeupRequests.id, locked.wake.id));

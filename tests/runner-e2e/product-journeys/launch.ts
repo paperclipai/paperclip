@@ -99,7 +99,7 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["catalog.ts", "task-properties.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of ["catalog.ts", "task-properties.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
   const suiteDefinitionHash = definitionHash.digest("hex");
   const expected = config.journeys.map(id => `product-journeys.${config.id}.${id === "cloud-onboarding" ? config.modelProfileId : "browser"}.${config.executionEnvironment}.${id}`);
   let reportPersisted = false;

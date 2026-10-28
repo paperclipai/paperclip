@@ -2,7 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { beginIdleTrackedWork } from "./task-admission.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
-import { and, asc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issues, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
@@ -21,7 +21,7 @@ import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspac
 
 import { adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure, type SystemRecoveryState } from "./system-recovery-state.js";
-import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible } from "./workspace-recovery-source.js";
+import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible, workspaceSourceBindingFailure } from "./workspace-recovery-source.js";
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 
@@ -132,7 +132,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             // Missing local merge metadata permits a separate snapshot of the
             // exact bound allocation. Corrupt metadata never weakens binding.
             if ((error as NodeJS.ErrnoException)?.code === "ENOENT") reference = null;
-            else throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
+            else throw workspaceSourceBindingFailure("local_descriptor_invalid");
           }
         }
         let stoppedLease = lease;
@@ -168,7 +168,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           environment, leaseId: lease.id, leaseMetadata: stoppedLease.metadata,
           lease: stoppedLease as EnvironmentLease, environmentRuntime: input.environmentRuntime });
         if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.remoteCwd !== remoteCwd)
-          throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
+          throw workspaceSourceBindingFailure("execution_target_invalid");
         await ownership.assertHeld();
         const cleanupLease = await db.transaction(async tx => {
           const [fresh] = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
@@ -176,7 +176,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           if (!fresh || !hasRemoteTerminationReceipt(fresh) || fresh.providerLeaseId !== lease.providerLeaseId)
             throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
           const pending = await prepareStoppedSandboxForRecovery(tx as unknown as Db, fresh);
-          if (!pending) throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
+          if (!pending) throw workspaceSourceBindingFailure("recovery_stop_intent_invalid");
           const [claimed] = await tx.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
             pendingCleanupAttemptId: ownership.token, pendingCleanupInFlight: true, pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
           })}::jsonb` }).where(eq(environmentLeases.id, fresh.id)).returning();
@@ -192,8 +192,8 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         try {
           const opened = await input.environmentRuntime.resumeWorkspaceRecoveryLease({ source: input,
             leaseId: cleanupLease.id, environmentId: environment.id, ownership });
-          if (opened?.providerLeaseId !== lease.providerLeaseId || opened.metadata?.remoteCwd !== remoteCwd)
-            throw new SystemRecoveryFailure("source_binding_invalid", "service_required");
+          if (opened?.providerLeaseId !== lease.providerLeaseId) throw workspaceSourceBindingFailure("reopened_allocation_mismatch");
+          if (opened.metadata?.remoteCwd !== remoteCwd) throw workspaceSourceBindingFailure("reopened_cwd_mismatch");
           await inspectWorkspaceRecoverySource(db, input);
           await progress({ phase: "preserve_files" });
           let operationId: string;
@@ -313,7 +313,7 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
     sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)));
 }
-export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false) {
+export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
   const cleanup = sql`(${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy' and exists (
     select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
     and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id}
@@ -339,6 +339,7 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
         ${cleanup} or ${waitingInput})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
+      inFlightRunIds.length ? notInArray(heartbeatRuns.id, inFlightRunIds) : undefined,
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);
 }
 
@@ -351,11 +352,14 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
   if (pending.size >= 2) return;
-  let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true);
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true);
+  // Locally running exports already own their slot. Exclude them before
+  // pagination so a page containing only held work cannot prevent wrapping.
+  const inFlightRunIds = [...pending];
+  let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
+  if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
   const unfinished = rows.length > 0;
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly);
-  if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly);
+  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+  if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
   const work: Promise<void>[] = [];
   let hasUnvisited = false;
   for (const { action, run } of rows) {
