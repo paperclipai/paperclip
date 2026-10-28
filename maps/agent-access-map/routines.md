@@ -2,6 +2,8 @@
 
 Product map: [Routines, schedules, and triggers](../feature-map/routines.md).
 
+Feature ID: `routines`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `definition`
+
+Capability ID: `routines/definition`.
 
 Review: `baseline`.
 
@@ -39,6 +43,8 @@ the permitted REST path. Creation needs a responsible user resolved from the par
 issue or company default.
 
 ## `triggers`
+
+Capability ID: `routines/triggers`.
 
 Review: `baseline`.
 
@@ -75,6 +81,8 @@ These are local contract checks, not a live provider sleep/wake qualification.
 
 ## `run-now`
 
+Capability ID: `routines/run-now`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -100,6 +108,8 @@ native authority requires a running bound run. A separate control binding remain
 
 ## `history`
 
+Capability ID: `routines/history`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -124,6 +134,8 @@ Gaps: Runs are readable in company scope; configuration revision access checks r
 ownership for agents.
 
 ## `management`
+
+Capability ID: `routines/management`.
 
 Review: `baseline`.
 

@@ -418,6 +418,24 @@ describe("worker configChanged cross-tenant guard", () => {
     } finally { worker.stop(); }
   });
 
+  it.each([false, true])("advertises read-only inspection only when implemented: %s", async supported => {
+    let inspections = 0, mutations = 0;
+    const worker = makeWorker(definePlugin({ async setup() {},
+      async onEnvironmentReleaseLease() { mutations++; },
+      async onEnvironmentDestroyLease() { mutations++; },
+      ...(supported ? { async onEnvironmentInspectLease() { inspections++; return { providerLeaseId: "allocation", state: "destroyed" as const }; } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("environmentInspectLease")).toBe(supported);
+      const result = worker.callWorker("environmentInspectLease", { driverKey: "fixture", companyId: "company", environmentId: "environment", providerLeaseId: "allocation", config: {} });
+      if (supported) await expect(result).resolves.toEqual({ providerLeaseId: "allocation", state: "destroyed" });
+      else await expect(result).rejects.toThrow();
+      expect(inspections).toBe(supported ? 1 : 0);
+      expect(mutations).toBe(0);
+    } finally { worker.stop(); }
+  });
+
   it("fails closed when a second, distinct company's config would overwrite a single-tenant worker", async () => {
     const applied: Array<{ companyId: string | null; token: unknown }> = [];
     const plugin = definePlugin({
@@ -1180,6 +1198,7 @@ describe("Durable lifecycle inbox RPC", () => {
       ctx.data.register("drain", async ({ companyId }) => {
         const events = await ctx.events.listLifecycle(companyId!, 10, "6");
         await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
+        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a", true);
         return events;
       });
     } });
@@ -1202,11 +1221,12 @@ describe("Durable lifecycle inbox RPC", () => {
       input.write(serializeMessage(createRequest(method, params, id)));
     });
     try {
-      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe"], entrypoints: {} }, config: {}, databaseNamespace: null });
+      await call("initialize", { manifest: { id: "fixture.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["events.subscribe", "agents.lifecycle.manage"], entrypoints: {} }, config: {}, databaseNamespace: null });
       expect((await call("getData", { key: "drain", companyId: "company-a", params: {} }) as { result: unknown }).result).toEqual([event]);
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
+        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
       ]);
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });

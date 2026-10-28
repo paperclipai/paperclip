@@ -9,7 +9,9 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess,
   executionWorkspaces, heartbeatRuns, issues, projects, projectAccessMembers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
+import { mergeCoalescedContextSnapshot } from "../services/heartbeat/run-preparation.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -51,30 +53,85 @@ afterAll(async () => {
 
 const input = () => ({ companyId, issueId, workspaceId, cwd, agentId, runId: runIds[0] });
 
-it("bounds repeated-principal queries without loading retained run payloads", async () => {
+it("does no historical reader work and keeps query/path counts constant as peer history grows", async () => {
   const queries: string[] = [];
   const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as typeof db;
-  await executionWorkspaceRepositoryService(recorded).guardForPublication(input());
-  expect(queries.length).toBeLessThan(800);
-  const runs = queries.filter(query => query.includes('from "heartbeat_runs"'));
-  expect(runs.length).toBeGreaterThan(0);
-  expect(runs.every(query => !query.includes('"result_json"') && !query.includes('"runner_profile_json"'))).toBe(true);
+  const service = executionWorkspaceRepositoryService(recorded);
+  const paths = vi.spyOn(fs, "realpath");
+  try {
+    await service.assertPublicationAllowed(input());
+    const smallQueries = queries.length, smallPaths = paths.mock.calls.length;
+    queries.length = 0; paths.mockClear();
+    const sourceIds = Array.from({ length: 1200 }, () => randomUUID());
+    await db.insert(executionWorkspaces).values(sourceIds.map(id => ({ id, companyId, projectId, cwd,
+      sourceIssueId: issueId, name: "Historical source", mode: "shared_workspace", strategyType: "operator_directory" })));
+    await db.insert(executionWorkspaceRepositoryAccess).values(sourceIds.map(scopeId => ({ companyId,
+      canonicalCwd: cwd, rootKey: createHash("sha256").update(cwd).digest("hex"), kind: "reader", scopeId,
+      issueId: randomUUID(), agentId: randomUUID(), responsibleUserId: "deleted-user" })));
+    await service.assertPublicationAllowed(input());
+    expect(queries).toHaveLength(smallQueries);
+    expect(paths.mock.calls).toHaveLength(smallPaths);
+    expect(queries.every(query => !query.includes('"execution_workspace_repository_access"')
+      && !query.includes('"execution_workspace_repository_roots"'))).toBe(true);
+    const runs = queries.filter(query => query.includes('from "heartbeat_runs"'));
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs.every(query => !query.includes('"result_json"') && !query.includes('"runner_profile_json"'))).toBe(true);
+  } finally { paths.mockRestore(); }
 });
 
-it("keeps each retained run identity and policy distinct for the same principals", async () => {
+it("rechecks the current run identity while ignoring broken historical readers", async () => {
   const service = executionWorkspaceRepositoryService(db);
-  const invalidId = runIds[31];
+  await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, runIds[31]));
+  await expect(service.assertPublicationAllowed(input())).resolves.toBeUndefined();
+  await expect(service.assertPublicationAllowed({ ...input(), runId: randomUUID() })).rejects.toThrow("identity");
+  const [foreign] = await db.insert(companies).values({ name: "Foreign current run", issuePrefix: "FCR" }).returning();
   try {
-    await db.update(executionWorkspaceRepositoryAccess).set({ responsibleUserId: randomUUID() }).where(eq(executionWorkspaceRepositoryAccess.scopeId, invalidId));
-    await expect(service.guardForPublication(input())).rejects.toThrow("identity");
-    await db.update(executionWorkspaceRepositoryAccess).set({ responsibleUserId: userId }).where(eq(executionWorkspaceRepositoryAccess.scopeId, invalidId));
-    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionPolicy: { trustPreset: "unsupported" } } }).where(eq(heartbeatRuns.id, invalidId));
-    await expect(service.guardForPublication(input())).rejects.toThrow();
+    await db.update(heartbeatRuns).set({ companyId: foreign.id }).where(eq(heartbeatRuns.id, runIds[0]));
+    await expect(service.assertPublicationAllowed(input())).rejects.toThrow("identity");
   } finally {
-    await db.update(executionWorkspaceRepositoryAccess).set({ responsibleUserId: userId }).where(eq(executionWorkspaceRepositoryAccess.scopeId, invalidId));
-    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, invalidId));
+    await db.update(heartbeatRuns).set({ companyId, contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runIds[0]));
   }
-  await expect(service.guardForPublication(input())).resolves.toBeUndefined();
+});
+
+it("preserves immutable task identity after another wake coalesces into the current run", async () => {
+  const otherIssueId = randomUUID();
+  const context = mergeCoalescedContextSnapshot({ issueId, taskId: issueId }, { issueId: otherIssueId, taskId: otherIssueId });
+  expect(runRetainsIssueIdentity({ nativeIssueId: null, issueId, contextSnapshot: context }, issueId)).toBe(true);
+  expect(runRetainsIssueIdentity({ nativeIssueId: issueId, issueId: otherIssueId, contextSnapshot: context }, issueId)).toBe(true);
+  expect(runRetainsIssueIdentity({ nativeIssueId: null, issueId: otherIssueId, contextSnapshot: context }, issueId)).toBe(false);
+  const service = executionWorkspaceRepositoryService(db);
+  try {
+    await db.update(heartbeatRuns).set({ issueId, contextSnapshot: context }).where(eq(heartbeatRuns.id, runIds[0]));
+    await expect(service.assertPublicationAllowed(input())).resolves.toBeUndefined();
+  } finally {
+    await db.update(heartbeatRuns).set({ issueId: null, contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runIds[0]));
+  }
+});
+
+it("preserves each actor's saved policy in batched read decisions", async () => {
+  const actor: AuthorizationActor = { type: "agent", source: "agent_jwt", companyId, agentId,
+    runId: runIds[0], onBehalfOfUserId: userId };
+  const policyRunId = runIds[31];
+  const actors = [actor, { ...actor, runId: policyRunId }, { ...actor, runId: runIds[0].toUpperCase() },
+    { ...actor, runId: randomUUID() }];
+  const resources = [{ type: "project" as const, companyId, projectId }, { type: "company" as const, companyId }];
+  const service = authorizationService(db);
+  try {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionPolicy: { trustPreset: "unsupported" } } })
+      .where(eq(heartbeatRuns.id, policyRunId));
+    const decisions = await service.decideReadsForActors(actors, resources);
+    for (const [index, candidate] of actors.entries()) {
+      for (const [resourceIndex, resource] of resources.entries()) {
+        expect(decisions[index][resourceIndex]).toEqual(await service.decide({ actor: { ...candidate }, resource,
+          action: resource.type === "project" ? "project:read" : "company_scope:read" }));
+      }
+    }
+    expect(decisions[0][0].allowed).toBe(true);
+    expect(decisions[1][0].allowed).toBe(false);
+  } finally {
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, policyRunId));
+  }
+  expect((await service.decideReadsForActors(actors, resources))[1][0].allowed).toBe(true);
 });
 
 it("reloads project grants on every publication attempt", async () => {
@@ -85,9 +142,9 @@ it("reloads project grants on every publication attempt", async () => {
     { companyId, projectId, subjectType: "user", subjectId: userId },
   ]).returning();
   try {
-    await expect(service.guardForPublication(input())).resolves.toBeUndefined();
+    await expect(service.assertPublicationAllowed(input())).resolves.toBeUndefined();
     await db.delete(projectAccessMembers).where(and(eq(projectAccessMembers.projectId, projectId), eq(projectAccessMembers.subjectType, "user")));
-    await expect(service.guardForPublication(input())).rejects.toThrow();
+    await expect(service.assertPublicationAllowed(input())).rejects.toThrow();
   } finally {
     await db.delete(projectAccessMembers).where(inArray(projectAccessMembers.id, grants.map(grant => grant.id)));
     await db.update(projects).set({ visibility: "open" }).where(eq(projects.id, projectId));
@@ -115,23 +172,14 @@ it("keeps supplied membership snapshots separate from fresh database snapshots",
   }
 });
 
-it("batches source retention and duplicate path reads without losing owners", async () => {
-  const sourceIds = Array.from({ length: 501 }, () => randomUUID());
-  await db.insert(executionWorkspaces).values(sourceIds.map(id => ({ id, companyId, projectId, cwd,
-    sourceIssueId: issueId, name: "Shared source", mode: "shared_workspace", strategyType: "operator_directory" })));
+it("does not canonicalize filesystem paths or mutate a ledger for empty-repository admission", async () => {
   const queries: string[] = [];
   const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as typeof db;
   const paths = vi.spyOn(fs, "realpath");
   try {
-    await executionWorkspaceRepositoryService(recorded).guardForPublication(input());
-    expect(queries.filter(query => query.startsWith('insert into "execution_workspace_repository_access"')).length).toBeLessThanOrEqual(2);
-    expect(paths.mock.calls.length).toBeLessThanOrEqual(8);
-  } finally {
-    paths.mockRestore();
-  }
-  const retained = await db.select({ scopeId: executionWorkspaceRepositoryAccess.scopeId }).from(executionWorkspaceRepositoryAccess)
-    .where(and(eq(executionWorkspaceRepositoryAccess.companyId, companyId),
-      eq(executionWorkspaceRepositoryAccess.rootKey, createHash("sha256").update(cwd).digest("hex")),
-      eq(executionWorkspaceRepositoryAccess.kind, "source")));
-  expect(new Set(retained.map(row => row.scopeId))).toEqual(new Set([workspaceId, ...sourceIds]));
+    await expect(executionWorkspaceRepositoryService(recorded).prepareForAdmission({ ...input(), responsibleUserId: userId })).resolves.toEqual([]);
+    expect(paths).not.toHaveBeenCalled();
+    expect(queries.every(query => !query.includes('"execution_workspace_repository_access"')
+      && !query.includes('"execution_workspace_repository_roots"'))).toBe(true);
+  } finally { paths.mockRestore(); }
 });

@@ -30,6 +30,7 @@ import {
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
 import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
+import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../contracts/provider-performance.js";
 
 type RpcMessage = {
   id?: string | number;
@@ -307,6 +308,13 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       );
       activeTurnId = null;
     } else if (event.eventType === "harness.diagnostic") {
+      if (payload.code === PROVIDER_PERFORMANCE_DIAGNOSTIC) {
+        send({method: "paperclip/providerPerformance", params: {
+          threadId: opened.ids().driverSessionId, turnId: event.turnId,
+          spans: parseProviderPerformanceSpans(payload, Date.now()),
+        }});
+        continue;
+      }
       send({
         method: "warning",
         params: {
@@ -471,6 +479,9 @@ function shutdown(exitCode = 0): Promise<void> {
       ?.close({ reason: "proxy_shutdown", force: true })
       .catch(() => {});
     await eventPump?.catch(() => {});
+    // A failed turn can be the last frame before a fatal exit. Pipe writes
+    // are asynchronous on some platforms, so let it reach runnerd first.
+    await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
   })().finally(() => process.exit(exitCode));
   return shutdownPromise;
 }

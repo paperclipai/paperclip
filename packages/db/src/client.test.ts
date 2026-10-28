@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
   resetPostgresDatabase,
 } from "./client.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
@@ -165,6 +166,181 @@ describeEmbeddedPostgres("resetPostgresDatabase", () => {
       await verifySql.end();
     }
   }, 30_000);
+});
+
+type MergedHistoryEntry = { idx: number; version: string; when: number; tag: string; breakpoints: boolean };
+const mergedMasterTail = [
+  { file: "0344_wide_blue_marvel.sql", when: 1791930226792, hash: "2df2e0b867f9ed65eb931b342e7f31fe8c59901da3108466c069b68cb3892f16" },
+  { file: "0345_luxuriant_carmella_unuscione.sql", when: 1791978393174, hash: "d1b360d9e6acf060a67e91b5d6dc3952f9804da3d512c7097a928b30360f6426" },
+  { file: "0346_cloudy_whiplash.sql", when: 1791989860950, hash: "a77d0b71eb96b4de14bbc60f5e5f00043bffacc09905ffc782f5f0cb818c4252" },
+] as const;
+const canonicalMasterTail = [
+  { file: "0347_flippant_imperial_guard.sql", when: 1792100545989, hash: "e159aba238be8e27e16adec236adee0febe29191ff1b4cf9cbb8d254910f4f8f" },
+  { file: "0348_agent_skill_runtime_hooks.sql", when: 1792101163248, hash: "22115f83622ba83f2f494a4637f3ce404afbdf8717a5dea106421223e64d0b93" },
+] as const;
+const mergedMuseTail = [
+  { file: "0349_oval_dragon_lord.sql", oldFile: "0344_perpetual_eternity.sql", when: 1791904391794, hash: "5c422698d40da1d6cdc587134553e371f7c807ce9617e07d7ff77eb05810ae49" },
+  { file: "0350_friendly_rhodey.sql", oldFile: "0345_lumpy_celestials.sql", when: 1791904404725, hash: "a9373b52e02fa985bf10c15da91f6681c49d8726d94d5d68fd77e5802fd47a68" },
+  { file: "0351_hard_albert_cleary.sql", oldFile: "0346_powerful_epoch.sql", when: 1791904422315, hash: "65f4f08c6a8fed7396db491e0691e693636f48c4ca4fa63cd2057af38039861a" },
+  { file: "0352_special_warbound.sql", oldFile: "0347_big_meggan.sql", when: 1791904430408, hash: "1d2d5834fd499b60a43778d6d14b2520e3e2980258b8c0997d80cb95465f4abf" },
+  { file: "0353_skinny_gamma_corps.sql", oldFile: "0348_foamy_lightspeed.sql", when: 1791905947460, hash: "1a379bc03d80c34815546bb9f50bf1408ccf156f4a1df2d86edb0a01acdc55c0" },
+] as const;
+
+describeEmbeddedPostgres("merged Muse migration histories", () => {
+  async function schemaShape(sql: ReturnType<typeof postgres>) {
+    const columns = await sql`
+      SELECT table_name, column_name, data_type, udt_name, is_nullable, column_default
+      FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position
+    `;
+    const indexes = await sql`
+      SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename, indexname
+    `;
+    const constraints = await sql`
+      SELECT t.relname AS table_name, c.conname, pg_get_constraintdef(c.oid, true) AS definition
+      FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+      WHERE n.nspname = 'public' ORDER BY t.relname, c.conname
+    `;
+    return { columns: Array.from(columns), indexes: Array.from(indexes), constraints: Array.from(constraints) };
+  }
+
+  async function historyRows(sql: ReturnType<typeof postgres>) {
+    return Array.from(await sql`SELECT id, hash, created_at::text AS created_at FROM drizzle.__drizzle_migrations ORDER BY id`);
+  }
+
+  async function replayHistoricalSchema(sql: ReturnType<typeof postgres>, entries: Array<{ file: string; oldFile?: string; when: number; hash: string }>) {
+    await sql`CREATE SCHEMA drizzle`;
+    await sql`CREATE TABLE drizzle.__drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at bigint)`;
+    let createdAt = 0;
+    for (const entry of entries) {
+      const content = await fs.promises.readFile(new URL(entry.oldFile ? `./__fixtures__/muse-preview-migrations/${entry.oldFile}` : `./migrations/${entry.file}`, import.meta.url), "utf8");
+      expect(createHash("sha256").update(content).digest("hex")).toBe(entry.hash);
+      createdAt = Math.max(createdAt + 1, entry.when);
+      const applyMigration = async (executor: Pick<ReturnType<typeof postgres>, "unsafe">) => {
+        for (const statement of content.split("--> statement-breakpoint")) {
+          if (!statement.trim()) continue;
+          await executor.unsafe(statement.replace(/^(\s*ALTER TABLE "[^"]+" DROP CONSTRAINT) (?!IF EXISTS\b)/i, "$1 IF EXISTS "));
+        }
+        await executor.unsafe("INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES ($1, $2)", [entry.hash, createdAt]);
+      };
+      const requiresTopLevel = /\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b/i.test(content)
+        || /^\s*COMMIT\s*;/im.test(content);
+      if (requiresTopLevel) await applyMigration(sql);
+      else await sql.begin(async transaction => { await applyMigration(transaction); });
+    }
+  }
+
+  async function seedRetainedRows(sql: ReturnType<typeof postgres>, withMuse: boolean) {
+    const userId = randomUUID(), clientId = `migration-client-${randomUUID()}`;
+    const [company] = await sql`INSERT INTO companies (name, issue_prefix) VALUES ('Retained migration company', 'MRG') RETURNING id`;
+    const [agent] = await sql`
+      INSERT INTO agents (company_id, name, adapter_type, adapter_config)
+      VALUES (${company.id}, 'Retained Muse', 'paperclip_runner', '{"provider":"muse"}'::jsonb) RETURNING id
+    `;
+    const [task] = await sql`
+      INSERT INTO issues (company_id, title, assignee_agent_id)
+      VALUES (${company.id}, 'Retained task', ${agent.id}) RETURNING id
+    `;
+    const [run] = await sql`
+      INSERT INTO heartbeat_runs (company_id, agent_id, invocation_source, trigger_detail, status, runtime_mode, native_issue_id, context_snapshot)
+      VALUES (${company.id}, ${agent.id}, 'assignment', 'system', 'failed', 'native', ${task.id},
+        ${JSON.stringify({ paperclipIssue: { id: task.id }, issueId: task.id })}::jsonb) RETURNING id
+    `;
+    await sql`INSERT INTO "user" (id, name, email, created_at, updated_at) VALUES (${userId}, 'Migration operator', ${`${userId}@example.test`}, now(), now())`;
+    await sql`INSERT INTO mcp_oauth_clients (id, name, redirect_uris) VALUES (${clientId}, 'Synthetic migration client', '["https://example.test/callback"]'::jsonb)`;
+    const [grant] = await sql`
+      INSERT INTO mcp_oauth_grants (company_id, user_id, client_id, resource, purpose, agent_id, scopes)
+      VALUES (${company.id}, ${userId}, ${clientId}, 'https://example.test/api/muse/v1', 'agent', ${agent.id}, '["paperclip:agent","offline_access"]'::jsonb) RETURNING id
+    `;
+    const [binding] = withMuse ? await sql`
+      INSERT INTO muse_agent_bindings (company_id, agent_id, operator_id, grant_id, status)
+      VALUES (${company.id}, ${agent.id}, ${userId}, ${grant.id}, 'connected') RETURNING id
+    ` : [];
+    return async () => {
+      const [companyRow] = await sql`SELECT to_jsonb(c) AS row FROM companies c WHERE id = ${company.id}`;
+      const [taskRow] = await sql`SELECT to_jsonb(t) AS row FROM issues t WHERE id = ${task.id}`;
+      const [runRow] = await sql`SELECT to_jsonb(r) AS row FROM heartbeat_runs r WHERE id = ${run.id}`;
+      const [grantRow] = await sql`SELECT to_jsonb(g) AS row FROM mcp_oauth_grants g WHERE id = ${grant.id}`;
+      const [bindingRow] = binding ? await sql`SELECT to_jsonb(b) AS row FROM muse_agent_bindings b WHERE id = ${binding.id}` : [];
+      return { company: companyRow.row, task: taskRow.row, run: runRow.row, grant: grantRow.row, binding: bindingRow?.row ?? null };
+    };
+  }
+
+  it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
+    const referenceUrl = await createTempDatabase();
+    const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
+    adminUrl.pathname = "/postgres";
+    await ensurePostgresDatabase(adminUrl.toString(), databaseName);
+    adminUrl.pathname = `/${databaseName}`;
+    const connectionString = adminUrl.toString();
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    const reference = postgres(referenceUrl, { max: 1, onnotice: () => {} });
+    try {
+      const journal = JSON.parse(await fs.promises.readFile(new URL("./migrations/meta/_journal.json", import.meta.url), "utf8")) as { entries: MergedHistoryEntry[] };
+      const common = await Promise.all(journal.entries.filter(entry => entry.idx <= 343).map(async entry => ({
+        entry, file: `${entry.tag}.sql`, when: entry.when, hash: await migrationHash(`${entry.tag}.sql`),
+      })));
+      const prefixIdentity = common.map(({ entry, hash }) => [entry.idx, entry.version, entry.when, entry.tag, entry.breakpoints, hash]);
+      expect(createHash("sha256").update(JSON.stringify(prefixIdentity)).digest("hex")).toBe("18063d01d91c172c556ee0bc7e84eaa35dc7c4b00b07e817c471cdf392393454");
+      for (const entry of [...mergedMasterTail, ...canonicalMasterTail]) {
+        expect(await migrationHash(entry.file)).toBe(entry.hash);
+        expect(journal.entries.find(candidate => `${candidate.tag}.sql` === entry.file)?.when).toBe(entry.when);
+      }
+      for (const entry of mergedMuseTail) {
+        expect(await migrationHash(entry.file)).not.toBe(entry.hash);
+        expect(journal.entries.some(candidate => `${candidate.tag}.sql` === entry.file)).toBe(true);
+      }
+      if (baseline !== "fresh") await replayHistoricalSchema(sql, [...common, ...(baseline === "master0346" ? mergedMasterTail : mergedMuseTail)]);
+      const beforeHistory = baseline === "fresh" ? [] : await historyRows(sql);
+      const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
+      const beforeRows = await retainedRows?.();
+      const state = await inspectMigrations(connectionString);
+      expect(state.status).toBe("needsMigrations");
+      const laterMigrations = journal.entries.filter(entry => entry.idx > 353).map(entry => `${entry.tag}.sql`);
+      const expectedPending = baseline === "master0346" ? [...[...canonicalMasterTail, ...mergedMuseTail].map(entry => entry.file), ...laterMigrations]
+        : baseline === "muse0348" ? [...[...mergedMasterTail, ...canonicalMasterTail, ...mergedMuseTail].map(entry => entry.file), ...laterMigrations]
+        : journal.entries.map(entry => `${entry.tag}.sql`);
+      expect(state).toMatchObject({ pendingMigrations: expectedPending });
+      if (baseline === "muse0348") {
+        expect(Number(beforeHistory.at(-1)!.created_at)).toBeGreaterThan(mergedMuseTail.at(-1)!.when);
+        expect(beforeHistory.slice(-5).map(row => row.hash)).toEqual(mergedMuseTail.map(entry => entry.hash));
+        expect(mergedMuseTail.map(entry => entry.oldFile)).toEqual([
+          "0344_perpetual_eternity.sql", "0345_lumpy_celestials.sql", "0346_powerful_epoch.sql", "0347_big_meggan.sql", "0348_foamy_lightspeed.sql",
+        ]);
+      }
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      const afterHistory = await historyRows(sql);
+      expect(afterHistory).toHaveLength(journal.entries.length + (baseline === "muse0348" ? mergedMuseTail.length : 0));
+      expect(afterHistory.slice(0, beforeHistory.length)).toEqual(beforeHistory);
+      for (const entry of [...mergedMasterTail, ...canonicalMasterTail]) expect(afterHistory.filter(row => row.hash === entry.hash)).toHaveLength(1);
+      for (const entry of mergedMuseTail) {
+        expect(afterHistory.filter(row => row.hash === entry.hash)).toHaveLength(baseline === "muse0348" ? 1 : 0);
+        const currentHash = await migrationHash(entry.file);
+        expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
+      }
+      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      const indexes = await sql`
+        SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
+        FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname IN (
+          'heartbeat_runs_company_ctx_paperclip_issue_created_idx', 'heartbeat_runs_company_origin_issue_idx', 'grok_dispatch_assignment_kind_idx'
+        ) ORDER BY c.relname
+      `;
+      expect(indexes).toHaveLength(3);
+      for (const index of indexes) expect(index).toMatchObject({ indisvalid: true, indisready: true });
+      expect(indexes.find(index => index.relname === "heartbeat_runs_company_origin_issue_idx")!.definition).toContain("COALESCE");
+      const finalShape = await schemaShape(sql);
+      expect(finalShape).toEqual(await schemaShape(reference));
+      await applyPendingMigrations(connectionString);
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+      expect(await historyRows(sql)).toEqual(afterHistory);
+      expect(await schemaShape(sql)).toEqual(finalShape);
+      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+    } finally {
+      await Promise.all([sql.end(), reference.end()]);
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 });
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
@@ -1956,6 +2132,24 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           triggerCount: 1,
           finalizationCount: 1,
         }]);
+        await replaySql`UPDATE issues SET assignee_agent_id = ${agentId} WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 2 }]);
+        await replaySql`UPDATE issues SET status = 'backlog', assignee_agent_id = null,
+          assignee_user_id = 'handoff-owner' WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        const assignmentVersionHash = await migrationHash("0358_issue_assignment_status_version.sql");
+        await replaySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${assignmentVersionHash}`;
+        await applyPendingMigrations(connectionString);
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        expect(await replaySql`SELECT count(*)::int AS count FROM pg_trigger
+          WHERE tgname = 'paperclip_issue_assignment_version_trigger' AND NOT tgisinternal`)
+          .toEqual([{ count: 1 }]);
+        await replaySql`UPDATE issues SET assignee_user_id = null WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 4 }]);
       } finally {
         await replaySql.end();
       }

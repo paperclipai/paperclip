@@ -2,7 +2,8 @@
 name: honeycomb-tracing
 description: >-
   Trace Paperclip runs, requests, and full CI suites in Honeycomb. Use to find
-  traces, diagnose latency, configure opt-in OpenTelemetry, or add missing spans.
+  traces, diagnose latency, design readable and foldable waterfalls, configure
+  opt-in OpenTelemetry, or add missing spans.
 ---
 
 # Honeycomb Tracing
@@ -19,6 +20,7 @@ replaying tasks, changing credentials, or deploying instrumentation.
 | Why is a task slow before, during, or after model execution? | Application workflow below; [runtime setup](references/runtime.md) if spans are absent |
 | Why does an issue page load slowly? | Request spans plus browser timing, described below |
 | Which CI jobs or test files delay the whole suite? | [CI profiling](references/ci.md) |
+| How should a trace be organized so a person can understand it? | Human-readable waterfall guidance below and [trace design](references/trace-design.md) |
 | Where should a new span go? | Instrumentation guidance below and [Observability contract](../../../doc/observability.md) |
 
 Repository-relative paths and commands assume the checkout root. The maintained
@@ -123,6 +125,32 @@ cannot explain preparation. Low aggregate container CPU does not exclude a
 blocked Node main thread. Keep profiled diagnostics separate from unprofiled
 acceptance timings.
 
+## Design a human-readable waterfall
+
+A collapsed trace should tell a person what the system is doing; expanding a
+phase should explain where its time went. Before adding or reorganizing spans,
+sketch the meaningful phases and compare them with the existing exported tree.
+For application runs, make preparation, runner startup, agent work, and settlement
+easy to distinguish. For CI, retain workflow/job/step/file/test ownership.
+
+- Group by purpose: file staging belongs under `stage.sync`, with workspace and
+  asset branches such as `stage.asset.home`; provider operations belong beneath
+  the work that caused them. Reuse the owning path's existing semantic groups.
+- Use real OpenTelemetry parent contexts. A dotted name or a `parentName`
+  attribute alone does not make a foldable hierarchy. A flat trace can need
+  better parentage even when it already has enough measurements.
+- Preserve useful detail beneath the groups. Improve folding before deleting
+  spans; account for any measurement moved to an attribute, event, or run log.
+- Make the hierarchy truthful on failure and during concurrent work. Cleanup
+  belongs to settlement even when startup fails; long-lived processes need an
+  owner that covers their lifetime. Preserve documented links between separate
+  attempts and provider lifecycles rather than forcing everything into one root.
+
+Read [trace design](references/trace-design.md) when designing or reviewing a
+hierarchy. It includes a staging example, lifecycle pitfalls, and acceptance
+checks for the actual exported waterfall. The current Observability contract
+owns exact span names and boundaries; historical examples are not a new schema.
+
 ## Add only the missing instrumentation
 
 Read applicable repository rules before editing. Reuse the existing timing seams:
@@ -152,6 +180,8 @@ OTel provider. Update `doc/observability.md` when the trace contract changes.
 Run focused tests for endpoint-off behavior, parentage/concurrent-run isolation,
 failure handling, and the changed seam. Use real exported evidence to claim that
 new spans appear in Honeycomb; a unit-test tracer alone does not prove ingestion.
+For hierarchy changes, also inspect collapsed and expanded exported views using
+the [trace-design acceptance checks](references/trace-design.md#verify-the-exported-waterfall).
 
 ## Compare and hand back useful evidence
 

@@ -1403,8 +1403,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       icon: "sparkles",
       role: "general",
       reportsTo: root.id,
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-haiku-4-5" },
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-haiku-4-5" },
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");

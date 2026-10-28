@@ -8,8 +8,8 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issueAccessGrants,
   issues, projects, projectAccessMembers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { authorizationService, executionWorkspaceReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
-import { executionWorkspaceRepositoryService, assertExecutionWorkspaceRootReadAccess } from "../services/execution-workspace-repositories.js";
-import { assertTaskWorkspaceAccess } from "../services/task-workspace-source-access.js";
+import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import { assertExecutionWorkspaceRecordAccess } from "../services/task-workspace-access.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -83,7 +83,7 @@ const support = await getEmbeddedPostgresTestSupport();
         schema: db._.fullSchema,
         logger: { logQuery: (query, params) => statements.push({ sql: query, params }) },
       }) as unknown as typeof db;
-      await assertTaskWorkspaceAccess(recorded, { type: "board", source: "local_implicit", userId: "local-board" }, companyId, workspaceId);
+      await assertExecutionWorkspaceRecordAccess(recorded, { type: "board", source: "local_implicit", userId: "local-board" }, companyId, workspaceId);
       const query = statements.find(statement => statement.sql.startsWith('select "id" from "issues"')
         && statement.sql.includes('"execution_workspace_id"'));
       expect(query).toBeDefined();
@@ -107,31 +107,7 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
-  it("authorizes a retained repository in bounded database round trips as its workspace history grows", async () => {
-    const cwd = await mkdtemp(path.join(tmpdir(), "root-admission-query-"));
-    const workspaceIds = Array.from({ length: 40 }, () => randomUUID());
-    const sourceIds = workspaceIds.map(() => randomUUID());
-    await db.insert(executionWorkspaces).values(workspaceIds.map(id => ({
-      id, companyId, cwd, name: "Historical root", mode: "shared_workspace", strategyType: "operator_directory",
-      metadata: { _issuePrivacySources: { [sourceId]: true } },
-    })));
-    await db.insert(issues).values(sourceIds.map((id, i) => ({ id, companyId, title: "Source", executionWorkspaceId: workspaceIds[i] })));
-    try {
-      const statements: string[] = [];
-      const recorded = drizzle(db.$client, { schema: db._.fullSchema,
-        logger: { logQuery: query => statements.push(query) } }) as unknown as typeof db;
-      await assertExecutionWorkspaceRootReadAccess(recorded, { companyId, cwd, actor: { ...actor } });
-      expect(statements.length).toBeLessThan(60);
-      await db.update(issues).set({ visibility: "private", privacyRootIssueId: sourceIds[39] }).where(eq(issues.id, sourceIds[39]));
-      await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId, cwd, actor: { ...actor } })).rejects.toThrow();
-    } finally {
-      await db.delete(issues).where(inArray(issues.id, sourceIds));
-      await db.delete(executionWorkspaces).where(inArray(executionWorkspaces.id, workspaceIds));
-      await rm(cwd, { recursive: true, force: true });
-    }
-  });
-
-  it("shares source loading across retained readers during actual repository admission", async () => {
+  it("ignores retained readers during actual repository admission", async () => {
     const cwd = await realpath(await mkdtemp(path.join(tmpdir(), "multi-reader-admission-")));
     const rootKey = createHash("sha256").update(cwd).digest("hex");
     const workspaceIds = Array.from({ length: 40 }, () => randomUUID());

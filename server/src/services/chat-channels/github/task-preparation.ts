@@ -37,7 +37,7 @@ export async function retainGitHubDeliveryAuthority(
   linkedUserId: string | null, taskUserId: string | null,
 ): Promise<void> {
           const guest = !linkedUserId;
-          await taskTx.update(chatDeliveries).set({ normalizedEvent: sql`${chatDeliveries.normalizedEvent} || ${JSON.stringify({ githubAuthority: { guest, responsibleUserId: taskUserId, sponsorUserId: guest ? taskEndpoint.sponsorUserId : null } })}::jsonb` }).where(eq(chatDeliveries.id, deliveryId));
+          await taskTx.update(chatDeliveries).set({ normalizedEvent: sql`${chatDeliveries.normalizedEvent} || ${JSON.stringify({ githubAuthority: { guest, botExternalId: taskEndpoint.botExternalId, responsibleUserId: taskUserId, sponsorUserId: guest ? taskEndpoint.sponsorUserId : null } })}::jsonb` }).where(eq(chatDeliveries.id, deliveryId));
 }
 
 export async function retainGitHubReviewReceipt(taskTx: DbOrTransaction, endpoint: EndpointRow, issueId: string, deliveryId: string, githubAutomatic: AutomaticRequest): Promise<void> {

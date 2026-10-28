@@ -1,3 +1,7 @@
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { writeExecutionControl } from "../execution-control-notifications.js";
+import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { parseNativeSessionGoalControl } from "./scheduling.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -132,6 +136,7 @@ export interface HeartbeatRuntimeExecutionInput {
     configuredTaskEnvironment: Parameters<typeof configuredEnvironmentProjection>[0];
     adapterEnv: Parameters<typeof buildNativeProviderEnvironment>[0];
     agentIdentity: AdapterExecutionContext["agentIdentity"];
+    observability?: AdapterExecutionContext["observability"];
     runtimeEnv: Selection["runtimeEnv"];
     useHostGitHub: boolean;
     githubSelection: { configured: boolean };
@@ -226,11 +231,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const { issueRef, issueContext, context, issueId, taskKey, executionContinuation } = input.task;
   const { nativeRuntimeResolution, nativeExecution, nativeRunnerInstanceId, adapter, runtimeForAdapter, getNativeFreshSessionHandoff, getFreshSessionHandoff, runOptions } = input.runtime;
   const { persistedExecutionWorkspace, executionWorkspace, executionTarget, workspaceOperationRecorder, nativeWorkspaceSync, workspaceRestoreSource, remoteExecution } = input.workspace;
-  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
+  const { runtimeConfig, resolvedConfig, resolvedInstanceSettings, configuredTaskEnvironment, adapterEnv, agentIdentity, observability, managedAiRuntime, runtimeEnv, useHostGitHub, githubSelection } = input.config;
   const { runtimeSessionParamsForAdapter, configuredModel, sessionConfigMetadata, goalCheckpointSession } = input.session;
   const { nativeInstructionWorkingCopy, collectStoppedInstructions, nativeInstructionReservation, releaseInstructionCopy } = input.instructions;
   const { providerTraceCapture, nativeRunnerPreparationSpans, attestedQuestionResponseAtMs, attemptStartedAtMs, environmentAcquireStartedAtMs, environmentRealizeEndedAtMs } = input.trace;
   const { executionControl, executionPhaseContext, dispatchResolvedInteractionContinuationWithAtomicGate } = input.control;
+  const dispatchWithTiming: HeartbeatRuntimeExecutionInput["control"]["dispatchResolvedInteractionContinuationWithAtomicGate"] = dispatch => {
+    const providerDispatch = AsyncLocalStorage.bind(dispatch);
+    return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
+  };
   const { identityRedactor, appendIdentityRedactedLog, onLog, onAdapterEvent, onAdapterMeta } = input.output;
   const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, dispatchPendingNativeStatusWakeups } = input.services;
   const localAgentJwtScope =
@@ -266,6 +275,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   }
   let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
   let preserveRunGatewayTokens = false;
+  let pluginWorkspaceFinalization: Record<string, unknown> | null = null;
   const inspectFinalizeWorkspaceBranch = async () => {
     const workspaceRecord = persistedExecutionWorkspace?.id
       ? await executionWorkspacesSvc.getStoredById(
@@ -273,7 +283,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           persistedExecutionWorkspace.id,
         )
       : persistedExecutionWorkspace;
-    if (workspaceRecord?.strategyType !== "git_worktree") return null;
+    pluginWorkspaceFinalization = workspaceRecord
+      ? await inspectPluginWorkspaceForFinalization(db, options.pluginWorkerManager, workspaceRecord, agent.id, run.id)
+      : null;
+    if (pluginWorkspaceFinalization || workspaceRecord?.strategyType !== "git_worktree") return null;
 
     const worktreePath =
       readNonEmptyString(workspaceRecord.providerRef) ??
@@ -470,6 +483,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           }
         }
         return { status, metadata: {
+          ...(pluginWorkspaceFinalization ? { pluginWorkspace: pluginWorkspaceFinalization } : {}),
           ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
           ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
         } };
@@ -481,7 +495,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     adapterFinalizeOutcome = status;
   };
 
-  const usageRecorder = await createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType });
+  const usageRecorder = await measureRunPhase("execution.usage_startup", () =>
+    createRunUsageRecorder(db, { companyId: run.companyId, runId: run.id, adapterType: agent.adapterType }));
   input.effects.onUsageCaptureReady(usageRecorder.persistFailure);
   let adapterResult: AdapterExecutionResult;
   const runGoalControlRequestId = readNonEmptyString(
@@ -496,12 +511,12 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         nativeExecution.runtimeContext.mcp.bindingId
           ? nativeExecution.runtimeContext.mcp.digest
           : null;
-      const nativeMcpServers = await buildPaperclipRuntimeMcpServers({
+      const nativeMcpServers = "homeMode" in nativeExecution && nativeExecution.homeMode === "preconfigured" ? [] : await measureRunPhase("execution.mcp_handoff", () => buildPaperclipRuntimeMcpServers({
         db,
         agent,
         runId: run.id,
         expectedAssignmentDigest: expectedNativeMcpDigest,
-      });
+      }));
       if ("runtimeContext" in nativeExecution) {
         if (nativeMcpServers.length > 1)
           throw new Error(
@@ -564,11 +579,13 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }),
       );
       const guardedDispatch =
-        await dispatchResolvedInteractionContinuationWithAtomicGate(
+        await dispatchWithTiming(
           (markDispatchStarted) => {
             return executePaperclipNativeSession({
+              casesEnabled: context.paperclipCasesEnabled === true,
               db,
               execution: nativeExecution,
+              observability,
               getFreshSessionHandoff: getNativeFreshSessionHandoff,
               refreshTools: context.refreshTools === true,
               conversationMode: isConversation(issueContext),
@@ -622,6 +639,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedGitHub: !useHostGitHub && githubSelection.configured,
               billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
+              managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
+              managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
@@ -650,6 +669,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                     }
                   : {}),
               },
+              onTaskDispatched: markDispatchStarted,
               runnerExecutionTarget: executionTarget,
               runnerIngressAuthorized: isRunnerIngressAuthorized(
                 nativeRuntimeResolution,
@@ -772,24 +792,25 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       if (runtimeTools && runtimeToolDelivery === "invocation_context") {
         adapterContext.paperclipRuntimeTools = runtimeTools;
       }
-      const managedMcpConfig = await createManagedMcpRunConfig({
+      const managedMcpConfig = await measureRunPhase("execution.mcp_handoff", () => createManagedMcpRunConfig({
         db,
         agent,
         runId: run.id,
         config: runtimeConfig,
         projectId: issueRef?.projectId ?? null,
         issueId: issueRef?.id ?? null,
-      });
+      }));
       if (managedMcpConfig) {
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
       const guardedDispatch =
-        await dispatchResolvedInteractionContinuationWithAtomicGate(
+        await dispatchWithTiming(
           (markDispatchStarted) => {
             input.effects.onLegacyAdapterEntered();
             return withAdapterExecutionPhase(executionPhaseContext, "adapter_execution", () => adapter.execute({
               getFreshSessionHandoff,
               agentIdentity,
+              observability,
               runId: run.id,
               agent,
               runtime: runtimeForAdapter,
@@ -923,7 +944,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
             })); });
         }
         await ownership?.assertHeld();
-        await db
+        await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
           .update(heartbeatRuns)
           .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
           .where(
@@ -931,7 +952,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               eq(heartbeatRuns.id, run.id),
               eq(heartbeatRuns.status, "running"),
             ),
-          );
+          ));
         const workspaceFinalizeStatus = hasWorkspaceRestoreFailure(adapterResult.resultJson) ? "failed" : "succeeded";
         await recordWorkspaceFinalize(workspaceFinalizeStatus);
         if (adapterResult.nativeFinalization) {
@@ -999,7 +1020,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
       input.effects.onProviderResourceDisposition("stop_and_retain");
     }
-    await db
+    await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
       .update(heartbeatRuns)
       .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
       .where(
@@ -1007,7 +1028,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           eq(heartbeatRuns.id, run.id),
           eq(heartbeatRuns.status, "running"),
         ),
-      );
+      ));
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&

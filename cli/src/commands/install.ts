@@ -111,6 +111,8 @@ function parseResolvedVersion(stdout: string): string {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (typeof parsed === "string") return parsed;
+    // npm 12 wraps single-value `npm view --json` output in an array.
+    if (Array.isArray(parsed) && parsed.length === 1 && typeof parsed[0] === "string") return parsed[0];
   } catch {
     if (EXACT_VERSION_PATTERN.test(trimmed)) return trimmed;
   }

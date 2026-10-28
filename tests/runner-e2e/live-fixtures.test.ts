@@ -1,10 +1,57 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { RunnerApi } from "./api.js";
 import { buildRuntimeUsage } from "./billing.js";
 import { runnerMatrix } from "./catalog.js";
 import { setupLiveFixtures, selectFixtureRuntimeLeases, fixtureRuntimeCostCoverage } from "./live-fixtures.js";
 
 describe("live runner fixtures", () => {
+  it.each([
+    ["receipt-smoke", 100], ["same-task-roundtrip", 1_000],
+  ] as const)("bounds %s before creating its initial subscription agent", async (taskId, budget) => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), "case-fixture-limits-")));
+    const home = path.join(root, "paperclip-home");
+    await mkdir(home);
+    vi.stubEnv("PAPERCLIP_RUNNER_E2E_TEMP_ROOT", root);
+    vi.stubEnv("PAPERCLIP_HOME", home);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "runner-e2e-case-fixture-test");
+    const execution = runnerMatrix.find(row => row.id === `case-handoffs.runner-codex-subscription.local.${taskId}`)!;
+    const companyId = "11111111-2222-4333-8444-555555555555";
+    let companyBody: any;
+    let agentBody: any;
+    let fixtures: Awaited<ReturnType<typeof setupLiveFixtures>> | undefined;
+    const api = {
+      async get() { return [{ id: "local", driver: "local" }]; },
+      async post(url: string, data: any) {
+        if (url === "/api/companies") { companyBody = data; return { id: companyId, name: "Test" }; }
+        if (url.endsWith("/agents")) { agentBody = data; return { id: "triage", ...data }; }
+        throw new Error(`Unexpected POST ${url}`);
+      },
+    } as unknown as RunnerApi;
+    try {
+      fixtures = await setupLiveFixtures({ api, execution, executionNonce: "fixture-limit-test", workspacePath: path.join(root, "workspace"),
+        credentials: { CODEX_AUTH_JSON: JSON.stringify({ tokens: { account_id: "synthetic-account", access_token: "synthetic-access",
+          refresh_token: "synthetic-refresh", id_token: "synthetic-id" } }) } });
+      expect(companyBody.budgetMonthlyCents).toBe(budget);
+      expect(agentBody.budgetMonthlyCents).toBe(budget);
+      expect(agentBody).not.toHaveProperty("instructionsBundle");
+      expect(agentBody.adapterConfig.env).toMatchObject({ OPENAI_API_KEY: "", CODEX_API_KEY: "" });
+      if (taskId === "receipt-smoke") {
+        expect(agentBody.adapterConfig).toMatchObject({ provider: "codex", timeoutSec: 90, modelReasoningEffort: "low" });
+        expect(agentBody.runtimeConfig.heartbeat).toMatchObject({ enabled: false, maxConcurrentRuns: 1, maxDailyRuns: 1, maxDailyCostCents: 100 });
+      } else {
+        expect(agentBody.adapterConfig).not.toHaveProperty("modelReasoningEffort");
+        expect(agentBody.runtimeConfig).not.toHaveProperty("heartbeat");
+      }
+    } finally {
+      await fixtures?.teardown();
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["runner-codex", "runner-acpx-claude", "runner-opencode"].flatMap(profile =>
     ["hire-reuse", "delegate-feedback"].map(task => [profile, task]))) (
     "applies %s %s budget stops in actual setup with a nonce and only its selected credential", async (profile, task) => {

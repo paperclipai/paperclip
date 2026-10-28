@@ -1,3 +1,7 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
+import type { ConnectionManagementContext } from "../connection-management.js";
 import { imessageResourceParticipants } from "./imessage-photon/resources.js";
 import { createGitHubResources, reconcileGitHubRepositoryCoordinates } from "./github/resources.js";
 import { baseTeamsConversationId } from "./microsoft-teams/resources.js";
@@ -77,6 +81,32 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
     return resource ?? null;
   }
 
+  async function setResourceConversationAvailability(
+    tx: DbTransaction,
+    endpoint: Pick<EndpointRow, "id" | "companyId">,
+    resourceId: string,
+    available: boolean,
+    now: Date,
+  ) {
+    const affected = and(
+      eq(chatConversations.companyId, endpoint.companyId),
+      eq(chatConversations.endpointId, endpoint.id),
+      eq(chatConversations.resourceId, resourceId),
+      available ? eq(chatConversations.state, "unavailable") : inArray(chatConversations.state, ["active", "waiting"]),
+    );
+    if (available) {
+      // Only a reopened binding creates projection work. Repeated inventory
+      // refreshes and completed history must not wake the milestone scanner.
+      const reopened = await tx.select({ issueId: chatConversations.issueId })
+        .from(chatConversations).where(affected).for("update");
+      for (const issueId of new Set(reopened.map(row => row.issueId))) {
+        await notifyChatRunMilestones(tx, { companyId: endpoint.companyId, issueId });
+      }
+    }
+    await tx.update(chatConversations)
+      .set({ state: available ? "active" : "unavailable", updatedAt: now }).where(affected);
+  }
+
   async function reconcileProviderResourceRows(
     endpoint: EndpointRow,
     inventory: ChatProviderInventoryResult,
@@ -96,17 +126,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
         if (resource) {
           // Resource recovery reopens only bindings that Paperclip marked
           // unavailable. Completed historical tasks stay completed.
-          await tx
-            .update(chatConversations)
-            .set({ state: "active", updatedAt: new Date() })
-            .where(
-              and(
-                eq(chatConversations.companyId, endpoint.companyId),
-                eq(chatConversations.endpointId, endpoint.id),
-                eq(chatConversations.resourceId, resource.id),
-                eq(chatConversations.state, "unavailable"),
-              ),
-            );
+          await setResourceConversationAvailability(tx, endpoint, resource.id, true, new Date());
         }
       }
 
@@ -129,17 +149,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
           .update(chatEndpointResources)
           .set({ availability: absentAvailability, updatedAt: new Date() })
           .where(eq(chatEndpointResources.id, resource.id));
-        await tx
-          .update(chatConversations)
-          .set({ state: "unavailable", updatedAt: new Date() })
-          .where(
-            and(
-              eq(chatConversations.companyId, endpoint.companyId),
-              eq(chatConversations.endpointId, endpoint.id),
-              eq(chatConversations.resourceId, resource.id),
-              inArray(chatConversations.state, ["active", "waiting"]),
-            ),
-          );
+        await setResourceConversationAvailability(tx, endpoint, resource.id, false, new Date());
       }
       await credentialLease.assertOwned(tx);
     });
@@ -166,7 +176,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
     endpointId: string,
     updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
-    options?: { initialGitHubImport?: boolean },
+    options?: { initialGitHubImport?: boolean; managementContext?: ConnectionManagementContext },
   ) {
     await updateResourceSelection(endpointId, updates, actorUserId, options);
     return listResources(endpointId);
@@ -176,8 +186,9 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
     endpointId: string,
     updates: Array<{ id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }>,
     actorUserId?: string | null,
-    options?: { initialGitHubImport?: boolean; allGitHubRepositoriesEnabled?: boolean },
+    options?: { initialGitHubImport?: boolean; allGitHubRepositoriesEnabled?: boolean; managementContext?: ConnectionManagementContext },
   ) {
+    await options?.managementContext?.reauthorize();
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     const bulk = options?.allGitHubRepositoriesEnabled !== undefined;
@@ -263,7 +274,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
             await assertChatExecutionDefaultsAccess(db, {
               companyId: endpoint.companyId,
               assigneeAgentId: endpoint.assignedAgentId,
-              actor: { type: "board", userId: actorUserId, source: actorUserId ? "session" : "local_implicit" },
+              actor: options?.managementContext?.actor ?? { type: "board", userId: actorUserId, source: actorUserId ? "session" : "local_implicit" },
               defaults: entry.executionDefaults,
             }, tx);
             finalDefaults.set(entry.id, entry.executionDefaults);
@@ -275,6 +286,9 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               before: { enabled: row.enabled, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: row.executionDefaults } : {}) },
               after: { enabled: finalEnabled.get(row.id)!, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: finalDefaults.get(row.id) } : {}) },
             }));
+          if (changes.some(change => !change.before.enabled && change.after.enabled)) {
+            await notifyChatRunMilestones(tx, { companyId: endpoint.companyId });
+          }
           if (bulk) {
             // One atomic database update, independent of pagination/search and
             // serialized with refresh, reconnect, and individual row changes.
@@ -306,8 +320,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               tx as unknown as Db,
               {
                 companyId: endpoint.companyId,
-                actorType: "user",
-                actorId: actorUserId ?? "board",
+                ...(options?.managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
                 action: "chat_endpoint.resources_updated",
                 entityType: "tool_connection",
                 entityId: endpoint.connectionId,
@@ -468,25 +481,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               await migrateTelegramResourceConversations(tx, currentEndpoint, previousResource, resource, previousProviderResourceId, providerResourceId, migratedLabel, now);
             }
             if (resource) {
-              await tx
-                .update(chatConversations)
-                .set({
-                  state:
-                    effect.availability === "available"
-                      ? "active"
-                      : "unavailable",
-                  updatedAt: now,
-                })
-                .where(
-                  and(
-                    eq(chatConversations.companyId, currentEndpoint.companyId),
-                    eq(chatConversations.endpointId, currentEndpoint.id),
-                    eq(chatConversations.resourceId, resource.id),
-                    effect.availability === "available"
-                      ? eq(chatConversations.state, "unavailable")
-                      : inArray(chatConversations.state, ["active", "waiting"]),
-                  ),
-                );
+              await setResourceConversationAvailability(tx, currentEndpoint, resource.id, effect.availability === "available", now);
             }
             await tx
               .update(chatEndpoints)
@@ -508,7 +503,8 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                     : currentEndpoint.status === "attention"
                       ? "verifying"
                       : currentEndpoint.status;
-                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId);
+                await notifyChatEndpointConfiguration(tx, currentEndpoint);
+                if (status !== currentEndpoint.status) await notifyChatEndpointWork(tx, currentEndpoint.connectionId, currentEndpoint.companyId);
                 await tx
                   .update(chatEndpoints)
                   .set({
@@ -522,6 +518,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                     updatedAt: now,
                   })
                   .where(eq(chatEndpoints.id, currentEndpoint.id));
+                await notifyChatConnectionHealth(tx, currentEndpoint);
                 await tx
                   .update(toolConnections)
                   .set({
@@ -536,6 +533,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                   .where(eq(toolConnections.id, currentEndpoint.connectionId));
               }
             } else {
+              await notifyChatEndpointConfiguration(tx, currentEndpoint);
               await tx
                 .update(chatEndpoints)
                 .set({
@@ -551,6 +549,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
                   updatedAt: now,
                 })
                 .where(eq(chatEndpoints.id, currentEndpoint.id));
+              await notifyChatConnectionHealth(tx, currentEndpoint);
               await tx
                 .update(toolConnections)
                 .set({
@@ -609,7 +608,10 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
         });
   }
 
-  const { reconcileGitHubWebhookRepository, listGitHubRepositories, toggleAllGitHubRepositories } = createGitHubResources(db, { endpointRecord, upsertProviderResourceRow, updateResourceSelection });
+  const { reconcileGitHubWebhookRepository, listGitHubRepositories, toggleAllGitHubRepositories } = createGitHubResources(db, {
+    endpointRecord, upsertProviderResourceRow, updateResourceSelection,
+    restoreResourceConversations: (tx, endpoint, resourceId) => setResourceConversationAvailability(tx, endpoint, resourceId, true, new Date()),
+  });
 
   return { reconcileGitHubWebhookRepository, reconcileProviderResourceRows, listResources, listGitHubRepositories, replaceResources, toggleAllGitHubRepositories, hasNewerProcessedProviderLifecycleEffect, applyProviderAvailability };
 }

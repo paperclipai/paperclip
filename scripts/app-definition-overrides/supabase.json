@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "slug": "supabase",
+  "name": "Supabase",
+  "description": "Create Supabase projects, deploy Edge Functions, manage databases, and configure application authentication and APIs.",
+  "categories": [
+    "data",
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/supabase.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.supabase.com/*",
+    "https://api.supabase.com/*"
+  ],
+  "docsUrl": "https://supabase.com/docs/guides/ai-tools/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://mcp.supabase.com/mcp",
+        "scopesHint": [
+          "organizations:read",
+          "projects:read",
+          "projects:write",
+          "database:write",
+          "database:read",
+          "analytics:read",
+          "secrets:read",
+          "edge_functions:read",
+          "edge_functions:write",
+          "environment:read",
+          "environment:write",
+          "storage:read",
+          "storage:write"
+        ]
+      },
+      "guidanceMd": "Connect the Supabase organization agents should use. Leave Project reference empty to create and manage projects; pin a project to restrict access and disable account tools. Database migrations and Edge Function deployment are available through MCP. Use the Management API method for Auth and Data API configuration.",
+      "riskTier": "S4",
+      "label": "Sign in with Supabase",
+      "consoleLinks": {
+        "docs": "https://supabase.com/docs/guides/ai-tools/mcp"
+      },
+      "warnings": [
+        "A Supabase account; use a development project and review write actions before connecting production data.",
+        "Do not connect production data unless you have reviewed Supabase's MCP security guidance."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Pin to project reference",
+          "type": "text",
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Optional. Restrict access to one existing project. Leave empty to create projects and use account tools.",
+          "transport": {
+            "location": "query",
+            "name": "project_ref"
+          },
+          "advanced": true,
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to prevent the connection from changing the database.",
+          "transport": {
+            "location": "query",
+            "name": "read_only",
+            "format": "boolean"
+          },
+          "advanced": true
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "database,docs",
+          "helperMd": "Optional comma-separated groups: docs, account, database, debugging, development, functions, branching, storage. Storage is disabled unless selected. Include account for project creation and functions for deployment.",
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          },
+          "validation": {
+            "pattern": "^(docs|account|database|debugging|development|functions|branching|storage)(\\s*,\\s*(docs|account|database|debugging|development|functions|branching|storage))*$",
+            "maxLength": 256
+          }
+        }
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a scoped Supabase personal access token for hosted MCP.",
+      "defaults": {
+        "serverUrl": "https://mcp.supabase.com/mcp"
+      },
+      "guidanceMd": "Connect the Supabase organization agents should use. Leave Project reference empty to create and manage projects; pin a project to restrict access and disable account tools. Database migrations and Edge Function deployment are available through MCP. Use the Management API method for Auth and Data API configuration.",
+      "riskTier": "S4",
+      "label": "Use a personal access token",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Supabase personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "sbp_...",
+          "secret": true,
+          "helperMd": "Create a scoped personal access token (sbp_...) with permissions for the enabled MCP tools. Project publishable, anon, service_role, and secret API keys do not authenticate the Management API or hosted MCP server."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://supabase.com/dashboard/account/tokens",
+        "docs": "https://supabase.com/docs/guides/ai-tools/mcp"
+      },
+      "warnings": [
+        "A Supabase account; use a development project and review write actions before connecting production data.",
+        "Do not connect production data unless you have reviewed Supabase's MCP security guidance."
+      ],
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Pin to project reference",
+          "type": "text",
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Optional. Restrict access to one existing project. Leave empty to create projects and use account tools.",
+          "transport": {
+            "location": "query",
+            "name": "project_ref"
+          },
+          "advanced": true,
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
+          }
+        },
+        {
+          "key": "readOnly",
+          "label": "Read-only mode",
+          "type": "checkbox",
+          "defaultValue": false,
+          "helperMd": "Enable this to prevent the connection from changing the database.",
+          "transport": {
+            "location": "query",
+            "name": "read_only",
+            "format": "boolean"
+          },
+          "advanced": true
+        },
+        {
+          "key": "features",
+          "label": "Feature groups",
+          "type": "textarea",
+          "advanced": true,
+          "placeholder": "database,docs",
+          "helperMd": "Optional comma-separated groups: docs, account, database, debugging, development, functions, branching, storage. Storage is disabled unless selected. Include account for project creation and functions for deployment.",
+          "transport": {
+            "location": "query",
+            "name": "features",
+            "format": "csv"
+          },
+          "validation": {
+            "pattern": "^(docs|account|database|debugging|development|functions|branching|storage)(\\s*,\\s*(docs|account|database|debugging|development|functions|branching|storage))*$",
+            "maxLength": 256
+          }
+        }
+      ]
+    },
+    {
+      "key": "management-api",
+      "label": "Deploy and configure with an access token",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Deploy Edge Function source files and secrets, and configure Auth redirect URLs, signup settings, and Data API schemas for an existing project.",
+      "defaults": {
+        "serverUrl": "https://api.supabase.com/v1"
+      },
+      "riskTier": "S4",
+      "guidanceMd": "Connect a scoped Supabase personal access token and the project reference. Agents can deploy and remove Edge Functions, set their environment secrets, inspect project details, and configure Auth and the Data API. Use hosted MCP for project creation, SQL migrations, and storage tools. Use the Supabase Dashboard when a human must enter a credential privately.",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Supabase personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "sbp_...",
+          "secret": true,
+          "helperMd": "Scope the token to this project. Grant Read-write for Project Settings, Auth Config, Data API Config, Edge Functions, and Edge Function Secrets. Auth updates require both Project Settings and Auth Config. Project API keys (publishable, anon, service_role, and secret keys) are not supported. Paperclip cannot increase token permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Project reference",
+          "type": "text",
+          "required": true,
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Copy the project reference from Supabase Dashboard \u2192 Project Settings. Every action is restricted to this project.",
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
+          }
+        }
+      ],
+      "requiredResourceFilters": [
+        "project"
+      ],
+      "consoleLinks": {
+        "keys": "https://supabase.com/dashboard/account/tokens",
+        "docs": "https://supabase.com/docs/reference/api/introduction"
+      },
+      "warnings": [
+        "Deployments and configuration changes affect the selected project. Configure action permissions for the agents that should manage it."
+      ]
+    }
+  ]
+}

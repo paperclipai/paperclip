@@ -1,3 +1,4 @@
+import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
@@ -15,12 +16,13 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
 import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -34,10 +36,15 @@ import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { resolveExecutionRunAdapterConfig } from "../services/heartbeat.js";
 import { aiConnectionBindingSchema, connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
+import { openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import express from "express";
 import request from "supertest";
 import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
 import { validateAiApiKey } from "../routes/ai-connections.js";
+import * as copilotProbe from "../services/copilot-connection-probe.js";
+import * as settingsModule from "../services/instance-settings.js";
+import { agentRoutes } from "../routes/agents.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 vi.mock("../services/local-ai-browser-login.js", () => ({
   startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
 }));
@@ -67,6 +74,297 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it.each([
+    { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
+    { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },
+    { provider: "openai", envKey: "OPENAI_API_KEY", routed: false },
+    { provider: "anthropic", envKey: "ANTHROPIC_API_KEY", routed: false },
+    { provider: "google", envKey: "GEMINI_API_KEY", routed: false },
+  ] as const)("prepares native Pi with isolated $provider credentials (routing=$routed)", async ({ provider, envKey, routed }) => {
+    const owner = `pi-managed-${provider}-${routed}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const token = "fixture-pi-provider-key";
+    const account = await service.save(companyId, owner, { provider, method: "api_key", ownership: "personal", name: owner, apiKey: token, allAgents: true, agentIds: [],
+      ...(routed ? { routing: { kind: "openrouter" as const, protocol: "chat" as const, auth: "bearer" as const, models: [] } } : {}) }, token);
+    if (!routed) await service.setDefault(companyId, owner, account.grantId);
+    const selected = routed
+      ? { provider, method: "api_key" as const, mode: "delegated" as const, ...account }
+      : { provider, method: "api_key" as const, mode: "responsible_user" as const };
+    const piInput = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner", binding: selected,
+      config: { provider: "acpx", acpxAgent: "pi", model: `${provider}/provider-model`, piThinkingLevel: "low", env: { OPENAI_API_KEY: "stale-openai", ANTHROPIC_API_KEY: "stale-anthropic" } } };
+    const runtime = await prepareManagedAiRuntime(db, piInput);
+    try {
+      expect(runtime.config).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: piInput.config.model, env: { OPENCODE_CONFIG_CONTENT: "", PAPERCLIP_PI_PROVIDERS: "" } });
+      for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "CODEX_API_KEY"]) expect(runtime.config.env[key]).toBe(key === envKey ? token : "");
+      expect(runtime.attribution).toMatchObject({ connectionId: account.connectionId, grantId: account.grantId, provider });
+    } finally { await runtime.cleanup(); }
+    await expect(prepareManagedAiRuntime(db, { ...piInput, config: { ...piInput.config, env: { PAPERCLIP_PI_PROVIDERS: "{}" } } })).rejects.toThrow("routing is incompatible");
+  });
+
+  it.each([200, 401])("reverifies native Pi OpenRouter keys without requiring the Legacy Pi CLI (HTTP %s)", async status => {
+    const owner = `pi-adoption-${status}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const token = `fixture-pi-adoption-${status}`;
+    const account = await service.save(companyId, owner, { provider: "openrouter", method: "api_key", ownership: "personal", name: owner, apiKey: token, allAgents: true, agentIds: [], routing: { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] } }, token);
+    const selected = { provider: "openrouter", method: "api_key", mode: "delegated", ...account } as const;
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner", binding: selected, config: { provider: "acpx", acpxAgent: "pi", model: "openrouter/anthropic/claude-sonnet-4.5" } });
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const { agentEnvironmentTestService } = await import("../services/agent-environment-test.js");
+    const native = vi.spyOn(requireServerAdapter("paperclip_runner"), "testEnvironment").mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: new Date().toISOString(), checks: [{ code: "acpx_runtime_ready", level: "info", message: "Pinned Pi runtime verified" }] });
+    const legacy = vi.spyOn(requireServerAdapter("pi_local"), "testEnvironment").mockRejectedValue(new Error("Legacy Pi CLI must not be required"));
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: {} }), { status }));
+    try {
+      const result = await agentEnvironmentTestService(db).testManagedEnvironment("paperclip_runner", { companyId, adapterType: "paperclip_runner", config: runtime.config }, selected, runtime, agentId);
+      expect(result.status).toBe(status === 200 ? "pass" : "fail");
+      expect(result.checks).toContainEqual(expect.objectContaining({ code: status === 200 ? "ai_connection_api_key_reverified" : "ai_connection_api_key_rejected" }));
+      expect(legacy).not.toHaveBeenCalled();
+      expect(request).toHaveBeenCalled();
+    } finally { native.mockRestore(); legacy.mockRestore(); request.mockRestore(); await runtime.cleanup(); }
+  });
+
+  it("defers a new plugin agent's Copilot check until its saved-agent lifecycle can acquire the computer", async () => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = "copilot-plugin-bootstrap", pluginId = randomUUID();
+    const pluginKey = `test.bootstrap.${pluginId}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/bootstrap", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Bootstrap", description: "Bootstrap fixture", author: "Test", categories: ["automation"],
+        capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }] } });
+    const [environment] = await db.insert(environments).values({ companyId, name: "Agent computer", driver: "plugin",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    const token = "github_pat_fixture_plugin_bootstrap";
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Bootstrap", apiKey: token, agentIds: [], allAgents: false }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget").mockRejectedValue(new Error("No computer exists before the agent is saved"));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const response = await request(app).post(`/api/companies/${companyId}/agents`).send({ name: "Plugin bootstrap", role: "general",
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+        defaultEnvironmentId: environment.id, runtimeConfig: { aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } } });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      expect(response.body.defaultEnvironmentId).toBe(environment.id);
+      expect(response.body.lifecycleState).toBe("preparing");
+      expect(probe).not.toHaveBeenCalled();
+    } finally { probe.mockRestore(); }
+  });
+
+  it.each(["create", "hire", "edit"])("refuses Copilot %s before probing or persisting when forced Kubernetes is missing", async action => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = `copilot-kubernetes-${action}`, id = randomUUID();
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: "Kubernetes fixture", adapterType: "paperclip_runner", adapterConfig: config, runtimeConfig: { aiConnection } });
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Kubernetes fixture", apiKey: "github_pat_fixture_kubernetes", agentIds: [id], allAgents: false }, "github_pat_fixture_kubernetes");
+    await service.setDefault(companyId, owner, account.grantId);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    const before = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
+    const originalSettings = settingsModule.instanceSettingsService;
+    const settings = vi.spyOn(settingsModule, "instanceSettingsService").mockImplementation(database => {
+      const service = originalSettings(database);
+      return { ...service, getGeneral: async () => ({ ...await service.getGeneral(), executionMode: "kubernetes" as const }) };
+    });
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget");
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const changedConfig = { ...config, model: "prospective-model" };
+      const response = action === "edit"
+        ? await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: changedConfig })
+        : await request(app).post(`/api/companies/${companyId}/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: "Forced Kubernetes", role: "general", adapterType: "paperclip_runner", adapterConfig: changedConfig, runtimeConfig: { aiConnection } });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details.code).toBe("copilot_environment_unavailable");
+      expect(probe).not.toHaveBeenCalled();
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toEqual(config);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId))).toHaveLength(before.length);
+    } finally {
+      probe.mockRestore(); settings.mockRestore();
+      await db.update(companies).set({ requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents }).where(eq(companies.id, companyId));
+    }
+  });
+  it.each(["create", "hire", "edit"].flatMap(action => [true, false].map(connectionProvided => ({ action, connectionProvided }))))(
+    "refuses unavailable Copilot models before $action persists configuration (connection binding: $connectionProvided)", async ({ action, connectionProvided }) => {
+    const { unprocessable } = await import("../errors.js");
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = `copilot-model-${action}-${connectionProvided}`, id = randomUUID();
+    const savedConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: `Copilot ${action} fixture`, adapterType: "paperclip_runner", adapterConfig: savedConfig, runtimeConfig: connectionProvided ? { aiConnection } : {} });
+    const token = `github_pat_fixture_model_${action}`;
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: `Model ${action}`, apiKey: token, agentIds: [id], allAgents: false }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const [company] = await db.select().from(companies).where(eq(companies.id, companyId));
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    const before = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId));
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget").mockRejectedValue(unprocessable("The selected Copilot model is unavailable for this account.", { code: "COPILOT_MODEL_UNAVAILABLE" }));
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const config = { ...savedConfig, model: "unavailable-copilot-model" };
+    try {
+      const response = action === "edit"
+        ? await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: config })
+        : await request(app).post(`/api/companies/${companyId}/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: `Unavailable ${action}`, role: "general", adapterType: "paperclip_runner", adapterConfig: config, ...(connectionProvided ? { runtimeConfig: { aiConnection } } : {}) });
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body).toMatchObject({ error: "The selected Copilot model is unavailable for this account." });
+      expect(probe).toHaveBeenCalledExactlyOnceWith(token, null, "unavailable-copilot-model");
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toEqual(savedConfig);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId))).toHaveLength(before.length);
+      expect(JSON.stringify(response.body)).not.toContain(token);
+    } finally {
+      probe.mockRestore();
+      await db.update(companies).set({ requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents }).where(eq(companies.id, companyId));
+    }
+  });
+
+  it("verifies the exact available Copilot model before a model-only edit with an unchanged connection", async () => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = "copilot-model-valid", id = randomUUID();
+    const aiConnection = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" };
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id, companyId, name: "Copilot available model", adapterType: "paperclip_runner", adapterConfig: { ...config, model: "previous-model" }, runtimeConfig: { aiConnection } });
+    const token = "github_pat_fixture_model_valid";
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Valid model", apiKey: token, agentIds: [id], allAgents: false }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const probe = vi.spyOn(copilotProbe, "probeCopilotExecutionTarget").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: config.model, label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: owner, companyIds: [companyId], isInstanceAdmin: true }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    try {
+      const response = await request(app).patch(`/api/agents/${id}`).send({ adapterConfig: config });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(token, null, config.model);
+      expect((await db.select().from(agents).where(eq(agents.id, id)))[0].adapterConfig).toMatchObject(config);
+      expect(response.body.runtimeConfig.aiConnection).toEqual(aiConnection);
+    } finally { probe.mockRestore(); }
+  });
+  it("passes the live sandbox worker manager to Copilot connection verification", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({
+      status: "verified", version: "1.0.88", profileDigest: "fixture-profile",
+      promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }],
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { pluginWorkerManager }));
+    try {
+      const response = await request(app).post(`/api/companies/${companyId}/ai-connections`).send({
+        provider: "github", method: "api_key", name: "Copilot remote route", ownership: "personal",
+        apiKey: "github_pat_fixture_remote", agentIds: [], allAgents: false,
+      });
+      expect(response.status).toBe(201);
+      expect(probe).toHaveBeenCalledWith(db, companyId, "github_pat_fixture_remote", undefined, undefined, { pluginWorkerManager });
+    } finally { probe.mockRestore(); }
+  });
+
+  it("discovers Copilot models in the selected environment with its sandbox worker", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
+    const [environment] = await db.insert(environments).values({ name: "Copilot model discovery", driver: "sandbox", config: { provider: "daytona" } }).returning();
+    const token = "github_pat_fixture_model_discovery";
+    const account = await service.save(companyId, "alice", { provider: "github", method: "api_key", ownership: "personal", name: "Model discovery account", apiKey: token, agentIds: [agentId], allAgents: false }, token);
+    await service.setDefault(companyId, "alice", account.grantId);
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db, { pluginWorkerManager }));
+    try {
+      const response = await request(app).get(`/api/companies/${companyId}/adapters/paperclip_runner/models`).query({ provider: "acpx", acpxAgent: "copilot", environmentId: environment.id, agentId, aiConnection: JSON.stringify({ provider: "github", method: "api_key", mode: "responsible_user" }) });
+      expect(response.status).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.body).toEqual([{ id: "gpt-5.6-luna", label: "GPT" }]);
+      expect(probe).toHaveBeenCalledWith(db, companyId, token, environment.id, undefined, { pluginWorkerManager, targetAgentId: agentId });
+      expect(JSON.stringify(response.body)).not.toContain(token);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("keeps Copilot model discovery behind shared installation and agent configuration authority", async () => {
+    const { errorHandler } = await import("../middleware/index.js");
+    const owner = "copilot-discovery-owner", audience = "copilot-discovery-audience";
+    await db.insert(companyMemberships).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", status: "active", membershipRole: "member" })));
+    await db.insert(principalPermissionGrants).values([owner, audience].map(principalId => ({ companyId, principalId, principalType: "user", permissionKey: "agents:create" })));
+    const token = "github_pat_fixture_shared_discovery";
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "shared", name: "Shared discovery", apiKey: token, agentIds: [], allAgents: false }, token);
+    await db.insert(connectionGrantMembers).values([owner, audience].map(subjectId => ({ companyId, grantId: account.grantId, subjectType: "user", subjectId })));
+    const binding = { provider: "github", method: "api_key", mode: "shared", ...account };
+    const probe = vi.spyOn(copilotProbe, "probeCopilotConnection").mockResolvedValue({ status: "verified", version: "1.0.88", profileDigest: "fixture-profile", promptSent: false, models: [{ id: "gpt-5.6-luna", label: "GPT" }] });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? audience), companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] }; next(); });
+    app.use("/api", agentRoutes(db)); app.use(errorHandler);
+    const url = `/api/companies/${companyId}/adapters/paperclip_runner/models`;
+    const query = { provider: "acpx", acpxAgent: "copilot", aiConnection: JSON.stringify(binding) };
+    try {
+      const denied = await request(app).get(url).query(query);
+      expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+      expect(denied.body.error).toContain("not permitted for this agent");
+      expect(probe).not.toHaveBeenCalled();
+      const allowed = await request(app).get(url).set("x-test-user", owner).query(query);
+      expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+      expect(probe).toHaveBeenCalledExactlyOnceWith(db, companyId, token, null, undefined, { pluginWorkerManager: undefined });
+      probe.mockClear();
+      const foreign = await request(app).get(url).set("x-test-user", owner).query({ ...query, agentId: randomUUID() });
+      expect(foreign.status).toBe(404);
+      expect(probe).not.toHaveBeenCalled();
+      expect(JSON.stringify([denied.body, allowed.body, foreign.body])).not.toContain(token);
+    } finally { probe.mockRestore(); }
+  });
+
+  it("preserves repository GitHub credentials for managed non-Copilot execution", async () => {
+    const owner = "repo-github-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    for (const configured of [{ GH_TOKEN: "repo-gh-fixture", GITHUB_TOKEN: "repo-github-fixture" }, {}]) {
+      const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: { env: configured } });
+      try {
+        expect(runtime.config.env).toMatchObject({ COPILOT_GITHUB_TOKEN: "", ANTHROPIC_API_KEY: `fixture-${owner}` });
+        for (const key of ["GH_TOKEN", "GITHUB_TOKEN"] as const) {
+          if (key in configured) expect(runtime.config.env?.[key]).toBe(configured[key as keyof typeof configured]);
+          else expect(runtime.config.env).not.toHaveProperty(key);
+        }
+      } finally { await runtime.cleanup(); }
+    }
+  });
+
+  it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
+    const owner = "copilot-owner";
+    const token = "github_pat_fixture_copilot";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "github", method: "api_key", ownership: "personal", name: "Copilot", apiKey: token, agentIds: [agentId], allAgents: false }, token);
+    const selectedBinding = { provider: "github", method: "api_key", mode: "responsible_user" } as const;
+    const config = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", env: { COPILOT_GITHUB_TOKEN: "ambient-never-use", GH_TOKEN: "project-never-use" } };
+    const runInput = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner", binding: selectedBinding, config };
+    const selected = await service.select({ ...runInput, userId: owner, runnerProvider: "acpx", acpxAgent: "copilot", model: config.model });
+    expect(await service.credential(selected)).toBe(token);
+    expect(JSON.stringify(await service.list(companyId, owner))).not.toContain(token);
+    const runtime = await prepareManagedAiRuntime(db, runInput);
+    try {
+      expect(runtime.config).toMatchObject({ provider: "acpx", acpxAgent: "copilot", model: config.model, env: { COPILOT_GITHUB_TOKEN: token, GH_TOKEN: "", GITHUB_TOKEN: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" } });
+      expect(runtime.attribution).toMatchObject({ provider: "github", method: "api_key", connectionId: account.connectionId, grantId: account.grantId });
+      expect(config.env.COPILOT_GITHUB_TOKEN).toBe("ambient-never-use");
+    } finally { await runtime.cleanup(); }
+    await expect(access(runtime.home!)).rejects.toThrow();
+    await expect(service.select({ ...runInput, userId: "bob", runnerProvider: "acpx", acpxAgent: "copilot" })).rejects.toThrow();
+    await expect(service.select({ ...runInput, companyId: otherCompanyId, userId: owner, binding: { ...selectedBinding, mode: "shared", ...account }, runnerProvider: "acpx", acpxAgent: "copilot" })).rejects.toThrow();
+    const network = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("usage must not send credentials"));
+    try {
+      expect(await service.probeUsage(companyId, owner, account.connectionId, account.grantId)).toMatchObject({ provider: "github", status: "unsupported", limits: [] });
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expect(prepareManagedAiRuntime(db, runInput)).rejects.toThrow();
+  });
+
   it("marks explicit AI selection rejections without changing their HTTP contract", async () => {
     const owner = "selection-blocker-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -596,7 +894,7 @@ describe("managed AI connections", () => {
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock")
         .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }))
         .mockRejectedValueOnce(Object.assign(new Error("lock timeout"), { code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE }));
-      saving = service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, sessionId);
+      saving = service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, { id: sessionId });
       void saving.catch(() => {});
       await vi.waitFor(() => expect(lock).toHaveBeenCalledTimes(3));
       expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, sessionId)))[0].connectionId).toBeNull();
@@ -604,7 +902,7 @@ describe("managed AI connections", () => {
       const [, saved] = await Promise.all([refreshing, saving]);
       const [row] = (await service.quotaAccounts(companyId, loginOwner)).filter(row => row.connection.id === saved.connectionId);
       expect(await service.credential(row)).toBe(credential);
-      expect(await service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, sessionId)).toEqual(saved);
+      expect(await service.save(companyId, loginOwner, { ...intent, agentIds: [] }, credential, { id: sessionId })).toEqual(saved);
       if (kind === "new") expect(JSON.parse(await service.credential(quotaRow))).toMatchObject({ tokens: { access_token: "quota-fresh", refresh_token: "quota-replacement" } });
     } finally {
       release.resolve(); await Promise.allSettled([refreshing, saving]); lock?.mockRestore(); request.mockRestore();
@@ -849,12 +1147,18 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await expect(access(runtime.home!)).rejects.toThrow();
   });
 
-  it("preserves Google account defaults when the provider constraint migration is reapplied", async () => {
+  it("preserves Google and Copilot account defaults when the current provider constraint migration is reapplied", async () => {
     const saved = await service.save(companyId, "bob", {
       provider: "google", method: "api_key", ownership: "personal", name: "Google migration",
       apiKey: "fixture", allAgents: true, agentIds: [],
     }, "google-migration-key");
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0306_familiar_titania.sql", import.meta.url), "utf8");
+    await db.insert(companyMemberships).values({ companyId, principalId: "migration-copilot", principalType: "user", status: "active", membershipRole: "member" });
+    const copilot = await service.save(companyId, "migration-copilot", {
+      provider: "github", method: "api_key", ownership: "personal", name: "Copilot migration",
+      apiKey: "fixture", allAgents: true, agentIds: [],
+    }, "github_pat_fixture_migration");
+    await service.setDefault(companyId, "migration-copilot", copilot.grantId);
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0361_mighty_dracula.sql", import.meta.url), "utf8");
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await db.transaction(async (tx) => {
         for (const statement of migration.split("--> statement-breakpoint")) {
@@ -867,6 +1171,12 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       binding: { provider: "google", method: "api_key", mode: "responsible_user" },
     });
     expect(selected.grant.id).toBe(saved.grantId);
+    const selectedCopilot = await service.select({
+      companyId, agentId, userId: "migration-copilot", adapterType: "paperclip_runner",
+      runnerProvider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna",
+      binding: { provider: "github", method: "api_key", mode: "responsible_user" },
+    });
+    expect(selectedCopilot.grant.id).toBe(copilot.grantId);
   });
 
   it.each([false, true])("reports the authoritative connection-manager capability for custom grants (manager: %s)", async (manager) => {
@@ -967,6 +1277,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, saved.grantId));
     await expect(service.select({ ...input, binding: selected, userId: "alice", adapterType: "codex_local", model: "openai/gpt-5.4" })).rejects.toThrow("Reconnect");
   });
+  it.each(["openrouter", "gateway"] as const)("preserves Claude custom headers for managed %s connections", async (kind) => {
+    const provider = kind === "openrouter" ? "openrouter" : "anthropic";
+    const routing = { kind, protocol: "messages", auth: "bearer", ...(kind === "gateway" ? { baseUrl: "https://gateway.example/v1" } : {}), models: [] } as const;
+    const saved = await service.save(companyId, "alice", { provider, method: "api_key", name: `Headers ${kind}`, ownership: "personal", allAgents: true, agentIds: [], routing: { ...routing, models: [] } }, "fixture-credential");
+    const selected = { provider, method: "api_key", mode: "delegated", ...saved } as const;
+    const customHeaders = "X-Gateway-Route: account-route\nx-title: Previous harness";
+    const reference = { type: "secret_ref", secretId: randomUUID(), version: "latest" };
+    const inherited = process.env.ANTHROPIC_CUSTOM_HEADERS;
+    process.env.ANTHROPIC_CUSTOM_HEADERS = "X-Gateway-Route: inherited-route";
+    try {
+      for (const adapterType of ["claude_local", "paperclip_runner"]) {
+        for (const configured of [customHeaders, reference, undefined]) {
+          const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: "alice", binding: selected, adapterType,
+            config: { provider: "acpx", acpxAgent: "claude", env: configured === undefined ? {} : { ANTHROPIC_CUSTOM_HEADERS: configured } } });
+          try {
+            const effective = configured ?? process.env.ANTHROPIC_CUSTOM_HEADERS;
+            const expected = kind === "openrouter" && typeof effective === "string"
+              ? openRouterClaudeHeaders(effective)
+              : configured;
+            expect(runtime.config.env.ANTHROPIC_CUSTOM_HEADERS).toEqual(expected);
+          } finally { await runtime.cleanup(); }
+        }
+      }
+    } finally {
+      if (inherited === undefined) delete process.env.ANTHROPIC_CUSTOM_HEADERS;
+      else process.env.ANTHROPIC_CUSTOM_HEADERS = inherited;
+    }
+  });
+
   it("reconnects JSONB routing without changing its identity or access", async () => {
     const routing = { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://gateway.example/v1", models: [{ id: "gateway-model" }] } as const;
     const input = { provider: "openai", method: "api_key", name: "Reconnect gateway", ownership: "personal", allAgents: false, agentIds: [agentId], routing: { ...routing, models: [...routing.models] } } as const;
@@ -1246,6 +1585,21 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "xai", target)).rejects.toThrow("overrides");
     } finally { execute.mockRestore(); }
   });
+  it("requires a typed project authentication capability for task-only environments", async () => {
+    const execute = vi.spyOn(executionTarget, "runAdapterExecutionTargetProcess");
+    const description = { kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    const task = vi.fn(async () => description);
+    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/unused", runnerTask: task } as Parameters<typeof assertManagedAiProjectAuth>[2];
+    try {
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).resolves.toBeUndefined();
+      await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target)).rejects.toThrow("overrides");
+      expect(task).toHaveBeenCalledWith({ kind: "describe" });
+      task.mockResolvedValueOnce({ ...description, projectAuthCheckVersion: undefined } as never);
+      await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
+      expect(execute).not.toHaveBeenCalled();
+    } finally { execute.mockRestore(); }
+  });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");
     await create("alice", "Alice second");
@@ -1363,11 +1717,70 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude subscription", agentIds: [], allAgents: true } as const;
     const sessionId = randomUUID();
     await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id, adapterType: "claude_local", startedByUserId: "alice", publicSessionId: sessionId, status: "submitting", aiConnection: { ...intent, agentIds: [] }, expiresAt: new Date(Date.now() + 60000) });
-    const first = await service.save(companyId, "alice", { ...intent, agentIds: [] }, "fixture-subscription", sessionId);
-    expect(await service.save(companyId, "alice", { ...intent, agentIds: [] }, "fixture-subscription", sessionId)).toEqual(first);
+    const first = await completeSetupTokenAiConnection(db, { scope: { companyId, ownerUserId: "alice", environmentId: environment.id, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] } }, token: "fixture-subscription", sessionId });
+    expect(await completeSetupTokenAiConnection(db, { scope: { companyId, ownerUserId: "alice", environmentId: environment.id, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] } }, token: "fixture-subscription", sessionId })).toEqual(first);
+    expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.publicSessionId, sessionId)))[0]).toMatchObject({ status: "stored", connectionId: first.connectionId, connectionGrantId: first.grantId });
     const cancelled = randomUUID();
     await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id, adapterType: "claude_local", startedByUserId: "alice", publicSessionId: cancelled, status: "cancelled", expiresAt: new Date(Date.now() + 60000) });
-    await expect(service.save(companyId, "alice", { ...intent, agentIds: [] }, "fixture-never-save", cancelled)).rejects.toThrow("no longer active");
+    await expect(completeSetupTokenAiConnection(db, { scope: { companyId, ownerUserId: "alice", environmentId: environment.id, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] } }, token: "fixture-never-save", sessionId: cancelled })).rejects.toThrow("no longer active");
+  });
+  it.each(["anthropic", "openai"] as const)("binds %s by internal session ID without choosing its completion state", async provider => {
+    const owner = `session-owner-${provider}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const [environment] = await db.insert(environments).values({ name: `Session identity ${provider}`, driver: "sandbox" }).returning();
+    const intent = { provider, method: "subscription", ownership: "personal", name: `Session identity ${provider}`, allAgents: false, agentIds: [] } as const;
+    const [session] = await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id,
+      adapterType: provider === "anthropic" ? "claude_local" : "codex_local", startedByUserId: owner,
+      publicSessionId: randomUUID(), status: "promoting", aiConnection: { ...intent, agentIds: [] },
+      expiresAt: new Date(Date.now() + 60_000),
+    }).returning();
+    const adapterWake = vi.fn(), setupWake = vi.fn();
+    const unsubscribe = [
+      subscribeDeliveryWork(db, DELIVERY_QUEUES.adapterLoginCleanup, adapterWake),
+      subscribeDeliveryWork(db, DELIVERY_QUEUES.setupTokenCleanup, setupWake),
+    ];
+    const complete = vi.fn(async () => {
+      expect(adapterWake).not.toHaveBeenCalled();
+      expect(setupWake).not.toHaveBeenCalled();
+    });
+    try {
+      await expect(service.save(companyId, owner, { ...intent, agentIds: [] }, "fixture", { id: session.publicSessionId, complete })).rejects.toThrow("ownership mismatch");
+      await expect(service.save(companyId, "bob", { ...intent, agentIds: [] }, "fixture", { id: session.id, complete })).rejects.toThrow("ownership mismatch");
+      await expect(service.save(companyId, owner, { ...intent, agentIds: [], ownership: "shared" }, "fixture", { id: session.id, complete })).rejects.toThrow("target mismatch");
+      expect(complete).not.toHaveBeenCalled();
+      const saved = await service.save(companyId, owner, { ...intent, agentIds: [] }, "fixture", { id: session.id, complete });
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, session.id)))[0]).toMatchObject({
+        connectionId: saved.connectionId, connectionGrantId: saved.grantId, status: "promoting",
+      });
+      expect(await service.save(companyId, owner, { ...intent, agentIds: [] }, "replacement", { id: session.id, complete })).toEqual(saved);
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(adapterWake).toHaveBeenCalledTimes(1);
+      expect(setupWake).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe.forEach(stop => stop());
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, session.id));
+    }
+  });
+  it("rolls back credential and connection writes if setup-token completion loses its claim", async () => {
+    const owner = "lost-setup-token-claim";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const [environment] = await db.insert(environments).values({ name: "Lost setup claim", driver: "sandbox" }).returning();
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Lost setup claim", allAgents: false, agentIds: [] } as const;
+    const [session] = await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id,
+      adapterType: "claude_local", startedByUserId: owner, publicSessionId: randomUUID(), status: "submitting",
+      aiConnection: { ...intent, agentIds: [] }, expiresAt: new Date(Date.now() + 60_000), boundAt: new Date(),
+    }).returning();
+    try {
+      await expect(completeSetupTokenAiConnection(db, { scope: { companyId, ownerUserId: owner,
+        environmentId: environment.id, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] } },
+        sessionId: session.publicSessionId, token: "must-rollback",
+      })).rejects.toThrow();
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, session.id)))[0]).toMatchObject({
+        connectionId: null, connectionGrantId: null, status: "submitting",
+      });
+      expect(await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.name, intent.name)))).toEqual([]);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.ownerUserId, owner))).toEqual([]);
+    } finally { await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, session.id)); }
   });
   it("preserves connection identity and defaults through reconnect; revocation wins over older attempts", async () => {
     const current = await service.select({ ...input, userId: "bob" });
@@ -1615,7 +2028,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     const sessionId = randomUUID();
     const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Expired", agentIds: [], allAgents: true } as const;
     await db.insert(adapterAuthSessions).values({ companyId, environmentId: environment.id, adapterType: "claude_local", startedByUserId: "alice", publicSessionId: sessionId, status: "submitting", aiConnection: { ...intent, agentIds: [] }, expiresAt: new Date(Date.now() - 1000) });
-    await expect(service.save(companyId, "alice", { ...intent, agentIds: [] }, "fixture-never-save", sessionId)).rejects.toThrow("no longer active");
+    await expect(completeSetupTokenAiConnection(db, { scope: { companyId, ownerUserId: "alice", environmentId: environment.id, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] } }, token: "fixture-never-save", sessionId })).rejects.toThrow("no longer active");
     expect((await service.list(companyId, "alice")).some(account => account.name === "Expired")).toBe(false);
   });
   it("authorizes account creation, reconnect and defaults at the HTTP boundary before provider calls", async () => {
@@ -1736,6 +2149,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(started.headers["cache-control"]).toBe("no-store");
       expect(started.body.command).toBeUndefined();
       expect((await request(app).post(`${base}/attempts`).send(intent)).body).toEqual(started.body);
+      await db.update(adapterAuthSessions).set({ publicSessionId: randomUUID() }).where(eq(adapterAuthSessions.id, started.body.sessionId));
       const input = { ...intent, localSessionId: started.body.sessionId };
       for (const endpoint of [base, `${base}/check`]) {
         expect((await request(app).post(endpoint).set("x-test-user", "bob").send(input)).status).toBe(404);
@@ -1916,6 +2330,61 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       delivery.mockRestore(); providerRequest.mockRestore(); probe.mockRestore(); runtime.mockRestore(); resolveTarget.mockRestore();
       await settings.update({ defaultEnvironmentId: previous.defaultEnvironmentId });
     }
+  });
+
+  it("saves a restricted shared connection during setup and installs it only when setup finishes", async () => {
+    const { requireServerAdapter } = await import("../adapters/index.js");
+    const setupId = randomUUID();
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared setup", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-setup-key");
+    const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const initial = await request(app).post(`/api/companies/${companyId}/agents`).send({ setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy" });
+    expect(initial.status, JSON.stringify(initial.body)).toBe(201);
+    const probe = vi.spyOn(requireServerAdapter("claude_local"), "testEnvironment");
+    const providerRequest = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
+    try {
+      const saved = await request(app).patch(`/api/agents/${setupId}`).send({ runtimeConfig: { aiConnection: selected } });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body).toMatchObject({ pauseReason: "setup", runtimeConfig: { aiConnection: selected } });
+      expect(probe).not.toHaveBeenCalled();
+      probe.mockResolvedValue({ adapterType: "claude_local", status: "pass", checks: [], testedAt: new Date().toISOString() });
+      const tested = await request(app).post(`/api/companies/${companyId}/adapters/claude_local/test-environment`).send({
+        agentId: setupId, runner: "legacy", adapterConfig: {}, aiConnection: selected,
+      });
+      expect(tested.status, JSON.stringify(tested.body)).toBe(200);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.targetId, setupId))).toHaveLength(0);
+      const finished = await request(app).post(`/api/companies/${companyId}/agent-hires`).send({
+        setupAgentId: setupId, name: "Shared setup agent", adapterType: "claude_local", runner: "legacy", runtimeConfig: { aiConnection: selected },
+      });
+      expect(finished.status, JSON.stringify(finished.body)).toBe(201);
+      expect(finished.body.agent.id).toBe(setupId);
+      expect(await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, setupId)))).toHaveLength(1);
+    } finally { probe.mockRestore(); providerRequest.mockRestore(); }
+  });
+
+  it.each([["responsible_user", "codex_local"], ["shared", "codex_local"], ["responsible_user", "claude_local"]] as const)("drops a superseded saved %s connection when %s setup changes authentication", async (mode, adapterType) => {
+    const setupId = randomUUID();
+    await db.insert(agents).values({ id: setupId, companyId, name: "Switch provider", createdByUserId: "alice",
+      adapterType, status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"],
+      runtimeConfig: { aiConnection: mode === "shared"
+        ? { provider: "openai", method: "api_key", mode, connectionId: randomUUID(), grantId: randomUUID() }
+        : { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", mode } },
+    });
+    const app = express(); app.use(express.json());
+    app.use((req, _res, next) => { req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] }; next(); });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const saved = await request(app).patch(`/api/agents/${setupId}`).send({ adapterType: "claude_local", runner: "legacy",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { enabled: false } },
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.runtimeConfig).not.toHaveProperty("aiConnection");
+    const [row] = await db.select().from(agents).where(eq(agents.id, setupId));
+    expect(row.runtimeConfig).not.toHaveProperty("aiConnection");
   });
 
   it("creates and hires agents with an authorized restricted shared connection", async () => {

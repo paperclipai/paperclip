@@ -8,6 +8,12 @@ import { createTarballFromDirectory, prepareSandboxManagedRuntime, type SandboxS
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 
 const execute = promisify(execFile);
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 const roots: string[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -48,9 +54,6 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
       for (const file of operation.files) {
         await fs.mkdir(path.dirname(file.targetPath), { recursive: true });
         await fs.cp(file.sourcePath, file.targetPath, { recursive: true, verbatimSymlinks: true });
-        if (file.sourcePath.endsWith("/workspace.tar")) {
-          await expect(fs.stat(path.join(path.dirname(file.sourcePath), "verify-seed"))).rejects.toMatchObject({ code: "ENOENT" });
-        }
       }
       for (const command of operation.postUploadCommands ?? []) await run(command.command);
     }
@@ -111,3 +114,45 @@ it.each([undefined, "all"] as const)("keeps nested Git metadata sanitized in col
   }
   await recovered.cleanupWorkspaceSnapshot(); await cached.cleanupWorkspaceSnapshot();
 }, 30000);
+
+it.each([false, true])("overlaps seed verification and upload and drains both before %s failure settles", async (failUpload) => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "managed-seed-overlap-")); roots.push(temp);
+  vi.stubEnv("PAPERCLIP_HOME", path.join(temp, "home"));
+  const host = path.join(temp, "host"); await fs.mkdir(host);
+  await fs.writeFile(path.join(host, "work.txt"), "original\n");
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let verificationFinished = false, settled = false;
+  const preparing = prepareSandboxManagedRuntime({
+    spec: { provider: "test", sandboxId: "test", remoteCwd: path.join(temp, "remote"), timeoutMs: 30000, apiKey: null, transport: "sandbox" },
+    adapterKey: "test", workspaceLocalDir: host, workspaceFileMode: "all",
+    workspaceSeedCacheDirectory: path.join(temp, "cache"),
+    workspaceDurableSeed: { workspaceArchivePath: path.join(temp, "seed.tar") },
+    runtimeSpan: async (name, work) => {
+      if (name !== "seed.verify") return work();
+      entered.resolve();
+      await release.promise;
+      try { return await work(); } finally { verificationFinished = true; }
+    },
+    client: {
+      makeDir: async () => {}, run: async () => {}, writeFile: async () => {},
+      readFile: async () => Buffer.alloc(0), listFiles: async () => [], remove: async () => {},
+      syncIn: async () => {
+        await entered.promise;
+        expect(verificationFinished).toBe(false);
+        if (failUpload) throw new Error("upload failed");
+        return { operations: [] };
+      },
+    },
+  });
+  const result = preparing.then(runtime => { settled = true; return { runtime }; }, error => { settled = true; return { error }; });
+  try {
+    await entered.promise;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(settled).toBe(false);
+  } finally { release.resolve(); }
+  const outcome = await result;
+  expect(verificationFinished).toBe(true);
+  if ("error" in outcome) { expect(failUpload).toBe(true); expect(outcome.error.message).toBe("upload failed"); }
+  else { expect(failUpload).toBe(false); await outcome.runtime.cleanupWorkspaceSnapshot(); }
+});

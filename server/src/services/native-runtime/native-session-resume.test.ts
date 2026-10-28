@@ -32,10 +32,11 @@ import {
 } from "@paperclipai/paperclip-runner";
 import {
   getEmbeddedPostgresTestSupport,
-  startEmbeddedPostgresTestDatabase,
+  startEmbeddedPostgresTestDatabase as startEmbeddedDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import {
   canonicalNativeRuntimeContextDigest,
+  buildNativeModelEnvelope,
   defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parseNativeExecutionInput,
@@ -71,6 +72,20 @@ import {
   selectNativeSessionResumeRun,
 } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
+
+async function startEmbeddedPostgresTestDatabase(prefix: string) {
+  const externalUrl = externalTestDatabaseUrl;
+  if (!externalUrl) return startEmbeddedDatabase(prefix);
+  const { closeRegisteredClients } = await import("@paperclipai/db");
+  return { connectionString: externalUrl, cleanup: async () => {
+    const db = createDb(externalUrl);
+    try { await db.execute(sql`TRUNCATE TABLE companies CASCADE`); }
+    finally { await closeRegisteredClients(externalUrl); }
+  } };
+}
 
 const companyId = "10000000-0000-4000-8000-000000000001";
 const issueId = "20000000-0000-4000-8000-000000000002";
@@ -282,12 +297,13 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
 });
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
+const databaseSupported = Boolean(externalTestDatabaseUrl) || embeddedSupport.supported;
 const recoveryFakeCodex = resolve(
   import.meta.dirname,
   "../../../../packages/paperclip-runner/test/fixtures/fake-final-burst-codex-app-server.mjs",
 );
 
-(embeddedSupport.supported && existsSync(defaultCapabilityRunnerdBinary())
+(databaseSupported && existsSync(defaultCapabilityRunnerdBinary())
   ? it
   : it.skip)(
   "keeps actual normalized driver events separate from raw maintenance receipts",
@@ -519,7 +535,7 @@ const recoveryFakeCodex = resolve(
   30_000,
 );
 
-(embeddedSupport.supported &&
+(databaseSupported &&
   existsSync(defaultCapabilityRunnerdBinary()) &&
   existsSync(recoveryFakeCodex)
   ? it
@@ -859,6 +875,11 @@ const recoveryFakeCodex = resolve(
           async onContinuityBreak(value) {
             continuity = value;
           },
+        }).then((result) => {
+          if (result.terminal.runTerminalState !== "succeeded") {
+            throw new Error(`Disposable recovery fixture failed: ${JSON.stringify(result)}`);
+          }
+          return result;
         }).catch(async (error: unknown) => {
           const eventRows = await db
             .select({
@@ -1056,7 +1077,7 @@ const recoveryFakeCodex = resolve(
   60_000,
 );
 
-(embeddedSupport.supported ? describe : describe.skip)(
+(databaseSupported ? describe : describe.skip)(
   "native session recovery database orchestration",
   () => {
     it("uses scoped latest checkpoints, preserves progress barriers, and guards bootstrap persistence after the row lock", async () => {
@@ -1753,6 +1774,13 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
     },
     {
+      contract: "regressed conditional run-scoped readers",
+      // Deployed v17 threads were opened without read_current_wake_comments
+      // and read_chat_attachment on ordinary turns; resume cannot add them.
+      retainedFingerprint:
+        "sha256:dc495475fb6a4bd034c6dbb2bbe0cf52e7ffc1635838889dc5f7d7251273f119",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -1819,6 +1847,23 @@ describe("rebindNativeSessionCheckpoint", () => {
 
 
 
+  it.each(["local", "remote"] as const)("refreshes only OpenCode's former direct MCP catalog on %s", target => {
+    const legacy = nativeToolContractFingerprintForTarget(target);
+    expect(nativeToolContractFingerprintForTarget(target, "codex")).toBe(legacy);
+    expect(nativeToolContractFingerprintForTarget(target, "acpx")).toBe(legacy);
+    const current = nativeToolContractFingerprintForTarget(target, "opencode");
+    expect(current).not.toBe(legacy);
+    const shortenedCatalog = target === "local"
+      ? "sha256:2ae35faccbb63cfe009d94170ef1ef13f0d57e120af6160540598a3ec72001d7"
+      : "sha256:ee5285ca5118b8468c0afd1df4ef9c05d85b0934e882bccd0b193dc8722dbb7a";
+    expect(current).not.toBe(shortenedCatalog);
+    const currentExecution = { ...execution(currentRunId), provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", permissionMode: "allow" }, session: { ...execution(currentRunId).session, driverKind: "opencode_server" } } as NativeExecutionInput;
+    const previousExecution = { ...execution(previousRunId), provider: currentExecution.provider, session: currentExecution.session };
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: shortenedCatalog, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: legacy, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: previousRun({ nativeToolContractFingerprint: current, nativeExecutionInput: previousExecution }), currentExecution, executionTargetKind: target })).not.toBeNull();
+  });
+
   it("binds the provider tool catalog to the local or remote execution target", () => {
     const remoteFingerprint = nativeToolContractFingerprintForTarget("remote");
     expect(remoteFingerprint).not.toBe(NATIVE_TOOL_CONTRACT_FINGERPRINT);
@@ -1838,6 +1883,17 @@ describe("rebindNativeSessionCheckpoint", () => {
         executionTargetKind: "remote",
       }),
     ).not.toBeNull();
+    // Deployed v17 remote threads were opened without the run-scoped readers.
+    expect(
+      rebindNativeSessionCheckpoint({
+        previousRun: previousRun({
+          nativeToolContractFingerprint:
+            "sha256:96dde421aab01f847468d1a8f12863d32dfdb3038a9aca61e1e6bdc81022d5a1",
+        }),
+        currentExecution: execution(currentRunId),
+        executionTargetKind: "remote",
+      }),
+    ).toBeNull();
   });
 
 
@@ -2147,7 +2203,7 @@ describe("rebindNativeSessionCheckpoint", () => {
 });
 
 describe("buildNativeExecutionInput wake projection", () => {
-  it("uses compact Slack input only after provider resume, preserving fresh bootstrap fallback", () => {
+  it.each(["slack", "github"])("uses compact %s input only after provider resume, preserving fresh bootstrap fallback", (externalChatProvider) => {
     const base = execution(currentRunId);
     const issue = { id: issueId, identifier: "DOT-2", title: "Old greeting", description: null, workMode: "standard" };
     const message = { id: "wake", body: "NEW_SLACK_MESSAGE", authorType: "user", authorId: "board", sourceTrust: "user", createdByRunId: null };
@@ -2158,7 +2214,7 @@ describe("buildNativeExecutionInput wake projection", () => {
       previousTurn: { runId: previousRunId, task: issue },
       wakePayload: {
         reason: "External chat message received", issue,
-        externalChatProvider: "slack", checkedOutByHarness: true,
+        externalChatProvider, checkedOutByHarness: true,
         comments: [{ ...message, author: { type: "user", id: "board" } }], commentIds: [message.id], latestCommentId: message.id,
         commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
         executionContinuation: { version: 1, objective: message.body, messages: [message], resumeDelta: { baseRunId: previousRunId, messages: [message] } },
@@ -2171,6 +2227,40 @@ describe("buildNativeExecutionInput wake projection", () => {
     expect(input.continuationPrompt).not.toContain("FULL_BOOTSTRAP");
     expect(input.task.prompt).toContain("FULL_BOOTSTRAP");
     expect(input.task.prompt).toContain(message.body);
+  });
+
+  it.each(["github", null])("restores GitHub configuration on fresh fallback and sends changes on %s resume", (externalChatProvider) => {
+    const base = execution(currentRunId);
+    const issue = { id: issueId, identifier: "REVIEW-1", title: "PR #1", description: null, workMode: "standard" };
+    const config = { key: "a".repeat(64), instructions: "STABLE_REVIEW_POLICY" };
+    const message = { id: "new-push", body: "Review new head abc123", authorType: "user", authorId: "board", createdByRunId: null };
+    const args = {
+      companyId, runId: currentRunId, agentId, issue, taskPrompt: "Canonical task",
+      resumedSession: true, previousTurn: { runId: previousRunId, task: issue, githubReviewConfigurationKeys: [config.key] },
+      wakePayload: { reason: externalChatProvider ? "External chat message received" : "issue_commented", issue, externalChatProvider, checkedOutByHarness: true,
+        githubReviewConfigurations: [config],
+        comments: [{ ...message, author: { type: "user", id: "board" } }], commentIds: [message.id], latestCommentId: message.id,
+        commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+        executionContinuation: { version: 1, objective: message.body, messages: [{ ...message, id: "old", body: "OLD_REQUEST" }, message],
+          resumeDelta: { baseRunId: previousRunId, messages: [message] } },
+      },
+      workspace: { id: currentRunId, ...base.workspace }, normalizedSessionId,
+      provider: "codex" as const, completionContract: base.completionContract, runtimeContext: nativeRuntimeContextFixture(),
+    };
+    const prepared = buildNativeExecutionInput(args);
+    const resumed = JSON.stringify(buildNativeModelEnvelope(prepared, { resumedSession: true }));
+    expect(resumed).toContain("paperclip.native-continuation.v1");
+    expect(resumed).toContain(message.body);
+    expect(resumed).not.toContain(config.instructions);
+    expect(resumed).not.toContain("OLD_REQUEST");
+    const fresh = JSON.stringify(buildNativeModelEnvelope(prepared));
+    expect(fresh.split(config.instructions)).toHaveLength(2);
+    expect(fresh).toContain("OLD_REQUEST");
+    const changed = buildNativeExecutionInput({ ...args, previousTurn: { ...args.previousTurn, githubReviewConfigurationKeys: [] } });
+    expect(JSON.stringify(buildNativeModelEnvelope(changed, { resumedSession: true })).split(config.instructions)).toHaveLength(2);
+    const reset = buildNativeExecutionInput({ ...args, resumedSession: false });
+    expect(reset.continuationPrompt).toBeUndefined();
+    expect(JSON.stringify(buildNativeModelEnvelope(reset))).toContain(config.instructions);
   });
 
   it("uses a neutral turn title for authenticated external-chat follow-ups", () => {

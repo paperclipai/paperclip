@@ -18,6 +18,7 @@ import { getLastProjectId } from "../lib/recent-projects";
 import { IssueProperties } from "./IssueProperties";
 import { applyOptimisticIssueFieldUpdate } from "../lib/optimistic-issue-comments";
 import { queryKeys } from "../lib/queryKeys";
+import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -46,6 +47,10 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
   unarchiveFromInbox: vi.fn(),
+}));
+
+const mockRoutinesApi = vi.hoisted(() => ({
+  get: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -90,6 +95,10 @@ vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
 
+vi.mock("../api/routines", () => ({
+  routinesApi: mockRoutinesApi,
+}));
+
 vi.mock("../api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -131,7 +140,8 @@ vi.mock("../lib/assignees", () => ({
   },
 }));
 
-vi.mock("./StatusIcon", () => ({
+vi.mock("./StatusIcon", async importOriginal => ({
+  ...await importOriginal<typeof import("./StatusIcon")>(),
   StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
     <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
@@ -141,7 +151,8 @@ vi.mock("./PriorityIcon", () => ({
   PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
 }));
 
-vi.mock("./Identity", () => ({
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
   Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
@@ -626,6 +637,7 @@ describe("IssueProperties", () => {
     document.body.appendChild(container);
     mockAgentsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockRoutinesApi.get.mockReset();
     mockProjectsApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.controlRuntimeCommands.mockReset();
@@ -1135,6 +1147,77 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).not.toContain("via ");
     });
+
+    act(() => root.unmount());
+  });
+
+  it("links a routine-created task back to its source routine under Relationships", async () => {
+    mockRoutinesApi.get.mockResolvedValue({ id: "routine-1", title: "Nightly triage" });
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      const row = container
+        .querySelector('[data-property-label="Routine"]')
+        ?.closest('[data-property-row="true"]');
+      const link = row?.querySelector("a");
+      expect(link?.getAttribute("href")).toBe("/routines/routine-1");
+      expect(link?.textContent).toContain("Nightly triage");
+    });
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row while the source routine is still loading", async () => {
+    mockRoutinesApi.get.mockReturnValue(new Promise(() => {}));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-1" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-1");
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row when the source routine no longer exists", async () => {
+    mockRoutinesApi.get.mockRejectedValue(new ApiError("Not found", 404, null));
+    const root = renderProperties(container, {
+      issue: createIssue({ originKind: "routine_execution", originId: "routine-gone" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRoutinesApi.get).toHaveBeenCalledWith("routine-gone");
+    });
+    await flush();
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("omits the Routine row for tasks not created by a routine", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(container.querySelector('[data-property-label="Routine"]')).toBeNull();
+    expect(mockRoutinesApi.get).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });
@@ -2019,7 +2102,8 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows only the workspace detail link for non-default workspaces", async () => {
+  it.each([false, true])("shows the workspace detail link only when its destination is enabled: %s", async enabled => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: enabled });
     mockProjectsApi.list.mockResolvedValue([createProject()]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -2036,12 +2120,12 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    const workspaceLink = Array.from(container.querySelectorAll("a")).find(
-      (link) => link.textContent?.trim() === "View workspace",
-    );
     expect(container.textContent).not.toContain("View workspace tasks");
-    expect(workspaceLink).not.toBeUndefined();
-    expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+    await vi.waitFor(() => {
+      const workspaceLink = Array.from(container.querySelectorAll("a")).find(link => link.textContent?.trim() === "View workspace");
+      if (enabled) expect(workspaceLink?.getAttribute("href")).toBe("/execution-workspaces/workspace-1");
+      else expect(workspaceLink).toBeUndefined();
+    });
 
     act(() => root.unmount());
   });
@@ -2280,6 +2364,34 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("Model lane");
     expect(container.textContent).not.toContain("Codex options");
 
+    act(() => root.unmount());
+  });
+
+  it("discovers Copilot overrides with the assignee connection and environment", async () => {
+    const binding = { provider: "github", method: "api_key", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Copilot", role: "engineer", status: "active",
+      adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
+      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: binding } }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "Copilot Luna" }]);
+    const { root, queryClient } = renderPropertiesWithQueryClient(container, {
+      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-luna" } } }),
+      childIssues: [], onUpdate: vi.fn(), inline: true,
+    });
+    await flush();
+    await flush();
+    expect(mockAgentsApi.adapterModels).not.toHaveBeenCalled();
+    const modelTrigger = findRowTrigger(container, "Model");
+    expect(modelTrigger).toBeDefined();
+    await act(async () => modelTrigger!.click());
+    await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
+      environmentId: "daytona-1", provider: "acpx", acpxAgent: "copilot", agentId: "agent-1", aiConnection: binding,
+    }));
+    await act(async () => { await queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
+    expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);
+    await act(async () => modelTrigger!.click());
+    await act(async () => modelTrigger!.click());
+    await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2));
     act(() => root.unmount());
   });
 
@@ -2920,6 +3032,7 @@ describe("IssueProperties", () => {
     };
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: baseMonitorState }),
       monitorAttemptCount: 1,
@@ -2933,6 +3046,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(252) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(132) } }),
       monitorNextCheckAt: new Date(at(192)),
@@ -2942,6 +3056,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
       monitorAttemptCount: 3,
@@ -2950,6 +3065,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(0) } }),
     }));
@@ -2958,6 +3074,7 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
     }));
@@ -2966,6 +3083,17 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
 
     renderMonitor(createIssue({
+      status: "blocked",
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: at(-18) } }),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("Automatic checks paused");
+    expect(monitorRowText()).toContain("Check now to request a manual check");
+    expect(monitorRowText()).not.toMatch(/overdue|next tick/i);
+
+    renderMonitor(createIssue({
+      status: "in_progress",
       executionPolicy: createExecutionPolicy(),
       executionState: createExecutionState({ monitor: {
         ...baseMonitorState,
@@ -3580,7 +3708,7 @@ describe("IssueProperties", () => {
     }, ["workspaces.isolation"]);
     await flush();
     expect(container.querySelector('[data-property-label="Execution"]')).toBeNull();
-    expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull();
+    await vi.waitFor(() => expect(container.querySelector('a[href="/execution-workspaces/workspace-1"]')).not.toBeNull());
     expect(onUpdate).not.toHaveBeenCalled();
     act(() => root.unmount());
   });

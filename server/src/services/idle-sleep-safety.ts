@@ -2,8 +2,12 @@ import { idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
 import { combineIdleSchedules, readIdleIssueSchedule } from "./idle-issue-schedule.js";
+import { connectionDeliveryWaitingForResponse, finishedIdleRun as finishedRun, finishedIdleWake, finishedFailedIdleLease as finishedFailedLease, passiveBoardRecovery } from "./idle-work-proof.js";
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
+import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
+import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
+import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
 
 export interface IdleSleepDrainStatus {
   ownerId?: string;
@@ -25,39 +29,10 @@ export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) 
   pluginIds: string[];
 }>;
 
-// Retry promotion keeps its due date as history on the run. Only a terminal
-// run finished at or after that date has consumed the schedule. Newer retry
-// dates, unfinished runs and accounting work still require the instance.
-function finishedRun(alias: string): string {
-  return `${alias}.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
-    AND ${alias}.finished_at IS NOT NULL
-    AND (${alias}.scheduled_retry_at IS NULL OR ${alias}.scheduled_retry_at <= ${alias}.finished_at)
-    AND ${alias}.cost_accounting_pending = false`;
-}
-
 // A failed turn may have successfully torn down its ephemeral allocation. A
 // cleanup label alone is not provider termination proof. Require the exact
 // host-owned receipt and finished run, and retain all cleanup/export intents.
 // Aliases are fixed at the call sites, never supplied by a client.
-function finishedFailedLease(alias: string): string {
-  const receipt = `${alias}.metadata->'remoteExecutionTermination'`;
-  return `${alias}.status = 'failed' AND ${alias}.lease_policy = 'ephemeral'
-    AND ${alias}.cleanup_status = 'success' AND ${alias}.released_at IS NOT NULL
-    AND COALESCE(${alias}.metadata->>'pendingCleanupInFlight', 'false') = 'false'
-    AND NOT (COALESCE(${alias}.metadata, '{}'::jsonb) ?| ARRAY['nativeWorkspaceExportResume', 'sandboxStopAndRetain'])
-    AND ${alias}.provider IS NOT NULL AND ${alias}.provider <> 'local'
-    AND ${alias}.provider_lease_id IS NOT NULL AND ${alias}.provider_lease_id <> ''
-    AND ${receipt}->>'schema' = 'paperclip.remote-termination.v1'
-    AND ${receipt}->>'companyId' = ${alias}.company_id::text
-    AND ${receipt}->>'runId' = ${alias}.heartbeat_run_id::text
-    AND ${receipt}->>'leaseId' = ${alias}.id::text
-    AND ${receipt}->>'provider' = ${alias}.provider
-    AND ${receipt}->>'providerLeaseId' = ${alias}.provider_lease_id
-    AND ${receipt}->>'state' IN ('stopped', 'destroyed')
-    AND EXISTS (SELECT 1 FROM heartbeat_runs r WHERE r.id = ${alias}.heartbeat_run_id
-      AND r.company_id = ${alias}.company_id
-      AND ${finishedRun("r")})`;
-}
 
 // These are deliberately conservative. Completed agent runs and workspace
 // operations are history, not reasons to keep an otherwise idle instance up.
@@ -79,6 +54,11 @@ const WORK_CHECKS = [
     OR process_stopped_at IS NULL OR next_attempt_at IS NOT NULL
     OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`,
   `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`,
+  `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`,
+  `SELECT 1 FROM agents WHERE lifecycle_state IN
+    ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`,
+  `SELECT 1 FROM decision_invocations WHERE status = 'running'`,
+  `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`,
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
   `SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`,
@@ -128,17 +108,45 @@ const WORK_CHECKS = [
     ) IS NOT TRUE`,
   `SELECT 1 FROM environment_leases l WHERE status NOT IN ('released', 'expired')
     AND (${finishedFailedLease("l")}) IS NOT TRUE`,
+  `SELECT 1 FROM environment_custom_image_setup_sessions s WHERE
+    (s.status IN ('promoted', 'cancelled', 'timed_out', 'failed') AND s.finished_at IS NOT NULL
+      AND s.connection_secret_ref IS NULL AND (${verifiedResourceCleanup('s', 'image_setup')})) IS NOT TRUE`,
+  // An unconfigured Slack draft has no provider identity or inbound runtime.
+  // Setup still wakes through normal browser admission. Retain every enabled,
+  // previously active, partially connected, foreign, or unsupported endpoint.
+  `SELECT 1 FROM chat_endpoints endpoint WHERE (endpoint.provider = 'slack'
+    AND endpoint.status = 'draft' AND endpoint.setup->>'step' = 'provider_setup'
+    AND (endpoint.setup - ARRAY['step', 'command']) = '{}'::jsonb
+    AND (endpoint.setup->'command' IS NULL OR endpoint.setup->'command' = 'null'::jsonb
+      OR jsonb_typeof(endpoint.setup->'command') = 'string')
+    AND endpoint.activated_at IS NULL AND endpoint.provider_account_id IS NULL
+    AND endpoint.bot_external_id IS NULL AND endpoint.bot_username IS NULL
+    AND endpoint.last_event_at IS NULL AND endpoint.last_publication_at IS NULL
+    AND endpoint.health_message IS NULL AND endpoint.last_error IS NULL
+    AND NOT EXISTS (SELECT 1 FROM chat_slack_registrations registration WHERE registration.endpoint_id = endpoint.id)
+    AND EXISTS (SELECT 1 FROM tool_connections draft_connection
+      WHERE draft_connection.id = endpoint.connection_id AND draft_connection.company_id = endpoint.company_id
+        AND draft_connection.connection_purpose = 'channel' AND draft_connection.transport = 'chat_sdk'
+        AND draft_connection.status = 'draft' AND draft_connection.enabled = false)) IS NOT TRUE`,
   `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`,
   `SELECT 1 FROM routine_runs WHERE status NOT IN ('completed', 'failed', 'skipped', 'cancelled')`,
   `SELECT 1 FROM plugin_jobs WHERE status <> 'paused'`,
   `SELECT 1 FROM plugin_job_runs WHERE status NOT IN ('succeeded', 'failed', 'cancelled')`,
   `SELECT 1 FROM plugin_webhook_deliveries WHERE status NOT IN ('succeeded', 'failed')`,
-  // Saved AI credentials have no independent worker. Login sessions, accepted
-  // quota/refresh work and recovery journals have their own checks. Other
-  // integrations still need an ingress/scheduler wake contract.
-  `SELECT 1 FROM tool_connections WHERE status <> 'archived'
-    AND NOT (status = 'active' AND connection_purpose = 'ai' AND transport = 'runtime_auth')`,
-  `SELECT 1 FROM issue_recovery_actions WHERE status NOT IN ('resolved', 'cancelled')`,
+  // Saved outbound MCP configuration and disabled drafts have no independent
+  // listener. Keep local processes, channels and GitHub webhook bindings awake;
+  // accepted calls, credential recovery and delivery work have separate fences.
+  `SELECT 1 FROM tool_connections c WHERE c.status <> 'archived' AND (
+    (c.status = 'draft' AND c.enabled = false)
+    OR (c.status = 'active' AND c.connection_purpose = 'ai' AND c.transport = 'runtime_auth')
+    OR (c.status = 'active' AND c.connection_purpose = 'tool' AND c.transport = 'mcp_remote'
+      AND NOT EXISTS (SELECT 1 FROM connection_grants g WHERE g.connection_id = c.id
+        AND (g.company_id <> c.company_id OR g.provider_tenant->'github' IS NOT NULL)))
+    ) IS NOT TRUE`,
+  // An explicit board escalation has no automatic retry. Retain the visible
+  // action and all execution/cleanup checks while the board decides what to do.
+  `SELECT 1 FROM issue_recovery_actions a WHERE a.status NOT IN ('resolved', 'cancelled')
+    AND (${passiveBoardRecovery('a')}) IS NOT TRUE`,
   `SELECT 1 FROM status_cards WHERE archived_at IS NULL`,
   `SELECT 1 FROM external_objects WHERE NOT is_terminal OR next_refresh_at IS NOT NULL`,
   // Login history keeps its provider reference after teardown. A terminal
@@ -186,21 +194,47 @@ const WORK_CHECKS = [
             SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
               AND r.company_id = w.company_id AND r.agent_id = w.agent_id
               AND ${finishedRun("r")})))))`,
+  // Cloud owns inbound event durability. A processed receipt is idempotency
+  // history; any downstream run, wake or delivery is still checked separately.
+  `SELECT 1 FROM connection_event_deliveries WHERE status <> 'processed' OR processed_at IS NULL`,
+  // A delivered outbox row is history after its exact accepted wake finishes.
+  // A system-retired connection card may also be parked behind a still-pending
+  // response. Keep the outbox intact: the normal reply path resumes delivery.
+  `SELECT 1 FROM connection_intent_deliveries d WHERE
+    (d.delivered_at IS NULL AND (${connectionDeliveryWaitingForResponse('d')}) IS NOT TRUE)
+    OR EXISTS (SELECT 1 FROM agent_wakeup_requests connection_wake
+      WHERE connection_wake.company_id = d.company_id AND connection_wake.idempotency_key IN (
+        'connection-intent:' || d.interaction_id::text || ':accepted',
+        'connection-intent:' || d.interaction_id::text || ':rejected',
+        'connection-intent:' || d.interaction_id::text || ':expired')
+      AND (${finishedIdleWake('connection_wake')}) IS NOT TRUE)`,
+  // Saved private feedback and acknowledged uploads have no delivery job.
+  // Pending/failed exports and unfamiliar states retain the instance. A sent
+  // label requires its completion stamp and a cleared failure reason.
+  `SELECT 1 FROM feedback_exports WHERE (status = 'local_only'
+    OR (status = 'sent' AND exported_at IS NOT NULL AND failure_reason IS NULL)) IS NOT TRUE`,
+  `SELECT 1 FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
+    WHERE c.status = 'active' AND b.active AND b.source_id IS NULL`,
+  `SELECT 1 FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
+    WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
+      AND (s.access_scope = 'company' OR EXISTS (
+        SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[
-    "chat_endpoints", "chat_deliveries", "chat_publications", "chat_actions",
-    "chat_completion_deliveries", "connection_event_deliveries",
-    "connection_intent_deliveries", "tool_action_requests", "tool_action_deliveries",
+    "chat_deliveries", "chat_publications", "chat_actions",
+    "chat_completion_deliveries", "tool_action_requests", "tool_action_deliveries",
     "workspace_runtime_services",
-    "execution_workspace_runtime_leases", "pipeline_automation_executions",
+    "execution_workspace_runtime_leases",
     "native_run_finalizations", "company_transfer_runs", "decisions", "decision_effect_executions",
     "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
-    "browser_use_browsers", "environment_custom_image_setup_sessions", "feedback_exports",
+    "browser_use_browsers",
     "company_secret_proposals",
     "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
     "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
     "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",
+    "muse_agent_bindings", "muse_credentials", "muse_runner_assignments",
+    "muse_runner_operations", "muse_mailbox_items", "muse_input_deliveries", "external_agent_holds",
   ].map((table) => `SELECT 1 FROM ${table}`),
 ] as const;
 
@@ -248,6 +282,9 @@ export async function readIdleSleepSafety(
         (!scheduledRoutines || query !== `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`)
         && (!scheduledIssueMonitors || query !== `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`))
         .map((query) => sql`EXISTS (${sql.raw(query)})`);
+      checks.push(sql`EXISTS (SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
+        WHERE ${companyHoldMismatch()})`);
+      checks.push(sql`EXISTS (SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()})`);
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.
       checks.push(quietPlugins.length === 0
@@ -266,7 +303,7 @@ export async function readIdleSleepSafety(
         if (!scheduledRoutines || !ownerId || ownerId !== before.ownerId) return undefined;
         const schedule = await readIdleIssueSchedule(tx, ownerId, now());
         if (schedule.blocked) return true;
-        scheduledWake = combineIdleSchedules(scheduledWake, schedule.scheduledWake);
+        scheduledWake = combineIdleSchedules(scheduledWake, schedule.scheduledWake, schedule.generation);
       }
       return false;
     }, { isolationLevel: "repeatable read", accessMode: "read only" });

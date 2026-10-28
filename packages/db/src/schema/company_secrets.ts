@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex, foreignKey } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { projects } from "./projects.js";
 import { agents } from "./agents.js";
 import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 import { userSecretDefinitions } from "./user_secret_definitions.js";
@@ -14,6 +15,7 @@ export const companySecrets = pgTable(
     scope: text("scope").notNull().default("company"),
     ownerUserId: text("owner_user_id"),
     ownerAgentId: uuid("owner_agent_id"),
+    ownerProjectId: uuid("owner_project_id"),
     ownerPluginId: uuid("owner_plugin_id").references(() => plugins.id, { onDelete: "cascade" }),
     userSecretDefinitionId: uuid("user_secret_definition_id").references(() => userSecretDefinitions.id, { onDelete: "set null" }),
     key: text("key").notNull(),
@@ -46,6 +48,9 @@ export const companySecrets = pgTable(
     ),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
     agentOwner: foreignKey({ columns: [table.companyId, table.ownerAgentId], foreignColumns: [agents.companyId, agents.id] }).onDelete("cascade"),
+    projectOwner: foreignKey({ columns: [table.companyId, table.ownerProjectId], foreignColumns: [projects.companyId, projects.id] }).onDelete("cascade"),
+    projectInstanceOwnerKeyUq: uniqueIndex("company_secrets_project_instance_owner_key_uq").on(table.companyId, table.ownerProjectId, table.ownerPluginId, table.key)
+      .where(sql`${table.scope} = 'instance' and ${table.deletedAt} is null`),
     instanceOwnerKeyUq: uniqueIndex("company_secrets_instance_owner_key_uq").on(table.companyId, table.ownerAgentId, table.ownerPluginId, table.key)
       .where(sql`${table.scope} = 'instance' and ${table.deletedAt} is null`),
     providerConfigIdx: index("company_secrets_provider_config_idx").on(table.providerConfigId),
@@ -64,16 +69,17 @@ export const companySecrets = pgTable(
         ${table.scope} = 'company'
         and ${table.ownerUserId} is null
         and ${table.userSecretDefinitionId} is null
-        and ${table.ownerAgentId} is null and ${table.ownerPluginId} is null
+        and ${table.ownerAgentId} is null and ${table.ownerProjectId} is null and ${table.ownerPluginId} is null
       ) or (
         ${table.scope} = 'user'
         and ${table.ownerUserId} is not null
         and ${table.userSecretDefinitionId} is not null
-        and ${table.ownerAgentId} is null and ${table.ownerPluginId} is null
+        and ${table.ownerAgentId} is null and ${table.ownerProjectId} is null and ${table.ownerPluginId} is null
       ) or (
         ${table.scope} = 'instance'
         and ${table.ownerUserId} is null and ${table.userSecretDefinitionId} is null
-        and ${table.ownerAgentId} is not null and ${table.ownerPluginId} is not null
+        and (${table.ownerAgentId} is not null) <> (${table.ownerProjectId} is not null)
+        and ${table.ownerPluginId} is not null
       )`,
     ),
   }),

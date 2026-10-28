@@ -2,6 +2,8 @@
 
 Product map: [Onboarding and first work](../feature-map/onboarding.md).
 
+Feature ID: `onboarding`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -15,6 +17,8 @@ selected-runtime validation and draft restoration. Unrelated baseline entries
 retain the original source commit; no live agent verification is added.
 
 ## `instance`
+
+Capability ID: `onboarding/instance`.
 
 Review: `baseline`.
 
@@ -38,6 +42,8 @@ Gaps: Bootstrapping an instance cannot depend solely on an API served by that
 not-yet-running instance.
 
 ## `company`
+
+Capability ID: `onboarding/company`.
 
 Review: `baseline`.
 
@@ -66,6 +72,8 @@ a company key.
 
 ## `adapter`
 
+Capability ID: `onboarding/adapter`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -87,6 +95,19 @@ setup validation requires `agents:create`, plus saved-agent update access when
 testing an existing agent; interactive account login additionally requires a
 board user and owner-bound session. An agent's right to hire is not login or
 instance-environment administration authority.
+
+Scoped source-only runtime preparation: the existing authorized adapter test
+prepares the default Claude CLI in its already acquired sandbox when the image
+version is too old for the selected model. It installs a pinned package into a
+workspace-private versioned prefix and verifies the executable before the hello
+test. This adds no installation API, account grant, environment authority or
+engine fallback. Cloud UI omits manual shell debugging and legacy operator hints
+while retaining check messages and details. Local, SSH and custom
+commands remain operator-managed. Controls:
+[runtime](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts),
+[probe](../../packages/adapters/claude-local/src/server/test.remote.test.ts), and
+[wizard](../../ui/src/components/OnboardingWizard.test.tsx). Live managed
+authorization and subscription execution remain `not-run` for this change.
 
 For fresh managed Codex Auto setup, the wizard's explicit Connect path can call
 `POST /api/environments/{environmentId}/probe?companyId={companyId}` before
@@ -146,16 +167,41 @@ environment access separately. These agent-context checks remain `not-run`.
 
 ## `first-task`
 
+Capability ID: `onboarding/first-task`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/issues`.
+- `POST /api/issues/{issueId}/children`.
 
 Agent access: `available` — Native create_task / agent REST / CLI issue.
 
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.
+
+An authenticated run bound to the server-created onboarding first task must
+obtain persisted human acceptance of the latest ordinary proposal before creating
+new tasks through native `create_task` or REST. Its authenticated run determines
+this admission even for an explicit standalone task. A card decision or a saved
+conversational resolution with a genuine later same-task user message supplies
+acceptance; an agent-only resolution does not. A plan approval must name the
+current same-task revision. Newer pending/rejected proposals stop new creation.
+Already admitted task replay and ordinary delegation retain their existing rules.
+
+Native `paperclip_finish` does not grant completion authority from an opening
+answer. The onboarding parent requires a trusted saved human decision on its
+latest proposal. Acceptance permits completion under the existing policy;
+rejection permits acknowledgment and closure without authorizing new work.
+The native status commit checks this decision again under its existing task/run
+locks. This adds no new agent endpoint or cross-company authority. The
+[native completion controls](../../server/src/services/native-runtime/paperclip-control-plane-port.test.ts)
+check persisted outcomes on disposable PostgreSQL; they are not live Cloud
+credential or onboarding qualification.
+Source: [creation admission](../../server/src/services/onboarding-first-task-admission.ts).
+Controls: [native/REST PostgreSQL regressions](../../server/src/__tests__/onboarding-first-task-admission.test.ts).
+These controls do not qualify a live Cloud provider journey.
 
 Evidence: `source-only` —
 [implementation](../../ui/src/components/OnboardingWizard.tsx#L279) at the reviewed
@@ -184,6 +230,8 @@ wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 
 ## `resume`
+
+Capability ID: `onboarding/resume`.
 
 Review: `baseline`.
 

@@ -21,6 +21,7 @@
       "enum": [
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
+        "auth.credentials.updated",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "research.started", "research.progressed", "research.completed",
         "delegation.started", "delegation.updated", "delegation.completed", "model.route.changed", "model.verification.updated", "context.compacted",
@@ -46,6 +47,7 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
+    { "if": { "properties": { "eventType": { "const": "auth.credentials.updated" } } }, "then": { "properties": { "sourceKind": { "const": "runner" }, "priority": { "const": 0 }, "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json" } } } },
     {
       "if": { "properties": { "eventType": { "enum": ["session.goal.snapshot", "session.goal.updated"] } } },
       "then": {

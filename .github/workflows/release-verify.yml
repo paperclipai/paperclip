@@ -15,6 +15,8 @@ on:
     outputs:
       runner_artifact_prefix:
         value: ${{ jobs.runner_binaries.outputs.artifact_prefix }}
+      provider_pack_artifact_prefix:
+        value: ${{ jobs.runner_binaries.outputs.provider_pack_artifact_prefix }}
       native_consumer_matrix:
         value: ${{ jobs.runner_binary_targets.outputs.native_consumers }}
 
@@ -469,7 +471,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Build the Runner release crate for its cache
         if: ${{ matrix.lane == 'rust' && github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_release_crate.outputs.cache-hit != 'true' }}
@@ -490,7 +492,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
   build:
     if: ${{ !inputs.runner_binaries_only }}
@@ -600,6 +602,7 @@ jobs:
       matrix: ${{ fromJSON(needs.runner_binary_targets.outputs.matrix) }}
     outputs:
       artifact_prefix: ${{ steps.identity.outputs.artifact_prefix }}
+      provider_pack_artifact_prefix: ${{ steps.identity.outputs.provider_pack_artifact_prefix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -610,7 +613,7 @@ jobs:
           version: 9.15.4
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: 24
+          node-version: 24.21.0
       - name: Bind immutable producer source and target
         id: identity
         env:
@@ -622,6 +625,9 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || exit 1
           [[ "$(node -p 'process.platform + "-" + process.arch')" == "$TARGET" ]] || exit 1
           echo "artifact_prefix=runner-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          if node --input-type=module -e 'const m = await import("./packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs"); process.exit(m.RELEASE_PROVIDER_PACK_TARGETS ? 0 : 1)'; then
+            echo "provider_pack_artifact_prefix=runner-provider-packs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Pin native Cargo workspace and toolchain
         id: native_rust_workspace
         working-directory: packages/paperclip-runner
@@ -698,5 +704,31 @@ jobs:
         with:
           name: ${{ steps.identity.outputs.artifact_prefix }}-${{ matrix.target }}
           path: ${{ runner.temp }}/runner-release/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build target-owned Linux provider pack
+        id: provider_pack
+        if: startsWith(matrix.target, 'linux-') && steps.identity.outputs.provider_pack_artifact_prefix != ''
+        env:
+          SOURCE_SHA: ${{ inputs.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          pack="$RUNNER_TEMP/provider-pack"
+          PAPERCLIP_RUNNER_SOURCE_REVISION="$SOURCE_SHA" node packages/paperclip-runner/scripts/build-provider-pack.mjs "$pack"
+          node --input-type=module - "$pack/provider-pack.json" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { verifyReleaseProviderPack } from './packages/paperclip-runner/scripts/release-provider-pack.mjs';
+          verifyReleaseProviderPack(JSON.parse(readFileSync(process.argv[2], 'utf8')), process.env.SOURCE_SHA, process.env.TARGET);
+          NODE
+          mkdir -p "$RUNNER_TEMP/release-provider-packs/$TARGET"
+          cp "$pack/provider-pack.json" "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.json"
+          tar -C "$pack" -czf "$RUNNER_TEMP/release-provider-packs/$TARGET/provider-pack.tar.gz" .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: startsWith(matrix.target, 'linux-') && steps.identity.outputs.provider_pack_artifact_prefix != ''
+        with:
+          name: ${{ steps.identity.outputs.provider_pack_artifact_prefix }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-provider-packs/
           if-no-files-found: error
           retention-days: 14

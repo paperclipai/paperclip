@@ -451,7 +451,7 @@ export class CodexSessionState {
       ...(refs.itemId ? { itemId: refs.itemId } : {}),
       eventType,
       schemaVersion: 1,
-      priority: eventType === "run.result.proposed" ? 0 : 1,
+      priority: eventType === "run.result.proposed" || eventType === "auth.credentials.updated" ? 0 : 1,
       emittedAt: this.now().toISOString(),
       payload,
     });

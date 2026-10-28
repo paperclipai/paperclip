@@ -34,7 +34,7 @@ import {
 
 const COMPANY_ID = "company-storybook";
 const SELECTED_COMPANY_STORAGE_KEY = "paperclip.selectedCompanyId";
-const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
+const ISSUE_DRAFT_STORAGE_KEY = `paperclip:issue-draft:${storybookAuthSession.user!.id}`;
 
 const storybookGoals: Goal[] = [
   {

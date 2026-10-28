@@ -1,3 +1,5 @@
+import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
+import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
 import fs from "node:fs/promises";
@@ -51,9 +53,11 @@ export async function resumeNativeWorkspaceFinalization(input: {
   db: Db;
   runId: string;
   environmentRuntime?: EnvironmentRuntimeService;
+  pluginWorkerManager?: WorkspaceWorkers;
 }) {
   const bound = await input.db.select({
     companyId: heartbeatRuns.companyId,
+    agentId: heartbeatRuns.agentId,
     runtimeMode: heartbeatRuns.runtimeMode,
     runnerProfileJson: heartbeatRuns.runnerProfileJson,
     issueId: nativeRunFinalizations.issueId,
@@ -237,6 +241,22 @@ export async function resumeNativeWorkspaceFinalization(input: {
           return workspaceSyncFailure(code);
         }
       }
+      let pluginWorkspace: Record<string, unknown> | null;
+      try {
+        pluginWorkspace = workspace
+          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId)
+          : null;
+      } catch (error) {
+        await ownership.assertHeld();
+        const message = error instanceof Error ? error.message : null;
+        const code = message === "plugin_workspace_branch_mismatch" || message === "plugin_workspace_owner_mismatch"
+          ? message : "plugin_workspace_inspection_failed";
+        return { status: "failed", exitCode: 1, stderr: `${code}\n` };
+      }
+      await ownership.assertHeld();
+      if (pluginWorkspace) return { status: "succeeded", exitCode: 0,
+        system: "Native workspace finalization used the plugin workspace owner.\n",
+        metadata: { pluginWorkspace } };
       if (!cwd) {
         return {
           status: "failed",

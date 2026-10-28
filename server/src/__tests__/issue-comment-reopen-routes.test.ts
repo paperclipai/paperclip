@@ -1,10 +1,17 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
 
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
+}));
+vi.mock("../services/execution-blocker.js", () => ({
+  getExecutionBlocker: vi.fn(async () => null),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -42,17 +49,20 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockSyncCommentReferences = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
 const mockTx = vi.hoisted(() => ({
+  select: () => mockDbSelect(),
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
   vi.fn(() => ({
     orderBy: mockDbSelectOrderBy,
+    for: async () => [{ id: "comment-1" }],
     then: (
       onFulfilled: (rows: unknown[]) => unknown,
       onRejected?: (reason: unknown) => unknown,
@@ -60,7 +70,7 @@ const mockDbSelectWhere = vi.hoisted(() =>
   })),
 );
 const mockDbSelectFrom = vi.hoisted(() =>
-  vi.fn(() => ({ where: mockDbSelectWhere })),
+  vi.fn((_table: unknown) => ({ where: mockDbSelectWhere })),
 );
 const mockDbSelect = vi.hoisted(() =>
   vi.fn(() => ({ from: mockDbSelectFrom })),
@@ -196,7 +206,7 @@ vi.mock("../services/index.js", () => ({
     }),
     emptySummary: () => ({ outbound: [], inbound: [] }),
     listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
+    syncComment: mockSyncCommentReferences,
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
   }),
@@ -229,10 +239,6 @@ async function installActor(
   app: express.Express,
   actor?: Record<string, unknown>,
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -257,8 +263,6 @@ async function normalizePolicy(input: {
     >;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } =
-    await import("../services/issue-execution-policy.js");
   return normalizeIssueExecutionPolicy(input);
 }
 
@@ -396,6 +400,7 @@ describe("issue comment reopen routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
+    mockSyncCommentReferences.mockReset().mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
     mockInstanceSettingsService.get.mockReset();
@@ -421,12 +426,23 @@ describe("issue comment reopen routes", () => {
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      for: async () => [{ id: "comment-1" }],
       then: (
         onFulfilled: (rows: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation((table) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name === "case_handoffs") return { where: vi.fn(() => ({
+        orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+      })) };
+      if (name === "heartbeat_runs") return { where: vi.fn(() => {
+        const query = mockDbSelectWhere();
+        return { ...query, limit: vi.fn((count: number) => Promise.resolve(query).then(rows => rows.slice(0, count))) };
+      }) };
+      return { where: mockDbSelectWhere };
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(
       async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),
@@ -560,6 +576,41 @@ describe("issue comment reopen routes", () => {
         };
       },
     );
+  });
+
+  it("finishes missing reference and activity writes for an accepted comment", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : selectFrom(table));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "hello", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+    expect(response.status).toBe(201);
+    expect(mockSyncCommentReferences).toHaveBeenCalledWith("comment-1", expect.anything());
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.comment_added", details: expect.objectContaining({ commentId: "comment-1" }),
+    }), expect.anything());
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("returns a retained comment before reopening completed work (changed body=%s)", async (changed) => {
+    const issue = makeIssue("done");
+    const requestId = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : getTableName(table as Parameters<typeof getTableName>[0]) === "activity_log"
+        ? { where: async () => [{ id: "activity-1" }] } as any : selectFrom(table));
+    if (changed) mockIssueService.addComment.mockRejectedValue(new HttpError(409, "Message request ID was already used for different content"));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: changed ? "Changed body" : "hello", clientRequestId: requestId });
+    expect(response.status).toBe(changed ? 409 : 201);
+    if (!changed) expect(response.body.id).toBe("comment-1");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
@@ -1215,7 +1266,7 @@ describe("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1246,6 +1297,58 @@ describe("issue comment reopen routes", () => {
     );
   });
 
+  it.each([
+    ["post", "queued"],
+    ["post", "running"],
+    ["patch", "queued"],
+    ["patch", "running"],
+  ] as const)("preserves a %s comment's %s retry execution", async (method, status) => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      ...createScheduledRetry(),
+      status,
+    });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch }));
+
+    const app = await installActor(createApp());
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Recovery evidence is attached." })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Recovery evidence is attached." });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId,
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
+  it.each(["post", "patch"] as const)("keeps the task active when a retry is promoted during a %s comment", async method => {
+    const issue = { ...makeIssue("in_progress"), executionRunId: "retry-run-1" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: "retry-run-1", status: "running" });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch }));
+    const app = await installActor(createApp());
+
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Additional context for the active run." })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Additional context for the active run." });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
+    expect(mockLogActivity).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "heartbeat.cancelled" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId, expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
   it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -1262,7 +1365,7 @@ describe("issue comment reopen routes", () => {
       .send({ body: "I added the missing detail; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
@@ -1945,7 +2048,7 @@ describe("issue comment reopen routes", () => {
         actorUserId: "local-board",
       }),
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         "22222222-2222-4222-8222-222222222222",
@@ -1976,7 +2079,7 @@ describe("issue comment reopen routes", () => {
       .send({ comment: "Retry window is over; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
@@ -3600,7 +3703,6 @@ describe("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    const { unprocessable } = await import("../errors.js");
     mockIssueService.update.mockRejectedValue(
       unprocessable("Issue can only have one assignee"),
     );

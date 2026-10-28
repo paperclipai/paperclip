@@ -18,6 +18,7 @@ import {
   confirmAgentConfigNavigation,
 } from "@/pages/AgentDetail";
 import { AgentSkillsTab } from "@/pages/agent-skills/AgentSkillsTab";
+import { AgentAdvancedTab } from "@/pages/AgentAdvancedTab";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { AgentContextualSidebar } from "@/components/AgentContextualSidebar";
 import { AgentActionButtons } from "@/components/AgentActionButtons";
@@ -45,6 +46,7 @@ import { storybookIssues } from "../../fixtures/paperclipData";
 import "./settings.css";
 
 const descriptions: Record<AgentLocalDetailView, string> = {
+  advanced: "Edit the agent’s configuration as YAML.",
   overview: "A snapshot of Nova’s work, capabilities, and current setup.",
   instructions: "The files that guide how your agent thinks and works.",
   skills: "Choose the skills your agent brings to each task.",
@@ -275,7 +277,7 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
             if (
               dirty &&
               (event.target as HTMLElement).closest("a") &&
-              !confirmAgentConfigNavigation(true)
+              (saving || !confirmAgentConfigNavigation(true))
             ) {
               event.preventDefault();
               event.stopPropagation();
@@ -470,6 +472,9 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
               )}
               {view === "revisions" && (
                 <AgentRevisionsTab agent={agent} companyId={COMPANY} />
+              )}
+              {view === "advanced" && (
+                <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={onDirty} onSavingChange={setSaving} onSaved={() => {}} />
               )}
             </div>
             {(saveError || permissions.error) && (

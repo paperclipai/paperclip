@@ -1,7 +1,8 @@
 import path from "node:path";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { runnerMatrix } from "./catalog.js";
-import { renderRunnerE2EDashboard } from "./dashboard.js";
+import { renderRunnerE2EDashboard, type RunnerDashboardInput } from "./dashboard.js";
+import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
 import {
   buildRunnerCampaign,
   canonicalExecutionId,
@@ -25,6 +26,29 @@ interface PublishedCampaign {
   generatedAt: string;
   expected: string[];
   results: PublishedResult[];
+  accounting?: RunnerE2ECampaign["accounting"];
+  operations?: RunnerE2ECampaign["operations"];
+  feedbackReview?: RunnerE2ECampaign["feedbackReview"];
+  braintrustExperiment?: RunnerE2ECampaign["braintrustExperiment"];
+  presentation?: RunnerDashboardInput["presentation"];
+}
+
+function validatePresentation(value: unknown) {
+  if (value === undefined) return;
+  const invalid = () => {
+    throw new Error("Published bundle has invalid presentation metadata in normalized-results.json");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const presentation = value as Record<string, unknown>;
+  for (const field of ["title", "description"]) {
+    if (presentation[field] !== undefined && typeof presentation[field] !== "string") invalid();
+  }
+  if (presentation.notes !== undefined &&
+      (!Array.isArray(presentation.notes) || presentation.notes.some(note => typeof note !== "string"))) invalid();
+  if (presentation.links !== undefined &&
+      (!Array.isArray(presentation.links) || presentation.links.some(link =>
+        !link || typeof link !== "object" || Array.isArray(link) ||
+        typeof link.label !== "string" || typeof link.href !== "string"))) invalid();
 }
 
 async function relativeFiles(root: string, current = root): Promise<string[]> {
@@ -57,7 +81,7 @@ export async function regenerateRunnerDashboard(input: {
   historyFile?: string | null;
   outputDirectory?: string;
   evidenceHrefPrefix?: string;
-  publicSummaryImageHref?: string;
+  feedbackReviewFile?: string;
 }) {
   const bundle = path.resolve(input.bundle);
   const outputDirectory = path.resolve(input.outputDirectory ?? bundle);
@@ -84,6 +108,7 @@ export async function regenerateRunnerDashboard(input: {
   ) {
     throw new Error("Published bundle has an invalid normalized-results.json");
   }
+  validatePresentation(normalized.presentation);
 
   const results = normalized.results.map(upgradeRunnerResult);
   const expected = normalized.expected.map(canonicalExecutionId);
@@ -94,6 +119,12 @@ export async function regenerateRunnerDashboard(input: {
     generatedAt: normalized.generatedAt,
     expected,
     results,
+    accounting: normalized.accounting,
+    operations: normalized.operations,
+    braintrustExperiment: normalized.braintrustExperiment,
+    feedbackReview: input.feedbackReviewFile
+      ? JSON.parse(await readFile(input.feedbackReviewFile, "utf8"))
+      : normalized.feedbackReview,
   });
   // A rendering refresh must not inherit the renderer's checkout or CI event.
   const retainedSource = results.find((result) =>
@@ -151,17 +182,18 @@ export async function regenerateRunnerDashboard(input: {
     }),
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: "Runner Full-Stack E2E",
+    title: normalized.presentation?.title ?? "E2E tests",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,
     entries,
     campaign,
     history,
-    publicSummaryImageHref: input.publicSummaryImageHref,
+    presentation: normalized.presentation,
   });
   const upgraded = {
     ...campaign,
+    ...(normalized.presentation ? { presentation: normalized.presentation } : {}),
     results: campaign.results.map((result, index) => ({
       ...result,
       evidenceValid:
@@ -170,10 +202,21 @@ export async function regenerateRunnerDashboard(input: {
       evidenceErrors: normalized.results[index]?.evidenceErrors ?? [],
     })),
   };
+  const summary = await readFile(path.join(bundle, "summary.md"), "utf8").then(text => text.replace(
+    /^(Feedback across retained attempts:.*?); [0-9]+ distinct items awaiting review;/m, "$1;",
+  )).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  const reviewStatus = /^(?:[0-9]+ distinct feedback items await review\.|Feedback reviewed by (?:human|agent) at ).*$/m;
+  const refreshedSummary = summary === undefined ? undefined : reviewStatus.test(summary)
+    ? summary.replace(reviewStatus, () => campaignFeedbackReviewText(campaign))
+    : `${summary.trimEnd()}\n\n## Campaign feedback review\n\n${campaignFeedbackReviewText(campaign)}\n`;
   await mkdir(outputDirectory, { recursive: true });
   await Promise.all([
     writeFile(path.join(outputDirectory, "index.html"), dashboard, "utf8"),
     writeFile(path.join(outputDirectory, "dashboard.html"), dashboard, "utf8"),
+    ...(refreshedSummary === undefined ? [] : [writeFile(path.join(outputDirectory, "summary.md"), refreshedSummary, "utf8")]),
     writeFile(
       path.join(outputDirectory, "normalized-results.json"),
       `${JSON.stringify(upgraded, null, 2)}\n`,
@@ -194,7 +237,7 @@ async function main() {
   );
   if (!bundleArgument) {
     throw new Error(
-      "Usage: pnpm test:e2e:runner:dashboard -- <published-bundle-directory> [--history <history.json>]",
+      "Usage: pnpm test:e2e:runner:dashboard -- <published-bundle-directory> [--history <history.json>] [--feedback-review <review.json>]",
     );
   }
   const historyIndex = arguments_.indexOf("--history");
@@ -202,7 +245,10 @@ async function main() {
     historyIndex >= 0 ? arguments_[historyIndex + 1] : undefined;
   if (historyIndex >= 0 && !historyFile)
     throw new Error("--history requires a path");
-  await regenerateRunnerDashboard({ bundle: bundleArgument, historyFile });
+  const reviewIndex = arguments_.indexOf("--feedback-review");
+  const feedbackReviewFile = reviewIndex >= 0 ? arguments_[reviewIndex + 1] : undefined;
+  if (reviewIndex >= 0 && !feedbackReviewFile) throw new Error("--feedback-review requires a path");
+  await regenerateRunnerDashboard({ bundle: bundleArgument, historyFile, feedbackReviewFile });
 }
 
 if (

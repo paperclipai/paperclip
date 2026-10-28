@@ -1,14 +1,41 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { withDedicatedDbConnection, type Db } from "@paperclipai/db";
+import { sql } from "drizzle-orm";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import type { TaskWorkspaceIntent } from "@paperclipai/shared";
-import type { GitRemoteAuthProvider } from "./git-credentials.js";
+import { isGitHubHttpsRemoteUrl, type GitRemoteAuthProvider } from "./git-credentials.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { materializeManagedProjectWorkspace } from "./managed-repository-checkout.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
+import { isRestrictedWorkspaceSourceDenial } from "./workspace-source-restriction.js";
+import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 
 const execFile = promisify(execFileCallback);
+
+const sourceLocks = new AsyncLocalStorage<ReadonlyArray<{ db: Db; key: string }>>();
+export class IsolatedRepositorySourceBusy extends Error {}
+
+/** Creation, reopening and base expiration share this cross-process exclusion. */
+export async function withIsolatedRepositorySourceLock<T>(db: Db, companyId: string, issueId: string,
+  action: () => Promise<T>, tryOnly = false): Promise<T> {
+  const key = `isolated_repository_source:${companyId}:${issueId}`;
+  const held = sourceLocks.getStore() ?? [];
+  if (held.some(lock => lock.db === db && lock.key === key)) return action();
+  return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+    const acquire = tryOnly
+      ? sql`pg_try_advisory_xact_lock(hashtextextended(${key}, 0))`
+      : sql`pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+    const rows = await tx.execute(sql`select ${acquire} as acquired,
+      (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+    if (tryOnly && !rows[0]?.acquired) throw new IsolatedRepositorySourceBusy();
+    return withWorkspaceLockKeepalive(tx, Number(rows[0]?.idle_timeout_ms),
+      () => sourceLocks.run([...held, { db, key }], action));
+  }));
+}
+
 
 export function isolatedRemoteSourcePath(companyId: string, issueId: string): string {
   if ([companyId, issueId].some(id => !/^[a-zA-Z0-9_-]+$/.test(id))) {
@@ -66,13 +93,12 @@ export function canIsolateRemoteWorkspaceSource(input: {
   strategy: Record<string, unknown>;
   trustPresetKind: string;
 }): boolean {
-  const error = input.error as { status?: unknown; message?: unknown } | null;
   const branchTemplate = input.strategy.branchTemplate;
   const selectsFixedBranch = typeof branchTemplate === "string" && branchTemplate.length > 0
     && !/\{\{\s*(?:issue\.(?:id|identifier|title)|slug)\s*\}\}/.test(branchTemplate);
-  if (input.trustPresetKind !== "standard" || error?.status !== 403 || error.message !== "Task workspace access is no longer available"
+  if (input.trustPresetKind !== "standard" || !isRestrictedWorkspaceSourceDenial(input.error)
     || input.reuseExisting || input.hasExistingWorkspace || input.strategy.existingBranch || selectsFixedBranch
-    || (input.selection && !["project", "task_default"].includes(input.selection.source))
+    || (input.selection && !["project", "task_default", "recovery"].includes(input.selection.source))
     || (input.selectedProjectWorkspaceId && (input.selection?.selection.kind !== "configured_source"
       || input.selection.selection.projectWorkspaceId !== input.selectedProjectWorkspaceId))) return false;
   if (!input.repoUrl) return false;
@@ -117,6 +143,8 @@ export async function materializeIsolatedRemoteWorkspaceSource(input: {
   });
   const result = await materializeManagedProjectWorkspace(canonicalCwd, {
     repoUrl: input.repoUrl, resolveGitAuth: input.resolveGitAuth,
+    objectCacheCompanyDirectory: isGitHubHttpsRemoteUrl(input.repoUrl)
+      ? path.join(await fs.realpath(resolvePaperclipInstanceRoot()), "repository-object-cache", input.companyId) : undefined,
   });
   if (result.warning) throw new Error("Isolated repository source is not a Git checkout");
   await measureRunPhase("workspace.materialize.source_identity", () => assertRemoteSourceIdentity(cwd, input.repoUrl));

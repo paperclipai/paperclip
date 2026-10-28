@@ -3,13 +3,18 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 const cells = runnerMatrix.filter(e => e.profile.id === "runner-acpx-pi");
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+// pnpm's source test wrapper sets NODE_PATH; the disposable public-install fixture must start closed.
+beforeEach(() => { vi.stubEnv("NODE_PATH", undefined); vi.stubEnv("NODE_OPTIONS", undefined); });
+afterEach(async () => {
+  try { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); }
+  finally { vi.unstubAllEnvs(); }
+});
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "e2e-installed-cli-"))); roots.push(root);
@@ -27,7 +32,7 @@ it("admits all26 current Pi cases through pinned installed public CLI/server wit
 });
 it("admits existing Codex onboarding, useful-file revision and restart journeys without broadening other cells", async () => {
   const { env, server } = await fixture();
-  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart"]) {
+  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart", "everyday-workflows.runner-codex.daytona.recover-controller"]) {
     const cell = runnerMatrix.find(e => e.id === id)!;
     expect(cell).toBeDefined();
     expect(await verifyInstalledCli(env, [cell])).toMatchObject({ serverRoot: server, defaultRuntimeResolution: true, qualificationOverride: false });
@@ -36,14 +41,30 @@ it("admits existing Codex onboarding, useful-file revision and restart journeys 
   for (const id of ["first-task.legacy-codex.local.task-card-accept", "first-task.runner-codex.local.interview-first-response", "everyday-workflows.runner-codex.daytona.build-revise"]) {
     const cell = runnerMatrix.find(e => e.id === id)!;
     expect(cell).toBeDefined();
-    expect(() => assertInstalledCliSelection(env, [cell])).toThrow("explicit supported Pi or Codex");
+    expect(() => assertInstalledCliSelection(env, [cell])).toThrow("explicit supported Pi, Codex, or Copilot");
   }
 });
-it("qualified providers drop ambient admission while pending Copilot retains its exact gate", () => {
+it("admits only the 20 agreed Copilot cells through normal installed resolution with no qualification override", async () => {
+  const { env, server } = await fixture();
+  const selected = runnerMatrix.filter(e => e.profile.id === "runner-acpx-copilot");
+  expect(selected).toHaveLength(20);
+  expect(selected.filter(e => e.environment.id === "local")).toHaveLength(10);
+  expect(selected.filter(e => e.environment.id === "daytona")).toHaveLength(10);
+  for (const cell of selected) {
+    expect(await verifyInstalledCli(env, [cell])).toMatchObject({ serverRoot: server, defaultRuntimeResolution: true, qualificationOverride: false });
+    const child = buildRunnerE2EProcessEnvironment(env, [cell]);
+    expect(child.PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
+    for (const key of ["PAPERCLIP_RUNNER_BINARY", "PAPERCLIP_RUNNER_REMOTE_BINARY_PATH", "PAPERCLIP_RUNNER_ACPX_QUALIFICATION", "NODE_PATH"]) {
+      expect(() => assertInstalledCliSelection({ ...env, [key]: "foreign" }, [cell])).toThrow("forbids");
+    }
+    expect(() => assertInstalledCliSelection(env, [{ ...cell, id: `${cell.id}-unreviewed` }])).toThrow("explicit supported");
+  }
+});
+it("qualified providers drop ambient admission without granting custom model overrides", () => {
   for (const cell of cells) expect(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
   for (const agent of ["copilot"]) {
     const cell = runnerMatrix.find(e => e.profile.qualificationCandidate === agent)!;
-    expect(JSON.parse(buildRunnerE2EProcessEnvironment({}, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION!)).toEqual([{ agent, model: cell.profile.model }]);
+    expect(buildRunnerE2EProcessEnvironment({ PAPERCLIP_RUNNER_ACPX_QUALIFICATION: "ambient" }, [cell]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
   }
   const changed = { ...cells[0]!, profile: { ...cells[0]!.profile, model: "custom/explicit-model" } };
   expect(buildRunnerE2EProcessEnvironment({}, [changed]).PAPERCLIP_RUNNER_ACPX_QUALIFICATION).toBeUndefined();
@@ -87,10 +108,9 @@ it("uses the direct public Playwright JS bin without bin-shim Node injection", a
   const f = await fixture(); const cli = join(f.root,"node_modules/@playwright/test/cli.js");
   await mkdir(join(f.root,"node_modules/@playwright/test"),{recursive:true});
   await writeFile(cli,"console.log(JSON.stringify({nodePath:process.env.NODE_PATH??null,nodeOptions:process.env.NODE_OPTIONS??null,args:process.argv.slice(2)}))");
-  const invocation = runnerE2EPlaywrightInvocation(f.root,["--version"],true);
+  const invocation = runnerE2EPlaywrightInvocation(f.root,["--version"]);
   expect(invocation.command).toBe(process.execPath);
   expect(JSON.parse(execFileSync(invocation.command,invocation.args,{env:{},timeout:5000,encoding:"utf8"}))).toEqual({nodePath:null,nodeOptions:null,args:["--version"]});
-  expect(runnerE2EPlaywrightInvocation(f.root,["--version"],false)).toEqual({command:"pnpm",args:["exec","playwright","--version"]});
   for (const key of ["NODE_PATH","NODE_OPTIONS"]) expect(()=>assertInstalledCliSelection({...f.env,[key]:""},[cells[0]!])).toThrow("ambient Node injection");
 });
 
@@ -186,4 +206,9 @@ it.skipIf(process.platform === "win32")("installed startup rejects stale daemon/
   const wrong = await startupFixture("wrong-model");
   await expect(probeInstalledCodexStartup({ consumerRoot: wrong.root, serverRoot: wrong.server, expectedRunnerSha256: wrong.expectedRunnerSha256 })).rejects.toThrow("matching native identity");
   expect(await readFile(wrong.observations, "utf8").then(JSON.parse)).toMatchObject({ calls: ["open", "session-close"] });
+});
+
+it("installed startup rejects ambient Node injection before launching", async () => {
+  vi.stubEnv("NODE_PATH", "/untrusted/test-path");
+  await expect(probeInstalledCodexStartup({ consumerRoot: "/unused", serverRoot: "/unused", expectedRunnerSha256: "0".repeat(64) })).rejects.toThrow("forbids NODE_PATH");
 });

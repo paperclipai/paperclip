@@ -6,6 +6,7 @@ import {
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { ISSUE_TREE_RESUME_EXECUTABLE_STATUSES } from "../services/issue-tree-control.js";
 import { conflict } from "../errors.js";
 import {
   createIssueTreeHoldSchema,
@@ -26,7 +27,6 @@ import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
-const RESUME_EXECUTABLE_STATUSES = ["todo", "in_progress", "in_review"];
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -436,15 +436,13 @@ export function issueTreeControlRoutes(
         const activeHold = await treeControlSvc.getHold(root.companyId, holdId);
         const issueIds =
           activeHold?.mode === "pause" && activeHold.rootIssueId === root.id
-            ? (activeHold.members ?? [])
-                .filter((member) => !member.skipped)
-                .map((member) => member.issueId)
+            ? (activeHold.members ?? []).map((member) => member.issueId)
             : [];
         if (issueIds.length > 0) {
           const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
             .from(issueRows).where(and(
               eq(issueRows.companyId, root.companyId), inArray(issueRows.id, issueIds),
-              inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
+              inArray(issueRows.status, ISSUE_TREE_RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
             ));
           for (const task of candidates) {
             const blocked = await getExecutionBlocker(db, root.companyId, task.id);
@@ -489,16 +487,18 @@ export function issueTreeControlRoutes(
       const wakeFailures: Array<{ issueId: string; message: string }> = [];
       if (hold.mode === "pause" && req.body.metadata?.wakeAgents === true) {
         for (const member of hold.members ?? []) {
-          if (member.skipped) continue;
           try {
             const issue = await issuesSvc.getById(member.issueId);
             if (
               !issue ||
               issue.companyId !== root.companyId ||
               !issue.assigneeAgentId ||
-              !RESUME_EXECUTABLE_STATUSES.includes(issue.status)
+              !ISSUE_TREE_RESUME_EXECUTABLE_STATUSES.includes(issue.status)
             )
               continue;
+            // The snapshot may predate reopening a task or releasing another
+            // pause. Current task state and remaining holds govern execution.
+            if (await treeControlSvc.getActivePauseHoldGate(root.companyId, issue.id)) continue;
             await heartbeat.wakeup(issue.assigneeAgentId, {
               source: "assignment",
               triggerDetail: "system",

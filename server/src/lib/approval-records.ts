@@ -1,3 +1,5 @@
+import { notifyToolReviewChange } from "../services/tool-review-work-notifications.js";
+import { writeApprovalChange } from "../services/approval-work-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { approvals, type Db } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
@@ -37,8 +39,9 @@ export function approvalResolutionRecords(db: Db) {
     }
 
     const now = new Date();
-    const updated = await database
-      .update(approvals)
+    const updated = await writeApprovalChange(database, existing.companyId, async tx => {
+      await notifyToolReviewChange(tx, existing.companyId);
+      return tx.update(approvals)
       .set({
         status: targetStatus,
         decidedByUserId,
@@ -49,6 +52,7 @@ export function approvalResolutionRecords(db: Db) {
       .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
       .returning()
       .then((rows) => rows[0] ?? null);
+    });
 
     if (updated) {
       return { approval: updated, applied: true };

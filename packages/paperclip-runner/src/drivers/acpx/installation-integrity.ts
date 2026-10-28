@@ -30,6 +30,7 @@ import {
 import type { Readable, Writable } from "node:stream";
 
 import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -652,11 +653,13 @@ export async function verifyQualifiedAcpxInstallation(
 ): Promise<VerifiedAcpxInstallation> {
   // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
-  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver && process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT !== undefined) {
-    resolvePackageJson = createAcpxPackageJsonResolver(
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
-    );
+  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {
+    const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+    const authority = boundRoot === undefined ? resolveInstalledProviderAuthority(import.meta.url) : {
+      root: boundRoot,
+      manifest: process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+    };
+    if (authority) resolvePackageJson = createAcpxPackageJsonResolver(authority.root, authority.manifest);
   }
   const builtin = profile.agent === "grok";
   if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {
@@ -1478,7 +1481,7 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
-  let directoriesReleased = false;
+  let directoriesRelease: Promise<void> | undefined;
   let spawnedChild: ChildProcess | null = null;
   let childExit: Promise<void> | null = null;
   let snapshotCleanup: Promise<void> | null = null;
@@ -1490,24 +1493,23 @@ function commandLease(
     }
     return snapshotCleanup;
   };
-  const releaseDirectories = async (): Promise<void> => {
-    if (directoriesReleased) return;
-    directoriesReleased = true;
-    await Promise.all([
+  const releaseDirectories = (): Promise<void> => {
+    return (directoriesRelease ??= Promise.all([
       commandDirectory.close(),
       ...dependencyAncestors.map((handle) => handle.close()),
       ...(providerRuntimeExecutable === null
         ? []
         : [providerRuntimeExecutable.close()]),
-    ]);
+    ]).then(() => undefined));
   };
   const releaseDirectoriesBestEffort = (): void => {
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed && privateSnapshot === null) return;
+    const wasConsumed = consumed;
     consumed = true;
-    verifiedBytes.fill(0);
+    // A spawned command owns its source buffer until its pipe write completes.
+    if (!wasConsumed) verifiedBytes.fill(0);
     await releaseDirectories();
     // A spawned provider may still read the snapshot. Runtime shutdown runs in
     // parallel and retires that child; do not remove its bytes or report command
@@ -1602,7 +1604,7 @@ function commandLease(
           environment[VERIFIED_PROVIDER_RUNTIME_TARGET_ENV] =
             providerRuntimeEnvironmentVariable;
         }
-        child = spawnChildProcess(
+        child = spawnedChild = spawnChildProcess(
           runtimeHandoff.executable,
           guarded
             ? [
@@ -2256,11 +2258,4 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {
   await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
-}
-
-/** Verify the pinned Pi closure and snapshot lease without launching a provider. */
-export async function probeAcpxPiInstallation(model: string): Promise<void> {
-  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("pi", model));
-  const lease = await installation.openCommand();
-  await lease.close();
 }

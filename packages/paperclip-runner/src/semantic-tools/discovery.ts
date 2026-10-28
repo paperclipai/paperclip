@@ -21,6 +21,10 @@ const MAX_DISCOVERY_RESULTS = 10;
 
 const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Object.freeze({
   set_task_title: "active_task",
+  handoff_case: "delegation",
+  read_case: "delegation", update_case: "delegation",
+  create_case: "delegation",
+  list_workflows: "delegation", read_workflow: "delegation", create_workflow: "delegation", update_workflow: "delegation",
   set_task_monitor: "continuation",
   search_api: "api_fallback",
   call_api: "api_fallback",

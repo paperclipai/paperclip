@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 import { createCapabilityFixtureState } from "../mock-core/capability-control-plane-types.js";
+import { sumAttemptCosts } from "../../scripts/runner-protocol-eval-metrics.mjs";
 
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
 import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
@@ -41,6 +42,26 @@ function request(overrides: Record<string, unknown> = {}): unknown {
     ...overrides,
   };
 }
+
+it("rejects a stale qualified Claude SDK before provider creation", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "eval-qualified-profile-"));
+  try {
+    const path = join(workspace, "request.json");
+    const expected = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
+    await writeFile(path, JSON.stringify(request({
+      provider: "acpx", driver: "acpx_runtime", acpxAgent: "claude", model: "claude-sonnet-5",
+      runnerd: { path: join(workspace, "missing-runnerd"), sha256: "a".repeat(64) },
+      session: { workingDirectory: workspace },
+    })));
+    const serviceFactory = vi.fn();
+    const args = ["--request", path, "--output", join(workspace, "artifact.json"), "--expected-acpx-profile"];
+    await expect(runEvalSessionCli([...args, JSON.stringify({ ...expected, agentRuntimeVersion: "0.3.263" })], { serviceFactory }))
+      .rejects.toThrow("does not match the built runner profile");
+    await expect(runEvalSessionCli([...args, JSON.stringify(expected)], { serviceFactory })).rejects.toThrow("ENOENT");
+    expect(serviceFactory).not.toHaveBeenCalled();
+    expect(await readdir(workspace)).toEqual(["request.json"]);
+  } finally { await rm(workspace, { recursive: true, force: true }); }
+});
 
 function agentCoreProfile(overrides: Record<string, unknown> = {}) {
   return {
@@ -137,6 +158,25 @@ describe("eval-session request contract", () => {
       await expect(runEvalSessionCli([...args, "--expected-acpx-profile", JSON.stringify(expected)], { serviceFactory }))
         .rejects.toThrow("ENOENT");
       expect(serviceFactory).not.toHaveBeenCalled();
+      expect(await readdir(workspace)).toEqual(["request.json"]);
+    } finally { await rm(workspace, { recursive: true, force: true }); }
+  });
+
+  it("requires bounded exact Copilot profile admission before loading provider state", async () => {
+    const args = ["--request", "/tmp/request.json", "--output", "/tmp/result.json", "--candidate-profile", "copilot"];
+    expect(() => parseEvalSessionCliArgs(args)).toThrow("require --expected-acpx-profile");
+    for (const invalid of ["[]", "null", "malformed", JSON.stringify({ overflow: "x".repeat(4096) })]) {
+      expect(() => parseEvalSessionCliArgs([...args, "--expected-acpx-profile", invalid])).toThrow();
+    }
+    const profile = resolveQualifiedAcpxProfile("copilot", "gpt-5.6-luna");
+    expect(parseEvalSessionCliArgs([...args, "--expected-acpx-profile", JSON.stringify(profile)]).expectedAcpxProfile).toEqual(profile);
+    const workspace = await mkdtemp(join(tmpdir(), "eval-profile-admission-"));
+    try {
+      const path = join(workspace, "request.json");
+      await writeFile(path, JSON.stringify(request({ provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" })));
+      const factory = vi.fn();
+      await expect(runEvalSessionCli(["--request", path, "--output", join(workspace, "output.json"), "--candidate-profile", "copilot", "--expected-acpx-profile", JSON.stringify({ ...profile, commandDigest: `sha256:${"0".repeat(64)}` })], { serviceFactory: factory })).rejects.toThrow("does not match the built runner profile");
+      expect(factory).not.toHaveBeenCalled();
       expect(await readdir(workspace)).toEqual(["request.json"]);
     } finally { await rm(workspace, { recursive: true, force: true }); }
   });
@@ -430,6 +470,39 @@ describe("eval-session usage", () => {
       providerReportedCostNanodollars: 6_000_000,
       estimatedCostNanodollars: 6_200_000,
     });
+  });
+
+  it.each([0, 6_000_000])("does not label Codex legacy ledger cost %d as a provider USD receipt", (legacyCost) => {
+    const snapshot = {
+      config: { provider: "codex" },
+      usageLedger: [{
+        receiptId: "codex-receipt", providerCalls: 1, providerRequests: 1,
+        inputTokens: 1_000, outputTokens: 100, cachedInputTokens: 400,
+        reasoningTokens: 50, costNanodollars: legacyCost,
+      }],
+    } as unknown as CapabilityLiveSessionSnapshot;
+    const usage = boundedEvalSessionUsage(parseEvalSessionRequest(request()), {
+      turnId: "codex-turn", status: "completed", assistantText: "Completed", snapshot,
+    });
+    expect(usage).toMatchObject({
+      agentTurns: 1, providerRequests: 1, inputTokens: 1_000, outputTokens: 100,
+      providerReportedCostNanodollars: null,
+      providerReportedCostProvenance: "unavailable",
+      estimatedCostNanodollars: 6_200_000,
+      legacyLedgerCostNanodollars: legacyCost,
+      costCoverage: "estimated",
+    });
+    expect(sumAttemptCosts([usage])).toMatchObject({
+      providerReported: { nanodollars: null, recordedAttempts: 0 },
+      estimated: { nanodollars: 6_200_000, recordedAttempts: 1 },
+    });
+    expect(snapshot.usageLedger[0]?.costNanodollars).toBe(legacyCost);
+    const limitedRequest = parseEvalSessionRequest(request());
+    limitedRequest.limits.maxEstimatedCostNanodollars = 10_000_000;
+    const costlySnapshot = { ...snapshot, usageLedger: [{ ...snapshot.usageLedger[0]!, costNanodollars: 10_000_001 }] };
+    expect(() => boundedEvalSessionUsage(limitedRequest, {
+      turnId: "codex-turn", status: "completed", assistantText: "Completed", snapshot: costlySnapshot,
+    })).toThrow("legacy ledger cost limit exceeded");
   });
 
   it("fails closed when a completed turn has no usage receipt", () => {

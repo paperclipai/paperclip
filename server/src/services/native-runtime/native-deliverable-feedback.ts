@@ -87,7 +87,12 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
       const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/giu)];
       return creates.flatMap((create, createIndex) => {
         const before = clause.slice(0, create.index);
-        if (/\b(?:do not|don't|never|no need to)\s*$/iu.test(before)) return [];
+        if (/\b(?:do not|don['’]t|never|no need to)\s*$/iu.test(before)) return [];
+        const negation = /\b(?:do not|don['’]t|never|no need to)\b/iu.exec(before);
+        if (negation) {
+          const rest = before.slice(negation.index + negation[0].length);
+          if (!/\binstead\b/iu.test(rest) && /^(?:\s*|[\s\S]*\b(?:and|or|nor)\s*)$/iu.test(rest)) return [];
+        }
         // Bind each object to its own verb. A denied write or "create no files"
         // cannot suppress a separate requested report in this same clause.
         const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index);

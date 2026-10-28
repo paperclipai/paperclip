@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { eq } from "drizzle-orm";
-import { companies, createDb, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { companies, createDb, companySecrets, projects, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -10,7 +10,7 @@ import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "../services/resource-lifecycle-events.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
-import type { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -27,6 +27,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
   afterAll(async () => { await database?.cleanup(); });
   afterEach(() => { vi.restoreAllMocks(); });
   beforeEach(async () => {
+    vi.spyOn(db.$client, "listen").mockResolvedValue({ unlisten: vi.fn(), state: {} } as never);
     await db.delete(plugins);
     companyId = randomUUID(); pluginId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Delivery fixture", issuePrefix: `L${companyId.slice(0, 6)}` });
@@ -53,6 +54,56 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
+  it("supplies project native credentials only to opted-in callbacks and saves returned patches before acknowledgment", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "projects.instance-secrets"] } as never }).where(eq(plugins.id, pluginId));
+    const [project] = await db.insert(projects).values({ companyId, name: "Native credentials owner" }).returning();
+    await event(project.id);
+    const d = delivery();
+    d.call.mockImplementationOnce(async (_p, _m, input) => {
+      expect(input.instanceSecrets).toEqual({});
+      return { eventId: input.id, status: "acknowledged", instanceSecrets: { mount_grants: "fixture-private-grants" } };
+    });
+    try {
+      await d.run();
+      expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.ownerProjectId, project.id))).toHaveLength(1);
+      await event(project.id, "update");
+      d.call.mockImplementationOnce(async (_p, _m, input) => {
+        expect(input.instanceSecrets).toEqual({ mount_grants: "fixture-private-grants" });
+        return { eventId: input.id, status: "retry", instanceSecrets: { mount_grants: "must-not-save" } };
+      });
+      await d.run();
+      const [stored] = await db.select().from(companySecrets).where(eq(companySecrets.ownerProjectId, project.id));
+      expect(stored.latestVersion).toBe(1);
+      expect(JSON.stringify(await pluginLifecycleInbox(db, pluginId).list(companyId))).not.toContain("fixture-private-grants");
+    } finally { d.worker.dispose(); vi.unstubAllEnvs(); }
+  });
+  it("rejects credential patches from plugins without project instance secret scope", async () => {
+    await event(); const d = delivery();
+    d.call.mockImplementationOnce(async (_p, _m, input) => {
+      expect(input.instanceSecrets).toBeUndefined();
+      return { eventId: input.id, status: "acknowledged", instanceSecrets: { mount_grants: "private" } };
+    });
+    try { await d.run(); expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1); }
+    finally { d.worker.dispose(); }
+  });
+  it.each([false, true])("does not wait for queued plugin callbacks during startup (runtime subscriber: %s)", async runtime => {
+    if (runtime) await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project", "agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    await event();
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const call = vi.fn(async (_plugin, _method, input) => { await blocked; return { eventId: input.id, status: "acknowledged" }; });
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
+    const worker = registerPluginLifecycleDelivery(coordinator, db, { call, isRunning: () => true, onConfigApplied: () => () => {} } as never, new EventEmitter() as never);
+    let ready = false;
+    void worker.ready.then(() => { ready = true; });
+    try {
+      await vi.waitFor(() => expect(call).toHaveBeenCalled(), { timeout: 5000 });
+      await vi.waitFor(() => expect(ready).toBe(true));
+      expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1);
+    } finally { release(); worker.dispose(); await coordinator.stop(); }
+  });
   it("drains creation before transitions, recovers acknowledgments across dispatcher replacement, and ignores agent events", async () => {
     const id = await event(); await event(id, "update"); await event(id, "delete");
     await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", randomUUID()));
@@ -176,6 +227,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
   });
   it("retains a failed scan across a retry skipped during idle drain", async () => {
     await event(); const d = delivery();
+    await d.worker.ready;
     const select = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("database unavailable"); });
     await expect(d.run()).rejects.toThrow("database unavailable");
     // The coordinator's drain path checks hasPending without calling run.
@@ -193,6 +245,59 @@ describePostgres("durable plugin lifecycle delivery", () => {
     await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
     expect((await registry.getConfig(pluginId, companyId))?.configJson).toEqual({ first: true, second: true });
   }, 5000);
+  it("retries listener setup through durable delivery after an enable-time failure", async () => {
+    const d = delivery();
+    await d.worker.ready;
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const listen = vi.mocked(db.$client.listen);
+    listen.mockRejectedValueOnce(new Error("temporary listener outage"));
+    d.lifecycle.emit("plugin.enabled");
+    await vi.waitFor(() => expect(listen).toHaveBeenCalledTimes(1));
+    expect(await d.pending()).toBe(true);
+    await d.run();
+    expect(listen).toHaveBeenCalledTimes(2);
+    expect(await d.pending()).toBe(false);
+    d.worker.dispose();
+  });
+  it("unregisters the listener on the last disable or unload and can subscribe again", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const otherPluginId = randomUUID();
+    await db.insert(plugins).values({ id: otherPluginId, pluginKey: otherPluginId, packageName: "other-runtime", version: "1.0.0", status: "ready", manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+    await db.insert(pluginConfig).values({ pluginId: otherPluginId, companyId, configJson: {} });
+    const first = { unlisten: vi.fn(), state: {} };
+    const second = { unlisten: vi.fn(), state: {} };
+    const third = { unlisten: vi.fn(), state: {} };
+    const listen = vi.mocked(db.$client.listen).mockResolvedValueOnce(first as never).mockResolvedValueOnce(second as never).mockResolvedValueOnce(third as never);
+    const d = delivery();
+    await d.worker.ready;
+    await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, pluginId));
+    d.lifecycle.emit("plugin.status_changed");
+    await d.run();
+    expect(first.unlisten).not.toHaveBeenCalled();
+    await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, otherPluginId));
+    d.lifecycle.emit("plugin.disabled");
+    await vi.waitFor(() => expect(first.unlisten).toHaveBeenCalledTimes(1));
+    await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId));
+    d.lifecycle.emit("plugin.enabled");
+    await d.run();
+    expect(listen).toHaveBeenCalledTimes(2);
+    const registry = pluginRegistryService(db);
+    await registry.upsertCompanySettings(pluginId, companyId, { enabled: false, settingsJson: {} });
+    d.applied();
+    await vi.waitFor(() => expect(second.unlisten).toHaveBeenCalledTimes(1));
+    await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
+    d.applied(); await d.run();
+    expect(listen).toHaveBeenCalledTimes(3);
+    await db.delete(plugins).where(eq(plugins.id, pluginId));
+    d.lifecycle.emit("plugin.unloaded");
+    await vi.waitFor(() => expect(third.unlisten).toHaveBeenCalledTimes(1));
+    expect(first.unlisten).toHaveBeenCalledTimes(1);
+    expect(second.unlisten).toHaveBeenCalledTimes(1);
+    d.worker.dispose();
+    expect(d.lifecycle.listenerCount("plugin.status_changed")).toBe(0);
+    expect(d.lifecycle.listenerCount("plugin.disabled")).toBe(0);
+    expect(d.lifecycle.listenerCount("plugin.unloaded")).toBe(0);
+  });
   it("records failed delivery scope and stage without provider secrets", async () => {
     await event(); const d = delivery();
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});

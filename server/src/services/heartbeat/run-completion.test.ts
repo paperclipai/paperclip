@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -8,11 +9,13 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
+import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
+import { createHeartbeatAgentStatus } from "./agent-status.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -75,15 +78,19 @@ it("constructs completion handlers without querying or starting work", () => {
 });
 
 const support = await getEmbeddedPostgresTestSupport();
-describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)("heartbeat run completion boundary", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     // Keep the accounting transaction real without reading provider receipt files.
     vi.spyOn(usageReceipts, "indexPendingUsageReceipts").mockResolvedValue(new Map());
     vi.spyOn(usageReceipts, "recoverPendingRunUsageReceipts").mockResolvedValue([]);
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
-    db = createDb(database.connectionString);
+    const external = process.env.PAPERCLIP_TEST_DATABASE_URL;
+    if (external) db = createDb(external);
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-completion");
+      db = createDb(database.connectionString);
+    }
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.restoreAllMocks(); });
@@ -112,6 +119,31 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     return { run, agent, wake, deps, controller, input, completion, failure, setup };
   }
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
+
+  it.each(["completeRun", "failRun"] as const)("settles the outgoing agent after a case handoff in %s", async operation => {
+    const f = await fixture();
+    await db.update(agents).set({ status: "running", lifecycleState: "ready" }).where(eq(agents.id, f.agent.id));
+    const [recipient] = await db.insert(agents).values({ companyId: f.agent.companyId, name: "Next phase", adapterType: "process" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: f.agent.companyId, title: "Case task", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    const [record] = await db.insert(cases).values({ companyId: f.agent.companyId, caseNumber: 1, identifier: "CASE-1", caseType: "work", title: issue.title, workIssueId: issue.id, handoffVersion: 1 }).returning();
+    await db.insert(caseHandoffs).values({ companyId: f.agent.companyId, caseId: record.id, issueId: issue.id, version: 1,
+      fromAgentId: f.agent.id, toAgentId: recipient.id, phase: "verification", instructions: "Verify the saved work",
+      actorType: "agent", actorId: f.agent.id, sourceRunId: f.run.id, wakeupRequestId: randomUUID(), idempotencyKey: "next-phase", inputFingerprint: "next-phase", state: "awaiting_release" });
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.deps.finalizeAgentStatus.mockImplementation(createHeartbeatAgentStatus(db).finalizeAgentStatus);
+
+    if (operation === "completeRun") await f.completion.completeRun(f.input);
+    else await f.completion.failRun(f.failure(new Error("Provider exited after the accepted handoff")));
+
+    const [settledAgent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(settledAgent).toMatchObject({ status: operation === "completeRun" ? "idle" : "error", lastHeartbeatAt: expect.any(Date) });
+    expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+    expect(f.deps.handleSuccessfulRunHandoff).not.toHaveBeenCalled();
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]?.status).toBe("in_progress");
+  });
 
   it("persists usage, accounting, final logs, presentation and the next task session", async () => {
     const f = await fixture();
@@ -305,6 +337,18 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     await f.completion.failRun(f.failure(new Error("transport ended")));
     expect((await read(f.run.id)).errorCode).toBe("native_result_missing");
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+  });
+
+  it("persists a project denial without provider work or an automatic retry", async () => {
+    const f = await fixture();
+    const projectId = randomUUID();
+    await f.completion.failRunSetup(f.setup(new ProjectAccessDeniedError(projectId)));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "project_access_denied",
+      resultJson: { projectAccessDenied: { projectId }, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {

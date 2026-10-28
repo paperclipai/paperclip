@@ -1,7 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/adapter-utils/openrouter-attribution";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
@@ -31,6 +34,136 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
+  it("stages a relocatable sandbox shell hook without changing the parent environment", async () => {
+    const configHome = await makeConfigHome({ plugin: ["operator-plugin"], permission: { bash: "ask" } });
+    const input = { env: { XDG_CONFIG_HOME: configHome }, config: { dangerouslySkipPermissions: false }, sandboxToolOomPreference: true };
+    const prepared = await prepareOpenCodeRuntimeConfig(input);
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const copiedHome = await makeConfigHome();
+    const relocated = path.join(copiedHome, "remote config 'with spaces'");
+    await fs.cp(prepared.env.XDG_CONFIG_HOME, relocated, { recursive: true });
+    await prepared.cleanup();
+    const pluginDir = path.join(relocated, "opencode", "plugins");
+    const plugins = await fs.readdir(pluginDir);
+    expect(plugins).toHaveLength(1);
+    const pluginUrl = pathToFileURL(path.join(pluginDir, plugins[0]!)).href;
+    const hookEnv = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+      Object.defineProperty(process, "platform", { value: "linux" });
+      delete process.env.BASH_ENV;
+      const hooks = await Object.values(await import(${JSON.stringify(pluginUrl)}))[0]();
+      const output = { env: {} };
+      await hooks["shell.env"]({}, output);
+      console.log(JSON.stringify({ child: output.env, parent: process.env.BASH_ENV ?? null }));
+    `], { encoding: "utf8" }));
+    expect(hookEnv.parent).toBeNull();
+    expect(hookEnv.child.BASH_ENV).toContain(relocated);
+    const command = spawnSync("bash", ["-c", 'printf "%s" "$1"; exit 7', "bash", "literal ' $() value"], {
+      env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
+    });
+    expect(command.stdout).toBe("literal ' $() value");
+    expect(command.status).toBe(7);
+    if (process.platform === "linux") {
+      const parentScore = await fs.readFile("/proc/self/oom_score_adj", "utf8");
+      expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
+        env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
+      }).trim()).toBe("1000");
+      expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
+    }
+    const config = JSON.parse(await fs.readFile(path.join(relocated, "opencode", "opencode.json"), "utf8"));
+    expect(config).toMatchObject({ plugin: ["operator-plugin"], permission: { bash: "ask" } });
+    expect(prepared.env).not.toHaveProperty("BASH_ENV");
+  });
+
+  it("preserves operator shell setup and leaves other platforms and local runs alone", async () => {
+    const configHome = await makeConfigHome();
+    const input = { env: { XDG_CONFIG_HOME: configHome }, config: {}, sandboxToolOomPreference: true };
+    const prepared = await prepareOpenCodeRuntimeConfig(input);
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const pluginDir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "plugins");
+    const pluginUrl = pathToFileURL(path.join(pluginDir, (await fs.readdir(pluginDir))[0]!)).href;
+    for (const scenario of [
+      { platform: "linux", parent: "/operator/setup.sh", child: {} },
+      { platform: "linux", parent: "", child: {} },
+      { platform: "linux", parent: null, child: { BASH_ENV: "/other-plugin/setup.sh" } },
+      { platform: "darwin", parent: null, child: {} },
+    ]) {
+      const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+        const scenario = ${JSON.stringify(scenario)};
+        Object.defineProperty(process, "platform", { value: scenario.platform });
+        if (scenario.parent === null) delete process.env.BASH_ENV;
+        else process.env.BASH_ENV = scenario.parent;
+        const hooks = await Object.values(await import(${JSON.stringify(pluginUrl)}))[0]();
+        const output = { env: scenario.child };
+        await hooks["shell.env"]({}, output);
+        console.log(JSON.stringify(output.env));
+      `], { encoding: "utf8" }));
+      expect(result).toEqual(scenario.child);
+    }
+    const local = await prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} });
+    cleanupPaths.add(local.env.XDG_CONFIG_HOME);
+    expect(await fs.readdir(path.join(local.env.XDG_CONFIG_HOME, "opencode"))).toEqual(["opencode.json"]);
+  });
+
+  it("keeps the existing runtime usable when the optional plugin cannot be installed", async () => {
+    const configHome = await makeConfigHome({ theme: "system" });
+    const rename = vi.spyOn(fs, "rename").mockRejectedValueOnce(new Error("fixture write denied"));
+    try {
+      const input = { env: { XDG_CONFIG_HOME: configHome }, config: {}, sandboxToolOomPreference: true };
+      const prepared = await prepareOpenCodeRuntimeConfig(input);
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const dir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+      expect(await fs.readdir(path.join(dir, "plugins"))).toEqual([]);
+      expect(await fs.readdir(dir)).toEqual(["opencode.json", "plugins"]);
+      expect(prepared.notes.some(note => note.startsWith("Could not prepare"))).toBe(true);
+      expect(JSON.parse(await fs.readFile(path.join(dir, "opencode.json"), "utf8"))).toMatchObject({ theme: "system" });
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it("materializes linked plugin directories without writing into the operator configuration", async () => {
+    const configHome = await makeConfigHome();
+    const operatorRoot = await makeConfigHome();
+    const operatorPlugins = path.join(operatorRoot, "plugins");
+    await fs.mkdir(operatorPlugins);
+    const operatorPlugin = "export const Operator = async () => ({});\n";
+    await fs.writeFile(path.join(operatorPlugins, "operator.js"), operatorPlugin);
+    await fs.symlink(operatorPlugins, path.join(configHome, "opencode", "plugins"), "dir");
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome }, config: {}, sandboxToolOomPreference: true,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    expect(await fs.readdir(operatorPlugins)).toEqual(["operator.js"]);
+    const plugins = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "plugins");
+    expect((await fs.lstat(plugins)).isDirectory()).toBe(true);
+    expect(await fs.readdir(plugins)).toHaveLength(2);
+    expect(await fs.readFile(path.join(plugins, "operator.js"), "utf8")).toBe(operatorPlugin);
+    await prepared.cleanup();
+    expect(await fs.readdir(operatorPlugins)).toEqual(["operator.js"]);
+    expect((await fs.lstat(path.join(configHome, "opencode", "plugins"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("attributes custom OpenRouter aliases and inline overrides without changing other endpoints", async () => {
+    const other = { options: { baseURL: "https://other.example/v1", headers: { "X-Title": "Other" } } };
+    const configHome = await makeConfigHome({ provider: { other, openrouter: other } });
+    const prepared = await prepareOpenCodeRuntimeConfig({ env: {
+      XDG_CONFIG_HOME: configHome,
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: { alias: {
+        options: { baseURL: "https://openrouter.ai/api/v1", apiKey: "fixture-key", headers: { "http-referer": "https://harness.example", "X-Route": "selected" } },
+        models: { model: { headers: { "x-title": "Harness" } } },
+      } } }),
+    }, config: {} });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const { alias } = JSON.parse(prepared.env.OPENCODE_CONFIG_CONTENT).provider;
+    expect(alias.options).toMatchObject({ apiKey: "fixture-key", headers: { ...OPENROUTER_ATTRIBUTION_HEADERS, "X-Route": "selected" } });
+    expect(alias.options.headers).not.toHaveProperty("http-referer");
+    expect(alias.models.model.headers).toEqual(OPENROUTER_ATTRIBUTION_HEADERS);
+    const config = JSON.parse(await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+    expect(config.provider.other).toEqual(other);
+    expect(config.provider.openrouter).toEqual(other);
+    await prepared.cleanup();
+  });
+
   it("allows all tools and connected tools by default", async () => {
     const configHome = await makeConfigHome({
       permission: {
@@ -180,7 +313,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS contains invalid JSON; custom providers ignored.",
     );
@@ -197,7 +330,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS is set but is not a JSON object; custom providers ignored.",
     );
@@ -241,7 +374,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     expect(prepared.notes).toContain(
       "PAPERCLIP_OPENCODE_PROVIDERS: skipped provider(s) with non-object values: bifrost.",
     );
@@ -259,7 +392,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { provider?: Record<string, { models?: Record<string, unknown> }> };
     expect(runtimeConfig.provider?.openrouter?.models).toEqual({
-      "openai/gpt-oss-120b:nitro": {},
+      "openai/gpt-oss-120b:nitro": { headers: OPENROUTER_ATTRIBUTION_HEADERS },
     });
     expect(prepared.notes).toContain(
       "Registered configured model openrouter/openai/gpt-oss-120b:nitro in the runtime OpenCode config.",
@@ -288,7 +421,9 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { provider?: Record<string, { models?: Record<string, unknown> }> };
-    expect(runtimeConfig.provider?.openrouter?.models).toEqual(providers.openrouter.models);
+    expect(runtimeConfig.provider?.openrouter?.models).toEqual(Object.fromEntries(
+      Object.entries(providers.openrouter.models).map(([id, model]) => [id, { ...model, headers: OPENROUTER_ATTRIBUTION_HEADERS }]),
+    ));
     expect(
       prepared.notes.some((note) => note.startsWith("Registered configured model")),
     ).toBe(false);
@@ -305,19 +440,20 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as Record<string, unknown>;
-    expect(runtimeConfig.provider).toBeUndefined();
+    expect(runtimeConfig.provider).toMatchObject({ openrouter: { options: { headers: { "HTTP-Referer": "https://paperclip.ing" } } } });
     await prepared.cleanup();
   });
 
-  it("respects explicit opt-out", async () => {
+  it("preserves permission settings while attributing OpenRouter when skip-permissions is off", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome },
       config: { dangerouslySkipPermissions: false },
     });
 
-    expect(prepared.env).toEqual({ XDG_CONFIG_HOME: configHome });
-    expect(prepared.notes).toEqual([]);
+    const config = JSON.parse(await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+    expect(config.permission).toBeUndefined();
+    expect(config.provider.openrouter.options.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
     await prepared.cleanup();
   });
 });

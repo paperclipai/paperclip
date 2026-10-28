@@ -1,5 +1,97 @@
 # Paperclip evaluation guide
 
+The public directory calls full-product testing **E2E tests**. Suites describe
+what is tested; deployment targets describe which app instance was tested.
+QA smoke is a named selection of existing journeys against QA, and appears in
+the same campaign history as other E2E runs. Agent execution (local or Daytona),
+provider, model and profile are independent filters. Browser-only journeys need
+no agent or model. Historical records without target metadata remain explicitly
+"Not recorded" rather than being assigned an inferred environment.
+
+The history sidebar includes the current suite catalog and retained historical
+suites. Each suite has its latest matching run and latest full run, with full
+coverage determined from the recorded suite definition, selection and execution
+counts. An unexecuted full selection remains unfinished, and a subset
+can pass without qualifying as a full suite run; failed full selections remain
+visible. Changing a model filter does not redefine the suite's recorded coverage.
+Existing `runner-e2e` URLs, test IDs, commands, and measurement timestamps remain
+stable. **Runner protocol evals** remain a separate category because they test
+the runner/provider against a mock control plane.
+
+Sidebar suite links open that suite's campaign history with other filters cleared.
+The Suite dropdown combines with the current filters instead. Explicit URLs retain
+their selected filters; when a suite is absent from a preset, the empty state
+explains the combination and links to the suite's runs.
+Active filters have blue borders and tinted fields. The filter toolbar counts
+active values, including a count beside More filters for collapsed controls.
+Reset all filters clears every campaign filter and the sidebar suite search.
+
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs`
+exercises the history UI using synthetic metadata and Chromium, with no model calls. It checks suite coverage, correlated
+suite/target/model/execution filters, saved QA selections, URL history and mobile
+navigation. Install the existing Playwright Chromium dependency before running.
+For presentation-only refreshes,
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-refresh.ts --history <history.json> --output <directory>`
+renders an existing history file. Its optional `--public-campaign`, `--public-url` and
+`--preset` arguments import a reviewed public measurement without replacing
+existing campaigns. Private Cloud bundles are rejected. The output contains
+only index HTML and history/pointer JSON; it does not upload evidence or change
+retained campaign bundles.
+
+The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
+two natural-language task scenarios into local native Product E2E cells. They
+verify saving an unstarted task and delegating a saved announcement back to chat,
+using ordinary production instructions, real browser messages and independent
+state/provenance checks. The broader YAML catalog remains planning inventory.
+
+The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
+extends the existing native restart oracle to a 125-second controller outage,
+using the recorded Claude and Codex models in disposable development fixtures.
+It requires same-process adoption, saved files and finalization without replay;
+local regression checks and catalog discovery are separate from live acceptance.
+
+The explicit-only [GitHub review bot journey](../tests/runner-e2e/GITHUB-REVIEW-JOURNEY.md)
+converts the Ponytail walkthrough into attended App setup, scoped installation,
+automatic PR review, and independent two-service checks. It supports attached
+self-hosted/Cloud targets and separately selected local/Daytona agents. Account
+and credential bindings stay in the private eval repo; registration and oracle
+tests do not establish a completed live pass or unattended CI qualification.
+
+The explicit-only [necessary free-text question journey](../tests/runner-e2e/README.md#necessary-free-text-question)
+checks one essential input, the rendered prompt and context, the real answer,
+one bound continuation, and an exact saved confirmation. Its four development
+cells use the recorded Codex and Claude models. Registration and calibration do
+not establish Slack, staging authentication, warm lifecycle, or live qualification.
+
+[Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
+deployment targets and starting-state recipes. The shared task-properties
+journey uses no model; Cloud onboarding supplies reusable verified state. Cloud
+fleet operations and trusted CI remain private. Local eval gateway qualification
+does not qualify Cloud routes, and these selections stay outside `--all`.
+
+The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
+contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task
+APIs, saved documents, handoff receipts, and browser readback. Receipt smoke has
+an explicit terminal handoff to `done` on its fourth run, proving case closure
+through normal task completion without a fifth provider run. It also has
+an initial task-owned brief supplied at kickoff through `initialDocuments`,
+ordinary native task document reads/writes, and case-page rollup readback.
+Earlier case-document campaign results remain preserved and do not qualify
+this subsequent document ownership change. The suite has
+separately selectable local Codex API-key and subscription profiles with the
+same model and limits. The API profile uses an encrypted company-secret
+reference; the subscription profile receives only an explicitly supplied private
+login fixture. The original arithmetic cell remains subscription-only.
+The receipt cell declares exactly four task work runs, 90-second work-run limits,
+a five-minute attempt, and 100-cent accounted-work budgets. Initial agent setup
+also performs production hello probes outside heartbeat counts, budget accounting
+and the work-run usage report. Up to three initial probes are expected; their
+detailed tokens and cost are unavailable, and a timeout need not cancel an
+in-flight probe immediately. These limits do not establish an absolute provider
+inference cap, and unknown setup usage is not free. The original arithmetic cell
+retains its own limits.
+Service tests and workflow discovery remain distinct from a completed provider run.
+
 The [Slack connector probe catalog](../server/src/services/connectors/slack/evals/README.md)
 organizes eleven manual model acceptance probes and a selector for existing
 deterministic regressions (`pnpm test:slack-connector`). It is not a registered
@@ -9,6 +101,13 @@ or that a real Slack interaction completes.
 The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-CONNECTIONS.md)
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
+
+The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
+uses ordinary task APIs and retained native receipts to measure unattended
+receiver behavior. It is a separate manual qualification probe, not a registered
+Product E2E campaign. Synthetic receiver tests cannot qualify personal Muse;
+real setup, clarification and fresh-conversation collaboration remain separate
+release gates.
 
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
@@ -28,6 +127,12 @@ behavior.
   provider, and (where selected) Daytona, using an isolated instance and
   grading oracle. See [`tests/runner-e2e`](../tests/runner-e2e/README.md) and
   [Everyday Workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md).
+
+The [chat scenario catalog](../tests/runner-e2e/chat-scenarios/README.md) is a
+planning inventory within Product E2E: natural user requests, assumed context and
+expected outcomes linked to the feature and agent-access maps. It includes
+conditional setup, permission, approval and recovery journeys. Its YAML files
+are not registered runnable cells and contribute no passing coverage or scores.
 
 Runner Evals answer whether a real runner/provider can perform a bounded
 protocol operation against the expected control-plane contract. Product E2E
@@ -233,6 +338,11 @@ analytical label.
 
 ## Evidence, provenance, and history
 
+Polling latency is an interval rather than an exact first-detection time. The
+[Product E2E timing contract](../tests/runner-e2e/README.md#latency-observation-bounds)
+keeps last-absent/first-present bounds, resolution, strict or inclusive targets,
+and pass/fail/inconclusive timing verdicts alongside the unchanged workflow grade.
+
 Retained result snapshots and dated measurement reports belong in
 `paperclip-evals`; application tests, Product E2E fixtures/graders, and executable
 scenario inventories remain in this repository. Keep a compact results index
@@ -258,6 +368,20 @@ coverage and completeness, while trend and latest-green views compare only
 compatible complete campaigns. Refreshing an existing report from retained
 evidence has zero provider calls and is a new presentation of the old
 measurement, not a new model run.
+
+Product E2E test details and screenshot galleries show the recorded application
+URL when it is available. The worker environment, such as Daytona, does not
+imply an application URL. Public projections can retain the reviewed URL in
+`targetUrl`. Test details put recorded checks first and keep raw usage, timing,
+and startup evidence under Diagnostics. Optional `presentation` metadata in a
+retained campaign supplies its title, description, notes, and evidence links
+inside the shared report shell when the dashboard is regenerated.
+
+Standard runner Product E2E attempts also retain a sanitized `taskChat` recording
+for Test details: task briefs, complete saved messages, requests and answers,
+and native agent progress. Related task threads are separate; incomplete capture
+is labeled. This automatic capture runs before teardown on success and failure.
+See the [Product E2E evidence contract](../tests/runner-e2e/README.md#evidence-and-cleanup).
 
 Existing public histories are available at
 [Runner protocol history](https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/index.html)
@@ -404,8 +528,9 @@ Remaining native chat boundaries are in the explicit-only
 `agent-chat-qualification` suite: active task reassignment, user Retry after
 verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
-The 26 native `first-task` cells exercise onboarding before native selection
-becomes the UI default. Live results and semantic answer reviews must accompany
+The 26 native `first-task` cells inspect the production wizard's saved native
+default on qualified targets, without an API runner switch. The 26 Legacy cells
+select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
@@ -463,3 +588,10 @@ covers projectless task files, deferred repository acquisition, controller resta
 and nested Git/dirty-file persistence on legacy local, native local and native
 Daytona OpenCode. Its three configured cells use independent filesystem, public
 API and download oracles; no live qualification is implied by fixture registration.
+
+The explicit-only [feedback persistence case](../tests/runner-e2e/README.md#feedback-persistence-explicit-only)
+checks real native complaint/suggestion submissions and retained bodies with
+run-attributed tool receipts on local and Daytona execution. Its four native
+Claude/Codex cells are explicit-only. Remote registrations remain unqualified
+until retained live attempts prove them. It uses the normal Product E2E report
+and keeps synthetic feedback distinct from actionable product findings.

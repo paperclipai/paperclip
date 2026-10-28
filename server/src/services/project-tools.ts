@@ -18,8 +18,9 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
 /** All transports use the normal authenticated API, including its validation and audit path. */
 export async function callProjectTool(input: {
   name: string; arguments: Record<string, unknown>; apiUrl: string; token: string;
-  companyId: string; issueId: string; agentId: string; conversation: boolean;
+  companyId: string; issueId: string; agentId: string; conversation: boolean; receiptOnly?: boolean;
 }) {
+  if (input.receiptOnly && input.name !== "create_project") throw badRequest("Receipt recovery is only supported for project creation");
   const args = input.arguments;
   const page = input.name === "list_projects" ? projectDiscoverySchema.parse(args) : null;
   let path = `/companies/${input.companyId}/projects`;
@@ -50,10 +51,13 @@ export async function callProjectTool(input: {
   } else throw badRequest("Unknown project tool");
   const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {
     method: input.name === "set_task_title" ? "PUT" : body ? "POST" : "GET",
-    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
+      ...(input.receiptOnly ? { "X-Paperclip-Receipt-Only": "true" } : {}),
+    },
     ...(body ? { body: JSON.stringify(body) } : {}),
     signal: AbortSignal.timeout(60_000),
   });
+  if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
   return result;

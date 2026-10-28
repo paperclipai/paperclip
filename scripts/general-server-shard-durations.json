@@ -398,7 +398,6 @@
     "server/src/__tests__/pi-local-adapter-environment.test.ts": 912,
     "server/src/__tests__/pi-local-execute.test.ts": 1068,
     "server/src/__tests__/pi-local-skill-sync.test.ts": 806,
-    "server/src/__tests__/pipelines-service.test.ts": 13114,
     "server/src/__tests__/plan-task-fixture.test.ts": 12967,
     "server/src/__tests__/plugin-access-authorization-host-services.test.ts": 10822,
     "server/src/__tests__/plugin-agent-sessions.test.ts": 2409,

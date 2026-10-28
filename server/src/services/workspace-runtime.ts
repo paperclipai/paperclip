@@ -1,3 +1,9 @@
+import { insertIssueComment } from "./issue-comment-writes.js";
+import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
+import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
+import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit } from "./git-restore-point-storage.js";
+import { getStorageService } from "../storage/index.js";
+import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
@@ -35,7 +41,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
@@ -109,6 +115,7 @@ import {
   type PersistedExposureRowSnapshot,
 } from "./runtime-exposure/port-reservation.js";
 import { resolveTailscaleDnsName } from "./runtime-exposure/tailscale-hostname.js";
+import { collectNestedRepositoryWorktrees, releaseNestedRepositoryWorktrees } from "./nested-repository-worktrees.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -132,6 +139,7 @@ export interface ExecutionWorkspaceAdditionalInput {
 }
 
 export interface ExecutionWorkspaceInput {
+  providerBinding?: import("@paperclipai/shared").WorkspaceProviderBinding;
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
   projectId: string | null;
@@ -755,7 +763,7 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
   return normalized.length > 0 ? normalized : fallback;
 }
 
-function renderWorkspaceTemplate(template: string, input: {
+export function renderWorkspaceTemplate(template: string, input: {
   issue: ExecutionWorkspaceIssueRef | null;
   agent: ExecutionWorkspaceAgentRef;
   projectId: string | null;
@@ -783,7 +791,7 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
+export function sanitizeBranchName(value: string): string {
   return value
     .trim()
     .replace(/[^A-Za-z0-9._/-]+/g, "-")
@@ -1629,18 +1637,15 @@ async function writeDirtyQuarantineAuditComments(input: {
   let claimantAuditCommentId: string | null = null;
   const now = new Date();
   if (input.evidence.sourceIssueId) {
-    const [sourceComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: input.evidence.sourceIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
+    const [sourceComment] = await insertIssueComment(input.db, {
+      companyId: input.companyId,
+      issueId: input.evidence.sourceIssueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      createdByRunId: input.heartbeatRunId,
+      body,
+    });
     sourceAuditCommentId = sourceComment?.id ?? null;
     await input.db
       .update(issues)
@@ -1650,18 +1655,15 @@ async function writeDirtyQuarantineAuditComments(input: {
 
   const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
   if (claimantIssueId && claimantIssueId !== input.evidence.sourceIssueId) {
-    const [claimantComment] = await input.db
-      .insert(issueComments)
-      .values({
-        companyId: input.companyId,
-        issueId: claimantIssueId,
-        authorAgentId: null,
-        authorUserId: null,
-        authorType: "system",
-        createdByRunId: input.heartbeatRunId,
-        body,
-      })
-      .returning({ id: issueComments.id });
+    const [claimantComment] = await insertIssueComment(input.db, {
+      companyId: input.companyId,
+      issueId: claimantIssueId,
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      createdByRunId: input.heartbeatRunId,
+      body,
+    });
     claimantAuditCommentId = claimantComment?.id ?? null;
     await input.db
       .update(issues)
@@ -3767,7 +3769,22 @@ export async function realizeExecutionWorkspace(input: {
   };
 }
 
+function isPersistedTaskDirectory(workspace: {
+  strategyType: string | null | undefined;
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+  repoUrl: string | null | undefined;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  return workspace.strategyType === "project_primary" && workspace.metadata?.source === "task_session"
+    && workspace.projectId === null && workspace.projectWorkspaceId === null && workspace.repoUrl === null;
+}
+
 export async function ensurePersistedExecutionWorkspaceAvailable(input: {
+  prepareRestoredLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
+  persistContentsRestoredAt?: (at: string | null) => Promise<void>;
+  persistRestorePointAppliedAt?: (at: string) => Promise<void>;
+  restorePointStorage?: StorageService;
   db?: Db | null;
   base: ExecutionWorkspaceInput;
   workspace: {
@@ -3802,13 +3819,14 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   if (!cwd) return null;
 
   const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
+  const taskDirectory = isPersistedTaskDirectory(input.workspace);
   const realized: RealizedExecutionWorkspace = {
     baseCwd: input.base.baseCwd,
-    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
+    source: input.workspace.mode === "shared_workspace" && !taskDirectory ? "project_primary" : "task_session",
     projectId: input.workspace.projectId === undefined ? input.base.projectId : input.workspace.projectId,
     workspaceId: input.workspace.projectWorkspaceId === undefined ? input.base.workspaceId : input.workspace.projectWorkspaceId,
-    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
-    repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    repoUrl: taskDirectory ? null : input.workspace.repoUrl ?? input.base.repoUrl,
+    repoRef: taskDirectory ? null : input.workspace.baseRef ?? input.base.repoRef,
     additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
@@ -3848,6 +3866,66 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
     );
   }
+  const restoration = savedGitWorkspaceRestoration({ metadata: input.workspace.metadata, companyId: input.agent.companyId,
+    workspaceId: input.workspace.id, cwd, baseCwd, repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
+    branchName: input.workspace.branchName ?? null });
+  const savedCommit = restoration?.commit ?? null;
+  let currentRecipe = input.workspace.metadata?.gitCacheRestoration;
+  const persistContentsRestoredAt = async (at: string | null) => {
+    if (!restoration?.contents || !input.workspace.id) return;
+    if (input.persistContentsRestoredAt) await input.persistContentsRestoredAt(at);
+    else {
+      if (!input.db) throw new GitCacheRestorationFailure();
+      const updated = await input.db.update(executionWorkspaces).set({
+        metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration,contentsRestoredAt}', ${JSON.stringify(at)}::jsonb)`,
+      }).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.agent.companyId),
+        sql`${executionWorkspaces.metadata}->'gitCacheRestoration' = ${JSON.stringify(currentRecipe)}::jsonb`))
+        .returning({ id: executionWorkspaces.id });
+      if (updated.length !== 1) throw new GitCacheRestorationFailure();
+    }
+    currentRecipe = { ...currentRecipe as Record<string, unknown>, contentsRestoredAt: at };
+    input.workspace.metadata!.gitCacheRestoration = currentRecipe;
+  };
+  const applyRestorePoint = async (repositoryCwd: string, worktreePath: string) => {
+    const ref = restoration?.restorePoint;
+    if (!ref || ref.appliedAt || !input.workspace.id) return;
+    await applyGitRestorePointToWorktree({ storage: input.restorePointStorage ?? getStorageService(),
+      workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref, repositoryCwd, worktreePath })
+      .catch(() => { throw new GitCacheRestorationFailure(); });
+    const at = new Date().toISOString();
+    if (input.persistRestorePointAppliedAt) await input.persistRestorePointAppliedAt(at);
+    else {
+      if (!input.db) throw new GitCacheRestorationFailure();
+      const updated = await input.db.update(executionWorkspaces).set({
+        metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{gitCacheRestoration,restorePoint,appliedAt}', ${JSON.stringify(at)}::jsonb)`,
+      }).where(and(eq(executionWorkspaces.id, input.workspace.id), eq(executionWorkspaces.companyId, input.agent.companyId),
+        sql`${executionWorkspaces.metadata}->'gitCacheRestoration'->'restorePoint'->>'id' = ${ref.id}`))
+        .returning({ id: executionWorkspaces.id });
+      if (updated.length !== 1) throw new GitCacheRestorationFailure();
+    }
+    ref.appliedAt = at;
+    currentRecipe = { ...currentRecipe as Record<string, unknown>, restorePoint: { ...ref } };
+    input.workspace.metadata!.gitCacheRestoration = currentRecipe;
+  };
+  const restoreContents = async () => {
+    if (!restoration?.contents || !input.workspace.id) return;
+    await restoreGitWorkspaceContents({ cwd, companyId: input.agent.companyId, workspaceId: input.workspace.id,
+      projectId: input.workspace.projectId, contents: restoration.contents, resolveGitAuth: async url => {
+        const auth = await input.resolveGitAuth?.(url);
+        if (!auth) return null;
+        const source = auth.source;
+        if (source !== "company_secret" && source !== "managed_connection" && source !== "server_env") throw new GitCacheRestorationFailure();
+        return { ...auth, source, secretName: auth.secretName ?? null };
+      },
+      authorizeSource: async source => {
+        if (!input.db || !input.workspace.projectId) throw new GitCacheRestorationFailure();
+        const [row] = await input.db.select().from(projectWorkspaces).where(and(
+          eq(projectWorkspaces.id, source.id), eq(projectWorkspaces.companyId, input.agent.companyId),
+          eq(projectWorkspaces.projectId, input.workspace.projectId)));
+        if (!row || row.repoUrl !== source.repoUrl) throw new GitCacheRestorationFailure();
+      }, prepareLocalSource: input.prepareRestoredLocalSource });
+    await persistContentsRestoredAt(new Date().toISOString());
+  };
   const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   await input.beforeSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
@@ -3908,7 +3986,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
     // An unstarted-worktree refresh can fast-forward the checked-out branch.
     // Never run it for an attached operator-owned ref.
-    const refresh = realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
+    const refresh = !savedCommit && realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
       ? await refreshUnstartedWorktreeToBase({
           repoRoot,
           worktreePath: reuseWorktreePath,
@@ -3929,6 +4007,8 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
     await input.afterSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
+    await applyRestorePoint(repoRoot, realized.worktreePath ?? cwd);
+    if (restoration && !restoration.contentsRestored) await restoreContents();
     await provisionExecutionWorktree({
       skipHostProvision: input.skipHostProvision,
       strategy: {
@@ -3953,9 +4033,22 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     throw new Error(`Execution workspace "${cwd}" is missing and cannot be restored because no branch name is recorded.`);
   }
 
+  await persistContentsRestoredAt(null);
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   await runGit(["worktree", "prune"], repoRoot).catch(() => {});
-  const restoreBaseRef = input.workspace.baseRef ?? input.base.repoRef ?? null;
+  if (savedCommit) {
+    if (restoration?.restorePoint && input.workspace.id) {
+      await ensureGitRestorePointCommit({ storage: input.restorePointStorage ?? getStorageService(),
+        workspace: { companyId: input.agent.companyId, id: input.workspace.id }, ref: restoration.restorePoint, repositoryCwd: repoRoot })
+        .catch(() => { throw new GitCacheRestorationFailure(); });
+    }
+    await ensureSavedGitCommit(repoRoot, input.workspace.repoUrl ?? input.base.repoUrl!, savedCommit, input.resolveGitAuth ?? (async () => null));
+    const existingTip = await resolveBaseRefSha(repoRoot, `refs/heads/${branchName}`);
+    // Once restored, subsequent task commits own this branch. The saved commit
+    // still prevents a clean resumed worktree from refreshing to upstream HEAD.
+    if (existingTip && existingTip !== savedCommit && !restoration?.restored) throw new GitCacheRestorationFailure();
+  }
+  const restoreBaseRef = savedCommit ? null : input.workspace.baseRef ?? input.base.repoRef ?? null;
   const restoreRefreshWarnings = restoreBaseRef
     ? await refreshRemoteTrackingBaseRef(repoRoot, restoreBaseRef, input.resolveGitAuth)
     : [];
@@ -3992,7 +4085,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         `Execution workspace "${worktreePath}" cannot be restored because its operator-owned branch "${branchName}" no longer exists.`,
       );
     }
-    const baseRef = input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
+    const baseRef = savedCommit ?? input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
     const recreatedBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
@@ -4023,6 +4116,8 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   });
 
   await input.afterSourceCopy?.(repoRoot, worktreePath);
+  await applyRestorePoint(repoRoot, worktreePath);
+  await restoreContents();
   await provisionExecutionWorktree({
     skipHostProvision: input.skipHostProvision,
     strategy: {
@@ -4181,6 +4276,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
+  if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);
@@ -4197,6 +4293,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   // Callers can require the workspace to match an assessed snapshot before
   // cleanup begins. Destructive paths recheck immediately before removal.
   await input.assertSafeToCleanup?.();
+  const nestedWorktrees = workspacePath ? await collectNestedRepositoryWorktrees(workspacePath).catch((err) => {
+    warnings.push(`Could not inspect nested repository worktrees: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }) : [];
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -4372,6 +4472,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   const cleaned =
     !workspacePath ||
     !(await directoryExists(workspacePath));
+  if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
   return {
     cleanedPath: workspacePath,
@@ -8843,7 +8944,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
           : null,
         workspace: {
           baseCwd: row.cwd,
-          source: row.mode === "shared_workspace" ? "project_primary" : "task_session",
+          source: row.mode === "shared_workspace" && !isPersistedTaskDirectory(row) ? "project_primary" : "task_session",
           projectId: row.projectId,
           workspaceId: row.projectWorkspaceId ?? null,
           repoUrl: row.repoUrl ?? null,

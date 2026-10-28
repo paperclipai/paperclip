@@ -536,13 +536,13 @@ Longer polling intervals alone do not complete an item.
   retain subscription scope, expiry, and replay safety. Source:
   [events.ts](../../server/src/services/public-mcp/events.ts).
 
-- [ ] **JOB-06 — Execution-control reconciliation.** Current: independent
-  **15s** recovery/delivery lanes, including when the main heartbeat is disabled.
-  Change: activate lanes from durable pending work and deadlines. **Complete
-  when:** empty lanes are quiet and abandoned finalizations, replacements,
-  continuations, status/disposition delivery, and login expiry still recover.
-  Sources: [index.ts](../../server/src/index.ts),
-  [execution-control-deadline.ts](../../server/src/services/execution-control-deadline.ts).
+- [x] **JOB-06 — Execution-control reconciliation.** Implemented in
+  [PR #17094](https://github.com/paperclipai/paperclip/pull/17094): six independent
+  workers wake from committed writes, saved control/login deadlines, or concrete
+  unfinished obligations. Empty queues and completed history no longer cause
+  recurring SQL. Existing 15s retries remain for pending work; Cloud sleep
+  eligibility and external alarm coverage are unchanged. See the
+  [worker and producer contract](../idle-execution-control.md).
 
 - [ ] **JOB-07 — Plugin job scheduling.** Current: **30s** SQL even without jobs.
   Change: register nearest `nextRunAt` and signal registration/update/removal.
@@ -613,24 +613,32 @@ Longer polling intervals alone do not complete an item.
   artifacts, deliveries, and ownership before deleting resources. Source:
   [execution-workspaces.ts](../../server/src/services/execution-workspaces.ts).
 
-- [ ] **JOB-17 — Sandbox cleanup and orphan spools.** Current: **30s** scans even
-  when attempts have longer staleness/backoff. Change: durable cleanup queue with
-  next retry, immediate failed-release activation, and provider/fleet backstop.
-  **Complete when:** idle scans stop without leaking paid sandboxes or ignoring
-  malformed/unpersisted spool entries. Source:
-  [heartbeat.ts](../../server/src/services/heartbeat.ts), `sweepPendingCleanupLeases`.
+- [ ] **JOB-17 — Sandbox cleanup and orphan spools (partially migrated).**
+  Pending lease cleanup now uses commit signals and saved retry/claim deadlines.
+  Deferred orphan buffers wake the worker without a DB connection; startup loads
+  the existing spool. Historical provider verification stops when matching proof
+  is complete. Empty maintenance passes no longer call these sweeps. Discovery of
+  orphaned active leases and legacy shutdown workspace settlement still belong
+  to the broader run-recovery loop. No Cloud sleep exemptions changed. See
+  [idle-environment-cleanup.md](../idle-environment-cleanup.md) for producer scope,
+  recovery, tests, and remaining limits.
 
-- [ ] **JOB-18 — Adapter login and setup-token reapers.** Current: **30s**
-  durable-session/lease scans, alongside local one-shot timers. Change: register
-  actual expiry and cleanup retry times. **Complete when:** abandoned logins and
-  interrupted teardown still release sandboxes across restart, without scans
-  when no obligations exist. Source:
-  [index.ts](../../server/src/index.ts), adapter and setup-token reaper wiring.
+- [x] **JOB-18 — Adapter login and setup-token reapers.** Replaced the default
+  **30s** empty scans with commit-aware workers, session/promotion expiry
+  deadlines, and retries for concrete failed cleanup. Existing session and lease
+  rows remain authoritative; no queue table was added. Startup reconstructs work,
+  and drain retains deferred generations. Tagged orphan recovery protects live
+  acquisitions and includes terminal/missing-session orphans. Local-subscription
+  rows remain owned by their separate worker. General failed-acquisition spool
+  recovery and host-sleep blockers are unchanged. See
+  [idle-login-cleanup.md](../idle-login-cleanup.md) for producer coverage,
+  verification and remaining provider-orphan boundaries.
 
-- [ ] **JOB-19 — Custom-image setup expiry.** Current: **30s** active-session
-  expiry scans. Change: register `expiresAt` and cleanup attempts. **Complete
-  when:** no sessions means no SQL and expired provider resources are released.
-  Source: [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts).
+- [x] **JOB-19 — Custom-image setup expiry.** Uses committed setup-session
+  changes and the earliest existing active-session expiry. Startup reconstructs
+  deadlines; empty and terminal history disarm. Failed reconciliation and first
+  writes retain their wake through drain. Provider teardown and historical cleanup
+  remain with the existing services. See [idle-environment-cleanup.md](../idle-environment-cleanup.md#custom-image-setup-expiry).
 
 - [ ] **JOB-20 — Tool connection health.** Current: **30s** DB inventory;
   provider probes are conditional. Change: check on use/configuration change,
@@ -639,8 +647,12 @@ Longer polling intervals alone do not complete an item.
   visible within the agreed freshness contract. Source:
   [index.ts](../../server/src/index.ts), `tools.sweepConnectionHealth`.
 
-- [ ] **JOB-21 — Secret proposals and expired action tokens.** Current: **30s**
-  expiry/cleanup queries. Change: enforce expiry synchronously on use and
+- [ ] **JOB-21 — Secret proposals and expired action tokens (partially migrated).**
+  Secret-proposal expiry now uses transaction signals and saved expiry deadlines;
+  see [the lifecycle contract](../idle-secret-proposal-expiry.md). Gateway token
+  and session expiry now also uses saved deadlines and producer signals; see
+  [its lifecycle contract](../idle-gateway-credential-expiry.md). Tool review
+  recovery still uses **30s** queries. Change: enforce expiry synchronously on use and
   register required scrub/cleanup deadlines. **Complete when:** idle cleanup
   does not extend authorization or secret-retention periods. Sources:
   [secret-proposals.ts](../../server/src/services/secret-proposals.ts),

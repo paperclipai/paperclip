@@ -280,6 +280,33 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 
+  it("mints project Git scope only for project lifecycle and workspace operations", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "companies.get": (async (_params, context) => context?.invocationScope) as never },
+    });
+    const common = { companyId: "company-a", params: { mode: "echo", requestedCompanyId: "company-a" } };
+    try {
+      await handle.start();
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "project", resourceId: "project-a" } as never))
+        .resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a" } });
+      await expect(handle.call("resourceLifecycle", { ...common, resourceType: "agent", resourceId: "agent-a" } as never))
+        .resolves.toEqual({ companyId: "company-a" });
+      for (const kind of ["prepare", "inspect", "remove", "finalize"]) {
+        const params = { ...common, projectId: "project-a", runId: "run-a", agentId: "agent-a", operation: {
+          kind, source: { id: "workspace-a" }, binding: { projectWorkspaceId: "workspace-a" } } };
+        await expect(handle.call("workspaceOperation", params as never)).resolves.toEqual({ companyId: "company-a",
+          ...(kind === "finalize" ? {} : { projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: kind,
+            ...(kind === "prepare" ? { runId: "run-a", agentId: "agent-a" } : {}) } }) });
+      }
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: null,
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: "prepare" } });
+      await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: "agent-a",
+        operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a" });
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
   it("passes performAction invocation scope to nested worker host calls", async () => {
     const companiesGet = vi.fn(async (
       params: { companyId: string },

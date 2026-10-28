@@ -1,10 +1,10 @@
 import { githubFixture } from "./helpers/github-skills.js";
-import { execFile } from 'node:child_process';
+import { fork } from 'node:child_process';
+import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { scanGitHubSkills, scanGitHubSkillsWithPackageFallback, previewGitHubSkillFile, parseSkillRepository } from '../services/github-skill-source.js';
 import { skillSourceDiscoverySchema, skillSourcePreviewSchema, type SkillSourceScanUpdate } from '@paperclipai/shared';
@@ -490,17 +490,44 @@ describe('repository packages', () => {
       const service = pathToFileURL(path.resolve(import.meta.dirname, '../services/company-skills.ts')).href;
       const loader = path.resolve(import.meta.dirname, '../../../cli/node_modules/tsx/dist/loader.mjs');
       const script = `import { auditSkillSnapshot } from ${JSON.stringify(service)};
-        const findings = await auditSkillSnapshot([
-          { path: 'scripts/newlines.sh', kind: 'script', content: '\\n'.repeat(1024 * 1024 - 1) + 'x' },
-          { path: 'scripts/spaces.sh', kind: 'script', content: 'then' + ' '.repeat(1024 * 1024 - 5) + 'x' },
-        ], false);
-        console.log(JSON.stringify(findings));`;
-      const { stdout } = await promisify(execFile)(process.execPath, ['--import', loader, '--input-type=module', '-e', script], {
-        timeout: 10_000, killSignal: 'SIGKILL', encoding: 'utf8', env: { ...process.env, TMPDIR: scratch },
+        process.once('message', async () => {
+          try {
+            const findings = await auditSkillSnapshot([
+              { path: 'scripts/newlines.sh', kind: 'script', content: '\\n'.repeat(1024 * 1024 - 1) + 'x' },
+              { path: 'scripts/spaces.sh', kind: 'script', content: 'then' + ' '.repeat(1024 * 1024 - 5) + 'x' },
+            ], false);
+            console.log(JSON.stringify(findings));
+          } finally { process.disconnect(); }
+        });
+        process.send('ready');`;
+      const scriptPath = path.join(scratch, 'audit.mjs');
+      await fs.writeFile(scriptPath, script);
+      const child = fork(scriptPath, [], {
+        execArgv: ['--import', loader], silent: true, env: { ...process.env, TMPDIR: scratch },
       });
+      let stdout = '';
+      let stderr = '';
+      child.stdout!.setEncoding('utf8').on('data', data => { stdout += data; });
+      child.stderr!.setEncoding('utf8').on('data', data => { stderr += data; });
+      let phase: 'startup' | 'audit' = 'startup';
+      let deadline = setTimeout(() => child.kill('SIGKILL'), 60_000);
+      child.once('message', message => {
+        if (message !== 'ready') return;
+        phase = 'audit';
+        clearTimeout(deadline);
+        deadline = setTimeout(() => child.kill('SIGKILL'), 10_000);
+        child.send('audit');
+      });
+      try {
+        const [code, signal] = await once(child, 'close');
+        expect({ phase, code, signal }, stderr).toEqual({ phase: 'audit', code: 0, signal: null });
+      } finally {
+        clearTimeout(deadline);
+        child.kill('SIGKILL');
+      }
       expect(JSON.parse(stdout).filter((finding: { severity: string }) => finding.severity === 'error')).toEqual([]);
     } finally {
       await fs.rm(scratch, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 75_000);
 });

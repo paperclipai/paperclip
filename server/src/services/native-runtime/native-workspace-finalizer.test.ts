@@ -1,3 +1,4 @@
+import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as platformProof from "./native-workspace-platform-proof.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { nativeSha256 } from "./canonical.js";
@@ -721,6 +722,46 @@ describe("native workspace finalization recovery", () => {
       ));
       expect(operations).toHaveLength(1);
     } finally { release(); await first; spy.mockRestore(); }
+  });
+
+  it.each(["plugin", "adapter_managed"])("resumes accepted work without Core files for %s storage", async providerType => {
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, projectId,
+      name: "Plugin-only work", providerType, providerRef: "provider:opaque-worktree", cwd: "/workspaces/plugin-only",
+      mode: "isolated_workspace", strategyType: providerType === "plugin" ? "git_worktree" : "project_primary",
+      branchName: "task-branch", metadata: providerType === "plugin" ? {} : { runnerTaskWorkspaceOwner: { agentId } } }).returning();
+    const seeded = await seedRun({ executionWorkspaceId: workspace.id, title: "Plugin result before controller restart" });
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockResolvedValue({ kind: "inspection",
+      branchName: "task-branch", headSha: "a".repeat(40), hasDirtyTrackedFiles: true, hasUntrackedFiles: false,
+      hasLocalOnlyData: true, isMergedIntoBase: false, remotelyRecoverable: false });
+    try {
+      expect(await resumeNativeWorkspaceFinalization({ db, runId: seeded.runId })).toMatchObject({ status: "succeeded" });
+      if (providerType === "plugin") expect(inspect).toHaveBeenCalledWith(db, undefined, expect.objectContaining({ id: workspace.id }), { agentId, runId: seeded.runId });
+      else expect(inspect).not.toHaveBeenCalled();
+    } finally { inspect.mockRestore(); }
+  });
+
+  it.each(["synthetic plugin unavailable", "plugin_workspace_branch_mismatch", "plugin_workspace_owner_mismatch"])("defers plugin failure without aborting other result recovery: %s", async message => {
+    const [unavailable, healthy] = await db.insert(executionWorkspaces).values([
+      { companyId, projectId, name: "Unavailable plugin", providerType: "plugin", providerRef: "provider:unavailable",
+        mode: "isolated_workspace", strategyType: "git_worktree", branchName: "task-branch" },
+      { companyId, projectId, name: "Healthy task", providerType: "adapter_managed", cwd: "/workspaces/healthy-task",
+        mode: "shared_workspace", strategyType: "project_primary", metadata: { runnerTaskWorkspaceOwner: { agentId } } },
+    ]).returning();
+    const blocked = await seedRun({ executionWorkspaceId: unavailable.id, title: "Plugin is unavailable after restart" });
+    const ready = await seedRun({ executionWorkspaceId: healthy.id, title: "Other result can recover" });
+    const inspect = vi.spyOn(pluginWorkspaces, "finalizePluginWorkspace").mockRejectedValue(new Error(message));
+    const code = message.startsWith("plugin_workspace_") ? message : "plugin_workspace_inspection_failed";
+    try {
+      await expect(reconcileNativeFinalizations(db, [blocked.runId, ready.runId])).resolves.toBeDefined();
+      const [retry] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, blocked.runId));
+      expect(retry).toMatchObject({ phase: "retryable_failure", nextAttemptAt: expect.any(Date), resultId: expect.any(String),
+        failureCode: code === message ? `native_${code}` : "native_workspace_sync_out_failed" });
+      if (code === message) expect(retry.failureDetail?.nextAction).toContain("Repair the plugin workspace");
+      expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, blocked.runId)))
+        .toMatchObject([{ status: "failed", stderrExcerpt: `${code}\n` }]);
+      expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, ready.runId)))
+        .toMatchObject([{ status: "succeeded" }]);
+    } finally { inspect.mockRestore(); }
   });
 
   it("records directory-only recovery without inventing an execution-workspace foreign key", async () => {

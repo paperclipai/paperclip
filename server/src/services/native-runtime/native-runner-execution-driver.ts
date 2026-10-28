@@ -5,6 +5,8 @@ import type { RunnerExecutionDriver } from "../../vendor/paperclip-runner/index.
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import type { Db } from "@paperclipai/db";
+import { nativeRunnerCheckpointRegistration } from "./native-runner-checkpoint.js";
 
 type ConnectionRegistration = NonNullable<RunnerExecutionDriver["controlPlaneRegistration"]>;
 type RunnerIdentity = Parameters<ConnectionRegistration>[1];
@@ -20,7 +22,8 @@ export interface NativeRunnerExecutionDriverInput {
   mapCaBundle?: (sourcePath: string) => string | Promise<string>;
   processStarted?: Promise<void>;
   processIdentityReady?: Promise<void>;
-  beforeConnect?: (identity?: RunnerIdentity) => Promise<void>;
+  beforeConnect?: (identity: RunnerIdentity, authority: Parameters<ConnectionRegistration>[0]) => Promise<void>;
+  controllerPersistence?: { db: Db; bootId: string; authorityRunId?: string | (() => string); onFailure?: (runId: string, leaseOwner: string) => Promise<void> };
   checkpoint?: Awaited<ReturnType<ConnectionRegistration>>["checkpoint"];
   process?: Omit<RunnerExecutionDriver, "controlPlaneRegistration">;
   trace?: NativeRunTrace;
@@ -59,6 +62,30 @@ export function resolveRemoteRunnerTransportMode(input: {
   return requiredMode;
 }
 
+type RemotePreparation = Pick<NativeRunnerExecutionDriverInput,
+  "target" | "runnerIngressAuthorized" | "runnerPublicUrl" | "runnerCaBundlePath" | "prepareRemote"> & { runId: string };
+
+async function resolveOutboundTransport(input: RemotePreparation): Promise<PaperclipRunnerTransport> {
+  const transport = await resolvePaperclipRunnerTransport({ target: input.target, runId: input.runId,
+    localConnectUrl: "ws://127.0.0.1/unused", runnerPublicUrl: input.runnerPublicUrl,
+    runnerCaBundlePath: input.runnerCaBundlePath, runnerIngressAuthorized: input.runnerIngressAuthorized === true });
+  if (transport.mode === "direct_outbound" && transport.caBundlePath && !existsSync(transport.caBundlePath)) {
+    throw new Error("runner_direct_wss_failed: configured runner CA bundle is unavailable");
+  }
+  return transport;
+}
+
+/** Resolve artifacts before provider-profile binding. Endpoint acquisition stays
+ * in connection registration; outbound eligibility is checked before staging.
+ */
+export async function prepareNativeRemoteRunner(input: RemotePreparation) {
+  const mode = resolveRemoteRunnerTransportMode({ target: input.target,
+    runnerIngressAuthorized: input.runnerIngressAuthorized === true });
+  if (mode === "dial_wss") await resolveOutboundTransport(input);
+  if (!input.prepareRemote) throw new Error("runner_remote_preparation_unavailable");
+  await input.prepareRemote(mode);
+}
+
 /** Built-in environment lifecycle. PRP commands and authentication are shared;
  * only environment preparation, process ownership, and connection routing vary.
  */
@@ -66,7 +93,12 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
   return {
     ...input.process,
     controlPlaneRegistration: async (authority, attachmentIdentity) => {
-      await input.beforeConnect?.(attachmentIdentity);
+      await input.beforeConnect?.(attachmentIdentity, authority);
+      if (input.controllerPersistence && input.binding.issueId) {
+        await nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
+          binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
+        })(authority, attachmentIdentity);
+      }
       return measureNativeRunnerSpan(
         input.trace,
         "runner.transport.connect",
@@ -116,28 +148,8 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
             transport = await measureNativeRunnerSpan(
               input.trace,
               "runner.transport.resolve",
-              () =>
-                resolvePaperclipRunnerTransport({
-                  target: input.target,
-                  runId:
-                    attachmentIdentity?.runId ??
-                    input.binding.runId,
-                  localConnectUrl: "ws://127.0.0.1/unused",
-                  runnerPublicUrl: input.runnerPublicUrl,
-                  runnerCaBundlePath: input.runnerCaBundlePath,
-                  runnerIngressAuthorized:
-                    input.runnerIngressAuthorized === true,
-                }),
+              () => resolveOutboundTransport({ ...input, runId: attachmentIdentity?.runId ?? input.binding.runId }),
             );
-            if (
-              transport.mode === "direct_outbound" &&
-              transport.caBundlePath &&
-              !existsSync(transport.caBundlePath)
-            ) {
-              throw new Error(
-                "runner_direct_wss_failed: configured runner CA bundle is unavailable",
-              );
-            }
             await measureNativeRunnerSpan(
               input.trace,
               "runner.artifact.prepare",

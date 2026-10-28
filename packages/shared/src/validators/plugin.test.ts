@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
 import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { pluginApiRouteDeclarationSchema, pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
 
 function buildSandboxProviderManifest(driver: Record<string, unknown>) {
   return {
@@ -33,6 +33,24 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("limits environment skills to unique declarations owned by the plugin", () => {
+    const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
+      capabilities: ["environment.drivers.register", "skills.managed"],
+      skills: [{ skillKey: "desktop", displayName: "Desktop" }] };
+    expect(pluginManifestV1Schema.parse(manifest).environmentDrivers![0].skillKeys).toEqual(["desktop"]);
+    for (const keys of [["missing"], ["desktop", "desktop"]]) {
+      expect(pluginManifestV1Schema.safeParse({ ...manifest,
+        environmentDrivers: [{ ...manifest.environmentDrivers[0], skillKeys: keys }] }).success).toBe(false);
+    }
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["environment.drivers.register"] }).success).toBe(false);
+  });
+  it("retains the agent prerequisite on environment drivers", () => {
+    const manifest = { ...buildSandboxProviderManifest({ requiresAgent: true }), agentLifecycle: true,
+      capabilities: ["environment.drivers.register", "agents.lifecycle.manage"] };
+    expect(pluginManifestV1Schema.parse(manifest).environmentDrivers?.[0]?.requiresAgent).toBe(true);
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ requiresAgent: "true" })).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, agentLifecycle: undefined }).success).toBe(false);
+  });
   it("requires authority for required agent lifecycle participants", () => {
     const manifest = { id: "example.lifecycle", apiVersion: 1, version: "0.1.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentLifecycle: true };
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
@@ -458,5 +476,46 @@ describe("login pty transport capability and legacy alias", () => {
     );
 
     expect(rejected.success).toBe(false);
+  });
+});
+
+describe("plugin WebSocket company resolution", () => {
+  const route = { routeKey: "channel.connect", method: "GET", path: "/channels/:channelId", auth: "board", capability: "api.routes.register" };
+
+  it("rejects body resolution only for WebSocket routes", () => {
+    const companyResolution = { from: "body", key: "companyId" };
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution }).success).toBe(true);
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(false);
+  });
+
+  it.each([
+    undefined,
+    { from: "query", key: "companyId" },
+    { from: "issue", param: "issueId" },
+    { from: "agent", param: "agentId" },
+  ])("accepts body-free resolution %j", (companyResolution) => {
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(true);
+  });
+});
+
+describe("plugin task side-panel declarations", () => {
+  const slot = { type: "detailTab", id: "view", displayName: "Live view", exportName: "LiveView", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability" } };
+  const route = { routeKey: "view.availability", method: "GET", path: slot.taskSidePanel.availabilityPath, auth: "board", capability: "api.routes.register", companyResolution: { from: "agent", param: "entityId" } };
+  const manifest = { id: "example.live-view", apiVersion: 1, version: "1.0.0", displayName: "Live view", description: "Live view", author: "Tests", categories: ["ui"], capabilities: ["ui.detailTab.register", "api.routes.register"], entrypoints: { worker: "worker.js", ui: "ui.js" }, ui: { slots: [slot] }, apiRoutes: [route] };
+  it("accepts an optional panel backed by an authorized plugin-local agent route", () => {
+    expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.taskSidePanel).toEqual(slot.taskSidePanel);
+  });
+  it("accepts a GET availability route when a POST at the same path is declared first", () => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes: [{ ...route, routeKey: "view.update", method: "POST" }, route] }).success).toBe(true);
+  });
+  it.each(["https://example.test/:entityId", "//example/:entityId", "/../:entityId", "/agents/:entityId?redirect=elsewhere", "/agents/:agentId/view"])("rejects unsafe or unsupported path %s", availabilityPath => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { availabilityPath } }).success).toBe(false);
+  });
+  it("rejects non-agent and non-detail contributions", () => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, entityTypes: ["issue"] }).success).toBe(false);
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, type: "page" }).success).toBe(false);
+  });
+  it.each([[], [{ ...route, method: "POST" }], [{ ...route, auth: "agent" }], [{ ...route, companyResolution: { from: "query", key: "companyId" } }]].map(apiRoutes => ({ apiRoutes })))("requires a declared board GET route scoped to the supplied agent", ({ apiRoutes }) => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
   });
 });

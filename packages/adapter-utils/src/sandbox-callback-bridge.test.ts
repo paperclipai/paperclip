@@ -320,6 +320,42 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests[0]?.headers.authorization).toBeUndefined();
     expect(seenRequests[0]?.headers["x-paperclip-run-id"]).toBeUndefined();
 
+    // The public Paperclip API documents the "X-API-Key" header, so an agent in
+    // the sandbox sends that header before it sends "Authorization: Bearer".
+    // The gateway accepts the same per-run token through either header.
+    const apiKeyResponse = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": bridgeToken,
+        accept: "application/json",
+      },
+    });
+    expect(apiKeyResponse.status).toBe(200);
+    await expect(apiKeyResponse.json()).resolves.toMatchObject({
+      ok: true,
+      method: "GET",
+      path: "/api/agents/me",
+    });
+
+    // A wrong token in the same header still fails closed.
+    const apiKeyDeniedResponse = await fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(apiKeyDeniedResponse.status).toBe(401);
+    await expect(apiKeyDeniedResponse.json()).resolves.toMatchObject({
+      error: "Invalid bridge token.",
+    });
+
+    // The header allowlist strips the credential header, so the token never
+    // leaves the sandbox with the forwarded request.
+    expect(seenRequests).toHaveLength(2);
+    expect(seenRequests[1]).toMatchObject({
+      method: "GET",
+      path: "/api/agents/me",
+    });
+    expect(seenRequests[1]?.headers["x-api-key"]).toBeUndefined();
+
     const githubResponse = await fetch(`${bridge.baseUrl}/runtime-tools/github/credentials`, {
       method: "POST",
       headers: {
@@ -331,11 +367,11 @@ describe("sandbox callback bridge", () => {
     });
     expect(githubResponse.status).toBe(200);
     await githubResponse.arrayBuffer();
-    expect(seenRequests[1]).toMatchObject({
+    expect(seenRequests[2]).toMatchObject({
       method: "POST", path: "/runtime-tools/github/credentials", body: "{}",
       headers: { "x-paperclip-github-capability": "test-run-scoped-capability" },
     });
-    expect(seenRequests[1]?.headers.authorization).toBeUndefined();
+    expect(seenRequests[2]?.headers.authorization).toBeUndefined();
 
     const feedbackBody = JSON.stringify({ kind: "complaint", body: "😭".repeat(5000), idempotencyKey: "bridge-feedback" });
     const feedbackResponse = await fetch(`${bridge.baseUrl}/api/companies/company-1/agent-commentary`, {
@@ -343,8 +379,9 @@ describe("sandbox callback bridge", () => {
     });
     expect(feedbackResponse.status).toBe(200);
     await feedbackResponse.arrayBuffer();
-    expect(seenRequests[2]).toMatchObject({ method: "POST", path: "/api/companies/company-1/agent-commentary", body: feedbackBody });
-    expect(seenRequests[2]?.headers.authorization).toBeUndefined();
+    expect(seenRequests).toHaveLength(4);
+    expect(seenRequests[3]).toMatchObject({ method: "POST", path: "/api/companies/company-1/agent-commentary", body: feedbackBody });
+    expect(seenRequests[3]?.headers.authorization).toBeUndefined();
 
   });
 
@@ -1225,11 +1262,15 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    // Publish the complete malformed envelope atomically, like the host writer.
+    // A direct write can instead exercise the reader's file-size race guard.
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      `${responsePath}.tmp`,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await fs.rename(`${responsePath}.tmp`, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);
@@ -1471,6 +1512,42 @@ describe("sandbox callback bridge", () => {
 
     // Nothing was written to the remote path on the failure path.
     await expect(readFile(remotePath, "utf8")).rejects.toThrow();
+  });
+
+  it.each([
+    "/api/companies/co-1/heartbeat-runs",
+    "/api/companies/co-1/live-runs",
+    "/api/heartbeat-runs/run-1",
+    "/api/heartbeat-runs/run-1/events",
+    "/api/heartbeat-runs/run-1/log",
+    "/api/heartbeat-runs/run-1/workspace-operations",
+    "/api/heartbeat-runs/run-1/issues",
+    "/api/issues/issue-1/runs",
+    "/api/issues/issue-1/recovery-actions",
+  ])("admits only GET for diagnostic path %s on both transports", (requestPath) => {
+    for (const routes of [undefined, HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST]) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method: "GET", path: requestPath }, routes)).toBeNull();
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method, path: requestPath }, routes))
+          .toBe(`Route not allowed: ${method} ${requestPath}`);
+      }
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method: "GET", path: `${requestPath}/extra` }, routes))
+        .toBe(`Route not allowed: GET ${requestPath}/extra`);
+    }
+  });
+
+  it.each([
+    { method: "POST", path: "/api/heartbeat-runs/run-1/cancel" },
+    { method: "POST", path: "/api/heartbeat-runs/run-1/retry" },
+    { method: "POST", path: "/api/heartbeat-runs/run-1/watchdog-decisions" },
+    { method: "POST", path: "/api/issues/issue-1/recovery-actions/resolve" },
+    { method: "POST", path: "/api/issues/issue-1/recovery-actions/retry-workspace-export" },
+    { method: "GET", path: "/api/heartbeat-runs/run-1/provider-trace" },
+    { method: "GET", path: "/api/companies/co-1/provider-traces" },
+    { method: "GET", path: "/api/companies/co-1/execution-workspaces" },
+  ])("keeps execution control and unrelated reads denied: $method $path", (request) => {
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes(request))
+      .toBe(`Route not allowed: ${request.method} ${request.path}`);
   });
 
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
@@ -3219,8 +3296,10 @@ describe("sandbox callback bridge", () => {
   async function startHttp2GatewayForTest(options: {
     bridgeToken: string;
     maxBodyBytes?: number;
+    holdProbeOpen?: () => boolean;
+    deferStderrUntilExit?: boolean;
     forwardRequest: (request: Http2BridgeForwardRequest) => Promise<Http2BridgeForwardResult>;
-  }): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
+  }, attempt = 0): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-http2-test-"));
     cleanupDirs.push(rootDir);
     const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
@@ -3235,7 +3314,12 @@ describe("sandbox callback bridge", () => {
           reject(new Error("Could not reserve a loopback port for the test."));
           return;
         }
-        probe.close(() => resolve(address.port));
+        if (options.holdProbeOpen?.()) {
+          cleanupFns.push(() => new Promise<void>((resolve) => probe.close(() => resolve())));
+          resolve(address.port);
+        } else {
+          probe.close(() => resolve(address.port));
+        }
       });
     });
 
@@ -3256,6 +3340,16 @@ describe("sandbox callback bridge", () => {
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
+
+    if (options.deferStderrUntilExit) {
+      const resume = child.stderr.resume.bind(child.stderr);
+      child.stderr.pause();
+      child.stderr.resume = () => child.stderr;
+      child.once("exit", () => setImmediate(() => {
+        child.stderr.resume = resume;
+        resume();
+      }));
+    }
 
     const dataListeners: Array<(chunk: Uint8Array) => void> = [];
     const pending: Buffer[] = [];
@@ -3294,7 +3388,7 @@ describe("sandbox callback bridge", () => {
       }
       deliver(chunk);
     });
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       clearTimeout(readyTimer);
       if (!sawReadyLine) {
         rejectReady(new Error("The http2 gateway exited early with code " + String(code) + ". stderr: " + stderr));
@@ -3319,7 +3413,16 @@ describe("sandbox callback bridge", () => {
       },
     };
 
-    await readyPromise;
+    try {
+      await readyPromise;
+    } catch (error) {
+      child.kill();
+      if (attempt < 2 && child.exitCode === 1
+        && stderr.includes("http2 gateway could not bind port") && stderr.includes("EADDRINUSE")) {
+        return startHttp2GatewayForTest(options, attempt + 1);
+      }
+      throw error;
+    }
 
     const handle = createHttp2BridgeServer({
       bridgeToken: options.bridgeToken,
@@ -3754,6 +3857,87 @@ describe("sandbox callback bridge", () => {
     expect(typeof seenRequests[0]?.body).toBe("string");
     expect(seenRequests[0]?.body).toBe(requestBodyText);
   });
+
+  it("does not retry unrelated HTTP/2 fixture startup failures", async () => {
+    let attempts = 0;
+    await expect(startHttp2GatewayForTest({
+      bridgeToken: "",
+      holdProbeOpen: () => { attempts++; return false; },
+      forwardRequest: async () => { throw new Error("Unexpected request to an unstarted gateway"); },
+    })).rejects.toThrow("PAPERCLIP_BRIDGE_TOKEN");
+    expect(attempts).toBe(1);
+  });
+
+  it("limits HTTP/2 fixture retries when every assigned port is occupied", async () => {
+    let attempts = 0;
+    await expect(startHttp2GatewayForTest({
+      bridgeToken: createSandboxCallbackBridgeToken(),
+      holdProbeOpen: () => { attempts++; return true; },
+      forwardRequest: async () => { throw new Error("Unexpected request to an unstarted gateway"); },
+    })).rejects.toThrow("EADDRINUSE");
+    expect(attempts).toBe(3);
+  }, 15000);
+
+  it.each([[false, false], [true, false], [true, true]])("accepts the bridge token in X-API-Key on the HTTP/2 path and strips the header (collision=%s, late stderr=%s)", async (portCollision, lateStderr) => {
+    // Both generated gateways share one token reader, so the HTTP/2 transport
+    // must accept "X-API-Key" exactly as the file-mode transport does. The
+    // header allowlist must still strip the credential before the gateway
+    // forwards the request to the host.
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const seenHeaders: Array<Record<string, string>> = [];
+    let attempts = 0;
+    const gateway = await startHttp2GatewayForTest({
+      bridgeToken,
+      holdProbeOpen: () => { attempts++; return portCollision && attempts === 1; },
+      deferStderrUntilExit: lateStderr,
+      forwardRequest: async (request) => {
+        seenHeaders.push(request.headers);
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify({ ok: true }), "utf8"),
+        };
+      },
+    });
+
+    expect(attempts).toBeGreaterThanOrEqual(portCollision ? 2 : 1);
+    expect(attempts).toBeLessThanOrEqual(3);
+
+    const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": bridgeToken,
+        accept: "application/json",
+      },
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true });
+    expect(seenHeaders).toHaveLength(1);
+    expect(seenHeaders[0]?.["x-api-key"]).toBeUndefined();
+
+    const deniedResponse = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(deniedResponse.status).toBe(401);
+    await expect(deniedResponse.json()).resolves.toMatchObject({
+      error: "Invalid bridge token.",
+    });
+    // The rejected request never opened a stream to the host.
+    expect(seenHeaders).toHaveLength(1);
+
+    // A bearer token still works and still wins when both headers are present.
+    const bearerResponse = await fetch(`${gateway.baseUrl}/api/agents/me`, {
+      headers: {
+        authorization: `Bearer ${bridgeToken}`,
+        "x-api-key": "wrong-token",
+      },
+    });
+    expect(bearerResponse.status).toBe(200);
+    expect(seenHeaders).toHaveLength(2);
+    expect(seenHeaders[1]?.authorization).toBeUndefined();
+    expect(seenHeaders[1]?.["x-api-key"]).toBeUndefined();
+  }, 15_000);
 });
 
 interface EmbeddedBridgeProcessBodyLedger {

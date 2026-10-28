@@ -5,7 +5,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceManifest, WorkspaceManifestMap, workspacePathMatcher, type PathManifest, type WorkspacePaths, type WorkspaceManifestWriter } from "./workspace-manifest.js";
 import { shouldExcludePath } from "./exclude-patterns.js";
-import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import { runSnapshotThread } from "./workspace-snapshot-thread.js";
 import type { WorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 
@@ -493,6 +492,7 @@ function nonEmpty(value: string | undefined): string | null {
  * would follow the symlink) before any caller treats it as the lock root.
  */
 async function resolveDirectoryMergeLockRoot(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const { resolvePaperclipInstanceRootForAdapter } = await import("./server-utils.js");
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
@@ -554,6 +554,16 @@ export async function withDirectoryPublicationLock<T>(
     await assertSafeLeaf();
     return fn(canonicalTargetDir);
   }, env);
+}
+
+export async function tryWithDirectoryMergeLock<T>(targetDir: string, fn: () => Promise<T>): Promise<T | undefined> {
+  const canonicalTargetDir = await fs.realpath(targetDir);
+  try {
+    return await withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, process.env, undefined, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return undefined;
+    throw error;
+  }
 }
 
 async function withCanonicalDirectoryMergeLock<T>(

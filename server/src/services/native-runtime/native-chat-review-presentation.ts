@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   agents,
@@ -573,20 +574,28 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     assessmentId: input.assessmentId,
     externalChatReviewPresentation: { ...proof, decisionId: input.decisionId },
   };
+  const runOwner = and(
+    eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.nativeIssueId, input.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  );
+  const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`;
+  const [run] = await db.select({
+    needsUpdate: sql<boolean>`${projectedResult} is distinct from ${heartbeatRuns.resultJson}`,
+  }).from(heartbeatRuns).where(runOwner).for("update");
+  if (!run) return false;
+  // A valid existing projection still permits the caller to materialize its
+  // response. Replaying recovery must not rewrite it or signal another scan.
+  if (!run.needsUpdate) return true;
+  await notifyChatRunMilestones(db, input);
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`,
+      resultJson: projectedResult,
       updatedAt: new Date(),
     })
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.nativeIssueId, input.issueId),
-        eq(heartbeatRuns.runtimeMode, "native"),
-      ),
-    )
+    .where(runOwner)
     .returning({ id: heartbeatRuns.id });
   return Boolean(updated);
 }

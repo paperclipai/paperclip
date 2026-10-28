@@ -43,6 +43,7 @@ export function resolveQualifiedAcpxProfile(
 ): QualifiedAcpxProfile {
   const profile = QUALIFIED_ACPX_PROFILES[agent];
   if (!requestedModel.trim()) throw new Error("ACPX model must not be empty");
+  if (agent === "copilot" && ["auto", "default"].includes(requestedModel.trim().toLowerCase())) throw new Error("Copilot requires an explicit model ID");
   return { ...structuredClone(profile), qualificationModel: requestedModel, reportedModelId: requestedModel };
 }
 

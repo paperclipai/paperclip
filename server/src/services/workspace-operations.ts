@@ -654,7 +654,10 @@ export function workspaceOperationService(db: Db) {
             if (!row) throw notFound("Workspace operation not found");
             return toWorkspaceOperation(row);
           } catch (error) {
-            await append("stderr", error instanceof Error ? error.message : String(error));
+            // The log file is best-effort once the operation has failed: a log write error (for
+            // example ENOSPC on a full disk) must neither strand this row in `running` nor replace
+            // the operation's own error. The excerpt still records the message.
+            await append("stderr", error instanceof Error ? error.message : String(error)).catch(() => undefined);
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
             await db

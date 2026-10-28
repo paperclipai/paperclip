@@ -42,8 +42,8 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
-import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  buildCodexHomeRefreshProvision,
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
@@ -204,8 +204,8 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Subscription-only inbound auth merge keeps the newer credential.
-        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Refresh managed config/auth while retaining remote conversation files.
+        provision: buildCodexHomeRefreshProvision({ mergeAuth: !apiKeyAuth }),
         // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json

@@ -128,19 +128,25 @@ export async function resolveConnectorAssignments(
   db: Db,
   binding: AgentBinding,
 ): Promise<ConnectorAssignment[]> {
-  const assignments: ConnectorAssignment[] = [];
-  for (const connector of connectors) {
+  const results = await Promise.allSettled(connectors.map(async (connector) => {
     const resources = await measureRunPhase(connector.resolvePhase, () => connector.resolve(db, binding));
-    if (resources.length)
-      assignments.push({
-        key: connector.key,
-        label: connector.label,
-        skillKey: skillKey(connector),
-        resources,
-        tools: connector.tools,
-      });
-  }
-  return assignments;
+    return resources.length ? [{
+      key: connector.key,
+      label: connector.label,
+      skillKey: skillKey(connector),
+      resources,
+      tools: connector.tools,
+    }] : [];
+  }));
+  return results.flatMap(result => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+}
+
+export function connectorToolDefinitionsForSkills(skillKeys: ReadonlySet<string>): Pick<ConnectorAssignment, "tools">[] {
+  return connectors.filter(connector => skillKeys.has(skillKey(connector)) && connector.tools.length > 0)
+    .map(connector => ({ tools: connector.tools }));
 }
 
 export function isConnectorSkill(key: string) {

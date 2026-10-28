@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -92,6 +92,60 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.$client.end();
     await stopDb?.();
   });
+
+  it("dispatches a plugin-owned account per-turn without Core workspace files through the native heartbeat boundary", async () => {
+    const companyId = randomUUID(), projectId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), sourceId = randomUUID();
+    const environmentId = randomUUID(), pluginId = randomUUID(), pluginKey = `test.tasks.${pluginId}`;
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-heartbeat-")); tempRoots.push(root);
+    await db.insert(companies).values({ id: companyId, name: "Task fixture", issuePrefix: "TASK", defaultResponsibleUserId: "task-user" });
+    await grantResponsibleUser(companyId, "task-user");
+    await db.insert(projects).values({ id: projectId, companyId, name: "Task fixture", status: "active",
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } });
+    const pluginOnlyCwd = path.join(root, "plugin-only", "project");
+    await db.insert(projectWorkspaces).values([
+      { id: sourceId, companyId, projectId, name: "Primary", cwd: pluginOnlyCwd, isPrimary: true },
+      { companyId, projectId, name: "Extra", cwd: null, repoUrl: "/unavailable-controller-repository.git", isPrimary: false },
+    ]);
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "@test/tasks", version: "1.0.0", apiVersion: 1,
+      categories: ["automation"], status: "ready", manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Tasks", description: "Task fixture", author: "Paperclip", categories: ["automation"],
+        capabilities: ["environment.drivers.register", "workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
+        workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
+        entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
+    await db.insert(environments).values({ id: environmentId, companyId, name: "Tasks", driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {},
+      defaultEnvironmentId: environmentId, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, projectId, projectWorkspaceId: sourceId, title: "Task-only dispatch", status: "in_progress",
+      assigneeAgentId: agentId, issueNumber: 1, identifier: "TASK-1" });
+    const call = vi.fn(async (_id: string, method: string, params?: any) => {
+      if (method === "workspaceOperation") return { kind: "prepared", binding: { pluginId, projectId,
+        executionWorkspaceId: params.executionWorkspaceId, projectWorkspaceId: params.operation.source.id,
+        sourceRevision: params.operation.source.revision, workspaceRef: "provider:heartbeat-workspace" },
+        branchName: params.operation.branchName, baseSha: "a".repeat(40), created: true, branchCreatedByRuntime: false };
+      if (method === "environmentAcquireLease") return { providerLeaseId: "heartbeat-task-attempt", metadata: { remoteCwd: "/project" } };
+      if (method === "environmentReleaseLease" || method === "environmentDestroyLease") return undefined;
+      throw new Error(`Unexpected task provider call: ${method}`);
+    });
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["workspaceOperation", "environmentTask", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const entered = vi.fn(() => { throw new Error("synthetic_native_boundary_reached"); });
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager, nativeSessionBackendFactory: entered });
+    heartbeats.push(heartbeat);
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual", contextSnapshot: { issueId, projectId } });
+    expect(run).not.toBeNull();
+    await vi.waitFor(async () => { expect((await heartbeat.getRun(run!.id))?.status).toBe("failed"); }, { timeout: 10_000 });
+    expect(entered).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({ runId: run!.id, companyId, issueId }),
+      session: expect.objectContaining({ lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }) }));
+    expect((await heartbeat.getRun(run!.id))?.error).toContain("synthetic_native_boundary_reached");
+    await heartbeat.drainActiveRunExecutions();
+    expect(call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.objectContaining({ providerLeaseId: "heartbeat-task-attempt" }));
+    expect(call.mock.calls.every(([, method]) => ["workspaceOperation", "environmentAcquireLease", "environmentDestroyLease"].includes(method))).toBe(true);
+    expect(call.mock.calls.filter(([, method]) => method === "workspaceOperation")).toHaveLength(1);
+    expect(adapterExecute).not.toHaveBeenCalled();
+    await expect(stat(pluginOnlyCwd)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
 
   it("acquires plugin environment leases through the heartbeat execution path", async () => {
     const companyId = randomUUID();

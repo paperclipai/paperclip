@@ -90,7 +90,9 @@ jobs:
           "${{ github.event.pull_request.head.sha }}"
 
       - name: Validate Dockerfile deps stage
-        run: node ./scripts/check-docker-deps-stage.mjs
+        run: |
+          node ./scripts/check-docker-deps-stage.mjs
+          node "$CI_NODE_TEST" ./scripts/docker-deps-postinstall.test.mjs
 
       - name: Validate Node version policy
         run: pnpm check:node-version
@@ -107,6 +109,13 @@ jobs:
       - name: Test feature module boundary check
         run: node "$CI_NODE_TEST" ./scripts/check-module-boundaries.test.mjs
 
+      # Report-only for now (always exits 0); --enforce turns findings into failures.
+      - name: Report raw query-error rendering
+        run: node scripts/check-query-error-rendering.mjs --summary
+
+      - name: Test query-error rendering check
+        run: node --test ./scripts/check-query-error-rendering.test.mjs
+
       - name: Test PR quality-gate scripts
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
 
@@ -117,7 +126,7 @@ jobs:
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
       - name: Test release verify workflow wiring
-        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
 
       - name: Test standalone package build concurrency
         run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -321,7 +330,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -834,7 +843,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -1051,7 +1060,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
@@ -1062,6 +1071,15 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # The production image starts the server from this bundle with plain
+      # node (Dockerfile CMD), so prove it boots before the image is built:
+      # bundle the `pnpm build` output, start it against a throwaway embedded
+      # instance, and wait for /api/health to report ok.
+      - name: Boot the production runtime bundle
+        run: |
+          pnpm --filter @paperclipai/server build:runtime
+          scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
 
       # This verification only needs `pnpm build` output (the verifier stages
       # the public packages' dist and reuses ui/dist itself), yet it ran at the
@@ -1400,7 +1418,7 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}

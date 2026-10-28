@@ -15,10 +15,13 @@ export const connectionDelay = (ms: number) => new Promise<void>(resolve => setT
 /** No raw response bodies, callback URLs, headers, or Playwright diagnostics escape. */
 export class ConnectionApi {
   constructor(readonly request: APIRequestContext, readonly origin: string) {}
-  async response(route: string, method = "GET", data?: unknown) {
-    if (!route.startsWith("/api/") || new URL(route, this.origin).origin !== this.origin) throw new ConnectionFailure("invalid_api_route");
+  async response(route: string, method = "GET", data?: unknown, options: { timeoutMs?: number } = {}) {
+    const target = new URL(route, this.origin);
+    if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
+    const timeout = options.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
     try {
-      const response = await this.request.fetch(`${this.origin}${route}`, { method, ...(data === undefined ? {} : { data }), maxRedirects: 0, timeout: 30_000 });
+      const response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0, timeout });
       if (!response.ok()) throw new ConnectionFailure(`api_status_${response.status()}`);
       return response;
     } catch (error) {
@@ -27,7 +30,7 @@ export class ConnectionApi {
     }
   }
   async get<T = any>(route: string): Promise<T> { return (await this.response(route)).json(); }
-  async post<T = any>(route: string, data?: unknown): Promise<T> { return (await this.response(route, "POST", data)).json(); }
+  async post<T = any>(route: string, data?: unknown, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "POST", data, options)).json(); }
   async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
   async delete(route: string) { await this.response(route, "DELETE"); }
   async bytes(route: string) { return (await this.response(route)).body(); }
@@ -89,11 +92,13 @@ export async function startConnectionTarget(config: ConnectionConfig, executions
   } catch (error) { await stop(); throw error; }
 }
 
-export async function verifyConnectionTarget(origin: string, config: ConnectionConfig) {
+export async function verifyConnectionTarget(origin: string, config: ConnectionConfig, request?: APIRequestContext) {
   let health: any;
   try {
-    const response = await fetch(`${targetOrigin(origin)}/api/health`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) throw new ConnectionFailure();
+    const response = request
+      ? await request.get(`${targetOrigin(origin)}/api/health`, { maxRedirects: 0, timeout: 15_000 })
+      : await fetch(`${targetOrigin(origin)}/api/health`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
+    if (!(typeof response.ok === "function" ? response.ok() : response.ok)) throw new ConnectionFailure();
     health = await response.json();
   } catch { throw new ConnectionBlock("blocked_target", "target_health_unavailable_or_redirected"); }
   if (typeof health.commit !== "string" || !/^[a-f0-9]{40}$/.test(health.commit)) throw new ConnectionBlock("blocked_target", "target_revision_unavailable");
