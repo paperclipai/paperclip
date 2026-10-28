@@ -792,7 +792,9 @@ export function createHeartbeatScheduling(
         })
         .where(issueMonitorClaimCondition(claimed))
         .returning({ id: issues.id });
-      if (consumed.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
+      // Admission already accepted the check. A replacement schedule must stay
+      // intact, but losing its consumption fence does not undo that accepted wake.
+      if (consumed.length === 0) return { outcome: "triggered" as const };
 
       await logActivity(db, {
         companyId: claimed.companyId,

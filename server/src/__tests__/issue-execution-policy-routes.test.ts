@@ -1204,6 +1204,7 @@ describe("issue execution policy routes", () => {
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ details: { code: "issue_monitor_check_deferred", reason } });
+    if (reason === "monitor_replaced") expect(res.body.error).toContain("monitor changed");
     expect(res.body.ok).toBeUndefined();
   });
 

@@ -13388,6 +13388,8 @@ export function issueRoutes(
       throw conflict(
         result.reason === "execution_reconciliation_required"
           ? "The previous run is still being recovered. Try again when recovery finishes."
+          : result.reason === "monitor_replaced"
+          ? "The monitor changed during this check. Review the task's current state before trying again."
           : "The monitor check did not start. Refresh the task to see its current state.",
         { code: "issue_monitor_check_deferred", reason: result.reason },
       );

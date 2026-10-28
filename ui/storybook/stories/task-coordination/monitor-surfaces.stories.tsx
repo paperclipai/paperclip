@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { IssueMonitorBanner, IssueMonitorComposerStrip } from "@/components/IssueMonitorBanner";
 import { IssueProperties } from "@/components/IssueProperties";
+import { prepareFixtureApi } from "../../support/capability-gaps/api";
 import {
   storybookExecutionWorkspaces,
   storybookIssueDocuments,
@@ -338,6 +339,9 @@ type Story = StoryObj<typeof meta>;
 export const MonitorSurfaces: Story = {};
 
 export const BlockedTask: Story = {
+  beforeEach: () => prepareFixtureApi([
+    { path: `/api/issues/${overdueMonitorIssue.id}/work-products`, read: () => [] },
+  ]).cleanup,
   render: function BlockedMonitor() {
     const [checkingNow, setCheckingNow] = useState(false);
     const issue = { ...overdueMonitorIssue, status: "blocked" as const };

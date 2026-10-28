@@ -425,7 +425,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     if (change === "cleared") expect(issue.monitorNextCheckAt).toBeNull();
   });
 
-  it("does not erase a replacement scheduled after wake admission", async () => {
+  it.each(["manual", "scheduled"] as const)("reports an accepted %s check and preserves a replacement schedule", async (source) => {
     const { companyId, issueId } = await seedFixture();
     const nextCheckAt = new Date("2026-04-11T13:30:00.000Z");
     let replaced = false;
@@ -444,7 +444,14 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         };
       },
     });
-    await heartbeatService(racingDb).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+    const heartbeat = heartbeatService(racingDb);
+    const now = new Date("2026-04-11T12:31:00.000Z");
+    if (source === "manual") {
+      expect(await heartbeat.triggerIssueMonitor(issueId, { now, actorType: "user", actorId: "local-board" }))
+        .toMatchObject({ outcome: "triggered" });
+    } else {
+      expect(await heartbeat.tickTimers(now)).toMatchObject({ enqueued: 1, skipped: 0 });
+    }
     expect(replaced).toBe(true);
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue.monitorNextCheckAt).toEqual(nextCheckAt);
