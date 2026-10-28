@@ -1,8 +1,10 @@
 import { chmodSync, cpSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createTarballFromDirectory } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import { prepareIsolatedCodexHome, releaseMaterializedNativeRuntimeSkills, resolveRunnerdCodexSkillInputs } from "../../vendor/paperclip-runner/testing.js";
@@ -70,6 +72,8 @@ async function filesystemFixture() {
   writeFileSync(join(source.instructions.bundle.rootPath, "AGENTS.md"), "Agent instructions\n");
   mkdirSync(source.skills[0]!.bundle.rootPath);
   writeFileSync(join(source.skills[0]!.bundle.rootPath, "SKILL.md"), "---\nname: test\ndescription: Selected skill\n---\nUse a native confirmation.\n");
+  mkdirSync(join(source.skills[0]!.bundle.rootPath, "scripts"));
+  writeFileSync(join(source.skills[0]!.bundle.rootPath, "scripts", "selected.sh"), "#!/bin/sh\nprintf selected\\n\n", { mode: 0o755 });
   await prepareIsolatedCodexHome({ context: source, codexHome: join(f.root, "codex-home") });
   const remote = join(f.root, "remote", "codex-home");
   f.input.persistenceDirectories = [{ name: "codex-home", location: "filesystem", targetPath: remote }];
@@ -78,10 +82,14 @@ async function filesystemFixture() {
     mkdirSync(dirname(targetPath), { recursive: true });
     cpSync(sourcePath, targetPath);
   };
-  f.input.stageDirectory = vi.fn(async ({ sourcePath, targetPath, mode }) => {
+  f.input.stageDirectory = vi.fn(async ({ sourcePath, targetPath }) => {
     if (!targetPath.startsWith(f.root)) return;
-    cpSync(sourcePath, targetPath, { recursive: true });
-    chmodSync(targetPath, mode);
+    // Native sandbox transfer archives omit the source root and mkdir the
+    // destination without applying the mapping mode. Exercise those actual
+    // tar/filesystem semantics rather than forcing the requested mode here.
+    const archivePath = join(f.root, "native-transfer.tar");
+    await createTarballFromDirectory({ localDir: sourcePath, archivePath });
+    execFileSync("sh", ["-c", 'umask 022; mkdir -p "$1" && tar -xf "$2" -C "$1"', "native-directory-transfer", targetPath, archivePath]);
   });
   f.input.runner.execute = async ({ command, args }) => {
     try {
@@ -103,7 +111,13 @@ describe("remote launch asset staging", () => {
     ], f.source, f.remote);
     expect(existsSync(skill!.path)).toBe(true);
     expect(readFileSync(skill!.path, "utf8")).toContain("Use a native confirmation.");
-    expect(statSync(skill!.path).mode & 0o222).toBe(0);
+    const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
+    for (const relative of ["SKILL.md", "scripts/selected.sh"]) {
+      expect(digest(join(f.remote, "skills", "test", relative))).toBe(digest(join(f.root, "codex-home", "skills", "test", relative)));
+    }
+    expect(statSync(skill!.path).mode & 0o777).toBe(0o444);
+    expect(statSync(join(f.remote, "skills", "test")).mode & 0o222).toBe(0);
+    expect(statSync(join(f.remote, "skills", "test", "scripts", "selected.sh")).mode & 0o777).toBe(0o555);
     expect(statSync(join(f.remote, "skills")).mode & 0o777).toBe(0o700);
   });
 

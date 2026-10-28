@@ -83,6 +83,10 @@ if (fs.lstatSync(skills, { throwIfNoEntry: false })) {
   unseal(skills);
   fs.rmSync(skills, { recursive: true });
 }
+// Native directory transfers omit the source root and may ignore its mapping
+// mode. Create the private discovery root before their mkdir/extract step.
+fs.mkdirSync(skills, { mode: 0o700 });
+fs.chmodSync(skills, 0o700);
 `;
 
 export async function stageRemoteLaunchAssets(input: LaunchAssetsInput): Promise<void> {

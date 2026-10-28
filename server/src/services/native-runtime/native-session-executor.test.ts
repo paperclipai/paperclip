@@ -84,6 +84,7 @@ import {
   verifyNativeHarnessBackupStamp,
 } from "./native-harness-backup-stamp.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { prepareIsolatedCodexHome } from "../../vendor/paperclip-runner/testing.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import * as nativeSessionResume from "./native-session-resume.js";
 import * as nativeLeaseRenewal from "./native-execution-lease.js";
@@ -14934,7 +14935,7 @@ describe("runnerd provider runtime wiring", () => {
       // the current invocation's launch files. The actual launch must stage
       // those files without trying to claim/restore the session a second time.
       const home = join(options.stateDirectory!, "codex-home");
-      await mkdir(home, { recursive: true });
+      await prepareIsolatedCodexHome({ codexHome: home, context: runtimeContext });
       await writeFile(join(home, "auth.json"), "fixture-current-credential");
       await writeFile(join(home, "config.toml"), "fixture-current-config");
       await writeFile(join(options.stateDirectory!, "runtime-context.json"), JSON.stringify(runtimeContext));
@@ -14945,6 +14946,9 @@ describe("runnerd provider runtime wiring", () => {
         command: "/controller/paperclip-runnerd", args: [], cwd: "/controller", environment: {},
       });
       await expect(launched.completion).rejects.toThrow("fixture_stop_after_launch_staging");
+      expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
+        files: [expect.objectContaining({ sourcePath: join(home, "skills"), kind: "directory", mode: 0o700 })],
+      })]);
       for (const name of ["auth.json", "config.toml"]) {
         expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({
           files: [expect.objectContaining({ sourcePath: join(home, name), kind: "file", mode: 0o600 })],
