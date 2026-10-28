@@ -37,12 +37,9 @@ describe("assigned MCP runner tools", () => {
       const listing = await rpc("tools/list");
       const search = listing.tools.find((tool: { name: string }) => tool.name === searchName);
       const limit = search.inputSchema.properties.limit;
-      // TypeScript tool renderings can omit numeric schema constraints. Both
-      // descriptions must communicate the bounds without those keywords.
       for (const description of [search.description, limit.description]) {
-        for (const value of [limit.minimum, limit.maximum, 5]) {
-          expect(description).toContain(String(value));
-        }
+        expect(description).toContain(`${limit.minimum} to ${limit.maximum}`);
+        expect(description).toContain(`default ${limit.default}`);
       }
       expect(limit).toMatchObject({ minimum: 1, maximum: 20, default: 5 });
       const page = async (args: Record<string, unknown>) => {
