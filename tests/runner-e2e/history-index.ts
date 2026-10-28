@@ -291,7 +291,7 @@ export function renderRunnerHistoryIndex(
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <p class="empty" data-index-empty hidden>No campaigns match these filters.</p>
+    <div class="empty" data-index-empty hidden><p data-index-empty-message>No campaigns match these filters.</p><a data-index-empty-suite hidden></a></div>
     <details data-index-trends hidden><summary>Campaign trends</summary>${renderReportHistory(history, { chartsOnly: true })}</details>
     <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Declared screenshots and normalized results</span></footer>
   </main></div></div>

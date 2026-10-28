@@ -140,6 +140,17 @@ export const historyBrowserScript = String.raw`
     }
     document.querySelector('[data-index-result]').textContent = visible + ' matching campaign' + (visible === 1 ? '' : 's') + (view === 'overview' && !active && candidates.length > 10 ? ' · Showing the 10 most recent; open Campaign history for all.' : '');
     document.querySelector('[data-index-empty]').hidden = visible !== 0;
+    const presetHasSuite = data.campaigns.some(campaign => campaign.preset === state.preset && campaign.suites.some(suite => suite.id === state.suite));
+    const incompatiblePreset = state.suite && state.preset && !presetHasSuite;
+    document.querySelector('[data-index-empty-message]').textContent = incompatiblePreset
+      ? 'No ' + selectedLabel + ' campaigns are included in ' + label('preset', state.preset) + '.'
+      : 'No campaigns match these filters.';
+    const suiteRuns = document.querySelector('[data-index-empty-suite]');
+    suiteRuns.hidden = !incompatiblePreset;
+    if (incompatiblePreset) {
+      suiteRuns.href = '?view=history&suite=' + encodeURIComponent(state.suite);
+      suiteRuns.textContent = 'View ' + selectedLabel + ' runs';
+    }
     controls.coverage.closest('label').querySelector('span').textContent = state.suite ? 'Suite coverage' : 'Campaign coverage';
     controls.coverage.setAttribute('aria-label',state.suite ? 'Suite coverage' : 'Campaign coverage');
     document.querySelectorAll('[data-index-suite-link]').forEach(link => { if (link.dataset.indexSuiteLink === state.suite) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current'); });
@@ -173,7 +184,7 @@ export const historyBrowserScript = String.raw`
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const link = event.target.closest('[data-index-suite-link],[data-index-preset-link],[data-nav-view]'); if (!link) return;
     event.preventDefault();
-    if (link.hasAttribute('data-index-suite-link')) { state.suite = link.dataset.indexSuiteLink; view = 'history'; }
+    if (link.hasAttribute('data-index-suite-link')) { state = { suite: link.dataset.indexSuiteLink }; view = 'history'; }
     else if (link.hasAttribute('data-index-preset-link')) { state = {}; state.preset = link.dataset.indexPresetLink; view = 'history'; }
     else { view = link.dataset.navView; if (view === 'overview') state = {}; }
     write(true); window.scrollTo({top:0,behavior:'instant'});

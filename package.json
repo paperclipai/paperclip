@@ -72,8 +72,6 @@
     "test:e2e:runner:dashboard": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/dashboard-regenerate.ts",
     "test:e2e:runner:models:update": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/openrouter-models-update.ts",
     "test:e2e:runner:history:publish": "node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/history-publish.ts",
-    "test:e2e:history:browser": "node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs",
-    "test:e2e:history:refresh": "node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-refresh.ts",
     "test:runner-recovery": "vitest run server/src/services/native-runtime/native-replacement-evidence.test.ts server/src/services/native-runtime/stopped-codex-turn.test.ts server/src/services/native-runtime/native-safe-replacement.test.ts",
     "test:slack-connector": "node server/src/services/connectors/slack/evals/run-regressions.mjs",
     "test:e2e:browser-context": "playwright test --config tests/e2e/playwright-company-context.config.ts",

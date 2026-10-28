@@ -102,6 +102,15 @@ export const reportNavigationStyles = `
   .report-breadcrumbs [aria-current=page] { color: var(--foreground); }
   .report-breadcrumbs a,.report-breadcrumbs span { overflow-wrap: anywhere; }
   .report-campaign-select { font: 11px var(--font-sans); padding: 8px; color: var(--foreground); background: var(--card); border: 1px solid var(--border); border-radius: 5px; width: 220px; max-width: 30%; flex: none; }
+  .report-shell .report-surface select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-inline-end: 34px;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%), linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+    background-position: calc(100% - 16px) center, calc(100% - 12px) center;
+    background-size: 4px 4px;
+    background-repeat: no-repeat;
+  }
   .report-menu-toggle { display: none; border: 0; padding: 0; background: transparent; color: var(--foreground); font-size: 20px; cursor: pointer; }
   .report-drawer-backdrop { display: none; }
   .report-header h1 { font-size: 32px; }

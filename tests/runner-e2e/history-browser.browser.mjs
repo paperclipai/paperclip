@@ -78,6 +78,24 @@ try{
  await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(1);
  await page.getByLabel('Model',{exact:true}).selectOption('__none__');
  await expect(page.locator('[data-index-campaign]:not([hidden]) [data-index-row-counts]')).toHaveText('1/1 matching executions passed · 1 executed');
+ await page.locator('[data-index-suite-link="fixture-tasks"]').click();
+ await expect(page.getByLabel('Run preset',{exact:true})).toHaveValue('');
+ await expect(page.getByLabel('Model',{exact:true})).toHaveValue('');
+ await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(3);
+ await page.goto(base+'?view=history&suite=fixture-tasks&preset=qa-smoke');
+ await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(0);
+ await expect(page.locator('[data-index-empty-message]')).toHaveText('No fixture tasks campaigns are included in QA smoke.');
+ await page.getByRole('link',{name:'View fixture tasks runs',exact:true}).click();
+ await expect(page.locator('[data-index-campaign]:not([hidden])')).toHaveCount(3);
+ await expect(page.getByLabel('Run preset',{exact:true})).toHaveValue('');
+ await page.locator('[data-index-preset-link="qa-smoke"]').click();
+ await page.getByLabel('Suite',{exact:true}).selectOption('fixture-tasks');
+ await expect(page.getByLabel('Run preset',{exact:true})).toHaveValue('qa-smoke');
+ await expect(page.locator('[data-index-empty-message]')).toHaveText('No fixture tasks campaigns are included in QA smoke.');
+ const selectStyle=await page.getByLabel('Agent profile',{exact:true}).evaluate(select=>{
+  const style=getComputedStyle(select);return {appearance:style.appearance,padding:parseInt(style.paddingRight),arrow:style.backgroundPosition};
+ });
+ if(selectStyle.appearance!=='none'||selectStyle.padding<32||!selectStyle.arrow.includes('12px'))throw Error('Dropdown arrow lacks inset: '+JSON.stringify(selectStyle));
  await page.getByRole('link',{name:'Overview',exact:true}).click();
  await expect(page.getByRole('heading',{name:'E2E tests',exact:true})).toBeVisible();
  await expect(page.getByLabel('Run preset',{exact:true})).toHaveValue('');

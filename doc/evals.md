@@ -18,12 +18,18 @@ Existing `runner-e2e` URLs, test IDs, commands, and measurement timestamps remai
 stable. **Runner protocol evals** remain a separate category because they test
 the runner/provider against a mock control plane.
 
-`pnpm test:e2e:history:browser` exercises the history UI using synthetic metadata
-and Chromium, with no model calls. It checks suite coverage, correlated
+Sidebar suite links open that suite's campaign history with other filters cleared.
+The Suite dropdown combines with the current filters instead. Explicit URLs retain
+their selected filters; when a suite is absent from a preset, the empty state
+explains the combination and links to the suite's runs.
+
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-browser.browser.mjs`
+exercises the history UI using synthetic metadata and Chromium, with no model calls. It checks suite coverage, correlated
 suite/target/model/execution filters, saved QA selections, URL history and mobile
 navigation. Install the existing Playwright Chromium dependency before running.
-For presentation-only refreshes, `tests/runner-e2e/history-refresh.ts` renders an
-existing history file. Its optional `--public-campaign`, `--public-url` and
+For presentation-only refreshes,
+`node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/history-refresh.ts --history <history.json> --output <directory>`
+renders an existing history file. Its optional `--public-campaign`, `--public-url` and
 `--preset` arguments import a reviewed public measurement without replacing
 existing campaigns. Private Cloud bundles are rejected. The output contains
 only index HTML and history/pointer JSON; it does not upload evidence or change
