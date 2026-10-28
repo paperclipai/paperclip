@@ -3085,7 +3085,9 @@ function renderApiAccessNote(env: Record<string, string>): string {
   if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
   const lines = [
     "Paperclip API access note:",
-    "Use terminal commands with curl to make Paperclip API requests.",
+    "Prefer the paperclip skill helper for Paperclip API requests; it resolves the base URL, adds auth and run-id headers, and exits non-zero on failure:",
+    `  bash "$paperclip_skill_dir/scripts/paperclip-api.sh" GET /api/agents/me`,
+    "Without the helper, use terminal commands with curl.",
     "Normalize the base URL before adding API paths:",
     `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "GET example:",
