@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const fixture = resolve(root, "test/fixtures/copilot-profile-v73-identity.json");
+const fixture = resolve(root, "test/fixtures/copilot-profile-v74-identity.json");
 const historical = JSON.parse(readFileSync(resolve(root, "test/fixtures/copilot-profile-v12-identity.json"), "utf8"));
-const declaration = { ...historical.declaration, agentProfileVersion: 73 };
+const declaration = { ...historical.declaration, agentProfileVersion: 74 };
 delete declaration.permissionIdentitySourceSha256;
 const sources = {
   displayEventSourceSha256: "src/drivers/acpx/copilot-events.ts",

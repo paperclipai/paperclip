@@ -17,7 +17,7 @@ export function preparedHarnessHome(environment: NodeJS.ProcessEnv | undefined, 
   const directory = environment?.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (directory === undefined) return null;
   if (agent !== "claude" || !isAbsolute(directory) || /[\0\r\n]/.test(directory)
-    || directory !== environment?.CLAUDE_CONFIG_DIR || resolve(directory) !== directory
+    || resolve(directory) !== directory
     || !lstatSync(directory).isDirectory() || realpathSync(directory) !== directory) {
     throw new Error("prepared_harness_home_invalid");
   }
@@ -29,7 +29,8 @@ export function preconfiguredHomeEnvironment(source: NodeJS.ProcessEnv = process
   const home = source.HOME ?? userInfo().homedir;
   const result: Record<string, string> = { HOME: home };
   for (const key of PRECONFIGURED_HOME_KEYS) {
-    const value = source[key];
+    const value = key === "CLAUDE_CONFIG_DIR" && source.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME !== undefined
+      ? source.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME : source[key];
     if (value !== undefined) result[key] = value;
   }
   for (const value of Object.values(result)) {

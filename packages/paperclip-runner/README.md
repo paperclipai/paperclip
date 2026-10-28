@@ -825,8 +825,9 @@ reuses the original handler execution, including when delivery failed.
 ## Prepared harness storage
 
 An execution environment can supply an existing Claude configuration directory
-through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME` and the same absolute,
-non-symlinked `CLAUDE_CONFIG_DIR`. This selects persistent harness storage without
+through `PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME`, using an absolute, non-symlinked
+path. Runner derives `CLAUDE_CONFIG_DIR` from this value, overriding any separately
+supplied value. This selects persistent harness storage without
 changing the run's permission mode or enabling preconfigured-home behavior.
 `HOME` remains the execution account's home. Each account must use its own
 configuration directory. The environment must publish the selected skills before
