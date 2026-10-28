@@ -5239,6 +5239,15 @@ export function recoveryService(
         }
 
         if (
+          issue.assigneeAgentId === participantAgentId &&
+          ((await issuesSvc.listDependencyReadiness(issue.companyId, [issue.id]))
+            .get(issue.id)?.pendingFinalizeBlockerIssueIds.length ?? 0) > 0
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (
           didAutomaticRecoveryFail(
             participantLatestRun,
             EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
