@@ -1,5 +1,5 @@
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -56,7 +56,7 @@ import {
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
-import { executionIssueCondition } from "./issue-visibility.js";
+import { executionIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -824,6 +824,7 @@ async function issueSummaryMap(
   companyId: string,
   issueIds: Array<string | null | undefined>,
   readCondition: SQL<boolean> = sql<boolean>`true`,
+  includeConversations = false,
 ) {
   const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
   if (ids.length === 0) return new Map<string, IssueSummaryRow>();
@@ -856,7 +857,9 @@ async function issueSummaryMap(
     .where(and(
       eq(issues.companyId, companyId),
       inArray(issues.id, ids),
-      executionIssueCondition(),
+      includeConversations
+        ? or(executionIssueCondition(), and(visibleIssueCondition(), isNotNull(issues.conversationAgentId)))
+        : executionIssueCondition(),
       readCondition,
     ));
   return new Map(rows.map((row) => [row.id, {
@@ -1307,7 +1310,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
-        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
+        // A pending human request remains actionable in a persistent chat even
+        // though its idle container is intentionally absent from work queues.
+        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition, true),
         issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
         planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
       ]);

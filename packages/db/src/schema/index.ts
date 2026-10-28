@@ -265,3 +265,5 @@ export { companyObservability } from "./company_observability.js";
 
 export * from "./prompt_injection_prevention.js";
 export { workflows } from "./workflows.js";
+
+export { userWorkspacePreferences } from "./user_workspace_preferences.js";

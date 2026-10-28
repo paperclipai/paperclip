@@ -75,7 +75,8 @@ import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPaused
 import { ComposerRunSettingsPicker } from "./ComposerRunSettingsPicker";
 import { TaskChatComposerBar } from "./TaskChatComposerBar";
 import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./ComposerAddMenu";
-import type { ComposerRunSettings } from "./composer-run-settings";
+import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
@@ -456,6 +457,7 @@ export function TaskChatComposer({
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
+  const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
   const runSettings = creation ? creation.runSettings : localRunSettings;
   const setRunSettings = creation ? creation.onRunSettingsChange : setLocalRunSettings;
@@ -664,7 +666,8 @@ export function TaskChatComposer({
   const showAssignee = Boolean(
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
-  const assigneeValue = creation ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
+  const assigneeValue = creation || conversationMode ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
+  const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =
@@ -1552,7 +1555,7 @@ export function TaskChatComposer({
 
             <div className={cn("ml-auto flex min-w-0 max-w-full items-center gap-2", mobile && !queuedEdit && "flex-1 justify-end")}>
 
-            {showAssignee && !queuedEdit && companyId && modelAgents ? (
+            {(showAssignee || showConversationModel) && !queuedEdit && companyId && modelAgents ? (
               <ComposerRunSettingsPicker
                 companyId={companyId}
                 assigneeValue={assigneeValue}
@@ -1563,6 +1566,7 @@ export function TaskChatComposer({
                 settings={runSettings}
                 onSettingsChange={setRunSettings}
                 onAssigneeChange={updatePendingAssignee}
+                allowAssigneeChange={showAssignee && !conversationMode}
                 renderAssigneeIdentity={(value, label, placement) => (
                   <AssigneeIdentityAvatar
                     assigneeValue={value}

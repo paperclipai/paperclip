@@ -20,6 +20,9 @@ import type {
   IssueDocument,
   IssueDocumentSummary,
   IssueWorkProduct,
+  DecisionHistoryItem,
+  ConversationTaskHandoff,
+  AttentionItem,
 } from "@paperclipai/shared";
 import type {
   PaperclipQuestionResponse,
@@ -582,6 +585,9 @@ export interface TaskChatBrowserItem {
 }
 
 export type TaskChatItem =
+  | { id: string; kind: "pending_question"; question: AttentionItem }
+  | { id: string; kind: "decision_receipt"; receipt: DecisionHistoryItem }
+  | { id: string; kind: "task_handoff"; handoff: ConversationTaskHandoff; animateEntry?: boolean }
   | TaskChatBrowserItem
   | TaskChatProjectCreatedItem
   | TaskChatSkillCreatedItem

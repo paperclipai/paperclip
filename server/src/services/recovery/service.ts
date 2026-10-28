@@ -4606,7 +4606,10 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+          if (await deliverConversationComments(db, issue, deps.enqueueWakeup) === "deferred") {
+            result.skipped += 1;
+            continue;
+          }
         }
       }
       if (isWaitingConversation(issue)) { result.skipped += 1; continue; }

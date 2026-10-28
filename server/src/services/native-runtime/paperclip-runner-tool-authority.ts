@@ -1,3 +1,4 @@
+import { requiredQualityReviewSchema } from "@paperclipai/shared";
 import { priorRecoveryApiReceipt } from "../recovery-effect-receipts.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -1661,6 +1662,12 @@ export class PaperclipRunnerToolAuthority {
           executionPolicy: { ...normalizeIssueExecutionPolicy({ authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } }) },
           sourceTrust: buildLowTrustSourceTrust({ issueId, runId: this.binding.runId, agentId: this.binding.agentId }),
         } : {}),
+        ...(input.requiredQualityReview !== undefined ? {
+          executionPolicy: normalizeIssueExecutionPolicy({
+            ...(trust.kind === "low_trust_review" ? { authorizationPolicy: { trustPreset: trust.preset, trustBoundary: trust.boundary } } : {}),
+            requiredQualityReview: requiredQualityReviewSchema.parse(input.requiredQualityReview),
+          }),
+        } : {}),
         initialPlan: nullableProviderId(input.initialPlan),
         title: requiredString(input.title),
         description: input.description === null || input.description === undefined
@@ -2767,6 +2774,7 @@ export class PaperclipRunnerToolAuthority {
           sourceRunId: this.binding.runId,
           title: requiredString(input.title),
           summary: prompt,
+          ...(input.resolverPolicy === undefined ? {} : { resolverPolicy: input.resolverPolicy }),
           continuationPolicy: requiredString(input.continuationPolicy),
           payload: {
             ...normalizedPayload,

@@ -11,6 +11,10 @@ import {
 import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { Agent } from "@paperclipai/shared";
+import { agentsApi } from "@/api/agents";
+import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
 import {
   loadDraftSubmission,
@@ -18,7 +22,6 @@ import {
   saveDraftSubmission,
 } from "../../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../../lib/comment-submit-result";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "../../lib/queryKeys";
 import { useAccountBoundMutation } from "../../hooks/useAccountBoundMutation";
 
@@ -2144,6 +2147,42 @@ describe("TaskChatComposer", () => {
     expect(onAdd.mock.calls[1][4]).not.toBe(onAdd.mock.calls[0][4]);
   });
 
+  it("shows model controls only in Coordinator chat and submits the choice without reassignment", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    const catalog = vi.spyOn(agentsApi, "adapterModels").mockResolvedValue([{ id: "gpt-6-astra", label: "GPT-6 Astra" }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const agent = { id: "chat-agent", name: "Mira", adapterType: "codex_local", adapterConfig: { model: "gpt-6-sol" } } as unknown as Agent;
+    const agents = new Map([[agent.id, agent]]);
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const paint = (coordinator: boolean) => render(<QueryClientProvider client={client}><CoordinatorPresentation.Provider value={coordinator}>
+      <TaskChatComposer onAdd={onAdd} conversationMode companyId="chat-company" workMode="standard"
+        currentAssigneeValue="agent:chat-agent" suggestedAssigneeValue="agent:someone-else" modelAgents={agents}
+        reassignOptions={[{ id: "agent:chat-agent", label: "Mira" }]} />
+    </CoordinatorPresentation.Provider></QueryClientProvider>);
+    try {
+      paint(false);
+      expect(container.querySelector('[aria-label="Select model and effort"]')).toBeNull();
+      paint(true);
+      await flushAsync();
+      expect(container.querySelector('[aria-label="Select assignee"]')).toBeNull();
+      await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Select model and effort"]')!.click());
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Choose exact model"]')!.click());
+      const option = [...document.querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(item => item.textContent?.startsWith("GPT-6 Astra"))!;
+      await act(async () => option.click());
+      const range = document.querySelector<HTMLInputElement>('input[aria-label="Effort"]')!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(range, "3");
+        range.dispatchEvent(new Event("change", { bubbles: true }));
+        range.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      typeText("Please outline the launch.");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith("Please outline the launch.", undefined, undefined, undefined, expect.any(String), { model: "gpt-6-astra", effort: "high", fast: false });
+    } finally {
+      render(<></>); client.clear(); catalog.mockRestore(); vi.unstubAllGlobals();
+    }
+  });
+
   describe("paused task takeover", () => {
     it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
       const onAdd = vi.fn().mockResolvedValue(undefined);
@@ -2595,10 +2634,13 @@ describe("TaskChatComposer", () => {
       const byLabel = (label: string) =>
         buttons().find((button) => button.textContent?.trim() === label);
 
-      // Page 1: required, so no Skip; Next waits for an answer. Answering
-      // enables Next but stays put — only Next moves on.
+      // Page 1: required, so no Skip. Next explains a missing answer only
+      // after an attempt; selecting an answer still does not navigate.
       expect(byLabel("Skip")).toBeUndefined();
-      expect(byLabel("Next")?.disabled).toBe(true);
+      expect(byLabel("Next")?.disabled).toBe(false);
+      flushSync(() => byLabel("Next")?.click());
+      expect(container.textContent).toContain("This question is required.");
+      expect(container.textContent).toContain("Where?");
       flushSync(() => byLabel("Staging")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Where?");
@@ -2661,7 +2703,8 @@ describe("TaskChatComposer", () => {
       await flushAsync();
       expect(container.textContent).toContain("1 of 3");
       expect(container.querySelector('[data-testid="question-other-answer-composer"]')).not.toBeNull();
-      expect(byLabel("Next").disabled).toBe(true);
+      expect(byLabel("Next").disabled).toBe(false);
+      expect(container.querySelector('[role="alert"]')).toBeNull();
       flushSync(() => {
         if (input === "click") byLabel("SQLite").click();
         else byLabel("SQLite").dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
