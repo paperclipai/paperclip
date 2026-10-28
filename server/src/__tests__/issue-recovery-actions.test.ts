@@ -1474,6 +1474,53 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
   });
 
+  it("blocks a routine_execution firing whose routine default agent was terminated instead of cancelling (GH #9201)", async () => {
+    const { companyId, coderId, prefix } = await seedCompany();
+    const routineIssue = await seedRoutineExecutionIssue({
+      companyId,
+      assigneeAgentId: coderId,
+      prefix,
+      issueNumber: 912,
+      withExecutionRun: true,
+    });
+    // The schedule still fires, but `dispatchRoutineRun` refuses a terminated
+    // default agent, so no replacement execution issue would ever be created.
+    const terminatedAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: terminatedAgentId,
+      companyId,
+      name: "Former digest owner",
+      role: "engineer",
+      status: "terminated",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(routines).set({ assigneeAgentId: terminatedAgentId }).where(eq(routines.id, routineIssue.originId!));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.escalateStrandedAssignedIssue({
+      issue: routineIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter connection refused",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      } as const,
+    });
+
+    expect(result?.status).toBe("blocked");
+    const [updated] = await db.select().from(issues).where(eq(issues.id, routineIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, routineIssue.id));
+    expect(comments.every((comment) => !comment.body?.includes("cancelled this recurring-run artifact"))).toBe(true);
+  });
+
   it("still cancels a dead routine_execution firing when its project is live (GH #9201)", async () => {
     const { companyId, coderId, prefix } = await seedCompany();
     // The project gate only suppresses while the project is paused: an unpaused

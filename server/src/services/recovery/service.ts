@@ -30,6 +30,7 @@ import {
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, hasLiveLegacyController, liveLegacyControllerExpiresAt } from "../legacy-controller-lease.js";
 import { isCompletedOnboardingHandoffWake } from "../chat-completion-delivery.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { assertAssignableAgent } from "../agent-assignability.js";
 import { isWaitingConversation, settleConversationTurnForRun, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
@@ -4074,6 +4075,20 @@ export function recoveryService(
   // transaction: an operator pausing the routine, disabling the trigger or
   // pausing the project concurrently either lands before we read it or waits
   // for our commit, instead of racing a cancellation that read stale state.
+  async function routineAgentCanTakeReplacementWork(
+    companyId: string,
+    assigneeAgentId: string | null,
+    dbOrTx: any,
+  ): Promise<boolean> {
+    if (!assigneeAgentId) return false;
+    try {
+      await assertAssignableAgent(dbOrTx as Db, companyId, assigneeAgentId, { kind: "routine" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function routineExecutionWillFireAgain(
     issue: typeof issues.$inferSelect,
     dbOrTx: any = db,
@@ -4112,6 +4127,7 @@ export function recoveryService(
         routineCreatedAt: routines.createdAt,
         activityGatePolicy: routines.activityGatePolicy,
         concurrencyPolicy: routines.concurrencyPolicy,
+        assigneeAgentId: routines.assigneeAgentId,
       })
       .from(routineTriggers)
       .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
@@ -4137,8 +4153,23 @@ export function recoveryService(
         routineCreatedAt: Date;
         activityGatePolicy: string;
         concurrencyPolicy: string;
+        assigneeAgentId: string | null;
       }>) => rows[0] ?? null);
     if (!recurring) return false;
+
+    // Dispatch gate: `dispatchRoutineRun` refuses to create the replacement
+    // execution issue when the routine has no default agent or that agent can
+    // no longer take work (terminated, pending approval, broken org chain) —
+    // `assertAssignableAgent` throws and the tick creates nothing. Cancelling
+    // under such a routine would drop the failed work with no path back, so run
+    // the same assignability check here and keep the block path on refusal.
+    // The agent rows are read without a row lock: agent rows are rewritten on
+    // every heartbeat while other paths hold issue rows, and a lock here would
+    // reopen the wait cycles that the lock order in
+    // `escalateStrandedAssignedIssue` exists to prevent.
+    if (!(await routineAgentCanTakeReplacementWork(issue.companyId, recurring.assigneeAgentId, dbOrTx))) {
+      return false;
+    }
 
     // Scheduler gate 1: `skip_if_active` cannot promise that the next tick
     // creates replacement work. Another live execution makes the scheduler
