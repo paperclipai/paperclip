@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -155,6 +155,18 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
     return rows.length;
   }
 
+  async function reviewWakes(agentId: string) {
+    return db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.reason, "execution_review_requested"),
+        ),
+      );
+  }
+
   describe.each([1, 2])("with changesRequestedCount %i", (count) => {
     it("keeps the cycle through a board blocked hold and an unrelated edit, then restores the same reviewer", async () => {
       const seeded = await seedHeldReview(count, "in_review");
@@ -176,6 +188,7 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
       expect(row.status).toBe("blocked");
       expect(row.priority).toBe("high");
       expect(row.executionState).toEqual(seeded.executionState);
+      expect(await reviewWakes(seeded.reviewerAgentId)).toHaveLength(0);
 
       const restore = await request(seeded.board)
         .patch(`/api/issues/${seeded.issueId}`)
@@ -191,6 +204,9 @@ describeEmbeddedPostgres("board holds on a pending review", () => {
         returnAssignee: seeded.executionState.returnAssignee,
         lastDecisionOutcome: "changes_requested",
         changesRequestedCount: count,
+      });
+      await vi.waitFor(async () => {
+        expect(await reviewWakes(seeded.reviewerAgentId)).toHaveLength(1);
       });
       const decisions = await db
         .select()
