@@ -30,11 +30,13 @@ async function createAgent(
   request: APIRequestContext,
   companyId: string,
   name: string,
+  permissions?: Json,
 ): Promise<Agent> {
   return await json<Agent>(
     await request.post(`/api/companies/${companyId}/agents`, {
       data: {
         name,
+        ...(permissions ? { permissions } : {}),
         role: "qa",
         title: "Connection intent fixture agent",
         capabilities: "Exercises deterministic connection intent wiring.",
@@ -346,12 +348,14 @@ test("store setup and task connection intent share one fake provider through con
         { data: { targetType: "agent", targetId: holder.id, priority: 100 } },
       ),
     );
-    await json(
-      await request.post(
-        `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/unbind`,
-        { data: { targetType: "company", targetId: seed.companyId } },
+    expect(
+      await json<{ unbound: number }>(
+        await request.post(
+          `/api/companies/${seed.companyId}/tools/profiles/${appProfile!.id}/unbind`,
+          { data: { targetType: "company", targetId: seed.companyId } },
+        ),
       ),
-    );
+    ).toMatchObject({ unbound: 1 });
 
     await page.goto(`/${seed.prefix}/apps/${connectionId}/permissions`);
     const actionRow = page.locator("[data-action-id]").filter({ hasText: "List fixture pages" });
@@ -374,6 +378,7 @@ test("store setup and task connection intent share one fake provider through con
       request,
       seed.companyId,
       "Connection requester",
+      { trustPreset: "low_trust_review" },
     );
     await json(
       await request.patch(`/api/agents/${scout.id}`, {
@@ -405,6 +410,14 @@ test("store setup and task connection intent share one fake provider through con
     // heartbeat invocation.
     const firstRun = await waitForAgentRun(request, seed.companyId, scout.id);
 
+    const requesterAccess = async () =>
+      (
+        await json<{ access: { tools: Array<{ toolName: string; decision: string }> } }>(
+          await request.get(`/api/tool-connections/${connectionId}/test-agents/${scout.id}/access`),
+        )
+      ).access.tools.find((tool) => tool.toolName === "notion:list_pages")?.decision ?? null;
+    expect(await requesterAccess()).not.toBe("allowed");
+
     const taskUrl = `/${seed.prefix}/issues/${issue.identifier}`;
     await page.goto(taskUrl);
     await expect(
@@ -418,6 +431,7 @@ test("store setup and task connection intent share one fake provider through con
     await expect(page.getByText("Notion access granted")).toBeVisible({
       timeout: 30_000,
     });
+    expect(await requesterAccess()).toBe("allowed");
     await expect(page).toHaveURL(new RegExp(`${taskUrl}$`));
     await expect(
       page
