@@ -3494,8 +3494,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       await heartbeat.drainActiveRunExecutions();
 
       const [started] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, continuationRunId));
+      expect(started).toMatchObject({ status: "succeeded", exitCode: 0 });
       expect(started!.startedAt).not.toBeNull();
-      expect(started!.status).not.toBe("queued");
       const [issueAfter] = await db.select().from(issues).where(eq(issues.id, fixture.issueA));
       expect(issueAfter!.status).toBe("in_review");
       expect(issueAfter!.executionState).toEqual(fixture.executionState);
