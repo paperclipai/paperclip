@@ -2,6 +2,9 @@ import { validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
+/** Presentation aliases only; retained execution identities never change. */
+export const retainedSuiteLabels: Readonly<Record<string, string>> = { "qa-basics": "Basic app journeys" };
+
 /** Display-only metadata: never load or reconstruct executable branch fixtures. */
 export interface ReportExecution {
   id: string;
@@ -92,7 +95,7 @@ export function discoverReportCatalog(input: {
       .sort();
     const suite = knownSuites.get(identity.suiteId) ?? {
       id: identity.suiteId,
-      label: identity.suiteId,
+      label: retainedSuiteLabels[identity.suiteId] ?? identity.suiteId,
       description:
         "Suite discovered from retained campaign identities; full suite size is not known to this publisher.",
       expectedMatrixSize: suiteIds.length,

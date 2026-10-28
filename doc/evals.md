@@ -1,5 +1,34 @@
 # Paperclip evaluation guide
 
+The public directory calls full-product testing **E2E tests**. Suites describe
+what is tested; deployment targets describe which app instance was tested.
+QA smoke is a named selection of existing journeys against QA, and appears in
+the same campaign history as other E2E runs. Agent execution (local or Daytona),
+provider, model and profile are independent filters. Browser-only journeys need
+no agent or model. Historical records without target metadata remain explicitly
+"Not recorded" rather than being assigned an inferred environment.
+
+The history sidebar includes the current suite catalog and retained historical
+suites. Each suite has its latest matching run and latest full run, with full
+coverage determined from the recorded suite definition, selection and execution
+counts. An unexecuted full selection remains unfinished, and a subset
+can pass without qualifying as a full suite run; failed full selections remain
+visible. Changing a model filter does not redefine the suite's recorded coverage.
+Existing `runner-e2e` URLs, test IDs, commands, and measurement timestamps remain
+stable. **Runner protocol evals** remain a separate category because they test
+the runner/provider against a mock control plane.
+
+`pnpm test:e2e:history:browser` exercises the history UI using synthetic metadata
+and Chromium, with no model calls. It checks suite coverage, correlated
+suite/target/model/execution filters, saved QA selections, URL history and mobile
+navigation. Install the existing Playwright Chromium dependency before running.
+For presentation-only refreshes, `tests/runner-e2e/history-refresh.ts` renders an
+existing history file. Its optional `--public-campaign`, `--public-url` and
+`--preset` arguments import a reviewed public measurement without replacing
+existing campaigns. Private Cloud bundles are rejected. The output contains
+only index HTML and history/pointer JSON; it does not upload evidence or change
+retained campaign bundles.
+
 The explicit-only [chat feature evals](../tests/runner-e2e/CHAT-FEATURES.md) promote
 two natural-language task scenarios into local native Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,

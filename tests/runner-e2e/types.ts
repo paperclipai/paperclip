@@ -477,6 +477,9 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string | null;
   model: string | null;
+  /** Absent in older records; never infer the application from the worker. */
+  targetUrl?: string;
+  runtimeMode?: RunnerE2EResult["runtimeMode"];
   status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
@@ -500,6 +503,8 @@ export interface RunnerE2EHistoryCampaign {
   billing: RunnerE2EAggregateBillingSummary;
   suites: RunnerE2ESuiteSummary[];
   executions: RunnerE2EHistoryExecution[];
+  /** A named case selection, independent of suite and deployment target. */
+  preset?: string;
 }
 
 export interface RunnerE2EHistoryIndex {

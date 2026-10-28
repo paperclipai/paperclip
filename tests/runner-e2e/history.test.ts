@@ -179,7 +179,7 @@ describe("runner E2E campaign history", () => {
     expect(history.latestGreenCampaignId).toBeNull();
     expect(history.latestGreenBySuite["first-task"]).toBeUndefined();
     expect(renderRunnerHistoryIndex(history)).toContain("1 incomplete");
-    expect(renderRunnerHistoryIndex(history)).toContain('data-history-status="incomplete"');
+    expect(renderRunnerHistoryIndex(history)).toContain('data-index-status="incomplete"');
   });
 
   it("shows unknown campaign costs without plotting zero dollars", () => {
@@ -319,8 +319,8 @@ describe("runner E2E campaign history", () => {
     expect(dashboard).not.toContain('class="history-section"');
     const index = renderRunnerHistoryIndex(history);
     expect(index).toContain("Campaign trends");
-    expect(index).toContain("data-history-from");
-    expect(index).toContain("data-history-through");
+    expect(index).toContain('data-index-filter="from"');
+    expect(index).toContain('data-index-filter="through"');
     expect(index).toContain(
       'data-history-suite-trends="core-compatibility"',
     );
@@ -333,7 +333,7 @@ describe("runner E2E campaign history", () => {
     expect(index).toContain("Suite pass rate");
     expect(index).toContain("lines break at definition changes");
     expect(index).toContain("cleanup passed");
-    expect(index).toContain("Runner E2E campaigns");
+    expect(index).toContain("E2E tests");
     expect(index).toContain("complete-green");
     expect(index).toContain("complete-red");
     expect(index).toContain(`${runnerMatrix.length}/${runnerMatrix.length} passed`);

@@ -12,13 +12,14 @@ export function reportHistoryHref(history: RunnerE2EHistoryIndex | undefined, ca
   const url = history?.campaigns.find(campaign => campaign.campaignId === campaignId)?.publicUrl;
   return url && /campaigns\/[^/]+\/(?:index\.html)?$/.test(url)
     ? url.replace(/campaigns\/[^/]+\/(?:index\.html)?$/, "")
-    : "https://pages.paperclip.ing/evals/";
+    : "https://d1p6rlowie26tp.cloudfront.net/runner-e2e/";
 }
 
 export function renderReportShell(input: {
   campaignId?: string;
   catalog?: readonly ReportExecution[];
   history?: RunnerE2EHistoryIndex;
+  historySuites?: readonly { id: string; label: string; campaignCount: number }[];
 }) {
   const h = reportHtml;
   const campaign = Boolean(input.catalog);
@@ -28,7 +29,8 @@ export function renderReportShell(input: {
   const tree = campaign ? `<nav class="report-suite-tree" aria-label="Campaign suites"><p class="report-side-label">Suites</p>${suites.map(suite => {
     const cases = [...new Map(input.catalog!.filter(row => row.suite.id === suite.id).map(row => [row.task.id, row])).values()];
     return `<details data-nav-suite="${h(suite.id)}"><summary><a href="#suite-${h(suite.id)}" data-nav-suite-link="${h(suite.id)}">${h(suite.label)}<small>${cases.length}</small></a></summary><ul>${cases.map(row => `<li><a href="?view=case&amp;case=${encodeURIComponent(`${suite.id}.${row.task.id}`)}#execution-${h(row.id)}" data-nav-case="${h(`${suite.id}.${row.task.id}`)}" data-report-case-link="${h(`${suite.id}.${row.task.id}`)}"><span class="case-status-dot" aria-hidden="true"></span><span>${h(row.task.label)}</span></a></li>`).join("")}</ul></details>`;
-  }).join("")}</nav>` : "";
+  }).join("")}</nav>` : input.historySuites ? `<nav class="report-suite-catalog" aria-label="E2E suites"><p class="report-side-label">Suites</p><input type="search" data-index-suite-query aria-label="Find suites" placeholder="Find suites…">${input.historySuites.map(suite => `<a href="?view=history&amp;suite=${encodeURIComponent(suite.id)}" data-index-suite-link="${h(suite.id)}"><span>${h(suite.label)}</span><small title="${suite.campaignCount} campaigns">${suite.campaignCount}</small></a>`).join("")}</nav>` : "";
+  const presets = [...new Set(input.history?.campaigns.map(row => row.preset).filter((preset): preset is string => Boolean(preset)) ?? [])];
   return `<div class="report-shell" data-report-scope="${campaign ? "campaign" : "global"}" data-campaign-label="${h(label)}">
     <button class="report-drawer-backdrop" type="button" data-nav-close aria-label="Close navigation" hidden></button>
     <aside class="report-sidebar" id="report-navigation" aria-label="Report navigation">
@@ -37,7 +39,7 @@ export function renderReportShell(input: {
         <a href="${campaign ? "?view=all" : "?view=overview"}" data-nav-view="${campaign ? "all" : "overview"}" aria-current="page"><span aria-hidden="true">◫</span>${campaign ? "All results" : "Overview"}</a>
         <a href="?view=attention" data-nav-view="attention"><span aria-hidden="true">○</span>Needs attention</a>
         <a href="${h(root)}?view=history" ${campaign ? "" : 'data-nav-view="history"'}><span aria-hidden="true">↶</span>Campaign history</a>
-      </nav>${tree}</div><div class="report-sidebar-footer">Product E2E${campaign ? `<span>${input.catalog!.length} executions</span>` : ""}</div>
+      </nav>${!campaign && presets.length ? `<nav class="report-global-nav" aria-label="Run presets"><p class="report-side-label">Run presets</p>${presets.map(preset => `<a href="?view=history&amp;preset=${encodeURIComponent(preset)}" data-index-preset-link="${h(preset)}">${h(preset === "qa-smoke" ? "QA smoke" : preset)}</a>`).join("")}</nav>` : ""}${tree}</div><div class="report-sidebar-footer">E2E tests${campaign ? `<span>${input.catalog!.length} executions</span>` : ""}</div>
     </aside><div class="report-surface">
     <header class="report-topbar"><button type="button" class="report-menu-toggle" data-nav-toggle aria-label="Open navigation" aria-controls="report-navigation" aria-expanded="false">☰</button>
       <nav class="report-breadcrumbs" aria-label="Breadcrumb" data-nav-breadcrumbs><a href="${h(root)}?view=history">Campaigns</a>${campaign ? `<span aria-hidden="true">/</span><span>${h(label)}</span><span aria-hidden="true">/</span><span aria-current="page">All results</span>` : '<span aria-hidden="true">/</span><span aria-current="page">Overview</span>'}</nav>
@@ -76,6 +78,12 @@ export const reportNavigationStyles = `
   .report-global-nav a:hover,.report-suite-tree a:hover { background: var(--raised); color: var(--foreground); }
   .report-global-nav a[aria-current=page] { color: var(--foreground); background: var(--raised); }
   .report-side-label { padding: 18px 10px 7px; margin: 0; font: 10px var(--font-mono); color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .08em; }
+  .report-suite-catalog { display: grid; gap: 2px; }
+  .report-suite-catalog input { min-width: 0; width: calc(100% - 12px); margin: 0 6px 7px; padding: 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--foreground); background: var(--background); font: 12px var(--font-sans); }
+  .report-suite-catalog a { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 10px; color: var(--muted-foreground); text-decoration: none; border-radius: 5px; font-size: 12px; }
+  .report-suite-catalog a span { min-width: 0; overflow-wrap: anywhere; }
+  .report-suite-catalog a small { flex: none; font: 10px var(--font-mono); }
+  .report-suite-catalog a:hover,.report-suite-catalog a[aria-current=page] { color: var(--foreground); background: var(--raised); }
   .report-suite-tree details > summary { display: flex; align-items: center; gap: 4px; list-style: none; cursor: pointer; padding-left: 4px; }
   .report-suite-tree summary::-webkit-details-marker { display: none; }
   .report-suite-tree summary::before { content: '›'; width: 12px; flex: none; color: var(--muted-foreground); }

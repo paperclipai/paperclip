@@ -3342,6 +3342,7 @@ for (const execution of executions) {
         ...(completionQuality.length ? { completionQuality } : {}),
         ...(publicMcpUsage ? { publicMcp: publicMcpUsage } : {}),
         runtimeMode: execution.profile.expectedRuntimeMode,
+        targetUrl: testInfo.project.use.baseURL,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier ?? null,
         runIds: selectedRuns.map((run) => run.id),
