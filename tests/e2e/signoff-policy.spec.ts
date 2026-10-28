@@ -72,6 +72,46 @@ const WAKEUP_WAIT_RESERVE_MS = 10_000;
 const WAKEUP_POLL_INTERVAL_MS = 100;
 const MAX_CONSECUTIVE_RUN_READ_FAILURES = 5;
 
+// A run in one of these statuses is terminal: it cannot act for a wakeup, so
+// it can only answer the wakeup that created it. See `canAnswerWakeup`.
+// `succeeded` is included: an older success is a predecessor too, and returning
+// it would make `waitForFixtureRun` accept a run this wakeup never produced.
+const TERMINAL_WAKEUP_STATUSES = new Set([
+  "succeeded",
+  "cancelled",
+  "failed",
+  "timed_out",
+  "interrupted",
+]);
+
+/**
+ * Whether `run` may answer the wakeup posted at `invokedAtMs`.
+ *
+ * A live run always may: it is the agent's current turn, even when an earlier
+ * wakeup started it. A terminal run (succeeded, cancelled, failed, timed_out or
+ * interrupted) may only when this wakeup created it (`createdAt >= invokedAtMs`)
+ * — then it is the wakeup's own run and the caller must see its real outcome.
+ * A terminal run created before the wakeup is a predecessor (the previous
+ * stage's run, or an assignment run the server already cancelled as
+ * `issue_assignee_changed`). Returning it makes `waitForFixtureRun` assert on
+ * — or worse, accept as success — a run this wakeup never produced, so the
+ * wait keeps polling for the run the server still owes it instead (ART-193).
+ */
+function canAnswerWakeup(
+  run: { status: string | null; createdAtMs: number | null },
+  invokedAtMs: number,
+): boolean {
+  if (run.status === null || !TERMINAL_WAKEUP_STATUSES.has(run.status)) return true;
+  return run.createdAtMs !== null && run.createdAtMs >= invokedAtMs;
+}
+
+/** Parse a run row's `createdAt`; null when the field is absent or malformed. */
+function runCreatedAtMs(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // First-seen start time for the current test, keyed by Playwright's own
 // TestInfo object. Playwright does not expose a test start timestamp, so
 // this helper records one the first time a test calls invokeHeartbeat.
@@ -111,7 +151,7 @@ async function fetchVerifiedRun(
   candidateRunId: string | null | undefined,
   agentId: string,
   issueId: string,
-): Promise<{ id: string; status: string; errorCode: string | null } | null> {
+): Promise<{ id: string; status: string; errorCode: string | null; createdAtMs: number | null } | null> {
   if (!candidateRunId) return null;
   const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidateRunId}`);
   if (!runRes.ok()) return null;
@@ -121,7 +161,12 @@ async function fetchVerifiedRun(
   if (context.issueId !== issueId && context.taskId !== issueId) return null;
   const errorCode = typeof candidateRun.errorCode === "string" && /^[a-z][a-z0-9_.-]{0,79}$/i.test(candidateRun.errorCode)
     ? candidateRun.errorCode : null;
-  return { id: candidateRunId, status: candidateRun.status, errorCode };
+  return {
+    id: candidateRunId,
+    status: typeof candidateRun.status === "string" ? candidateRun.status : "",
+    errorCode,
+    createdAtMs: runCreatedAtMs(candidateRun.createdAt),
+  };
 }
 
 /**
@@ -134,13 +179,20 @@ async function fetchVerifiedRun(
  *
  * Every returned run ID passes `fetchVerifiedRun` first. The issue's
  * run-lock fields name a candidate, not a verified answer, because the lock
- * holder and the issue assignee can differ during a stage transition.
+ * holder and the issue assignee can differ during a stage transition. A
+ * verified run still has to pass `canAnswerWakeup`: a terminal run that
+ * predates this post is a predecessor, not this wakeup's run. Only the id in
+ * this post's own 202 response needs no verification — the server accepted it
+ * for this agent and payload.
  */
 async function invokeHeartbeat(
   board: APIRequestContext,
   agentId: string,
   issueId: string,
 ): Promise<string> {
+  // Timestamp of this wakeup. A run created before it cannot be the run this
+  // post produced, so a cancelled/failed candidate older than this is skipped.
+  const invokedAtMs = Date.now();
   const res = await board.post(`${BASE_URL}/api/agents/${agentId}/wakeup`, {
     data: {
       source: "on_demand",
@@ -160,6 +212,7 @@ async function invokeHeartbeat(
     executionRunId: typeof run.executionRunId === "string" ? run.executionRunId : null,
     blockingRunStatus: null as string | null,
     blockingRunReadFailed: false,
+    ignoredPredecessorRunId: null as string | null,
   };
 
   // A stage transition can invoke the next participant before the prior
@@ -181,7 +234,8 @@ async function invokeHeartbeat(
       // (for example one started when the issue was assigned). Verify it
       // before this code treats it as the agent's current turn.
       const verified = await fetchVerifiedRun(board, run.executionRunId, agentId, issueId);
-      if (verified) return verified.id;
+      if (verified && canAnswerWakeup(verified, invokedAtMs)) return verified.id;
+      if (verified) lastSeen.ignoredPredecessorRunId = verified.id;
     } else {
       // A different agent holds the lock (the prior stage's participant, or
       // the blocker's owner). Wait for that run to finish. It promotes this
@@ -225,9 +279,11 @@ async function invokeHeartbeat(
     }
 
     const verifiedCheckout = await fetchVerifiedRun(board, issueRunLock.checkoutRunId, agentId, issueId);
-    if (verifiedCheckout) return verifiedCheckout.id;
+    if (verifiedCheckout && canAnswerWakeup(verifiedCheckout, invokedAtMs)) return verifiedCheckout.id;
+    if (verifiedCheckout) lastSeen.ignoredPredecessorRunId = verifiedCheckout.id;
     const verifiedExecution = await fetchVerifiedRun(board, issueRunLock.executionRunId, agentId, issueId);
-    if (verifiedExecution) return verifiedExecution.id;
+    if (verifiedExecution && canAnswerWakeup(verifiedExecution, invokedAtMs)) return verifiedExecution.id;
+    if (verifiedExecution) lastSeen.ignoredPredecessorRunId = verifiedExecution.id;
 
     const recentRunsRes = await board.get(
       `${BASE_URL}/api/companies/${issueRunLock.companyId}/heartbeat-runs?agentId=${agentId}&limit=20`,
@@ -241,7 +297,12 @@ async function invokeHeartbeat(
           recentRun.agentId === agentId &&
           (context.issueId === issueId || context.taskId === issueId)
         ) {
-          return recentRun.id;
+          const candidate = {
+            status: typeof recentRun.status === "string" ? recentRun.status : null,
+            createdAtMs: runCreatedAtMs(recentRun.createdAt),
+          };
+          if (canAnswerWakeup(candidate, invokedAtMs)) return recentRun.id;
+          lastSeen.ignoredPredecessorRunId = recentRun.id;
         }
       }
     }
@@ -256,7 +317,8 @@ async function invokeHeartbeat(
       `Last checkoutRunId: ${lastSeen.checkoutRunId ?? "none"}. ` +
       `Last executionRunId: ${lastSeen.executionRunId ?? "none"}. ` +
       `Blocking run status: ${lastSeen.blockingRunStatus ?? "none"}` +
-      `${lastSeen.blockingRunReadFailed ? " (the blocking run read failed repeatedly)" : ""}.`,
+      `${lastSeen.blockingRunReadFailed ? " (the blocking run read failed repeatedly)" : ""}. ` +
+      `Ignored terminal predecessor run: ${lastSeen.ignoredPredecessorRunId ?? "none"}.`,
   );
 }
 
@@ -758,5 +820,174 @@ test.describe("Signoff execution policy", () => {
     expect(doneIssue.status).toBe("done");
     expect(doneIssue.executionState.status).toBe("completed");
     expect(doneIssue.executionState.completedStageIds).toHaveLength(1);
+  });
+});
+
+/**
+ * Harness self-test: these fake responses pin the run-selection rule the
+ * signoff helpers rely on. ART-193 followed ART-191's e2e shard 8/8 failure:
+ * the resubmit wakeup was skipped while an `issue_assignee_changed` run
+ * created ~0.6 s earlier had already been cancelled. The recent-runs fallback
+ * returned that dead run, and `waitForFixtureRun` failed on a run the wakeup
+ * never produced. These cases are deterministic — no server, no timing race —
+ * so a regression fails here instead of as an intermittent shard failure.
+ */
+test.describe("invokeHeartbeat run selection", () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+  const issueId = "22222222-2222-4222-8222-222222222222";
+  const companyId = "33333333-3333-4333-8333-333333333333";
+
+  // The shape the server returns when it accepted no run for this wakeup.
+  const wakeupSkipped = {
+    status: "skipped",
+    reason: "wakeup_skipped",
+    issueId,
+    executionRunId: null,
+    executionAgentId: null,
+  };
+
+  interface FakeRun {
+    id: string;
+    agentId: string;
+    status: string;
+    createdAt: string;
+    contextSnapshot: { issueId: string };
+  }
+
+  // A predecessor exists before the test's wakeup. Pinning it to one instant
+  // keeps it older than `invokedAtMs` for every poll: a `Date.now() - 600`
+  // factory would catch up with the wakeup after 600 ms of polling and turn a
+  // dead predecessor into an "acceptable" one.
+  const predecessorCreatedAtMs = Date.now() - 60_000;
+
+  function fakeRun(id: string, status: string, createdAtMs: number): FakeRun {
+    return {
+      id,
+      agentId,
+      status,
+      createdAt: new Date(createdAtMs).toISOString(),
+      contextSnapshot: { issueId },
+    };
+  }
+
+  function jsonResponse(body: unknown) {
+    return { ok: () => true, status: () => 200, json: async () => body };
+  }
+
+  /**
+   * Stand in for the APIRequestContext the helpers call. Only the endpoints
+   * `invokeHeartbeat` reads are served, and `list` is re-evaluated per request
+   * so a test can make a run appear between two polls.
+   */
+  function fakeBoard(handlers: {
+    issueLock?: () => { checkoutRunId: string | null; executionRunId: string | null };
+    list: () => FakeRun[];
+  }) {
+    const notFound = { ok: () => false, status: () => 404, json: async () => ({ error: "not found" }) };
+    return {
+      post: async () => jsonResponse(wakeupSkipped),
+      get: async (url: string) => {
+        if (url.includes("/api/issues/")) {
+          return jsonResponse({
+            companyId,
+            assigneeAgentId: agentId,
+            ...(handlers.issueLock?.() ?? { checkoutRunId: null, executionRunId: null }),
+          });
+        }
+        if (url.includes("/api/companies/")) return jsonResponse(handlers.list());
+        const runId = url.split("/api/heartbeat-runs/")[1]?.split("?")[0];
+        const run = handlers.list().find((entry) => entry.id === runId);
+        return run ? jsonResponse(run) : notFound;
+      },
+    } as unknown as APIRequestContext;
+  }
+
+  for (const status of ["cancelled", "succeeded"]) {
+    test(`returns the accepted wakeup run instead of a ${status} predecessor`, async () => {
+      test.setTimeout(12_000);
+      let polls = 0;
+      const board = fakeBoard({
+        list: () => {
+          polls += 1;
+          const predecessor = fakeRun(`run-${status}`, status, predecessorCreatedAtMs);
+          // The promoted run appears only once the deferred lock is released.
+          return polls === 1
+            ? [predecessor]
+            : [fakeRun("run-accepted", "queued", Date.now()), predecessor];
+        },
+      });
+
+      await expect(invokeHeartbeat(board, agentId, issueId)).resolves.toBe("run-accepted");
+    });
+  }
+
+  test("returns a run this wakeup created even when it already ended cancelled", async () => {
+    test.setTimeout(12_000);
+    const board = fakeBoard({
+      list: () => [fakeRun("run-cancelled-now", "cancelled", Date.now())],
+    });
+
+    await expect(invokeHeartbeat(board, agentId, issueId)).resolves.toBe("run-cancelled-now");
+  });
+
+  test("returns a succeeded run this wakeup created", async () => {
+    test.setTimeout(12_000);
+    const board = fakeBoard({
+      list: () => [fakeRun("run-succeeded-now", "succeeded", Date.now())],
+    });
+
+    await expect(invokeHeartbeat(board, agentId, issueId)).resolves.toBe("run-succeeded-now");
+  });
+
+  for (const status of ["succeeded", "cancelled", "failed", "timed_out", "interrupted"]) {
+    test(`does not return a ${status} predecessor named by the issue lock`, async () => {
+      test.setTimeout(10_800);
+      const board = fakeBoard({
+        issueLock: () => ({ checkoutRunId: "run-predecessor", executionRunId: null }),
+        list: () => [fakeRun("run-predecessor", status, predecessorCreatedAtMs)],
+      });
+
+      await expect(invokeHeartbeat(board, agentId, issueId)).rejects.toThrow(
+        /No verified heartbeat run became available/,
+      );
+    });
+  }
+
+  test("fails instead of returning a cancelled predecessor when no run appears", async () => {
+    // Leave a positive polling budget: with a timeout this small, the helper
+    // would skip the loop and never read the predecessor, so the test could
+    // not tell predecessor filtering from an immediate budget failure.
+    test.setTimeout(12_500);
+    const board = fakeBoard({
+      list: () => [fakeRun("run-cancelled", "cancelled", predecessorCreatedAtMs)],
+    });
+
+    let message = "";
+    try {
+      await invokeHeartbeat(board, agentId, issueId);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("No verified heartbeat run became available");
+    expect(message).toContain("Ignored terminal predecessor run: run-cancelled");
+  });
+
+  test("fails instead of returning an older succeeded run from recent runs", async () => {
+    // QA finding on #17500: `succeeded` is terminal too. Before this case, the
+    // recent-runs fallback returned an older success and `waitForFixtureRun`
+    // accepted it as if this wakeup had produced it.
+    test.setTimeout(12_500);
+    const board = fakeBoard({
+      list: () => [fakeRun("run-old-succeeded", "succeeded", predecessorCreatedAtMs)],
+    });
+
+    let message = "";
+    try {
+      await invokeHeartbeat(board, agentId, issueId);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain("No verified heartbeat run became available");
+    expect(message).toContain("Ignored terminal predecessor run: run-old-succeeded");
   });
 });
