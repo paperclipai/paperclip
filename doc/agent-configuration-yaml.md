@@ -270,6 +270,8 @@ errors include a location; schema errors identify a field path. There is no
 interpolation, shell evaluation, include directive, or parser file access.
 Comments and formatting are not persisted; saving/reloading regenerates YAML.
 Changing only comments or mapping order does not write resources.
+The editor shows **No configuration changes** and keeps Save disabled when the
+operation plan is empty, including when an optional section is omitted.
 
 The initial core read checks configuration access before related resources are
 loaded. Failed reads are shown as errors, never substituted with empty resource
@@ -286,7 +288,10 @@ checks, not a transaction spanning all resources.
 
 Core changes use `PATCH /api/agents/:id` with
 `expectedConfigurationRevision`, checked again under the row lock. Removing an
-adapter key uses `replaceAdapterConfig: true`. Managed instruction files and
+adapter key uses `replaceAdapterConfig: true`. The opaque revision uses a
+domain-separated HMAC with the instance's private signing key. Credential edits
+invalidate an open draft without exposing a public credential digest. Rotating
+the signing key requires reloading open editors. Managed instruction files and
 entry revisions enforce hash/revision preconditions. External supporting file
 writes/deletions do not enforce these preconditions. Other resources retain
 their own API guarantees; changes between preflight and an unversioned resource

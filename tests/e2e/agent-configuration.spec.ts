@@ -154,6 +154,26 @@ test("stale drafts and invalid commands leave saved configuration unchanged", as
   await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
 });
 
+test("renaming an agent keeps newly created key tokens visible through the route change", async ({ page, request }) => {
+  const { agent, url } = await setup(request);
+  await page.goto(`${url}/advanced`);
+  await edit(page, value => {
+    value.spec.name = "Renamed YAML engineer";
+    value.spec.apiKeys!.create = [{ name: "Rename key", scope: { kind: "standard" } }];
+  });
+  await save(page);
+  await expect(page).toHaveURL(/\/agents\/renamed-yaml-engineer\/advanced$/);
+  const token = page.getByRole("textbox", { name: "API key: Rename key token" });
+  await expect(token).toBeVisible();
+  const created = await token.inputValue();
+  expect(created).toMatch(/^pcp_/);
+  expect(stringify(await document(page))).not.toContain(created);
+  expect(await json(await request.get(`/api/agents/${agent.id}/keys`))).toHaveLength(1);
+  await edit(page, value => { value.spec.title = "Another saved edit"; });
+  await save(page);
+  await expect(token).toHaveValue(created);
+});
+
 test("a lost creation response requires reload and cannot blindly replay commands", async ({ page, request }) => {
   const { agent, url } = await setup(request);
   let creates = 0;
@@ -166,6 +186,7 @@ test("a lost creation response requires reload and cannot blindly replay command
   });
   await page.goto(`${url}/advanced`);
   await edit(page, value => {
+    value.spec.name = "Partially renamed YAML engineer";
     value.spec.title = "Saved before lost response";
     value.spec.apiKeys!.create = ["First key", "Second key"].map(name => ({ name, scope: { kind: "standard" } }));
   });
@@ -178,6 +199,8 @@ test("a lost creation response requires reload and cannot blindly replay command
   expect((await document(page)).spec.apiKeys!.create).toHaveLength(2);
   await page.getByRole("button", { name: "Reload saved", exact: true }).click();
   await expect.poll(async () => (await document(page)).spec.apiKeys!.create).toEqual([]);
+  await expect(page).toHaveURL(/\/agents\/partially-renamed-yaml-engineer\/advanced$/);
+  await expect(page.getByRole("textbox", { name: "API key: First key token" })).toBeVisible();
   await edit(page, value => { value.spec.title = "Recovered save"; });
   await save(page);
   expect(creates).toBe(2);

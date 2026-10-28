@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { redactAgentAdapterConfig } from "../redaction.js";
@@ -11,6 +11,19 @@ const agent = {
 };
 
 describe("agent configuration revisions and redactions", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("keys revisions with the private instance secret while detecting hidden credential edits", () => {
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "a".repeat(32));
+    const original = agentConfigurationRevision(agent);
+    expect(agentConfigurationRevision({ ...agent, adapterConfig: { ...agent.adapterConfig, apiKey: "changed-hidden-secret" } }))
+      .not.toBe(original);
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "b".repeat(32));
+    expect(agentConfigurationRevision(agent)).not.toBe(original);
+    vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "a".repeat(32));
+    expect(agentConfigurationRevision(agent)).toBe(original);
+  });
+
   it("normalizes raw and presented rows and ignores live bookkeeping", () => {
     expect(agentConfigurationRevision({ ...agent, appearance: resolveAgentAppearance(null, agent.id), permissions: { canCreateAgents: false, canCreateSkills: true } }))
       .toBe(agentConfigurationRevision(agent));

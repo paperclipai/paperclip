@@ -69,7 +69,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       return { document, changes: planAgentConfiguration(saved, document).map(step => step.label), error: null };
     } catch (cause) { return { document: null, changes: [], error: cause instanceof Error ? cause.message : "Invalid YAML" }; }
   }, [source, saved]);
-  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onDirtyChange(dirty || reloadRequired); }, [dirty, reloadRequired, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const save = useMutation({
@@ -141,8 +141,8 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
     <footer className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4">
       <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>Reload saved</Button>
       <div className="flex items-center gap-3">
-        <span role="status" className="text-xs text-muted-foreground">{save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? "Unsaved changes" : ""}</span>
-        <Button disabled={!dirty || busy || reloadRequired || !validation.document} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? "Saving…" : "Save changes"}</Button>
+        <span role="status" className="text-xs text-muted-foreground">{save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : ""}</span>
+        <Button disabled={!dirty || busy || reloadRequired || !validation.document || !validation.changes.length} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? "Saving…" : "Save changes"}</Button>
       </div>
     </footer>
   </div>;

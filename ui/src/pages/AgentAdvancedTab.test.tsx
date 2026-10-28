@@ -136,6 +136,14 @@ describe("Advanced agent configuration", () => {
     expect(api.save).not.toHaveBeenCalled();
   });
 
+  it("keeps Save disabled for formatting-only changes", async () => {
+    await render(); await settle(() => expect(editor()).toBeTruthy());
+    await edit(source => `${source}\n# A local note\n`);
+    expect(button("Save changes").disabled).toBe(true);
+    expect(container.textContent).toContain("No configuration changes");
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
   it("shows a configuration read denial without rendering an empty editable document", async () => {
     api.load.mockRejectedValue(new Error("Configuration access denied"));
     await render(); await settle(() => expect(container.textContent).toContain("Configuration access denied"));
