@@ -353,12 +353,12 @@ const support = await getEmbeddedPostgresTestSupport();
   it.skipIf(process.platform === "win32")("treats a recorded process group as reused only when a newer process holds its leader ID", async () => {
     const agent = await hire();
     const finishedAt = new Date(Date.now() - 60_000);
-    const handoff = spawn("sh", ["-c", "sleep 30 & exit 0"], { detached: true, stdio: "ignore" });
-    await once(handoff, "exit");
+    const leaderlessGroup = spawn("sh", ["-c", "sleep 30 & exit 0"], { detached: true, stdio: "ignore" });
+    await once(leaderlessGroup, "exit");
     const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
     try {
       const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "succeeded", invocationSource: "on_demand",
-        runtimeMode: "legacy", startedAt: finishedAt, finishedAt, processPid: 2_000_000_000, processGroupId: handoff.pid }).returning();
+        runtimeMode: "legacy", startedAt: finishedAt, finishedAt, processPid: 2_000_000_000, processGroupId: leaderlessGroup.pid }).returning();
       const probe = (startedAt: Date | null) => ({ processStartedAt: async () => startedAt?.toISOString() ?? null });
       expect(await agentExecutionsHaveStopped(db, [agent.id], probe(new Date()))).toBe(false);
       await db.update(heartbeatRuns).set({ processGroupId: leader.pid }).where(eq(heartbeatRuns.id, run.id));
@@ -366,7 +366,7 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await agentExecutionsHaveStopped(db, [agent.id], probe(null))).toBe(false);
       expect(await agentExecutionsHaveStopped(db, [agent.id], probe(new Date()))).toBe(true);
     } finally {
-      process.kill(-handoff.pid!, "SIGKILL");
+      process.kill(-leaderlessGroup.pid!, "SIGKILL");
       leader.kill("SIGKILL");
     }
   });
