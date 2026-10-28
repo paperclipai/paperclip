@@ -559,7 +559,7 @@ async function runReleaseRecoveryTail(
       : false;
 
   const hasExplicitBlockerPath =
-    reviewParticipantApplies || immediateApplies
+    (reviewParticipantApplies && issue.assigneeAgentId === currentParticipant?.agentId) || immediateApplies
       ? await transaction.hasExplicitBlockerPath({
           companyId: issue.companyId,
           issueId: issue.id,

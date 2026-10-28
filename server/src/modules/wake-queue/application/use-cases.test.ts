@@ -799,10 +799,10 @@ describe("releaseIssueExecution review-participant recovery", () => {
     contextSnapshot: { issueId: ISSUE.id, wakeReason: "execution_review_requested" },
   };
 
-  async function release(hasExplicitBlockerPath: boolean, run: RunSnapshot = reviewRun) {
+  async function release(hasExplicitBlockerPath: boolean, run: RunSnapshot = reviewRun, issue: IssueSnapshot = reviewIssue) {
     const transaction = createFakeTransaction({ hasExplicitBlockerPath: vi.fn(async () => hasExplicitBlockerPath) });
     const recovery = createFakeRecovery();
-    const issueLock = createFakeIssueLock(createFakeHost(), transaction, reviewIssue, run);
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction, issue, run);
     await createReleaseIssueExecution({ issueLock, recovery })({ companyId: "company-1", runId: "run-1", now: new Date() });
     return { transaction, recovery };
   }
@@ -824,6 +824,13 @@ describe("releaseIssueExecution review-participant recovery", () => {
       },
     });
     expect(transaction.queueReviewParticipantRecoveryRun).not.toHaveBeenCalled();
+    expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+  });
+
+  it("retries the reviewer when the blocker-resolved wake would go to a different assignee", async () => {
+    const { transaction, recovery } = await release(true, reviewRun, { ...reviewIssue, assigneeAgentId: "executor-agent" });
+    expect(transaction.hasExplicitBlockerPath).not.toHaveBeenCalled();
+    expect(transaction.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(1);
     expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
   });
 
