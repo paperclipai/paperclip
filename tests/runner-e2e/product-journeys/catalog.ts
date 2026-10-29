@@ -5,11 +5,11 @@ export const productJourneys = [
   { id: "task-create", label: "Create a task for yourself and reopen it", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/create"], paid: false },
   { id: "ask-question", label: "Ask an agent a question and read its answer", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/questions"], paid: true },
   { id: "task-properties", label: "Assign a task to the signed-in user", requires: ["company", "board-user", "task-write", "backlog-task"], capabilities: ["tasks/properties"], paid: false },
-  { id: "plan-revise-accept", label: "Revise and approve a saved Plan, then complete the task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["tasks/plan"], paid: true },
-  { id: "build-revise", label: "Download and independently verify both artifact versions", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["tasks/artifacts"], paid: true },
-  { id: "protected-actions", label: "Approve and decline protected service actions", requires: ["company", "board-user", "task-write", "agent", "review-service"], capabilities: ["questions-and-approvals/approvals"], paid: true },
-  { id: "create-skill-studio", label: "Create a company skill and persist a Skill Studio edit", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/studio"], paid: true },
-  { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["tasks/stop"], paid: true },
+  { id: "plan-revise-accept", label: "Revise and approve a saved Plan, then complete the task", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["questions-and-approvals/plan-review"], paid: true },
+  { id: "build-revise", label: "Download and independently verify both artifact versions", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["documents-artifacts/attachments"], paid: true },
+  { id: "protected-actions", label: "Approve and decline protected service actions", requires: ["company", "board-user", "task-write", "agent", "review-service"], capabilities: ["questions-and-approvals/tool-review"], paid: true },
+  { id: "create-skill-studio", label: "Create a company skill and persist a Skill Studio edit", requires: ["company", "board-user", "task-write", "agent", "skill-write"], capabilities: ["skills/authoring"], paid: true },
+  { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/stop-and-pause"], paid: true },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
 
