@@ -627,6 +627,22 @@ describe("adapter skill snapshots", () => {
 });
 
 describe("runChildProcess", () => {
+  it.skipIf(process.platform !== "win32")("runs a cmd shim with spaces and preserves quoted arguments", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip cmd spawn "));
+    try {
+      const script = path.join(root, "fixture.mjs");
+      const command = path.join(root, "fixture.cmd");
+      await fs.writeFile(script, "process.stdout.write(JSON.stringify(process.argv.slice(2)));");
+      await fs.writeFile(command, `@"${process.execPath}" "${script}" %*\r\n`);
+      const args = ["with spaces", "ampersand & value", ""];
+      const result = await runChildProcess(randomUUID(), command, args, {
+        cwd: root, env: {}, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(args);
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   it("does not arm a timeout when timeoutSec is 0", async () => {
     const result = await runChildProcess(
       randomUUID(),

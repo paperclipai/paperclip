@@ -1,10 +1,10 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
-import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
+import { ensureCommandResolvable, resolveCommandForLogs, resolveSpawnTarget } from "@paperclipai/adapter-utils/server-utils";
 import { resolveCodexCommand } from "../vendor/paperclip-runner/index.js";
 
 export type LocalBrowserLoginState = {
@@ -16,9 +16,6 @@ export type LocalBrowserLoginState = {
   abort: () => void;
 };
 
-// Node has no built-in PTY API. Python's standard-library pty module supplies
-// the terminal required by both CLIs. The Docker image already includes
-// python3. This bridge forwards only bytes; provider output is never logged.
 const PYTHON_PTY_BRIDGE = String.raw`
 import errno, os, pty, select, signal, sys
 pid, master = pty.fork()
@@ -49,9 +46,39 @@ sys.exit(os.waitstatus_to_exitcode(status))
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: string): LocalBrowserLoginState {
   const controller = new AbortController();
-  const state: LocalBrowserLoginState = { abort: () => controller.abort() };
+  const state: LocalBrowserLoginState = { abort: () => {
+    const retry = controller.signal.aborted;
+    controller.abort();
+    if (retry) void stopChild().catch(() => {});
+  } };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
+  const windowsCodex = process.platform === "win32" && provider === "openai";
   let child: ChildProcessWithoutNullStreams | null = null;
+  let stopping: Promise<void> | undefined;
+  const cleanupError = "Codex sign-in could not be stopped. Stop this login's Codex process or retry cancellation before starting sign-in again.";
+  function stopChild(): Promise<void> {
+    if (stopping) return stopping;
+    const active = child;
+    if (!active?.pid || active.exitCode !== null || active.signalCode !== null) return Promise.resolve();
+    if (!windowsCodex) {
+      active.kill("SIGTERM");
+      return Promise.resolve();
+    }
+    stopping = new Promise((resolve, reject) => {
+      execFile(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+        ["/PID", String(active.pid), "/T", "/F"], { windowsHide: true, timeout: 5000 }, error => {
+          if (error && active.exitCode === null && active.signalCode === null) {
+            stopping = undefined;
+            state.error = cleanupError;
+            reject(new Error("Local sign-in cleanup failed"));
+          } else {
+            if (state.error === cleanupError) delete state.error;
+            resolve();
+          }
+        });
+    });
+    return stopping;
+  }
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
       let executable = "claude";
@@ -80,21 +107,28 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: s
         CODEX_HOME: provider === "openai" ? home : process.env.CODEX_HOME,
         BROWSER: "true",
       };
+      const target: { command: string; args: string[]; windowsVerbatimArguments?: boolean } = windowsCodex
+        ? await resolveSpawnTarget(executable, args, process.cwd(), env)
+        : { command: "python3", args: ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args] };
+      if (controller.signal.aborted) throw new Error("Local sign-in cancelled before launch");
       return new Promise((resolve, reject) => {
-        child = spawn("python3", ["-u", "-c", PYTHON_PTY_BRIDGE, executable, ...args], { env, stdio: ["pipe", "pipe", "pipe"] });
+        child = spawn(target.command, target.args, { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+          windowsVerbatimArguments: target.windowsVerbatimArguments });
         child.stdout.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
-        // Provider output may contain secrets. Never log or retain stderr.
-        child.stderr.resume();
+        if (windowsCodex) child.stderr.on("data", (bytes: Buffer) => onData(bytes.toString("utf8")));
+        else child.stderr.resume();
         child.once("error", () => {
-          state.error = "Browser sign-in requires Python 3 and a working local terminal. Install Python 3 on this execution host, then start sign-in again.";
+          state.error = windowsCodex
+            ? "Codex browser sign-in could not start. Check that the Codex CLI is executable, then start sign-in again."
+            : "Browser sign-in requires Python 3 and a working local terminal. Install Python 3 on this execution host, then start sign-in again.";
           reject(new Error("Browser login terminal unavailable"));
         });
         child.once("close", (exitCode) => resolve({ exitCode }));
       });
     },
     write(input: string) { child?.stdin.write(input); },
-    stop() { child?.kill("SIGTERM"); },
-    async dispose() { child?.kill("SIGTERM"); },
+    stop() { void stopChild(); },
+    async dispose() { await stopChild(); },
     async readFile(file: string) { const { readLocalAiCredentialFile } = await import("./local-ai-credential-file.js"); return Buffer.from(await readLocalAiCredentialFile(file)); },
   };
   if (provider === "anthropic") {

@@ -96,6 +96,7 @@ interface RunningProcess {
 interface SpawnTarget {
   command: string;
   args: string[];
+  windowsVerbatimArguments?: boolean;
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
@@ -3636,7 +3637,7 @@ function resolveWindowsCmdShell(env: NodeJS.ProcessEnv): string {
   return path.join(fallbackRoot, "System32", "cmd.exe");
 }
 
-async function resolveSpawnTarget(
+export async function resolveSpawnTarget(
   command: string,
   args: string[],
   cwd: string,
@@ -3713,7 +3714,8 @@ async function resolveSpawnTarget(
     ].join(" ");
     return {
       command: shell,
-      args: ["/d", "/s", "/c", commandLine],
+      args: ["/d", "/s", "/c", `"${commandLine}"`],
+      windowsVerbatimArguments: true,
     };
   }
 
@@ -4773,6 +4775,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
+          windowsVerbatimArguments: target.windowsVerbatimArguments,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();

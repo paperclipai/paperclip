@@ -44,6 +44,10 @@ Use `paperclipai onboard --help` or `paperclipai run --help` to select an isolat
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a new isolated data directory and record deployment mode. A configured adapter may still need account authentication.
 
+For `onboarding/adapter` on native Windows, OpenAI subscription sign-in uses the
+Codex CLI on `PATH` without Python. Verify the device prompt, cancellation, and
+the account's hello test separately. This does not qualify Claude sign-in.
+
 ### `web-wizard`
 
 Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.

@@ -35,6 +35,10 @@ the same provider tiles, method controls, API entry, and `AdapterLoginPanel` use
 by agent setup. Supported sandbox environments use onboarding's existing browser
 sign-in controllers. Self-hosted Claude and Codex installations use the same
 browser sign-in presentation with a local login runner and require no sandbox.
+On native Windows, Codex device sign-in uses the installed Codex CLI on `PATH`
+without Python. Windows `.cmd` launchers are supported. Cancelling sign-in stops
+that login's process tree. Claude's local browser sign-in still requires a Unix
+terminal host; this does not add native Windows Claude subscription support.
 Environment selection does not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
