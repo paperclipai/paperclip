@@ -123,7 +123,7 @@ export function seedIssueDetailProjections(
   issueRef?: string | null,
 ) {
   const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
-  if (issue.planDocument !== undefined && !queryClient.getQueryState(planKey)) {
+  if (issue.planDocument !== undefined && queryClient.getQueryData(planKey) === undefined) {
     queryClient.setQueryData(planKey, issue.planDocument);
   }
   if (issue.workProducts !== undefined) {

@@ -43,6 +43,16 @@ and build. The layout capture held seven cards, width 742 and height 1,492 acros
 101 frames. Review follow-up evidence
 and hosted acceptance are recorded in PR #18092.
 
+The next review found the same pending/error distinction for the plan query.
+The projection helper now checks for missing plan data rather than a missing
+query. Four hook regressions first failed with pending or errored empty caches;
+they pass after the fix. The existing-plan test now also preserves a known null.
+All 212 affected page/cache/plan-hook tests and UI typecheck pass. CI on c91fa107ba
+passed every browser shard, including the earlier YAML clipboard case, but one
+unchanged Discord chat-binding test returned false in 185 ms. Its 16-test local
+integration file passes unchanged; the CI cause remains unestablished. The next
+head's hosted CI must pass before merging.
+
 Local reproduction: http://127.0.0.1:3223/TASAAAAA/issues/TASAAAAA-1#document-investigation.
 Synthetic task data only; no live provider execution. Restart with
 `PAPERCLIP_HOME=/tmp/paperclip-stable-task-loading PAPERCLIP_INSTANCE_ID=task-loading PAPERCLIP_UI_DEV_MIDDLEWARE=true node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts run`.
