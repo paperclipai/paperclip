@@ -7,6 +7,7 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
     DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
@@ -249,6 +250,9 @@ fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerE
 }
 
 fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, LocalRunnerError> {
+    let candidate_admission = optional_value(args, "--acpx-candidate-admission-json")?
+        .map(|encoded| AcpxCandidateAdmission::parse_json(&encoded))
+        .transpose()?;
     let authority_digest = optional_value(args, "--acpx-launch-authority-digest")?;
     let command = optional_value(args, "--acpx-sidecar-command")?;
     let command_sha256 = optional_value(args, "--acpx-sidecar-command-sha256")?;
@@ -261,7 +265,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
         sidecar,
         sidecar_sha256,
     ) {
-        (None, None, None, None, None) => Ok(None),
+        (None, None, None, None, None) if candidate_admission.is_none() => Ok(None),
         (
             Some(authority_digest),
             Some(command),
@@ -272,6 +276,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
             let command = PathBuf::from(command);
             let sidecar = PathBuf::from(sidecar);
             Ok(Some(AcpxLaunchProfile {
+                candidate_admission,
                 authority_digest,
                 command: command.clone(),
                 args: vec![sidecar.to_string_lossy().into_owned()],
@@ -473,6 +478,14 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     {
         return run_durable(args);
     }
+    if args
+        .iter()
+        .any(|argument| argument == "--acpx-candidate-admission-json")
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX candidate admission requires trusted durable runner startup",
+        ));
+    }
     run_local_runner(RunnerConfig {
         run_id: value(args, "--run-id")?,
         normalized_session_id: value(args, "--session-id")?,
@@ -571,6 +584,42 @@ mod tests {
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])
         );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_startup_requires_a_complete_trusted_launch_profile() {
+        let profiles: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../acpx-profiles.json")).unwrap();
+        let distributions: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../antigravity-distributions.json"
+        ))
+        .unwrap();
+        let encoded = json!({
+            "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1", "agent":"antigravity", "model":"exact-model",
+            "profileDigest":profiles["profiles"]["antigravity"]["commandDigest"],
+            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
+            "platform":"darwin", "architecture":"arm64", "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+            "runId":"run-1", "normalizedSessionId":"session-1"
+        }).to_string();
+        let mut args = vec!["--acpx-candidate-admission-json".to_owned(), encoded];
+        assert!(acpx_launch_profile(&args).is_err());
+        assert!(run(&args).is_err());
+        args.extend([
+            "--acpx-launch-authority-digest".to_owned(),
+            format!("sha256:{}", "a".repeat(64)),
+            "--acpx-sidecar-command".to_owned(),
+            "/qualified/node".to_owned(),
+            "--acpx-sidecar-command-sha256".to_owned(),
+            format!("sha256:{}", "b".repeat(64)),
+            "--acpx-sidecar-script".to_owned(),
+            "/qualified/sidecar.cjs".to_owned(),
+            "--acpx-sidecar-script-sha256".to_owned(),
+            format!("sha256:{}", "c".repeat(64)),
+        ]);
+        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
+        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        assert!(acpx_launch_profile(&[]).unwrap().is_none());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
+import { sanitizeAntigravityEnvironment } from "./antigravity-environment.js";
 import { providerObservabilityEnvironment } from "../agent-observability.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
@@ -7,6 +8,7 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 
 export const ACPX_CREDENTIAL_BINDING_ENV = "PAPERCLIP_ACPX_CREDENTIAL_BINDING";
 export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly string[]>> = {
+  antigravity: ["GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"],
   grok: ["XAI_API_KEY"],
   pi: PI_CREDENTIAL_NAMES,
   cursor: ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
@@ -25,7 +27,7 @@ function removePiIamCredentials(environment: NodeJS.ProcessEnv): void {
   }
 }
 
-const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot";
+const isCandidate = (agent: QualifiedAcpxAgent) => agent === "pi" || agent === "cursor" || agent === "copilot" || agent === "antigravity";
 
 /** Mint only at the controller's explicit task-environment boundary, never by copying a marker. */
 export function createAcpxCredentialBinding(
@@ -77,6 +79,7 @@ export function createAcpxSidecarHostEnvironment(
     }
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
   return result;
 }
 
@@ -158,6 +161,10 @@ export function createSanitizedAcpxSpawnInput(
     result[key] = value;
   }
   if (agent === "pi") removePiIamCredentials(result);
+  if (agent === "antigravity") sanitizeAntigravityEnvironment(result);
+  // The controller-to-sidecar document is staged under a lifetime fence. The
+  // native child receives the private token file, never its launch document.
+  if (agent === "antigravity") delete result.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET;
   if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
     result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }

@@ -1,3 +1,6 @@
+import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
+import { plugins, heartbeatRunEvents } from "@paperclipai/db";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { redactEventPayload } from "../redaction.js";
@@ -41,6 +44,28 @@ describe("live-event run read boundaries", () => {
     if (previousMasterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
     await temporary?.cleanup();
+  });
+
+  it.each(["ready", "disabled", "error", "upgrade_pending"] as const)("restores a structured activation for an installed %s plugin", async status => {
+    const companyId = randomUUID(), pluginKey = `example.recovered-${status}`;
+    await db.insert(companies).values({ id: companyId, name: "Panel recovery", issuePrefix: `PNL${status.toUpperCase()}` });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Panel fixture", adapterType: "process" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "running" }).returning();
+    await db.insert(plugins).values({ pluginKey, packageName: pluginKey, version: "1.0.0", status,
+      manifestJson: { ui: { slots: [{ type: "detailTab", id: "screen", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: `example.runtime-${status}`, activityKey: "desktop.used" } } }] } } as never });
+    const write = (seq: number, panel: unknown) => db.insert(heartbeatRunEvents).values({ companyId, agentId: agent.id, runId: run.id,
+      seq, eventType: "runtime.activity.recorded", payload: { prpEvent: { sourceKind: "runner", eventType: "runtime.activity.recorded", payload: panel } } });
+    await write(1, { namespace: `example.runtime-${status}`, activityKey: "desktop.used" });
+    await write(2, { namespace: `example.runtime-${status}`, activityKey: "unknown.activity" });
+    await write(3, { namespace: "unknown.runtime", activityKey: "desktop.used" });
+    await write(4, { namespace: `example.runtime-${status}`, activityKey: "desktop.used" }); // Replay may repeat activity with a new source ID.
+    await write(5, { namespace: `example.runtime-${status}`, activityKey: "desktop.used", runId: "caller-run" });
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId: agent.id, runId: run.id, seq: 6,
+      eventType: "runtime.activity.recorded", payload: { prpEvent: { sourceKind: "control_plane", eventType: "runtime.activity.recorded", payload: { namespace: `example.runtime-${status}`, activityKey: "desktop.used" } } } });
+    expect(await readTaskPanelActivations(db, companyId, run.id)).toEqual([{ pluginKey, slotId: "screen" }]);
+    expect(await readTaskPanelActivations(db, randomUUID(), run.id)).toEqual([]);
+    await db.update(plugins).set({ status: "uninstalled" }).where(eq(plugins.pluginKey, pluginKey));
+    expect(await readTaskPanelActivations(db, companyId, run.id)).toEqual([]);
   });
 
   it("reads only run bindings and reauthorizes every delivery after revocation or deletion", async () => {

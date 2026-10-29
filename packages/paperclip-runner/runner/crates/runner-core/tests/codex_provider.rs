@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 
 #[path = "support/codex_assigned_tool_validation.rs"]
 mod assigned_tool_validation;
+#[path = "support/codex_human_input_validation.rs"]
+mod human_input_validation;
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 static RECEIPT_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());

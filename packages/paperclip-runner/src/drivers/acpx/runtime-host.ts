@@ -1,3 +1,4 @@
+import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
@@ -13,6 +14,7 @@ import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
+import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
@@ -238,6 +240,8 @@ export interface AcpxRuntimeHostDependencies {
 }
 
 export interface OpenAcpxRuntimeHostOptions {
+  /** Trusted startup authority from runnerd; never provider session data. */
+  candidateAdmission?: AcpxCandidateStartupAdmission;
   /** Explicit task execution policy; never inferred from auto-approval. Required for Pi. */
   providerPolicy?: AcpxProviderRuntimePolicy;
   /** Never persisted as session options or recovery identity. */
@@ -309,6 +313,7 @@ export class AcpxRuntimeHost {
   readonly #toolBridge: RunnerToolBridge | null;
   readonly #claudeSkillNames: readonly string[];
   readonly #assertAgentFilesHeld: (() => void) | undefined;
+  readonly #candidateAdmission: AcpxCandidateStartupAdmission | undefined;
   #activeTurn: AcpxRuntimeTurn | null = null;
   #activeTurnInterruption: AcpxRuntimeTurn["cancel"] | null = null;
   #closingStarted = false;
@@ -325,6 +330,7 @@ export class AcpxRuntimeHost {
     toolBridge: RunnerToolBridge | null;
     claudeSkillNames: readonly string[];
     assertAgentFilesHeld?: () => void;
+    candidateAdmission?: AcpxCandidateStartupAdmission;
   }) {
     this.#runtime = input.runtime;
     this.#binding = input.binding;
@@ -335,6 +341,7 @@ export class AcpxRuntimeHost {
     this.#toolBridge = input.toolBridge;
     this.#claudeSkillNames = [...input.claudeSkillNames];
     this.#assertAgentFilesHeld = input.assertAgentFilesHeld;
+    this.#candidateAdmission = input.candidateAdmission ? structuredClone(input.candidateAdmission) : undefined;
   }
 
   static async open(
@@ -365,6 +372,11 @@ export class AcpxRuntimeHost {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
+    if (options.candidateAdmission) {
+      assertAcpxExecutionAdmission(profile, options.candidateAdmission);
+      options = { ...options, candidateAdmission: parseAcpxCandidateStartupAdmission(options.candidateAdmission, { agent: options.agent, model: options.model, normalizedSessionId: options.normalizedSessionId }) };
+      if (preconfigured || typeof options.providerPolicy?.readOnly !== "boolean") throw new Error("ACPX candidate requires a fresh isolated session and explicit task policy");
+    }
     const binding = await runAbortableAdmissionStage(
       options.signal,
       () =>
@@ -403,9 +415,9 @@ export class AcpxRuntimeHost {
     const installation = await runAbortableAdmissionStage(
       options.signal,
       () =>
-        (dependencies.verifyInstallation ?? verifyAcpxProfileInstallation)(
-          profile,
-        ),
+        dependencies.verifyInstallation
+          ? dependencies.verifyInstallation(profile)
+          : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
     if (installation.commandDigest !== profile.commandDigest) {
@@ -477,6 +489,7 @@ export class AcpxRuntimeHost {
         dependencies.retainAdmissionCleanup,
       );
       admissionStage = "credential";
+      if (options.agent === "antigravity") assertAcpxProfileEnvironment(options.agent, options.environment ?? {});
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -490,6 +503,14 @@ export class AcpxRuntimeHost {
           releaseLate: (lateCredential) => lateCredential.close(),
           reportFailure: (failure) =>
             dependencies.reportRetainedCleanupFailure(failure),
+        });
+      } else if (options.agent === "antigravity") {
+        credential = await acquireAbortableAdmissionResource({
+          signal: options.signal,
+          acquire: () => stageManagedAntigravityCredential({ agentHomeDirectory: sandbox.agentHomeDirectory,
+            environment: options.environment, retainRefresh: () => admissionSucceeded }),
+          resource: "credential", releaseLate: late => late.close(),
+          reportFailure: failure => dependencies.reportRetainedCleanupFailure(failure),
         });
       } else if (options.agent === "grok") {
         credential = await acquireAbortableAdmissionResource({
@@ -528,7 +549,9 @@ export class AcpxRuntimeHost {
       );
       options.signal?.throwIfAborted();
       admissionStage = "credential";
-      assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      // Antigravity's selected OAuth document has already been validated and
+      // staged; it is intentionally absent from the native launch environment.
+      if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
       // This copy is registered by the authenticated controller for its company,
@@ -630,6 +653,7 @@ export class AcpxRuntimeHost {
           options.assertWorkspaceHeld?.();
           agentFiles?.assertHeld();
           await assertAcpxProfileWorkspace(options.agent, binding.workspacePath);
+          if (options.candidateAdmission) assertAcpxExecutionAdmission(profile, options.candidateAdmission);
           return dependencies.openRuntime({
             ...(options.clientCapabilities === undefined ? {} : {
               clientCapabilities: structuredClone(options.clientCapabilities),
@@ -740,6 +764,7 @@ export class AcpxRuntimeHost {
         command,
         toolBridge,
         assertAgentFilesHeld: agentFiles?.assertHeld,
+        candidateAdmission: options.candidateAdmission,
         claudeSkillNames: options.agent === "claude"
           ? (options.runtimeContext?.skills.map((skill) => skill.runtimeName) ?? [])
           : [],
@@ -864,6 +889,7 @@ export class AcpxRuntimeHost {
   }
 
   startTurn(input: AcpxRuntimeTurnInput): AcpxRuntimeTurn {
+    if (this.#candidateAdmission) parseAcpxCandidateStartupAdmission(this.#candidateAdmission, { agent: this.#candidateAdmission.agent, model: this.#binding.requestedModel, normalizedSessionId: this.#binding.normalizedSessionId });
     this.#assertAgentFilesHeld?.();
     if (this.#closed || this.#closingStarted) {
       throw new Error("ACPX runtime host is closing");

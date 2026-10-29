@@ -133,6 +133,27 @@ impl NativeProviderCommandExecutor {
     }
 
     fn select_recovery(&mut self) -> Result<(), DurableRunnerError> {
+        if !self.recovery_checked
+            && self
+                .config
+                .acpx_launch_profile
+                .as_ref()
+                .is_some_and(|profile| profile.candidate_admission.is_some())
+            && [
+                CODEX_PROVIDER_STATE_FILE,
+                ACPX_PROVIDER_STATE_FILE,
+                MANAGED_PROVIDER_STATE_FILE,
+                DOT_PROVIDER_STATE_FILE,
+                MUSE_PROVIDER_STATE_FILE,
+                "credential-observer-state.json",
+            ]
+            .iter()
+            .any(|file| self.state_dir.join(file).exists())
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot adopt a prior durable runner activation",
+            ));
+        }
         self.credentials.restore()?;
         if self.recovery_checked {
             return Ok(());
@@ -190,6 +211,32 @@ impl NativeProviderCommandExecutor {
                     "run.prepare requires a supported provider kind before runner execution",
                 )
             })?;
+        if let Some(admission) = self
+            .config
+            .acpx_launch_profile
+            .as_ref()
+            .and_then(|profile| profile.candidate_admission.as_ref())
+        {
+            if kind != "acpx" {
+                return Err(DurableRunnerError::invalid(
+                    "ACPX candidate cannot authorize another provider kind",
+                ));
+            }
+            admission
+                .validate_binding(
+                    payload
+                        .pointer("/provider/agent")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    payload
+                        .pointer("/provider/model")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    &self.config.run_id,
+                    &self.config.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         self.selected = Some(match kind {
             "muse" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
                 &self.state_dir,

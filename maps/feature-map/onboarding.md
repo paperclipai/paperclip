@@ -155,6 +155,11 @@ admit new work. [Admission controls](../../server/src/__tests__/onboarding-first
 exercise native and REST calls against disposable PostgreSQL; live model and
 Cloud onboarding remain separate evidence.
 
+For a native proposal, reject root-level `version` or `supersedeOnUserComment`
+without creating a card. Correct them inside `payload`, preserve the confirmation
+or checkbox approval kind, and verify one pending card after idempotent replay.
+An answered question form still cannot authorize the proposed child task.
+
 After acceptance, reject a new task whose blockers include its onboarding source.
 The rejected command must leave no task, dependency, wake or creation receipt;
 a corrected retry must still create the ready child. Preserve valid blockers for

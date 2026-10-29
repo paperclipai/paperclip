@@ -565,6 +565,13 @@ arguments can be submitted again. `retryable: false` prevents automatic replay
 of the invalid call. Unauthorized tools still receive a generic rejection, and
 corrected calls retain the same permission and approval checks.
 
+For native `request_human_input`, `version` and `supersedeOnUserComment` belong
+inside `payload`, never at the tool's root. Repair guidance names those paths
+and keeps approval requests as `confirmation` or `checkbox`. A question form
+collects answers; it cannot replace proposal acceptance. Invalid calls remain
+rejected before dispatch, and a corrected call still waits for the normal saved
+human decision before it can authorize onboarding child work.
+
 A native provider may omit `continuation` (or send `null`) when it reports
 `yielded` after saving a monitor, requesting repository preparation, or publishing
 an authorized current-head GitHub review. The controller reads current authorized task

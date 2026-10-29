@@ -288,6 +288,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     for (const path of [
       `/api/heartbeat-runs/${fixture.privateRunId}`,
       `/api/heartbeat-runs/${fixture.privateRunId}/events`,
+      `/api/heartbeat-runs/${fixture.privateRunId}/events?view=plugin-panels`,
       `/api/heartbeat-runs/${fixture.privateRunId}/log`,
       `/api/heartbeat-runs/${fixture.privateRunId}/workspace-operations`,
       `/api/workspace-operations/${fixture.operationId}/log`,

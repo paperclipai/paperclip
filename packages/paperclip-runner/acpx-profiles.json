@@ -4,22 +4,32 @@
   "driverKind": "acpx_runtime",
   "protocolVersion": 1,
   "profiles": {
+    "antigravity": {
+      "agentProfileVersion": 1,
+      "agentServerPackage": "native:antigravity-acp",
+      "agentServerVersion": "1.4.3",
+      "agentRuntimePackage": "native:antigravity-localharness",
+      "agentRuntimeVersion": "1.4.3",
+      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "requiresProviderPolicy": true,
+      "qualificationStatus": "pending"
+    },
     "grok": {
-      "agentProfileVersion": 13,
+      "agentProfileVersion": 14,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:37bd33b35ec77d7ab41da026236e73244c29d11942c10346d527ceeeffd04b84",
+      "commandDigest": "sha256:ca59edc7f416cc1e86ac7d7d1e288d3d91065b7ab59e79bcb62bae5f0cc5cf49",
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 34,
+      "agentProfileVersion": 35,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:ed4b32cc8fbf36309d38b3bd378f41f8e7b9e96a2405d275cc55e89042d94c7f",
+      "commandDigest": "sha256:9473de6ef4baf2bd82fe8b6757239bdc160960b0a78ae6f47fa9e0996544226c",
       "requiresProviderPolicy": true
     },
     "cursor": {
@@ -32,12 +42,12 @@
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 82,
+      "agentProfileVersion": 85,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:109aa97da43abf4d867248212e34465ab3de6f78654822de77c6cb502a617c20",
+      "commandDigest": "sha256:267e04ce9335f7641f665d9b952bc4637056ee1cfeac23715b7aefbc3a8df3c9",
       "requiresProviderPolicy": true
     },
     "claude": {

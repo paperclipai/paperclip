@@ -2,14 +2,14 @@
 // restart whenever the resulting identity changes. Historical identities remain.
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const fixture = resolve(root, "test/fixtures/copilot-profile-v82-identity.json");
+const fixture = resolve(root, "test/fixtures/copilot-profile-v85-identity.json");
 const historical = JSON.parse(readFileSync(resolve(root, "test/fixtures/copilot-profile-v12-identity.json"), "utf8"));
-const declaration = { ...historical.declaration, agentProfileVersion: 82 };
+const declaration = { ...historical.declaration, agentProfileVersion: 85 };
 delete declaration.permissionIdentitySourceSha256;
 const sources = {
   displayEventSourceSha256: "src/drivers/acpx/copilot-events.ts",
@@ -85,6 +85,9 @@ for (const [field, path] of Object.entries(sources)) {
 const sorted = Object.fromEntries(Object.entries(declaration).sort(([a], [b]) => a.localeCompare(b)));
 const commandDigest = `sha256:${createHash("sha256").update(JSON.stringify(sorted)).digest("hex")}`;
 const identity = `${JSON.stringify({ commandDigest, declaration }, null, 2)}\n`;
+if (!process.argv.includes("--check") && existsSync(fixture) && readFileSync(fixture, "utf8") !== identity) {
+  throw new Error("Copilot profile identity is immutable; advance its version before changing bound source");
+}
 // The shared manifest now generates both TypeScript and Rust admission. Update
 // only Copilot; other providers retain their upstream release attestations.
 const manifestPath = resolve(root, "acpx-profiles.json");
