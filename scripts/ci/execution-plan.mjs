@@ -37,8 +37,3 @@ export function executionPlan(config, task, args, files = sourceFiles()) {
   return { target, args: commandArgs, config: { ...config,
     globalDependencies: select(config.globalDependencies ?? []), tasks: { [target]: { ...definition, inputs } } } };
 }
-
-// Write-only local caching forces execution without Turbo's conflicting --force flag.
-export const localTaskCacheArgs = (force = false) => [
-  `--cache=local:${force ? "w" : "rw"}`, "--cache-dir=.turbo/cache",
-];

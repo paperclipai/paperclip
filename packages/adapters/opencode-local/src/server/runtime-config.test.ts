@@ -57,7 +57,6 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     `], { encoding: "utf8" }));
     expect(hookEnv.parent).toBeNull();
     expect(hookEnv.child.BASH_ENV).toContain(relocated);
-    // A socket stdin with stripped SHLVL can select Bash's remote startup path.
     const command = spawnSync("bash", ["-c", 'printf "%s" "$1"; exit 7', "bash", "literal ' $() value"], {
       env: { ...process.env, ...hookEnv.child }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
