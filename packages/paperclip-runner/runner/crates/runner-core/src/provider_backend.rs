@@ -645,13 +645,15 @@ fn terminal_events(
     event_type: &str,
     goal_status: Option<&str>,
 ) -> Vec<NormalizedProviderEvent> {
-    if goal_status == Some("active") {
+    let rejected_completion =
+        state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none();
+    if goal_status == Some("active") && !rejected_completion {
         return Vec::new();
     }
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
-    if state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none() {
+    if rejected_completion {
         return vec![
             NormalizedProviderEvent {
                 event_type: "session.failed".to_owned(),
@@ -2189,7 +2191,7 @@ impl CodexCommandExecutor {
                                 }) } else { Value::Null },
                             }),
                         };
-                        if provider_label == "codex" {
+                        if provider_label == "codex" && !state.active_terminal_tool_rejected {
                             // No provider result was observed. Preserve the lost
                             // turn as a fact, but leave the run open for the
                             // controller's bounded same-conversation recovery.
@@ -5435,6 +5437,9 @@ mod tests {
         assert_eq!(state.tool_bridge.pending_calls().count(), 0);
 
         assert_rejected_finish_terminal(&state);
+        let active_goal_events = terminal_events(&state, "turn.completed", Some("active"));
+        assert_eq!(active_goal_events[0].event_type, "session.failed");
+        assert_eq!(active_goal_events[0].payload["recoverable"], false);
         assert!(state.validate().is_ok());
     }
 
@@ -5489,10 +5494,11 @@ mod tests {
     #[test]
     fn legacy_snapshot_without_a_rejected_finish_marker_keeps_its_fallback() {
         let mut encoded = serde_json::to_value(declared_finish_state()).unwrap();
-        encoded
+        assert!(encoded
             .as_object_mut()
             .unwrap()
-            .remove("active_terminal_tool_rejected");
+            .remove("activeTerminalToolRejected")
+            .is_some());
         let restored: CodexProviderState = serde_json::from_value(encoded).unwrap();
 
         assert_eq!(
@@ -5550,6 +5556,7 @@ mod tests {
             "The requested answer is ready."
         );
         assert_eq!(events[1].payload["runTerminalState"], "succeeded");
+        assert!(terminal_events(&state, "turn.completed", Some("active")).is_empty());
         assert!(state.validate().is_ok());
     }
 
