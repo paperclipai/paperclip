@@ -385,7 +385,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       canonicalSha256,
     });
 
-    await this.#db.transaction(async (tx) => {
+    const insertedResult = await this.#db.transaction(async (tx) => {
       // Result insertion checks the task foreign key. Acquire that parent lock
       // before the run, matching task mutations that subsequently update a run.
       // Otherwise concurrent chat/status writes can deadlock after generation.
@@ -409,7 +409,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       if (existing) {
         this.#assertActive(options);
         if (existing.canonicalSha256 !== canonicalSha256) throw new Error("structured_result_replay_conflict");
-        return;
+        return false;
       }
       const resultJson = {
         result: validated.result,
@@ -465,7 +465,8 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         updatedAt: new Date(),
       }).where(eq(heartbeatRuns.id, this.#binding.runId));
       this.#assertActive(options);
+      return true;
     });
-    try { await this.#onResultCommitted?.(); } catch {}
+    if (insertedResult) { try { await this.#onResultCommitted?.(); } catch {} }
   }
 }
