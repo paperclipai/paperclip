@@ -141,6 +141,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isAgentCreatedIssue,
+  isAgentInvokable,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -5669,9 +5670,19 @@ function blockedChainOwner(
   interactionByIssueId: Map<string, BlockedInboxInteractionRow>,
   approvalByIssueId: Map<string, BlockedInboxApprovalRow>,
 ): IssueBlockedInboxOwner {
-  const actor =
-    (terminalBlockerIssueId ? issuesById.get(terminalBlockerIssueId) : undefined) ??
-    row;
+  const unknown: IssueBlockedInboxOwner = {
+    type: "unknown",
+    agentId: null,
+    userId: null,
+    label: null,
+  };
+  const terminal = terminalBlockerIssueId
+    ? issuesById.get(terminalBlockerIssueId)
+    : undefined;
+  if (terminal && terminal.id !== row.id && terminal.visibility !== "open") {
+    return unknown;
+  }
+  const actor = terminal ?? row;
   const agent = (agentId: string): IssueBlockedInboxOwner => ({
     type: "agent",
     agentId,
@@ -5693,6 +5704,16 @@ function blockedChainOwner(
   if (interactionByIssueId.has(actor.id) || approvalByIssueId.has(actor.id)) {
     return board;
   }
+  const hasMonitor = Boolean(
+    actor.monitorNextCheckAt && actor.monitorNextCheckAt.getTime() > Date.now(),
+  );
+  if (
+    actor.status === "blocked" &&
+    !hasMonitor &&
+    externalWaitFromDescription(actor.description)
+  ) {
+    return { type: "external", agentId: null, userId: null, label: null };
+  }
   const descriptorOwner =
     actor.status === "blocked" ? actor.unblockDescriptor?.owner : undefined;
   if (descriptorOwner === "board") return board;
@@ -5708,7 +5729,7 @@ function blockedChainOwner(
   }
   if (actor.assigneeAgentId) return agent(actor.assigneeAgentId);
   if (actor.assigneeUserId) return user(actor.assigneeUserId);
-  return { type: "unknown", agentId: null, userId: null, label: null };
+  return unknown;
 }
 
 async function listIssueBlockedInboxAttentionMap(
@@ -6332,25 +6353,41 @@ async function listIssueBlockedInboxAttentionMap(
       (blockerState?.state === "needs_attention" ||
         blockerState?.state === "stalled")
     ) {
+      const owner = blockedChainOwner(
+        row,
+        blockerState.terminalBlockerIssueId,
+        issuesById,
+        interactionByIssueId,
+        approvalByIssueId,
+      );
+      const ownerAgent = owner.agentId
+        ? companyAgents.find((candidate) => candidate.id === owner.agentId)
+        : undefined;
+      const ownerCannotRun =
+        owner.type === "agent" &&
+        (!ownerAgent ||
+          !isAgentInvokable({ agent: ownerAgent, agents: companyAgents }));
       result.set(
         row.id,
         attentionBase({
           state: "needs_attention",
-          reason: "blocked_chain_stalled",
-          severity: "high",
+          reason: ownerCannotRun
+            ? "blocked_by_uninvokable_assignee"
+            : "blocked_chain_stalled",
+          severity: ownerCannotRun ? "critical" : "high",
           stoppedSinceAt: row.updatedAt,
-          owner: blockedChainOwner(
-            row,
-            blockerState.terminalBlockerIssueId,
-            issuesById,
-            interactionByIssueId,
-            approvalByIssueId,
-          ),
-          action: {
-            label: "Inspect blocker chain",
-            detail:
-              "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
-          },
+          owner,
+          action: ownerCannotRun
+            ? {
+                label: "Assign active owner",
+                detail:
+                  "The next owner of this blocker chain cannot run. Assign an active owner or replace the blocker.",
+              }
+            : {
+                label: "Inspect blocker chain",
+                detail:
+                  "Inspect the stalled blocker or review leaf and make the next owner/action explicit.",
+              },
           sourceIssue: source,
           sampleIssueIdentifier:
             blockerState.sampleStalledBlockerIdentifier ??
