@@ -127,6 +127,7 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
+  IssueBlockedInboxOwner,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -5661,6 +5662,55 @@ function compareBlockedInboxRows(
   return right.id.localeCompare(left.id);
 }
 
+function blockedChainOwner(
+  row: IssueRow,
+  terminalBlockerIssueId: string | null | undefined,
+  issuesById: Map<string, IssueRow>,
+  interactionByIssueId: Map<string, BlockedInboxInteractionRow>,
+  approvalByIssueId: Map<string, BlockedInboxApprovalRow>,
+): IssueBlockedInboxOwner {
+  const actor =
+    (terminalBlockerIssueId ? issuesById.get(terminalBlockerIssueId) : undefined) ??
+    row;
+  const agent = (agentId: string): IssueBlockedInboxOwner => ({
+    type: "agent",
+    agentId,
+    userId: null,
+    label: null,
+  });
+  const user = (userId: string): IssueBlockedInboxOwner => ({
+    type: "user",
+    agentId: null,
+    userId,
+    label: null,
+  });
+  const board: IssueBlockedInboxOwner = {
+    type: "board",
+    agentId: null,
+    userId: null,
+    label: "Board",
+  };
+  if (interactionByIssueId.has(actor.id) || approvalByIssueId.has(actor.id)) {
+    return board;
+  }
+  const descriptorOwner =
+    actor.status === "blocked" ? actor.unblockDescriptor?.owner : undefined;
+  if (descriptorOwner === "board") return board;
+  if (descriptorOwner && "agentId" in descriptorOwner) return agent(descriptorOwner.agentId);
+  if (descriptorOwner && "userId" in descriptorOwner) return user(descriptorOwner.userId);
+  if (actor.status === "in_review") {
+    const participant = parseObject(actor.executionState).currentParticipant;
+    if (participant && typeof participant === "object" && !Array.isArray(participant)) {
+      const { agentId, userId } = participant as Record<string, unknown>;
+      if (typeof agentId === "string") return agent(agentId);
+      if (typeof userId === "string") return user(userId);
+    }
+  }
+  if (actor.assigneeAgentId) return agent(actor.assigneeAgentId);
+  if (actor.assigneeUserId) return user(actor.assigneeUserId);
+  return { type: "unknown", agentId: null, userId: null, label: null };
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -6289,7 +6339,13 @@ async function listIssueBlockedInboxAttentionMap(
           reason: "blocked_chain_stalled",
           severity: "high",
           stoppedSinceAt: row.updatedAt,
-          owner: { type: "unknown", agentId: null, userId: null, label: null },
+          owner: blockedChainOwner(
+            row,
+            blockerState.terminalBlockerIssueId,
+            issuesById,
+            interactionByIssueId,
+            approvalByIssueId,
+          ),
           action: {
             label: "Inspect blocker chain",
             detail:
