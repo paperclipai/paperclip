@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+  schedule:
+    # Retry refreshes held by the release-age gate once their versions are old enough.
+    - cron: "23 6 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -125,7 +128,7 @@ jobs:
 
           ## Risks
 
-          The lockfile bot merges this PR without CI or review. It merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
+          The lockfile bot merges this PR without CI or review when every added package version is at least 3 days old on npm. Otherwise the PR waits for a maintainer, and the daily refresh tries again. The bot merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
 
           ## Model Used
 
@@ -135,7 +138,7 @@ jobs:
 
           - [x] Thinking path and problem description included
           - [x] Generated lock and matching report proof included
-          - [x] Merged automatically by the lockfile bot
+          - [x] Release-age gate decides between bot merge and maintainer review
           PR_BODY
             pr_url="$(gh pr create \
               --head "$BRANCH" \
@@ -148,13 +151,49 @@ jobs:
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      # Resolution picks the newest matching version for any added or widened
+      # dependency. Merge without review only when every added version has been
+      # on npm long enough for a hijacked release to be caught and pulled.
+      - name: Check release age of added package versions
+        id: release-age
+        if: steps.upsert-pr.outputs.pr_url != ''
+        run: |
+          git show "$GITHUB_SHA:pnpm-lock.yaml" > "$RUNNER_TEMP/base-pnpm-lock.yaml"
+          node .github/scripts/check-lockfile-release-age.mjs \
+            --base "$RUNNER_TEMP/base-pnpm-lock.yaml" \
+            --head pnpm-lock.yaml \
+            --min-age-days 3 \
+            --report "$RUNNER_TEMP/release-age-report.md"
+          cat "$RUNNER_TEMP/release-age-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hold lockfile PR for review
+        if: steps.release-age.outputs.eligible == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
+        run: |
+          # Keep one report comment per PR instead of adding one on every run.
+          pr_number="${PR_URL##*/}"
+          comment_id="$(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr_number/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- lockfile-release-age -->"))) | .id' |
+            head -n 1
+          )"
+          if [ -n "$comment_id" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              -F "body=@$RUNNER_TEMP/release-age-report.md" > /dev/null
+          else
+            gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/release-age-report.md"
+          fi
+          echo "::notice title=Lockfile PR held::Added package versions are too new to merge without review. See $PR_URL"
+
       # Mint the bypass token only after resolution has finished, so no earlier
       # step can read it. The lockfile bot is a master ruleset bypass actor in
       # pull_request mode: it can merge PRs past checks and review, but cannot
       # push to master directly. See doc/RELEASE-AUTOMATION-SETUP.md.
       - name: Create lockfile bot token
         id: bot-token
-        if: steps.upsert-pr.outputs.pr_url != ''
+        if: steps.release-age.outputs.eligible == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.LOCKFILE_BOT_CLIENT_ID }}
@@ -163,7 +202,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Merge lockfile PR
-        if: steps.upsert-pr.outputs.pr_url != ''
+        if: steps.release-age.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ steps.bot-token.outputs.token }}
           PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}

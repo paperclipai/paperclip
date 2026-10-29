@@ -223,6 +223,8 @@ If `@cryppadotta` is not the right reviewer identity in the public repo, change 
 
 `.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Contributors never commit the lockfile, so the bot is the only path for lockfile changes.
 
+Resolution keeps locked versions, but it picks the newest matching version for an added or widened dependency. A release-age gate (`.github/scripts/check-lockfile-release-age.mjs`) therefore checks every package version that the refresh adds. The bot merges only when each one has been on npm for at least 3 days. If any version is newer, or the gate cannot verify it, the bot leaves a comment on the PR and does not merge. A maintainer can review and merge it, or the daily scheduled refresh merges it after the versions are old enough. Change the age with `--min-age-days` in the workflow.
+
 The merge uses a dedicated GitHub App. Do not reuse `commitperclip` or bypass the built-in `github-actions` app. Those identities are available to other workflows, including release jobs that run dependency install scripts, so a bypass for them would let any of those workflows land code on `master`.
 
 1. Create an organization-owned GitHub App, for example `paperclip-lockfile-bot`:
