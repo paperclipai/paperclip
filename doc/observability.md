@@ -233,12 +233,21 @@ connection instructions, and agent identity. Their names are
 when a later setup step fails before the provider lifecycle trace starts.
 
 `task.execution_attempt` owns one invocation of the server executor, from its
-admission reads through preparation, provider dispatch, completion, reply persistence,
-and cleanup. It starts a new root trace with a link to the active trigger. It
+admission reads through preparation, provider dispatch, and inline settlement.
+Deferred native workspace finalization and reply persistence can finish after
+this root ends. It starts a new root trace with a link to the active trigger. It
 therefore follows the operator's root sampler even when the HTTP trigger was not
 sampled. Async-local ownership parents same-run preparation and nested phases to
 the current attempt. Concurrent runs have separate contexts. A phase invoked
 without a live matching attempt still starts an independent linked root.
+
+`task.workspace_finalization` owns each deferred native workspace finalization
+check. It starts when the background worker checks the run, including its
+admission and ownership checks, and ends when that check returns or fails.
+Workspace restore phases nest under this root using the same hashed run ID.
+It does not extend an earlier execution attempt or include time waiting for
+the background worker to run. Retries have separate roots. A check that finds
+no eligible work can end without a restore child.
 
 These spans exist before provider dispatch, including setup failures. Preparation phases have
 only the existing `paperclip.task.run.run_id` attribute: the first 12 hexadecimal
@@ -611,8 +620,9 @@ An unsampled HTTP request therefore cannot suppress an otherwise sampled
 background run. An operator who disables root sampling still gets no spans.
 Without an OTLP endpoint, tracing remains silent and does not export data.
 
-The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters, and
-`task.execution_attempt` for server preparation and settlement. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the three root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
+The run link in Honeycomb matches `task.provider_session` for native runs, `task.run` for legacy adapters,
+`task.execution_attempt` for server preparation and settlement, and
+`task.workspace_finalization` for deferred native copyback. It retains the exact hashed run-ID and service filters and groups by trace ID. The URL builder uses Honeycomb’s supported `in` operator for the four root names; see the [query specification](https://github.com/honeycombio/honeycomb-mcp#query-specification-for-run_query). This changes only the query link. The operator endpoint gate and span attribute allowlist remain unchanged.
 
 The canonical lifecycle is:
 
