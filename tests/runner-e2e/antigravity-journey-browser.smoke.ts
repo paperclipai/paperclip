@@ -26,6 +26,9 @@ const fixtures: Record<string, string> = {
   ready: `<div hidden><h2>Finishing agent setup</h2><button disabled>Assign ${agent} a Task</button></div><h2>Your agent is ready</h2><button>Assign ${agent} a Task</button>`,
   "narrative-ready": `<p>The assistant says Your agent is ready.</p><h2>Finishing agent setup</h2><button disabled>Assign ${agent} a Task</button>`,
   done: `<div hidden data-testid="issue-detail-header"><button aria-label="Change status (current: Todo)">Todo</button></div><div data-testid="issue-detail-header"><button aria-label="Change status (current: Done)"><svg><title>Done</title></svg></button></div><div role="menu" hidden>Done</div><p>Earlier task: Todo</p>`,
+  "done-scrolled": `<nav aria-label="breadcrumb"><span aria-current="page"><svg role="img" aria-label="Done"><title>Done</title></svg>Current task</span></nav><div id="thread" style="height:200px;overflow:auto"><div data-testid="issue-detail-header" style="height:1000px"><button aria-label="Change status (current: Done)">Done</button></div><div style="height:1000px">Restored latest messages and open file viewer</div></div><script>document.getElementById('thread').scrollTop=2000</script>`,
+  "wrong-current-breadcrumb": `<nav aria-label="breadcrumb"><a><svg role="img" aria-label="Done"><title>Done</title></svg>Older task</a><span aria-current="page"><svg role="img" aria-label="Todo"><title>Todo</title></svg>Current task</span></nav><div data-testid="issue-detail-header"><button aria-label="Change status (current: Done)">Done</button></div>`,
+  "hidden-breadcrumb-done": `<nav aria-label="breadcrumb"><span aria-current="page"><svg style="display:none" role="img" aria-label="Done"><title>Done</title></svg><svg role="img" aria-label="Todo"><title>Todo</title></svg>Current task</span></nav><div data-testid="issue-detail-header"><button aria-label="Change status (current: Done)">Done</button></div>`,
   "narrative-done": `<div data-testid="issue-detail-header"><button aria-label="Change status (current: Todo)"><svg><title>Done</title></svg></button></div><div hidden><button aria-label="Change status (current: Done)">Done</button></div><p>The task is Done</p>`,
   composer: `<div role="dialog" aria-labelledby="composer"><h2 id="composer">New task</h2><button aria-label="Select assignee">${agent}</button><button aria-label="Select model and effort"><span data-testid="task-chat-composer-model-label">${model}</span></button><div hidden data-testid="new-issue-paused-assignee-note">paused</div></div><div data-testid="new-issue-paused-assignee-note">unrelated paused agent</div>`,
   "paused-composer": `<div role="dialog" aria-labelledby="composer"><h2 id="composer">New task</h2><button aria-label="Select assignee">${agent}</button><button aria-label="Select model and effort"><span data-testid="task-chat-composer-model-label">${model}</span></button><div data-testid="new-issue-paused-assignee-note">paused</div></div>`,
@@ -156,7 +159,13 @@ try {
   await visit("ready"); await assertAntigravityReady(page, agent, 300);
   await visit("narrative-ready"); await assert.rejects(assertAntigravityReady(page, agent, 300));
   await visit("done"); await assertAntigravityTaskDone(page, 300);
-  await visit("narrative-done"); await assert.rejects(assertAntigravityTaskDone(page, 300));
+  await visit("done-scrolled");
+  const restoredScroll = await page.locator("#thread").evaluate(node => node.scrollTop);
+  await assertAntigravityTaskDone(page, 300);
+  assert.equal(await page.locator("#thread").evaluate(node => node.scrollTop), restoredScroll);
+  for (const fixture of ["narrative-done", "wrong-current-breadcrumb", "hidden-breadcrumb-done"]) {
+    await visit(fixture); await assert.rejects(assertAntigravityTaskDone(page, 300), fixture);
+  }
   await visit("composer"); await assertAntigravityCleanComposer(page, agent, model, 300);
   await visit("paused-composer"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
   await visit("wrong-model"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));

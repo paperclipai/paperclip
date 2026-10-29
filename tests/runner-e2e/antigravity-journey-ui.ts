@@ -60,8 +60,16 @@ export async function assertAntigravityCleanComposer(page: Page, agentName: stri
 export async function assertAntigravityTaskDone(page: Page, timeout = 30_000) {
   const header = page.locator('[data-testid="issue-detail-header"]:visible');
   await expect(header).toBeVisible({ timeout });
-  await header.scrollIntoViewIfNeeded({ timeout });
-  await expect(header.getByRole("button", { name: "Change status (current: Done)", exact: true })).toBeVisible({ timeout });
+  // The thread restores its bottom anchor after reload. Scrolling its entire
+  // large header fights that restoration and is unnecessary to read status.
+  const control = header.getByRole("button", { name: "Change status (current: Done)", exact: true });
+  await expect(control).toHaveCount(1, { timeout });
+  await expect(control).toBeVisible({ timeout });
+  const current = page.getByRole("navigation", { name: "breadcrumb", exact: true }).locator('[aria-current="page"]:visible');
+  if (await current.count()) {
+    await expect(current).toHaveCount(1, { timeout });
+    await expect(current.getByRole("img", { name: "Done", exact: true })).toBeVisible({ timeout });
+  }
 }
 
 export async function assertAntigravityFileActivity(page: Page, timeout = 30_000) {
