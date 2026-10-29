@@ -6175,6 +6175,134 @@ fn codex_completion_emits_the_bound_result_before_the_terminal_event() {
 }
 
 #[test]
+fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
+    let schemas = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../protocol/schemas");
+    let result_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("result.schema.json")).unwrap()).unwrap();
+    let terminal_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("terminal.schema.json")).unwrap()).unwrap();
+    let stop_reason_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("stop-reason.schema.json")).unwrap())
+            .unwrap();
+    let registry = jsonschema::Registry::new()
+        .add(
+            "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json",
+            stop_reason_schema,
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let terminal_validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&terminal_schema)
+        .unwrap();
+    for scenario in ["schema", "summary", "controller"] {
+        let directory = temporary_directory(&format!("rejected-completion-{scenario}"));
+        let input = if scenario == "schema" {
+            json!({})
+        } else {
+            json!({
+                "schema": "paperclip.run_result.v1",
+                "reportedWorkDisposition": "done",
+                "summary": if scenario == "summary" { "x".repeat(12_001) } else { "Requested work is ready.".to_owned() },
+                "completionClaim": { "contractRevision": "contract-1", "objectiveSatisfied": true,
+                    "criteria": [{"criterionId": "output", "status": "satisfied", "evidenceRefs": []}],
+                    "remainingWork": [] },
+                "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [],
+            })
+        };
+        let input_path = directory.join("finish-input.json");
+        fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+        let mut config = provider_config(&directory, &["--complete-after-tool-call"]);
+        config.args.extend([
+            "--terminal-result-file".to_owned(),
+            input_path.to_string_lossy().into_owned(),
+        ]);
+        let operation = AuthorizedTool {
+            operation_id: "paperclip_finish".to_owned(),
+            version: 1,
+            description: "Report completed work.".to_owned(),
+            input_schema: result_schema.clone(),
+            response_schema: json!({"type": "object"}),
+        };
+        let authorized = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                .unwrap(),
+            operations: vec![operation],
+        };
+        let mut executor =
+            CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+        executor.execute(&command("prepare", 1, "run.prepare", json!({"provider": config,
+            "authorizedTools": authorized, "completionContract": {"revision": "contract-1", "criterionIds": ["output"]}}))).unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text": "Report the local fixture result."}),
+            ))
+            .unwrap();
+        let mut emitted = Vec::new();
+        let mut input_calls = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let events = poll_and_ack(&mut executor).unwrap();
+            for event in &events {
+                if event.event_type == "semantic_tool.input" {
+                    input_calls += 1;
+                    assert_eq!(scenario, "controller");
+                    executor.execute(&command("reject", 4, "semantic_tool.result", json!({
+                        "callId": "terminal-result-call", "operationId": "paperclip_finish", "isError": true,
+                        "result": {"error": {"code": "deliverable_missing"}} }))).unwrap();
+                }
+            }
+            emitted.extend(events);
+            if emitted
+                .iter()
+                .any(|event| event.event_type == "run.terminal")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let failure = emitted
+            .iter()
+            .position(|event| event.event_type == "session.failed")
+            .unwrap();
+        let turn = emitted
+            .iter()
+            .position(|event| event.event_type == "turn.completed")
+            .unwrap();
+        let terminal = emitted
+            .iter()
+            .position(|event| event.event_type == "run.terminal")
+            .unwrap();
+        assert!(failure < turn && turn < terminal);
+        assert_eq!(
+            emitted[failure].payload["code"],
+            "semantic_completion_rejected"
+        );
+        assert_eq!(emitted[failure].payload["recoverable"], false);
+        assert_eq!(emitted[terminal].payload["runTerminalState"], "failed");
+        terminal_validator
+            .validate(&emitted[terminal].payload)
+            .unwrap();
+        assert!(!emitted
+            .iter()
+            .any(|event| event.event_type == "run.result.proposed"));
+        assert_eq!(input_calls, usize::from(scenario == "controller"));
+        assert_eq!(call_count(&directory, "terminal-result:rejected"), 1);
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn idle_integrity_failure_persists_reconciliation_and_retires_provider() {
     assert_idle_failure_reconciled(false);
 }
