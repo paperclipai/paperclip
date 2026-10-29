@@ -46,6 +46,12 @@ to an external chat provider. If registration fails, use the returned error to
 resolve the failure or explain the limitation; do not describe a workspace path
 as an uploaded file.
 
+With workspace-relative file access, create or copy task deliverables into the
+directory returned by `get_workspace.cwd` before registration. `AGENT_HOME`
+holds personal instructions and memory. If registration reports a missing
+workspace file, copy the file to that task directory and retry with a relative
+`contentRef`.
+
 ## Legacy adapters
 
 Use Bash to run the helper bundled with the Paperclip skill from the repo root; installed skill files may not retain executable permissions:
