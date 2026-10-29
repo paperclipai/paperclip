@@ -781,6 +781,10 @@
           "minLength": 1,
           "type": "string"
         },
+        "resolverPolicy": {
+          "const": "human_only",
+          "description": "Optionally require an authenticated human response."
+        },
         "targetRevisionId": {
           "description": "Optional bound document revision.",
           "maxLength": 240,
@@ -3318,6 +3322,46 @@
             "string",
             "null"
           ]
+        },
+        "requiredQualityReview": {
+          "additionalProperties": false,
+          "properties": {
+            "deliverables": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "key": {
+                    "description": "Stable output key, e.g. copy or visual.",
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-readable output name.",
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "maxItems": 10,
+              "minItems": 1,
+              "type": "array"
+            },
+            "version": {
+              "const": 1
+            }
+          },
+          "required": [
+            "version",
+            "deliverables"
+          ],
+          "type": "object"
         },
         "status": {
           "description": "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved).",

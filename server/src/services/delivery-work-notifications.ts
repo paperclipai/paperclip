@@ -2,6 +2,8 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  instructionCommit: "instruction-commit",
+  scheduledRetryCancellation: "scheduled-retry-cancellation",
   executionFinalization: "execution-finalization",
   workspaceRecovery: "workspace-recovery",
   executionReplacement: "execution-replacement",
@@ -39,8 +41,13 @@ export const DELIVERY_QUEUES = {
   chatReceiptReactions: "chat-receipt-reactions",
   chatSessionStops: "chat-session-stops",
   chatProviderEffects: "chat-provider-effects",
+  chatGitHubWebhookRecovery: "chat-github-webhook-recovery",
   chatGitHubIngress: "chat-github-ingress",
   chatGitHubPublications: "chat-github-publications",
+  chatGitHubReviewProjection: "chat-github-review-projection",
+  chatGitHubReviewChecks: "chat-github-review-checks",
+  chatGitHubTerminalResponses: "chat-github-terminal-responses",
+  chatGitHubAcknowledgements: "chat-github-acknowledgements",
   chatFailedRunRetries: "chat-failed-run-retries",
   chatTelegramMaintenance: "chat-telegram-maintenance",
   chatReceivers: "chat-receivers",

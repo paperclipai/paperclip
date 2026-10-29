@@ -1,11 +1,23 @@
+import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import { type ThreadScrollAnchor, threadScrollAnchorDelta } from "./scroll-anchor";
 import { createContext, useContext } from "react";
 
 export const TaskChatScrollNavigation = createContext<{ key: string; restore: boolean; hash: string } | null>(null);
 export const TaskChatScrollReady = createContext(true);
 
+/** Decision links name the conversation anchor separately from the artifact. */
+export function taskChatHashAnchor(hash: string): string | null {
+  const documentTarget = parseDocumentAnnotationHash(hash);
+  if (documentTarget?.interactionId) return `interaction-${documentTarget.interactionId}`;
+  if (documentTarget) return null;
+  try { return hash ? decodeURIComponent(hash.slice(1).split("&")[0]!) : null; } catch { return null; }
+}
+
 /** Document navigation opens a pane without starting a new thread reading. */
 export function taskChatScrollEntry(location: { key: string; hash: string; pathname: string; state: unknown }): { key: string; hash: string; pathname: string } {
+  if (parseDocumentAnnotationHash(location.hash)?.interactionId) {
+    return { key: location.key, hash: location.hash, pathname: location.pathname };
+  }
   const saved = location.state && typeof location.state === "object" && "taskDocumentScrollEntry" in location.state
     ? location.state.taskDocumentScrollEntry : null;
   if (saved && typeof saved === "object" && "key" in saved && "hash" in saved && "pathname" in saved && saved.pathname === location.pathname && typeof saved.key === "string" && typeof saved.hash === "string") {
@@ -41,9 +53,8 @@ export function useTaskChatScrollNavigation() {
         return saved.top;
       }
       if (navigation.hash) {
-        let id: string;
-        try { id = decodeURIComponent(navigation.hash.slice(1)); } catch { return null; }
-        const target = document.getElementById(id);
+        const id = taskChatHashAnchor(navigation.hash);
+        const target = id ? document.getElementById(id) : null;
         if (target && root.contains(target)) return scrollTop + target.getBoundingClientRect().top - viewportTop;
       }
       return null;
