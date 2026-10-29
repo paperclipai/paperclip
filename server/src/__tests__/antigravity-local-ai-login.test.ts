@@ -16,7 +16,7 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 
 const intent: AiConnectionLoginIntent = { provider: "google", method: "subscription", name: "Google account", ownership: "personal", allAgents: true, agentIds: [] };
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); vi.clearAllMocks(); });
+afterEach(async () => { vi.useRealTimers(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); vi.clearAllMocks(); });
 
 // This suite exercises service ordering with an explicit transaction result
 // queue. It does not replace database authorization/concurrency coverage; the
@@ -82,7 +82,7 @@ describe("Google local sign-in service admission", () => {
     f.db.selections.push([f.db.session]);
     await expect(f.service.complete("company", "user", f.attempt.sessionId, intent)).rejects.toThrow("Finish Google browser sign-in");
     expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
-    f.release(); f.db.selections.push([f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
+    f.release(); f.db.selections.push([f.db.session], [f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
   });
 
   it("returns the verified account email and passes it to the saved connection", async () => {
@@ -123,8 +123,8 @@ describe("Google local sign-in service admission", () => {
       await expect(access(f.home)).resolves.toBeUndefined();
     } finally {
       f.release(); await starting;
-      f.db.selections.push([f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
-      if (attempt) { other.selections.push([other.session]); await otherService.cancel("another-company", "another-user", attempt.sessionId); }
+      f.db.selections.push([f.db.session], [f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
+      if (attempt) { other.selections.push([other.session], [other.session]); await otherService.cancel("another-company", "another-user", attempt.sessionId); }
     }
   });
 
@@ -162,16 +162,41 @@ describe("Google local sign-in service admission", () => {
     await expect(access(join(f.home, "..", second.sessionId))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it.each(["cancel", "restart"] as const)("bounds %s without holding a transaction and keeps the claim for maintenance", async action => {
+    const f = await fixture();
+    f.db.selections.push([f.db.session], [f.db.session]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let result: unknown;
+    const operation = (action === "cancel" ? f.service.cancel("company", "user", f.attempt.sessionId)
+      : f.service.start("company", "user", intent, true)).then(value => { result = value; }, error => { result = error; });
+    try {
+      await vi.waitFor(() => expect(f.browser.abort).toHaveBeenCalledOnce());
+      expect(f.db.activeTransactions).toBe(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await operation;
+      expect(result).toMatchObject({ status: 422, details: { code: "ai_connection_busy" } });
+      expect(f.db.session.status).toBe("waiting_for_user");
+      expect(f.db.session.failureReason).toBe("local_login_retirement_pending");
+      expect(f.db.session.expiresAt.getTime()).toBeLessThanOrEqual(Date.now());
+      await expect(access(f.home)).resolves.toBeUndefined();
+    } finally { vi.useRealTimers(); f.release(); await operation; }
+    f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]);
+    await f.service.reapExpired();
+    expect(f.db.session.status).toBe("cancelled");
+    expect(f.db.session.expiresAt).toBeNull();
+    await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each(["cancel", "expiry", "restart", "complete"] as const)("awaits physical browser retirement before deleting the login home on %s", async action => {
     const f = await fixture();
     let operation: Promise<unknown>;
     if (action === "cancel") {
-      f.db.selections.push([f.db.session]); operation = f.service.cancel("company", "user", f.attempt.sessionId);
+      f.db.selections.push([f.db.session], [f.db.session]); operation = f.service.cancel("company", "user", f.attempt.sessionId);
     } else if (action === "expiry") {
       f.db.session.expiresAt = new Date(Date.now() - 1);
       f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]); operation = f.service.reapExpired();
     } else if (action === "restart") {
-      f.db.selections.push([f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
+      f.db.selections.push([f.db.session], [f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
       operation = f.service.start("company", "user", intent, true);
     } else {
       f.browser.outcome = "success";

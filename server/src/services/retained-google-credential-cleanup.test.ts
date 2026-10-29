@@ -63,6 +63,26 @@ it("lets a durable encrypted journal take over without replaying the retired cal
   expect(cleanup).toHaveBeenCalledOnce();
 });
 
+it("retries a rejected physical proof only on the next account action and coalesces proof ownership", async () => {
+  const owner = scope();
+  const retired = Promise.reject(new Error("fixture initial retirement proof unavailable"));
+  let confirm!: () => void;
+  const retryRetirement = vi.fn().mockRejectedValueOnce(new RetiredCredentialRecoveryError(new Error("fixture owner still present")))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { confirm = resolve; }));
+  const cleanup = vi.fn(async () => {});
+  retainGoogleCredentialCleanup({ scope: owner, cleanup, retired, retryRetirement });
+  await retired.catch(() => {});
+  await expect(reconcileRetainedGoogleCleanup(owner)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+  expect(retryRetirement).toHaveBeenCalledOnce(); expect(cleanup).not.toHaveBeenCalled();
+  const first = reconcileRetainedGoogleCleanup(owner), second = reconcileRetainedGoogleCleanup(owner);
+  await vi.waitFor(() => expect(retryRetirement).toHaveBeenCalledTimes(2));
+  expect(cleanup).not.toHaveBeenCalled();
+  confirm(); await Promise.all([first, second]);
+  expect(cleanup).toHaveBeenCalledOnce();
+  await reconcileRetainedGoogleCleanup(owner);
+  expect(retryRetirement).toHaveBeenCalledTimes(2);
+});
+
 it("does not recurse through cleanup wrappers and settles peers once", async () => {
   const owner = scope();
   const first = vi.fn(async () => { assertGoogleCredentialCleanupSettled(owner); await reconcileRetainedGoogleCleanup(owner); });

@@ -446,6 +446,41 @@ describe("managed AI connections", () => {
     expect(await service.credential(row)).toBe(auth);
   });
 
+  it("retries retired Codex probe cleanup before the same account can launch again", async () => {
+    const owner = "retired-probe-retry", otherOwner = "retired-probe-other";
+    const auth = (user: string, hour: string) => JSON.stringify({ tokens: { account_id: user, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    for (const user of [owner, otherOwner]) {
+      await db.insert(companyMemberships).values({ companyId, principalId: user, principalType: "user", status: "active", membershipRole: "member" });
+      await service.save(companyId, user, { provider: "openai", method: "subscription", ownership: "personal", name: user, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth(user, "10"));
+    }
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    const stopped = deferredSignal();
+    const provider = vi.fn(async runtime => readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8"));
+    const merge = vi.spyOn(codexAdapter, "decideCodexAuthMerge").mockRejectedValue(new Error("fixture cleanup storage unavailable"));
+    let retained: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    try {
+      await expect(withManagedAiProbe(db, input, async runtime => {
+        retained = runtime;
+        await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth(owner, "11"));
+        throw new runnerProbe.NativeEnvironmentProbeCleanupError(stopped.promise, new Error("fixture probe interruption"), []);
+      })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(provider).not.toHaveBeenCalled(); expect(merge).not.toHaveBeenCalled();
+      stopped.resolve();
+      await vi.waitFor(() => expect(merge).toHaveBeenCalledOnce());
+      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(provider).not.toHaveBeenCalled(); expect(merge).toHaveBeenCalledTimes(2);
+      await expect(withManagedAiProbe(db, { ...input, responsibleUserId: otherOwner }, provider)).resolves.toBe(auth(otherOwner, "10"));
+      expect(await readFile(path.join(String(retained!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth(owner, "11"));
+      merge.mockRestore();
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "11"));
+      expect(await service.credential(row)).toBe(auth(owner, "11"));
+      await expect(access(retained!.home!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { stopped.resolve(); merge.mockRestore(); await retained?.cleanup().catch(() => {}); }
+  });
+
   it("keeps quota refresh outside a manual probe until its rotated credential is saved", async () => {
     const owner = "manual-probe-race";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });

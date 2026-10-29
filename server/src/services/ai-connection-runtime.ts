@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
@@ -24,12 +25,10 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
 import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
 import { NativeEnvironmentProbeCleanupError, sanitizeAntigravityCredential } from "../vendor/paperclip-runner/index.js";
-import { logger } from "../middleware/logger.js";
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
-import { bindRetainedGoogleCredentialHome, reconcileRetainedGoogleCleanup, retainGoogleCredentialCleanup } from "./retained-google-credential-cleanup.js";
+import { assertAiCredentialCleanupSettled, bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup, type RetainedAiCleanupScope } from "./retained-ai-credential-cleanup.js";
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -231,6 +230,13 @@ export function managedAiSessionFingerprintConfig(
   return { ...config, env, ...(managed?.sessionIdentity ? { managedAiConnection: { ...managed, identity: managed.sessionIdentity } } : {}) };
 }
 
+const managedProbeCredentialLocks = new AsyncLocalStorage<{ companyId: string; active: boolean }>();
+async function reconcileManagedCredentialCleanup(scope: RetainedAiCleanupScope): Promise<void> {
+  const ownership = managedProbeCredentialLocks.getStore();
+  if (ownership?.active && ownership.companyId === scope.companyId) assertAiCredentialCleanupSettled(scope);
+  else await reconcileRetainedAiCleanup(scope);
+}
+
 export async function prepareManagedAiRuntime(
   db: Db,
   input: {
@@ -275,9 +281,8 @@ export async function prepareManagedAiRuntime(
     runnerProvider: input.config.provider,
     acpxAgent: input.config.acpxAgent,
   });
-  const retainedCleanupScope = harness === "antigravity_runtime" && selection.attribution.method === "subscription"
-    ? { companyId: input.companyId, accountKey: selection.grant.id } : undefined;
-  if (retainedCleanupScope) await reconcileRetainedGoogleCleanup(retainedCleanupScope);
+  const retainedCleanupScope = { companyId: input.companyId, accountKey: selection.grant.id };
+  await reconcileManagedCredentialCleanup(retainedCleanupScope);
   const subscriptionFile =
     selection.attribution.method === "subscription" &&
     input.binding.provider !== "anthropic";
@@ -336,7 +341,7 @@ export async function prepareManagedAiRuntime(
     if (harness === "antigravity_runtime") home = await realpath(home);
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
-    if (retainedCleanupScope) releaseCredentialHome = bindRetainedGoogleCredentialHome(providerHome, retainedCleanupScope);
+    if (retainedCleanupScope) releaseCredentialHome = bindRetainedAiCredentialHome(providerHome, retainedCleanupScope);
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
       ...Object.fromEntries(AI_AUTH_ENV_KEYS.map((key) => [key, ""])),
@@ -436,7 +441,7 @@ export async function prepareManagedAiRuntime(
     };
     const cleanupRuntime = async () => {
       if (homeRemoved) return;
-      if (retainedCleanupScope) await reconcileRetainedGoogleCleanup(retainedCleanupScope);
+      await reconcileManagedCredentialCleanup(retainedCleanupScope);
       if (homeRemoved) return;
       const cleanup = async () => {
         if (removalOnly) {
@@ -593,7 +598,7 @@ export async function prepareManagedAiRuntime(
         return await (antigravitySubscription
           ? withAccountHomeSecretMutationLock(undefined, input.companyId, cleanup) : cleanup());
       } catch (error) {
-        if (retainedCleanupScope && !homeRemoved) retainGoogleCredentialCleanup({ scope: retainedCleanupScope, cleanup: cleanupRuntime });
+        if (retainedCleanupScope && !homeRemoved) retainAiCredentialCleanup({ scope: retainedCleanupScope, cleanup: cleanupRuntime });
         throw error;
       }
     };
@@ -636,16 +641,18 @@ export async function withManagedAiProbe<T>(
   const run = async () => {
     const runtime = await prepareManagedAiRuntime(db, input);
     let retained = false;
-    try { return await probe(runtime); }
+    try {
+      assertAiCredentialCleanupSettled(runtime.retainedCleanupScope!);
+      return await probe(runtime);
+    }
     catch (error) {
       if (error instanceof NativeEnvironmentProbeCleanupError) {
         // Keep the selected credential generation until the native owner has
         // retired and completed its refresh handoff. HTTP need not wait for it.
         retained = true;
-        if (runtime.retainedCleanupScope) retainGoogleCredentialCleanup({
-          scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup, retired: error.retired,
-        });
-        else retainProbeCredentialCleanup(input.companyId, runtime.cleanup, error.retired);
+        const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
+        retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, cleanup: runtime.cleanup, retired: error.retired,
+          ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
         throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
       }
       throw error;
@@ -654,44 +661,27 @@ export async function withManagedAiProbe<T>(
         try { await runtime.cleanup(); }
         catch (error) {
           if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {
-            retainGoogleCredentialCleanup({ scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup });
+            retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup });
           }
           throw error;
         }
       }
     }
   };
-  return input.binding.provider === "openai"
-    ? withAccountHomeSecretMutationLock(undefined, input.companyId, run).catch(error => {
-      if ((error as NodeJS.ErrnoException)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
-        throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
-      }
-      throw error;
-    })
-    : run();
-}
-
-const retainedProbeCredentialCleanups = new Set<{ cleanup: () => Promise<void> }>();
-registerIdleLocalWorkProbe(() => retainedProbeCredentialCleanups.size ? "present" : "none");
-
-/** Physical retirement triggers one cleanup. Failed Google writeback is durable
- * and the next authorized account use recovers it, without background SQL. */
-function retainProbeCredentialCleanup(companyId: string, cleanup: () => Promise<void>, retired: Promise<void>) {
-  const obligation = { cleanup };
-  retainedProbeCredentialCleanups.add(obligation);
-  let warned = false;
-  const warn = () => {
-    if (warned) return;
-    warned = true;
-    logger.warn({ companyId, code: "NATIVE_PROBE_CREDENTIAL_CLEANUP_PENDING" }, "Native setup credential cleanup remains pending");
-  };
-  void (async () => {
-    try { await retired; }
-    catch { warn(); return; }
-    try { await obligation.cleanup(); retainedProbeCredentialCleanups.delete(obligation); }
-    catch (error) {
-      if (error instanceof RetiredCredentialRecoveryError) retainedProbeCredentialCleanups.delete(obligation);
-      warn();
+  if (input.binding.provider !== "openai") return run();
+  // A retirement callback may need the company lock. Join it before taking
+  // the probe's outer lock; preparation rechecks this scope synchronously.
+  const selected = await aiConnectionService(db).select({ ...input, userId: input.responsibleUserId,
+    model: input.config.model, runnerProvider: input.config.provider, acpxAgent: input.config.acpxAgent });
+  await reconcileRetainedAiCleanup({ companyId: input.companyId, accountKey: selected.grant.id });
+  return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
+    const ownership = { companyId: input.companyId, active: true };
+    try { return await managedProbeCredentialLocks.run(ownership, run); }
+    finally { ownership.active = false; }
+  }).catch(error => {
+    if ((error as NodeJS.ErrnoException)?.code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) {
+      throw unprocessable("AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" });
     }
-  })();
+    throw error;
+  });
 }
