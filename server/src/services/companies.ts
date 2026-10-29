@@ -1,4 +1,6 @@
-import { rm } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
@@ -44,6 +46,61 @@ export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
 
 const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
 
+const runCleanup = promisify(execFile);
+const MANAGED_CLEANUP_SCRIPT = `
+const fs = require("node:fs/promises");
+(async () => {
+  const [expectedDev, expectedIno, ...segments] = process.argv.slice(1);
+  const root = await fs.lstat(".", { bigint: true });
+  if (String(root.dev) !== expectedDev || String(root.ino) !== expectedIno) {
+    throw new Error("Managed cleanup root changed");
+  }
+  for (const segment of segments.slice(0, -1)) {
+    const before = await fs.lstat(segment, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      throw new Error("Unsafe managed cleanup parent");
+    }
+    process.chdir(segment);
+    const after = await fs.lstat(".", { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino) {
+      throw new Error("Managed cleanup parent changed");
+    }
+  }
+  await fs.rm(segments.at(-1), { recursive: true, force: true });
+})().catch(error => {
+  if (error.code !== "ENOENT") {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
+});
+`;
+
+async function removeManagedCleanupTarget(instanceRoot: string, target: string): Promise<void> {
+  const relative = path.relative(instanceRoot, target);
+  const insideInstance = relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const base = insideInstance ? instanceRoot : path.dirname(path.dirname(target));
+  const segments = path.relative(base, target).split(path.sep);
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+    throw new Error("Invalid managed cleanup path");
+  }
+  let canonicalBase: string;
+  try {
+    canonicalBase = await realpath(base);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const identity = await lstat(canonicalBase, { bigint: true });
+  try {
+    await runCleanup(process.execPath, ["-e", MANAGED_CLEANUP_SCRIPT, String(identity.dev), String(identity.ino), ...segments], {
+      cwd: canonicalBase,
+    });
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(`Managed-file cleanup failed for ${target}: ${stderr || "cleanup worker failed"}`);
+  }
+}
+
 async function removeCompanyManagedFiles(companyId: string, agentIds: string[]): Promise<void> {
   if (!SAFE_PATH_SEGMENT.test(companyId)) {
     throw new Error("Invalid company id for managed-file cleanup");
@@ -67,7 +124,7 @@ async function removeCompanyManagedFiles(companyId: string, agentIds: string[]):
   }
 
   const results = await Promise.allSettled(
-    targets.map((target) => rm(target, { recursive: true, force: true })),
+    targets.map((target) => removeManagedCleanupTarget(instanceRoot, target)),
   );
   const failure = results.find((result) => result.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;

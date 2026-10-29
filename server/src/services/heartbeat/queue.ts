@@ -747,6 +747,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     try {
       const attempt = () => db.transaction(async (tx) => {
         terminal = null;
+        if (stage === "claim") {
+          const [company] = await tx.select({ status: companies.status }).from(companies)
+            .where(eq(companies.id, run.companyId)).for("share");
+          if (company?.status !== "active") return null;
+        }
         // Same queue-edit lock order, then the close committer's conversation
         // row. NOWAIT releases partial locks on contention. Claim defers to the
         // queue; dispatch retries this transaction before considering failure.

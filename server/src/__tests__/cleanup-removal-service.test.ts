@@ -2,9 +2,10 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -452,13 +453,101 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
   it("deletes safely when the application pool has only one connection", async () => {
     const { companyId } = await seedFixture();
-    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const singleConnectionDb = createDb(external ?? tempDb!.connectionString, { maxConnections: 1 });
     configureAgentLifecycle(singleConnectionDb, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     try {
       await expect(companyService(singleConnectionDb).remove(companyId))
         .resolves.toMatchObject({ id: companyId });
     } finally {
       await singleConnectionDb.$client.end();
+    }
+  });
+
+  it.each(["companies", "projects", "skills", "workspaces", "data", "custom-logs", "custom-storage"])(
+    "rejects a symlinked %s cleanup directory and preserves external files",
+    async (kind) => {
+      const { companyId, agentId } = await seedFixture();
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-symlink-"));
+      vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+      vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+      vi.stubEnv("PAPERCLIP_STORAGE_LOCAL_DIR", path.join(root, "custom-storage"));
+      if (kind === "custom-logs") vi.stubEnv("RUN_LOG_BASE_PATH", path.join(root, kind));
+      const instance = resolvePaperclipInstanceRoot();
+      const outside = path.join(root, "outside");
+      const id = kind === "workspaces" ? agentId : companyId;
+      const protectedDir = path.join(outside, kind === "data" ? "run-logs" : "", id);
+      try {
+        await mkdir(protectedDir, { recursive: true });
+        await writeFile(path.join(protectedDir, "sentinel"), "keep");
+        const link = kind.startsWith("custom-") ? path.join(root, kind) : path.join(instance, kind);
+        await mkdir(path.dirname(link), { recursive: true });
+        await symlink(outside, link, "dir");
+        await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+
+        await expect(companyService(db).remove(companyId, { deleteFiles: true }))
+          .resolves.toMatchObject({ fileCleanup: "failed" });
+        expect(await readFile(path.join(protectedDir, "sentinel"), "utf8")).toBe("keep");
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["before", "after"])("keeps cleanup safe when a parent is replaced %s traversal", async (timing) => {
+    const { companyId } = await seedFixture();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-swap-"));
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+    const parent = path.join(resolvePaperclipInstanceRoot(), "projects");
+    const moved = path.join(root, "moved-projects");
+    const outside = path.join(root, "outside");
+    const preload = path.join(root, "swap.cjs");
+    try {
+      await mkdir(path.join(parent, companyId), { recursive: true });
+      await mkdir(path.join(outside, companyId), { recursive: true });
+      await writeFile(path.join(outside, companyId, "sentinel"), "keep");
+      await writeFile(preload, `const fs = require("node:fs");
+const original = process.chdir.bind(process);
+process.chdir = (directory) => {
+  if (${JSON.stringify(timing)} === "after") original(directory);
+  if (directory === "projects") {
+    fs.renameSync(${JSON.stringify(parent)}, ${JSON.stringify(moved)});
+    fs.symlinkSync(${JSON.stringify(outside)}, ${JSON.stringify(parent)}, "dir");
+  }
+  if (${JSON.stringify(timing)} === "before") original(directory);
+};`);
+      vi.stubEnv("NODE_OPTIONS", `${process.env.NODE_OPTIONS ?? ""} --require=${preload}`);
+      await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+      await expect(companyService(db).remove(companyId, { deleteFiles: true }))
+        .resolves.toMatchObject({ fileCleanup: timing === "before" ? "failed" : "succeeded" });
+      expect(await readFile(path.join(outside, companyId, "sentinel"), "utf8")).toBe("keep");
+      if (timing === "after") {
+        await expect(access(path.join(moved, companyId))).rejects.toMatchObject({ code: "ENOENT" });
+      } else {
+        await expect(access(path.join(moved, companyId))).resolves.toBeUndefined();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("unlinks a managed leaf symlink without deleting its external contents", async () => {
+    const { companyId } = await seedFixture();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-leaf-"));
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+    const outside = path.join(root, "outside");
+    const parent = path.join(resolvePaperclipInstanceRoot(), "projects");
+    try {
+      await mkdir(outside, { recursive: true });
+      await writeFile(path.join(outside, "sentinel"), "keep");
+      await mkdir(parent, { recursive: true });
+      await symlink(outside, path.join(parent, companyId), "dir");
+      await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+      await expect(companyService(db).remove(companyId, { deleteFiles: true }))
+        .resolves.toMatchObject({ fileCleanup: "succeeded" });
+      expect(await readFile(path.join(outside, "sentinel"), "utf8")).toBe("keep");
+      await expect(access(path.join(parent, companyId))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
