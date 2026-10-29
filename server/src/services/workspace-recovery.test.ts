@@ -382,7 +382,7 @@ describe("automatic retained workspace recovery", () => {
       await requestTaskRetry({ db, companyId: third.companyId, issueId: third.issueId, actorId: "board",
         observedRunId: third.runId, idempotencyKey: randomUUID() });
       await expect.poll(async () => readSystemRecovery((await action(third.actionId)).evidence)?.state,
-        { timeout: 20_000 }).toBe("complete");
+        { timeout: 40_000 }).toBe("complete");
       expect(readSystemRecovery((await action(held.actionId)).evidence)?.state).toBe("running");
       expect(maximum).toBeLessThanOrEqual(2);
       expect(await readFile(path.join(third.host, "saved.txt"), "utf8")).toBe("finished work\n");

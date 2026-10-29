@@ -4,6 +4,8 @@ import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { lstat, realpath, rm } from "node:fs/promises";
+import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -12,6 +14,8 @@ import {
   projectGoals,
   goals,
   issues,
+  costEvents,
+  financeEvents,
   budgetPolicies,
   pluginManagedResources,
   plugins,
@@ -40,13 +44,65 @@ import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 
 type ProjectTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export async function lockProjectRootMutation(tx: ProjectTransaction, projectId: string) {
   return tx.select().from(projects).where(eq(projects.id, projectId)).for("update").then(rows => rows[0] ?? null);
+}
+
+async function assertProjectDeletionAllowed(db: Db | ProjectTransaction, project: { id: string; companyId: string }) {
+  const [retained] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, project.companyId), eq(executionWorkspaces.projectId, project.id))).limit(1);
+  if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+  const [issue] = await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, project.companyId), eq(issues.projectId, project.id))).limit(1);
+  if (issue) throw conflict("This project still has linked issues. Move or delete its issues before deleting it, or archive the project.");
+  const [cost] = await db.select({ id: costEvents.id }).from(costEvents)
+    .where(and(eq(costEvents.companyId, project.companyId), eq(costEvents.projectId, project.id))).limit(1);
+  if (cost) throw conflict("This project has cost records that must be preserved. Archive the project instead of deleting it.");
+  const [finance] = await db.select({ id: financeEvents.id }).from(financeEvents)
+    .where(and(eq(financeEvents.companyId, project.companyId), eq(financeEvents.projectId, project.id))).limit(1);
+  if (finance) throw conflict("This project has financial records that must be preserved. Archive the project instead of deleting it.");
+}
+
+import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+export async function removeProjectManagedFiles(input: {
+  companyId: string;
+  projectId: string;
+}): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(input.companyId) || !SAFE_PATH_SEGMENT.test(input.projectId)) {
+    throw new Error("Invalid company or project id for managed-file cleanup");
+  }
+
+  let instanceRoot: string;
+  try {
+    instanceRoot = await realpath(resolvePaperclipInstanceRoot());
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  let checkedPath = instanceRoot;
+  for (const segment of ["projects", input.companyId, input.projectId]) {
+    checkedPath = path.join(checkedPath, segment);
+    try {
+      const stat = await lstat(checkedPath);
+      if (stat.isSymbolicLink() || !stat.isDirectory() || await realpath(checkedPath) !== checkedPath) {
+        throw new Error("Refusing managed-file cleanup through a redirected directory");
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+  }
+  await rm(checkedPath, { recursive: true, force: true });
 }
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -647,7 +703,16 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
-export function projectService(db: Db, options: { captureWorkspaceUpdates?: boolean } = {}) {
+export function projectService(
+  db: Db,
+  options: {
+    captureWorkspaceUpdates?: boolean;
+    removeManagedFiles?: (input: {
+      companyId: string;
+      projectId: string;
+    }) => Promise<void>;
+  } = {},
+) {
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
@@ -972,11 +1037,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, status: projects.status, deletionClaimToken: projects.deletionClaimToken, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (projectData.status !== undefined && projectData.status !== existingProject.status &&
+          (existingProject.status === "deleting" || existingProject.deletionClaimToken)) {
+        throw conflict("Project deletion is in progress. Retry the deletion before changing its status.");
+      }
       if (projectData.executionWorkspacePolicy !== undefined &&
           projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
         const providers = await listProjectWorkspaceProviders(db, existingProject.companyId);
@@ -1077,18 +1146,76 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       return cleared;
     },
 
-    remove: async (id: string) => db.transaction(async tx => {
-      const project = await lockProjectRootMutation(tx, id);
-      if (!project) return null;
-      const [retained] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-        .where(eq(executionWorkspaces.projectId, id)).limit(1);
-      if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
-      await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
-      await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
-      const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
-    }),
+    assertDeletionAllowed: (project: { id: string; companyId: string }) => assertProjectDeletionAllowed(db, project),
+
+    remove: async (
+      id: string,
+      removeOptions: { deleteFiles?: boolean; deletionClaimToken?: string | null } = {},
+    ) => {
+      const result = await db.transaction(async (tx) => {
+        const project = await lockProjectRootMutation(tx, id);
+        if (!project) return { row: null };
+        await assertProjectDeletionAllowed(tx, project);
+        await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
+        await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        if (project.deletionClaimToken && !removeOptions.deletionClaimToken) {
+          throw conflict("Project deletion is already in progress. Retry the requested deletion.");
+        }
+        if (removeOptions.deletionClaimToken) {
+          if (
+            project.status !== "deleting" ||
+            project.deletionClaimToken !== removeOptions.deletionClaimToken ||
+            !project.deletionClaimExpiresAt ||
+            project.deletionClaimExpiresAt.getTime() <= Date.now()
+          ) {
+            throw conflict("Project deletion claim expired. Retry the deletion.");
+          }
+        }
+        const rows = await tx
+          .delete(projects)
+          .where(
+            removeOptions.deletionClaimToken
+              ? and(
+                  eq(projects.id, id),
+                  eq(projects.deletionClaimToken, removeOptions.deletionClaimToken),
+                  gt(projects.deletionClaimExpiresAt, new Date()),
+                )
+              : eq(projects.id, id),
+          )
+          .returning();
+        if (rows.length === 0 && removeOptions.deletionClaimToken) {
+          throw conflict("Project deletion claim expired. Retry the deletion.");
+        }
+        return {
+          row: rows[0] ?? null,
+        };
+      });
+      if (!result.row) return null;
+
+      let fileCleanup: FileCleanupStatus = "not_requested";
+      if (removeOptions.deleteFiles) {
+        try {
+          await (options.removeManagedFiles ?? removeProjectManagedFiles)({
+            companyId: result.row.companyId,
+            projectId: result.row.id,
+          });
+          fileCleanup = "succeeded";
+        } catch (err) {
+          fileCleanup = "failed";
+          logger.warn(
+            { err, companyId: result.row.companyId, projectId: result.row.id },
+            "project deleted but managed-file cleanup failed",
+          );
+        }
+      }
+
+      return {
+        ...result.row,
+        urlKey: deriveProjectUrlKey(result.row.name, result.row.id),
+        fileCleanup,
+      };
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

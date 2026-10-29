@@ -1,8 +1,8 @@
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
-import { createHash } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { activityLog } from "@paperclipai/db";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { museExternalAgents, withExternalExecutionAdmission } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
@@ -11,9 +11,7 @@ import { z } from "zod";
 import { normalizeProjectRepositoryUrl, resolveProjectRepositorySelection } from "../services/project-repositories.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
 import { agents, authUsers, companyMemberships, instanceUserRoles, projectAccessMembers } from "@paperclipai/db";
-import { inArray } from "drizzle-orm";
 import {
   addProjectAccessMemberSchema,
   createProjectSchema,
@@ -32,7 +30,13 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import {
+  accessService,
+  heartbeatService,
+  projectService,
+  logActivity,
+  workspaceOperationService,
+} from "../services/index.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -43,6 +47,7 @@ import {
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
 import {
@@ -59,12 +64,17 @@ import { secretService } from "../services/secrets.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
+const PROJECT_DELETION_CLAIM_TTL_MS = 60_000;
+const PROJECT_DELETION_CLAIM_RENEW_MS = 10_000;
+const PROJECT_DELETION_DRAIN_STATUSES = [
+  "queued", "scheduled_retry", "running", "succeeded", "interrupted", "failed", "cancelled", "timed_out",
+];
 
 export function projectRoutes(db: Db) {
   const router = Router();
   router.use(skillAccessRequestContext);
   const svc = projectService(db);
-
+  const heartbeat = heartbeatService(db);
   async function repositoryViewer(req: Request) {
     if (req.actor.type === "board") return { userId: req.actor.userId ?? null, localTrusted: req.actor.source === "local_implicit" };
     const context = await projectToolContext(db, req.actor);
@@ -118,6 +128,73 @@ export function projectRoutes(db: Db) {
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["local", "ssh", "sandbox"],
     });
+  }
+
+  async function stopProjectDeletionActivity(project: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!project) return;
+
+    const issueRunRefs = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.projectId, project.id));
+    const referencedRunIds = Array.from(
+      new Set(
+        issueRunRefs.flatMap((row) => [row.checkoutRunId, row.executionRunId]).filter(Boolean),
+      ),
+    ) as string[];
+    const referencedActiveRuns =
+      referencedRunIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                inArray(heartbeatRuns.id, referencedRunIds),
+                inArray(
+                  heartbeatRuns.status,
+                  project.status === "deleting" ? PROJECT_DELETION_DRAIN_STATUSES : ["queued", "running"],
+                ),
+              ),
+            )
+        : [];
+    const contextualActiveRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, project.companyId),
+        inArray(
+          heartbeatRuns.status,
+          project.status === "deleting" ? PROJECT_DELETION_DRAIN_STATUSES : ["queued", "running"],
+        ),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'projectId' = ${project.id}`,
+      ));
+
+    const candidateRuns = [...referencedActiveRuns, ...contextualActiveRuns];
+    const activeRunIds = new Set(candidateRuns.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id));
+    const drainRunIds = new Set(candidateRuns.map((run) => run.id));
+    for (const runId of activeRunIds) {
+      await heartbeat.cancelRun(runId, "Cancelled because the project was deleted");
+    }
+    for (const workspace of project.workspaces) {
+      await stopRuntimeServicesForProjectWorkspace({
+        db,
+        projectWorkspaceId: workspace.id,
+      });
+    }
+    const projectExecutionWorkspaces = await db
+      .select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.projectId, project.id));
+    for (const workspace of projectExecutionWorkspaces) {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      });
+    }
+    for (const runId of drainRunIds) {
+      await heartbeat.waitForRunExecutionDrain(runId, { timeoutMs: 30_000 });
+    }
   }
 
   function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
@@ -283,6 +360,12 @@ export function projectRoutes(db: Db) {
 
   router.param("id", async (req, _res, next, rawId) => {
     try {
+      if (
+        req.method === "DELETE" && req.route?.path === "/projects/:id" &&
+        (req.query.deleteFiles === "true" || req.query.deleteFiles === "1")
+      ) {
+        assertBoard(req);
+      }
       req.params.id = await normalizeProjectReference(req, rawId);
       next();
     } catch (err) {
@@ -1053,11 +1136,116 @@ export function projectRoutes(db: Db) {
   });
 
   router.delete("/projects/:id", async (req, res) => {
+    const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
+    if (deleteFiles) assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
-    const project = await svc.remove(id);
+    if (deleteFiles && !(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
+    let deletionClaimToken: string | null = null;
+    let claimLost = false;
+    let renewal: ReturnType<typeof setInterval> | null = null;
+    let renewalInFlight: Promise<void> | null = null;
+    if (deleteFiles || existing.status === "deleting") {
+      await svc.assertDeletionAllowed(existing);
+      const claimToken = randomUUID();
+      deletionClaimToken = claimToken;
+      const claimed = await db.transaction(async (tx) =>
+        tx
+          .update(projects)
+          .set({
+            status: "deleting",
+            deletionClaimToken: claimToken,
+            deletionClaimExpiresAt: new Date(Date.now() + PROJECT_DELETION_CLAIM_TTL_MS),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(projects.id, existing.id),
+            eq(projects.companyId, existing.companyId),
+            or(
+              isNull(projects.deletionClaimToken),
+              isNull(projects.deletionClaimExpiresAt),
+              lt(projects.deletionClaimExpiresAt, new Date()),
+            ),
+          ))
+          .returning({ id: projects.id }),
+      );
+      if (claimed.length === 0) {
+        res.status(409).json({ error: "Project deletion is already in progress." });
+        return;
+      }
+      renewal = setInterval(() => {
+        if (renewalInFlight) return;
+        renewalInFlight = db
+          .update(projects)
+          .set({ deletionClaimExpiresAt: new Date(Date.now() + PROJECT_DELETION_CLAIM_TTL_MS) })
+          .where(and(
+            eq(projects.id, existing.id),
+            eq(projects.deletionClaimToken, claimToken),
+            gt(projects.deletionClaimExpiresAt, new Date()),
+          ))
+          .returning({ id: projects.id })
+          .then((rows) => { if (rows.length === 0) claimLost = true; })
+          .catch(() => { claimLost = true; })
+          .finally(() => { renewalInFlight = null; });
+      }, PROJECT_DELETION_CLAIM_RENEW_MS);
+      renewal.unref?.();
+      try {
+        await stopProjectDeletionActivity(existing);
+        await renewalInFlight;
+        const stillClaimed = await db
+          .select({ id: projects.id, expiresAt: projects.deletionClaimExpiresAt })
+          .from(projects)
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)))
+          .limit(1);
+        if (
+          claimLost ||
+          stillClaimed.length === 0 ||
+          !stillClaimed[0].expiresAt ||
+          stillClaimed[0].expiresAt.getTime() <= Date.now()
+        ) {
+          clearInterval(renewal);
+          await renewalInFlight;
+          await db
+            .update(projects)
+            .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+            .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)));
+          res.status(409).json({ error: "Project deletion claim expired. Retry the deletion." });
+          return;
+        }
+      } catch (err) {
+        clearInterval(renewal);
+        await renewalInFlight;
+        await db
+          .update(projects)
+          .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, deletionClaimToken)));
+        if (err instanceof Error && err.message.startsWith("Timed out waiting for heartbeat run ")) {
+          res.status(409).json({
+            error: "Project activity is still stopping. The project remains fenced; retry the deletion after its active runs stop.",
+          });
+          return;
+        }
+        throw err;
+      }
+    }
+    let project;
+    try {
+      project = await svc.remove(existing.id, { deleteFiles, deletionClaimToken });
+    } catch (err) {
+      if (renewal) clearInterval(renewal);
+      await renewalInFlight;
+      if (deletionClaimToken) {
+        await db
+          .update(projects)
+          .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
+          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, deletionClaimToken)));
+      }
+      throw err;
+    }
+    await renewalInFlight;
+    if (renewal) clearInterval(renewal);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
