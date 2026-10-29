@@ -102,10 +102,11 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
           && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
         const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
-        const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
+        const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu.test(output);
+        const inline = inlineDestination || /\b(?:its|the) contents\b/iu.test(output);
         const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
           && /\b(?:(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)|download link)\b/iu.test(output));
-        const inlineOnly = inline && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+        const inlineOnly = inlineDestination && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
           && !/\bas (?:an? )?attachment\b/iu.test(output);
         const objects = [...output.matchAll(file)].filter(match => {
           const prefix = output.slice(0, match.index);

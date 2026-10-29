@@ -6,6 +6,7 @@ describe("explicit file output requirements", () => {
     "Prepare a requested file",
     "Make a Markdown file named checklist.md with three items.",
     "Write connection-proof.json with the computed result.",
+    "Write result.json with the contents of the verified report.",
     "Write result.json inline and attach it as a download.",
     "Write result.json inline and publish it.",
     "Write result.json inline. Publish it on this task.",
