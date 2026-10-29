@@ -652,6 +652,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         state.lifecycle = "ready".to_owned();
         state.recoverable_failure = None;
         store.save(&state)?;
+        #[cfg(unix)]
+        if let Some(notifications) = notifications.as_mut() {
+            notifications.poll(&config, &mut state, &store);
+        }
         let mut sent_source_seq = state.acked_source_seq;
         let mut ack_persistence = CumulativeAckPersistence::default();
 

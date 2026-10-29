@@ -287,14 +287,15 @@ Runner supplies the matching absolute executable as
 `PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
 override them. Provider launch boundaries preserve both values. Codex receives
 read access to the helper, descriptor and publisher lock, plus write access to
-one named pipe. The enclosing Runner state remains protected.
+one named pipe. The pipe and lock live in a private temporary directory, outside
+durable Runner state. The enclosing directories remain protected.
 
 The helper captures context locally. After success, it publishes newline-delimited
 JSON through a nonblocking pipe. A leading newline terminates an interrupted
 previous write. A read-only file lock serializes publishers with a 500 ms deadline.
 Runner reuses its bounded line reader: 2 KiB per record, 128 queued records and
 16 records per control-loop iteration. Idle transport blocks; cleanup removes
-only its pipe and lock files.
+only its pipe, lock and empty private directory.
 
 A successful helper exit means publication to the pipe. Runner validates context
 against the active run, deduplicates up to 128 activity pairs per authority, and

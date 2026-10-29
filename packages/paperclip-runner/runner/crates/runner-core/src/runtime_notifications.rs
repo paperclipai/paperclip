@@ -9,7 +9,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, Read, Write};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -52,6 +52,7 @@ impl Drop for ActivityPipe {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
         let _ = fs::remove_file(self.0.with_extension("lock"));
+        let _ = fs::remove_dir(self.0.parent().unwrap());
     }
 }
 
@@ -172,9 +173,14 @@ pub struct RuntimeNotifications {
 impl RuntimeNotifications {
     pub fn bind(state_dir: &Path) -> Result<Self, DurableRunnerError> {
         verify_private_directory(state_dir)?;
-        let pipe = ActivityPipe(
-            state_dir.join(format!("runtime-activity-{}.fifo", Uuid::new_v4().simple())),
-        );
+        let directory = fs::canonicalize(std::env::temp_dir())
+            .map_err(failure)?
+            .join(format!("runtime-activity-{}", Uuid::new_v4().simple()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .map_err(failure)?;
+        let pipe = ActivityPipe(directory.join("activity.fifo"));
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -657,6 +663,7 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(fs::read(nested.join("protected")).unwrap(), b"unchanged");
+        fs::remove_dir_all(pipe.parent().unwrap()).unwrap();
     }
     #[test]
     #[ignore = "requires CODEX_NOTIFICATION_SANDBOX_COMMAND and PAPERCLIP_RUNTIME_NOTIFICATION_HELPER"]
@@ -701,6 +708,8 @@ mod tests {
 if cat "$1" >/dev/null 2>&1; then exit 71; fi
 if /bin/sh -c ': >> "$PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT"' 2>/dev/null; then exit 72; fi
 if touch "$2/probe" 2>/dev/null; then exit 75; fi
+if touch "$3/probe" 2>/dev/null; then exit 76; fi
+if /bin/sh -c ': >> "$1"' ignored "$4" 2>/dev/null; then exit 77; fi
 context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit 73
 "$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used || exit 74
 "#;
@@ -743,7 +752,7 @@ context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit
                     assert!(message.get("error").is_none(), "initialize: {message}");
                     writeln!(input, "{}", json!({"method":"initialized","params":{}})).unwrap();
                     writeln!(input, "{}", json!({"id":2,"method":"command/exec","params":{
-                        "command":["/bin/sh","-c",script,"publisher",config.state_dir.join("runner-state.json"),config.state_dir],
+                        "command":["/bin/sh","-c",script,"publisher",config.state_dir.join("runner-state.json"),config.state_dir,server.pipe.0.parent().unwrap(),server.pipe.0.with_extension("lock")],
                         "cwd":workspace,"timeoutMs":10000}})).unwrap();
                 } else if message["id"] == 2 {
                     response = Some(message);

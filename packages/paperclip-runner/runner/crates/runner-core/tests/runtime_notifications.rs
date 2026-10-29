@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,8 +15,12 @@ use paperclip_runner_core::runtime_notifications::{
 fn helper(config: &DurableRunnerConfig, args: &[&str]) -> Output {
     Command::new(std::env::var_os(HELPER_ENV).expect("Runner publishes its matching helper"))
         .env("PATH", "/usr/bin:/bin")
-        .env(CONTEXT_ENV, context_path(&config.state_dir))
+        .env(
+            CONTEXT_ENV,
+            fs::canonicalize(context_path(&config.state_dir)).unwrap(),
+        )
         .env("PAPERCLIP_RUN_ID", "stale-process-run")
+        .current_dir(std::env::temp_dir())
         .args(args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -24,14 +29,16 @@ fn helper(config: &DurableRunnerConfig, args: &[&str]) -> Output {
 }
 
 #[test]
-fn real_cli_uses_runner_context_and_never_process_run_identity() {
-    let path = std::env::temp_dir().join(format!("notification-cli-{}", uuid::Uuid::new_v4()));
+fn real_cli_uses_relative_state_from_another_directory_and_never_process_run_identity() {
+    let path = std::env::current_dir()
+        .unwrap()
+        .join(format!("notification-cli-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     let mut config = DurableRunnerConfig {
         connect_url: "ws://127.0.0.1/runner".into(),
         ca_bundle_path: None,
-        state_dir: path.clone(),
+        state_dir: PathBuf::from(path.file_name().unwrap()),
         runner_instance_id: "runner".into(),
         environment_lease_id: "lease".into(),
         run_id: "active-run".into(),
@@ -52,9 +59,9 @@ fn real_cli_uses_runner_context_and_never_process_run_identity() {
     let store = DurableStateStore::new(&path).unwrap();
     let (mut state, _) = store.load_or_create(&config).unwrap();
     state.lifecycle = "ready".into();
-    let mut server = RuntimeNotifications::bind(&path).unwrap();
+    let mut server = RuntimeNotifications::bind(&config.state_dir).unwrap();
     server.poll(&config, &mut state, &store);
-    std::env::set_var(CONTEXT_ENV, context_path(&path));
+    std::env::set_var(CONTEXT_ENV, fs::canonicalize(context_path(&path)).unwrap());
     std::env::set_var(HELPER_ENV, env!("CARGO_BIN_EXE_paperclip-runnerd"));
     let mut provider = paperclip_runner_core::process_supervisor::SupervisedProcess::spawn(
         std::path::Path::new("/bin/sh"),
@@ -70,7 +77,12 @@ fn real_cli_uses_runner_context_and_never_process_run_identity() {
         provider
             .receive_stdout_line(Duration::from_secs(1))
             .unwrap(),
-        Some(context_path(&path).to_string_lossy().into_owned())
+        Some(
+            fs::canonicalize(context_path(&path))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        )
     );
     assert_eq!(
         provider
