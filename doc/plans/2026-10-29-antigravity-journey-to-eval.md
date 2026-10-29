@@ -174,7 +174,7 @@ fixture setup. Every one of the 47 numbered steps appears once below.
 | A31 | In Progress / native work | verification / first-working | observation | Same task/agent; bounded start |
 | A32 | Actual 61-byte result card arrives | verification / first-delivery | observation | New attachment correlated to owned first run |
 | A33 | Open actual file; first finish rejected | verification / first-file | retain + recovery regression | Read/download actual bytes; preserve genuine rejection |
-| A34 | Expand history after finish rejection | verification / activity-status | retain | A36 image and native receipts establish per-call attribution |
+| A34 | Expand history after finish rejection | verification / activity-status | adapt | Open ordinary More messages when saved history is compacted, then expand activity; match actual native `tool_call`/`tool_result` (`kind: tool`) and canonical `provider_activity` rows while retaining A36 per-call attribution |
 | A35 | Done after corrected finish | verification / first-settlement | observation | Own accepted result, committed finalization, applied Done |
 | A36 | Completed edit/read, only actual finish failed | verification / activity-status | observation + recovery regression | Completed tools stay completed; do not force live rejection |
 | A37 | Reload first result | verification / first-persistence | retain | Durable navigation boundary |
