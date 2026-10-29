@@ -1851,6 +1851,53 @@ When a workspace service runs Paperclip for browser OAuth QA, configure its `exp
 
 ## Heartbeat Service Extractions
 
+Pending reviewer turns carry the complete policy/state generation from admission.
+For an ordinary review monitor, scheduling supplies a scoped claim to the queue.
+The queue consumes that exact monitor and captures the new run's complete
+post-consumption generation in one company-scoped issue transaction. Existing
+runs retain their original generation. Dispatch starts after the outer commit.
+Before coalescing a fresh wake, queue admission retires a queued review whose
+complete generation no longer matches the task, even when the reviewer is
+unchanged. Retirement and fresh admission share the issue transaction. A failed
+admission rolls both back; running turns are not retired by this path.
+
+For legacy tasks with no responsible user, the identity owner initializes the
+NEW review run through the same operator/origin/message selection as dispatch.
+It applies the original null-only task backfill before the queue captures the
+complete generation in that admission transaction. Non-null task ownership is
+preserved. An immutable null-generation intent waits for lawful initialization;
+then the existing generation check retires it instead of re-signing it.
+When an ordinary comment coalesces into that queued review, the identity owner
+accepts previously unseen message identities inside the first claim transaction,
+after the queue holds company, issue/wake and run locks. It preserves explicit
+operator priority and existing accepted steering, and returns a run whose user
+matches its active identity. Reclaims do not replay messages or rewind identity.
+This changes run attribution without re-signing the review generation or
+reassigning the task's now non-null responsible user.
+
+
+A stamped reviewer quota retry also needs installation evidence. The issue
+mutation owner verifies the source's complete generation before installing the
+quota monitor, rejects any simultaneous non-monitor generation change, and
+records both the source and installed generations in the same transaction's
+`issue.review_quota_monitor_installed` activity. This is a company-scoped,
+server-owned installation proof, not a wake receipt. At retry admission, the
+monitor owner checks that proof against the exact source and current installed
+generation under issue-before-run locks. Only a NEW scheduled retry consumes the
+matching claim and captures the complete post-consumption generation in that
+commit. A missing/foreign proof or any intervening generation change refuses
+admission and retains the monitor duty. Existing retries and immutable receipts
+keep their original generation; provider dispatch still follows outer commit.
+Source eligibility preserves both proven bootstrap failures and the existing legacy
+conversation-continuation contract. Cleanup and reconciliation checks apply to both.
+Stamped cross-agent reviewers recheck current authority at both provider gates;
+only continuations that require the assignee execution lock must own that lock.
+Verified reviewer comments retain the dependency-blocked interaction exception at
+both provider gates. Each gate checks the persisted comment and wake provenance;
+ordinary review work remains blocked by unfinished dependencies.
+
+
+
 Routine and issue-monitor dispatch uses saved future deadlines through
 `server/src/services/scheduled-work.ts` and the existing delivery coordinator.
 Startup restores the next deadline. Routine edits and monitor changes notify

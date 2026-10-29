@@ -292,6 +292,7 @@ import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-uti
 
 import {
   initializeRunIdentity,
+  runIdentityInitializationInput,
 } from "./run-identity.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -979,6 +980,7 @@ export function heartbeatService(
   const runDispatch = createRunDispatch(db);
   const {
     scheduleBoundedRetryForRun,
+    scheduleMonitorRetryForRun,
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
@@ -1552,9 +1554,11 @@ export function heartbeatService(
   } = createHeartbeatScheduling(db, {
     issuesSvc,
     enqueueWakeup,
+    enqueueMonitorWakeup: heartbeatQueue.enqueueMonitorWakeup,
     getRun,
     getAgent,
     scheduleBoundedRetryForRun,
+    scheduleMonitorRetryForRun,
     getSchedulingSuppression,
     getWorktreeExecutionCutoff,
     toAgentOrgRow,
@@ -2330,41 +2334,8 @@ export function heartbeatService(
           issueContext,
           routineEnvContext,
         });
-      const identityContext = await initializeRunIdentity(db, {
-        companyId: agent.companyId,
-        runId: run.id,
-        responsibleUserId,
-        interactionId: readNonEmptyString(context.interactionId),
-        issueId,
-        messageIds:
-          (run.retryOfRunId || context.retryOfRunId) && !isFailedChatRunRetry
-            ? []
-            : queuedCommentIdsFromRunContext(context).length
-              ? queuedCommentIdsFromRunContext(context)
-              : Array.isArray(context.wakeCommentIds)
-                ? context.wakeCommentIds.filter(
-                    (id): id is string => typeof id === "string",
-                  )
-                : wakeCommentId
-                  ? [wakeCommentId]
-                  : [],
-        parentContextId:
-          run.retryOfRunId || context.retryOfRunId
-            ? null
-            : (readNonEmptyString(context.originIdentityContextId) ??
-              (run.triggerDetail === "manual" || context.parentRunId
-                ? null
-                : (issueContext?.continuationIdentityContextId ??
-                  issueContext?.originIdentityContextId))),
-        parentRunId:
-          run.retryOfRunId ??
-          readNonEmptyString(context.retryOfRunId) ??
-          readNonEmptyString(context.parentRunId),
-        cause:
-          readNonEmptyString(context.executionIdentityCause) ??
-          readNonEmptyString(context.wakeReason) ??
-          "dispatch",
-      });
+      const identityContext = await initializeRunIdentity(db, runIdentityInitializationInput(
+        run, context, issueContext, responsibleUserId, isFailedChatRunRetry));
       // Initialization has persisted the active context, including an explicit
       // absence of identity inherited from an automatic continuation.
       responsibleUserId = identityContext.responsibleUserId;

@@ -108,6 +108,9 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "agent_not_invokable"
+  | "issue_paused"
+  | "issue_access_denied"
   | "issue_waiting_for_response"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
@@ -130,8 +133,11 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  invokabilityBlock?: string | null;
+  activePauseHold?: PauseHoldFacts | null;
+  accessBlock?: string | null;
+  reconciliationBlock?: { reason: string; recoveryActionId: string | null } | null;
   pendingResponse?: "interaction" | "approval" | null;
-  /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
   runAgentId: string;
@@ -548,6 +554,17 @@ export function decideQueuedRunStaleness(
     }
   }
 
+  if (facts.invokabilityBlock) return { stale: true, errorCode: "agent_not_invokable",
+    reason: facts.invokabilityBlock, details: { issueId: facts.issueId, agentId: facts.runAgentId } };
+  if (facts.reconciliationBlock) return { stale: true, errorCode: "execution_reconciliation_required",
+    reason: facts.reconciliationBlock.reason,
+    details: { issueId: facts.issueId, recoveryActionId: facts.reconciliationBlock.recoveryActionId } };
+  if (facts.activePauseHold) return { stale: true, errorCode: "issue_paused",
+    reason: "Cancelled because the task tree is paused before dispatch",
+    details: { issueId: facts.issueId, ...facts.activePauseHold } };
+  if (facts.accessBlock) return { stale: true, errorCode: "issue_access_denied",
+    reason: facts.accessBlock, details: { issueId: facts.issueId } };
+
   if (facts.pendingResponse) {
     return { stale: true, errorCode: "issue_waiting_for_response",
       reason: "Cancelled because the continuation is still waiting for an authorized response",
@@ -594,9 +611,9 @@ export function decideQueuedRunStaleness(
     };
   }
 
-  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+  if (facts.dependenciesBlocked) {
     return { stale: true, errorCode: "issue_dependencies_blocked",
-      reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
+      reason: "Cancelled because issue dependencies became blocked before dispatch",
       details: { issueId: facts.issueId,
         unresolvedBlockerIssueIds: facts.dependenciesBlocked.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount } };

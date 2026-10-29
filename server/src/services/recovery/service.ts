@@ -1,3 +1,4 @@
+import { ReviewQuotaMonitorHeld } from "../heartbeat/reviewer-quota-monitor.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -4455,10 +4456,16 @@ export function recoveryService(
       actor: { agentId: null, userId: null },
       monitorExplicitlyUpdated: true,
     });
-    const updated = await issuesSvc.update(input.issue.id, {
-      ...transition.patch,
-      executionPolicy: policy,
-    });
+    let updated;
+    try {
+      updated = await issuesSvc.update(input.issue.id, {
+        ...transition.patch,
+        executionPolicy: policy,
+      });
+    } catch (error) {
+      if (error instanceof ReviewQuotaMonitorHeld) return null;
+      throw error;
+    }
     if (!updated) return null;
 
     await logActivity(db, {
@@ -5190,17 +5197,18 @@ export function recoveryService(
         if (
           participantAdapterFailureClassification?.kind === "provider_quota"
         ) {
+          const classifiedParticipantRun = await persistAdapterFailureRecoveryClassification(
+            issue,
+            participantLatestRun,
+            participantAdapterFailureClassification,
+          );
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
-            latestRun: participantLatestRun,
+            latestRun: classifiedParticipantRun,
             classification: participantAdapterFailureClassification,
           });
           if (monitored) {
-            latestRun = await persistAdapterFailureRecoveryClassification(
-              issue,
-              participantLatestRun,
-              participantAdapterFailureClassification,
-            );
+            latestRun = classifiedParticipantRun;
             result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
           } else {

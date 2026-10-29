@@ -1,3 +1,4 @@
+import { assertReviewQuotaMonitorInstallation, ReviewQuotaMonitorHeld } from "./reviewer-quota-monitor.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
   issues,
@@ -43,6 +44,7 @@ import {
   buildIssueMonitorClearedPatch,
   parseIssueExecutionState,
   buildIssueMonitorTriggeredPatch,
+  issueExecutionGeneration,
 } from "../issue-execution-policy.js";
 import { conflict, HttpError, notFound } from "../../errors.js";
 import { EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON } from "./run-state.js";
@@ -66,10 +68,11 @@ type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 
 export interface HeartbeatSchedulingDependencies
   extends Pick<HeartbeatRetryDependencies, "getRun" | "getAgent" | "getWorktreeExecutionCutoff">,
-    Pick<HeartbeatQueue, "enqueueWakeup" | "parseHeartbeatPolicy" | "claimDueTimerHeartbeat">,
+    Pick<HeartbeatQueue, "enqueueWakeup" | "enqueueMonitorWakeup" | "parseHeartbeatPolicy" | "claimDueTimerHeartbeat">,
     Pick<RunPreparation, "toAgentOrgRow" | "groupAgentOrgRowsByCompany"> {
   issuesSvc: Pick<ReturnType<typeof issueService>, "listReviewAttention" | "create">;
   scheduleBoundedRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleBoundedRetryForRun"];
+  scheduleMonitorRetryForRun: ReturnType<typeof createHeartbeatRetries>["scheduleMonitorRetryForRun"];
   getSchedulingSuppression: () => Promise<{ suppressed: boolean }>;
 }
 
@@ -119,6 +122,70 @@ export function formatIssueIdentifierLink(
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON =
   "execution_review_participant_recovery";
 
+interface IssueMonitorDispatchRow {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  goalId: string | null;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  billingCode: string | null;
+  responsibleUserId: string | null;
+  executionPolicy: Record<string, unknown> | null;
+  executionState: Record<string, unknown> | null;
+  monitorNextCheckAt: Date | null;
+  monitorWakeRequestedAt: Date | null;
+  monitorLastTriggeredAt: Date | null;
+  monitorAttemptCount: number | null;
+  monitorNotes: string | null;
+  monitorScheduledBy: string | null;
+}
+
+function monitorOnlyDispatchPatch<T extends ReturnType<typeof buildIssueMonitorClearedPatch>>(patch: T) {
+  return {
+    ...patch,
+    executionPolicy: sql`nullif(${issues.executionPolicy} - 'monitor', '{}'::jsonb)`,
+    executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
+      '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
+  };
+}
+
+function issueMonitorClaimCondition(claimed: IssueMonitorDispatchRow) {
+  return and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId),
+    eq(issues.assigneeAgentId, claimed.assigneeAgentId!), isNull(issues.assigneeUserId),
+    eq(issues.status, claimed.status), eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt!),
+    eq(issues.monitorWakeRequestedAt, claimed.monitorWakeRequestedAt!));
+}
+
+export class IssueMonitorAdmission {
+  constructor(private readonly claimed: IssueMonitorDispatchRow, private readonly now: Date, private readonly quotaSourceRunId?: string) {}
+
+  async consume(tx: Db, current: Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "responsibleUserId" | "executionPolicy" | "executionState">, agentId: string, source?: typeof heartbeatRuns.$inferSelect) {
+    if (this.quotaSourceRunId) {
+      if (!source || source.id !== this.quotaSourceRunId) throw new ReviewQuotaMonitorHeld("The quota source changed before admission");
+      const [task] = await tx.select().from(issues).where(and(eq(issues.id, current.id), eq(issues.companyId, current.companyId)));
+      if (!task) throw new ReviewQuotaMonitorHeld("The monitored task is unavailable");
+      await assertReviewQuotaMonitorInstallation(tx, task, source);
+    }
+    const participant = this.quotaSourceRunId ? parseIssueExecutionState(this.claimed.executionState)?.currentParticipant : null;
+    const targetAgentId = participant?.type === "agent" ? participant.agentId : this.claimed.assigneeAgentId;
+    if (current.id !== this.claimed.id || current.companyId !== this.claimed.companyId || agentId !== targetAgentId
+      || issueExecutionGeneration(current) !== issueExecutionGeneration(this.claimed))
+      throw new Error("Monitor admission generation changed");
+    const [consumed] = await tx.update(issues).set({
+      ...monitorOnlyDispatchPatch(buildIssueMonitorTriggeredPatch({ issue: this.claimed,
+        policy: normalizeIssueExecutionPolicy(this.claimed.executionPolicy), triggeredAt: this.now })),
+      updatedAt: new Date(),
+    }).where(issueMonitorClaimCondition(this.claimed)).returning();
+    if (!consumed) throw new Error("Monitor claim was replaced before admission");
+    return consumed;
+  }
+}
+
 // Construction only binds dependencies. Scheduler calls retain the existing queue admission gates.
 export function createHeartbeatScheduling(
   db: Db,
@@ -127,9 +194,11 @@ export function createHeartbeatScheduling(
   const {
     issuesSvc,
     enqueueWakeup,
+    enqueueMonitorWakeup,
     getRun,
     getAgent,
     scheduleBoundedRetryForRun,
+    scheduleMonitorRetryForRun,
     getSchedulingSuppression,
     getWorktreeExecutionCutoff,
     toAgentOrgRow,
@@ -150,6 +219,7 @@ export function createHeartbeatScheduling(
     assigneeAgentId: issues.assigneeAgentId,
     assigneeUserId: issues.assigneeUserId,
     billingCode: issues.billingCode,
+    responsibleUserId: issues.responsibleUserId,
     executionPolicy: issues.executionPolicy,
     executionState: issues.executionState,
     monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -160,27 +230,6 @@ export function createHeartbeatScheduling(
     monitorScheduledBy: issues.monitorScheduledBy,
   };
 
-  interface IssueMonitorDispatchRow {
-    id: string;
-    companyId: string;
-    projectId: string | null;
-    goalId: string | null;
-    identifier: string | null;
-    title: string;
-    status: string;
-    priority: string;
-    assigneeAgentId: string | null;
-    assigneeUserId: string | null;
-    billingCode: string | null;
-    executionPolicy: Record<string, unknown> | null;
-    executionState: Record<string, unknown> | null;
-    monitorNextCheckAt: Date | null;
-    monitorWakeRequestedAt: Date | null;
-    monitorLastTriggeredAt: Date | null;
-    monitorAttemptCount: number | null;
-    monitorNotes: string | null;
-    monitorScheduledBy: string | null;
-  }
 
   function parseMonitorDate(value: string | null | undefined) {
     if (!value) return null;
@@ -525,23 +574,6 @@ export function createHeartbeatScheduling(
     return { outcome: "skipped" as const, reason: input.clearReason };
   }
 
-  function monitorOnlyDispatchPatch<T extends ReturnType<typeof buildIssueMonitorClearedPatch>>(patch: T) {
-    // Admission and consumption are separate transactions. Preserve any review
-    // policy/state changes made between them; only the monitor belongs to us.
-    return {
-      ...patch,
-      executionPolicy: sql`nullif(${issues.executionPolicy} - 'monitor', '{}'::jsonb)`,
-      executionState: sql`jsonb_set(coalesce(${issues.executionState}, ${JSON.stringify(patch.executionState)}::jsonb),
-        '{monitor}', ${JSON.stringify(patch.executionState?.monitor ?? null)}::jsonb)`,
-    };
-  }
-
-  function issueMonitorClaimCondition(claimed: IssueMonitorDispatchRow) {
-    return and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId),
-      eq(issues.assigneeAgentId, claimed.assigneeAgentId!), isNull(issues.assigneeUserId),
-      eq(issues.status, claimed.status), eq(issues.monitorNextCheckAt, claimed.monitorNextCheckAt!),
-      eq(issues.monitorWakeRequestedAt, claimed.monitorWakeRequestedAt!));
-  }
 
   async function releaseIssueMonitorWithDiagnostic(
     claimed: IssueMonitorDispatchRow,
@@ -676,6 +708,9 @@ export function createHeartbeatScheduling(
       });
     }
 
+    let atomicAdmission = monitor?.serviceName !== PROVIDER_QUOTA_MONITOR_SERVICE_NAME
+      && executionState?.status === "pending" && executionState.currentStageType === "review"
+      && reviewParticipantAgentId === targetAgentId ? new IssueMonitorAdmission(claimed, input.now) : null;
     try {
       if (monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME) {
         // Normalized monitor projections redact externalRef. Read the claimed
@@ -700,6 +735,12 @@ export function createHeartbeatScheduling(
             "The quota recovery source changed; inspect the current task execution.",
           );
         }
+        if (isProviderQuotaReviewMonitor) {
+          const [task] = await db.select().from(issues).where(and(eq(issues.id, claimed.id), eq(issues.companyId, claimed.companyId)));
+          if (!task || issueExecutionGeneration(task) !== issueExecutionGeneration(claimed))
+            throw new ReviewQuotaMonitorHeld("The quota monitor generation changed before recovery");
+          await assertReviewQuotaMonitorInstallation(db, task, sourceRun);
+        }
         if (sourceRun.runtimeMode === "native") {
           throw conflict(
             "Native execution recovery owns this provider failure; a quota monitor cannot start a replacement.",
@@ -715,7 +756,13 @@ export function createHeartbeatScheduling(
           const targetAgent = await getAgent(targetAgentId);
           if (!targetAgent)
             throw conflict("The quota recovery agent is unavailable.");
-          const scheduled = await scheduleBoundedRetryForRun(
+          if (isProviderQuotaReviewMonitor)
+            atomicAdmission = new IssueMonitorAdmission(claimed, input.now, sourceRun.id);
+          const schedule = atomicAdmission
+            ? (run: typeof sourceRun, agent: typeof targetAgent, opts: Parameters<typeof scheduleBoundedRetryForRun>[2]) =>
+              scheduleMonitorRetryForRun(run, agent, opts, atomicAdmission!)
+            : scheduleBoundedRetryForRun;
+          const scheduled = await schedule(
             sourceRun,
             targetAgent,
             {
@@ -735,7 +782,9 @@ export function createHeartbeatScheduling(
         }
       } else {
         let executionDeferredCause: string | null = null;
-        const wake = await enqueueWakeup(targetAgentId, {
+        const enqueue = atomicAdmission ? (id: string, opts: Parameters<typeof enqueueWakeup>[1]) =>
+          enqueueMonitorWakeup(id, opts ?? {}, atomicAdmission!) : enqueueWakeup;
+        const wake = await enqueue(targetAgentId, {
           issueStateGuard: { statuses: [claimed.status], assigneeAgentId: claimed.assigneeAgentId,
             monitorNextCheckAt: scheduledAtIso, monitorWakeRequestedAt: claimed.monitorWakeRequestedAt!.toISOString(),
             onExecutionDeferred: cause => { executionDeferredCause = cause; } },
@@ -780,7 +829,7 @@ export function createHeartbeatScheduling(
         }
       }
 
-      const consumed = await db
+      const consumed = atomicAdmission ? [{ id: claimed.id }] : await db
         .update(issues)
         .set({
           ...monitorOnlyDispatchPatch(buildIssueMonitorTriggeredPatch({
@@ -818,7 +867,7 @@ export function createHeartbeatScheduling(
 
       return { outcome: "triggered" as const };
     } catch (err) {
-      if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+      if (!(err instanceof ReviewQuotaMonitorHeld) && err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
           await db
             .update(issues)

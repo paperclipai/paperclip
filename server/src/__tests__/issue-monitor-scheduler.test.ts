@@ -1,9 +1,12 @@
+import { issueService } from "../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   costEvents,
+  authUsers,
+  companyMemberships,
   activityLog,
   agentRuntimeState,
   agentWakeupRequests,
@@ -28,7 +31,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
-import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { issueExecutionGeneration, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -120,6 +123,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(companies);
   }
 
@@ -522,15 +527,29 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
+        changesRequestedCount: 0,
         monitor: monitorState,
       },
     }).where(eq(issues.id, issueId));
+    const userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Quota sponsor", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "operator", status: "active" });
+    const [before] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const policy = { ...before.executionPolicy! };
+    delete policy.monitor;
+    const state = { ...before.executionState! };
+    delete state.monitor;
+    const [submission] = await db.update(issues).set({ responsibleUserId: userId,
+      executionPolicy: policy, executionState: state, monitorNextCheckAt: null }).where(eq(issues.id, issueId)).returning();
     await db.insert(heartbeatRuns).values({
       id: sourceRunId, companyId, agentId: participantAgentId, status: "failed",
       errorCode: "provider_quota", finishedAt: new Date("2026-04-11T12:00:00.000Z"),
-      contextSnapshot: { issueId },
+      responsibleUserId: userId,
+      contextSnapshot: { issueId, reviewerAssignmentGeneration: issueExecutionGeneration(submission) },
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     });
+    await issueService(db).update(issueId, { monitorNextCheckAt: before.monitorNextCheckAt,
+      executionPolicy: before.executionPolicy });
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
     const result = await heartbeat.tickTimers(tickAt);

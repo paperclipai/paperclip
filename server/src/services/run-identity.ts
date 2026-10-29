@@ -1,5 +1,6 @@
+import { issueExecutionGeneration } from "./issue-execution-policy.js";
 import { readTaskRetryIntent, readTaskRetryBoardMessageOrigin } from "./task-retry.js";
-import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   heartbeatRuns,
@@ -174,6 +175,93 @@ async function activate(executor: Executor, context: RunIdentityContext) {
       );
 }
 
+function identityString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function runIdentityInitializationInput(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "retryOfRunId" | "triggerDetail">,
+  context: Record<string, unknown>,
+  task: Pick<typeof issues.$inferSelect, "id" | "continuationIdentityContextId" | "originIdentityContextId"> | null,
+  responsibleUserId: string | null,
+  retryMessages = false,
+) {
+  const retry = run.retryOfRunId || context.retryOfRunId;
+  const ids = queuedCommentIdsFromRunContext(context);
+  return {
+    companyId: run.companyId, runId: run.id, responsibleUserId,
+    issueId: task?.id ?? identityString(context.issueId),
+    interactionId: identityString(context.interactionId),
+    messageIds: retry && !retryMessages ? [] : ids.length ? ids
+      : Array.isArray(context.wakeCommentIds) ? context.wakeCommentIds.filter((id): id is string => typeof id === "string")
+      : identityString(context.wakeCommentId) ? [String(context.wakeCommentId)] : [],
+    parentContextId: retry ? null : (identityString(context.originIdentityContextId)
+      ?? (run.triggerDetail === "manual" || context.parentRunId ? null
+        : task?.continuationIdentityContextId ?? task?.originIdentityContextId)),
+    parentRunId: run.retryOfRunId ?? identityString(context.retryOfRunId) ?? identityString(context.parentRunId),
+    cause: identityString(context.executionIdentityCause) ?? identityString(context.wakeReason) ?? "dispatch",
+  };
+}
+
+export async function settleNewReviewRunIdentity(tx: Db, run: typeof heartbeatRuns.$inferSelect, retryMessages = false) {
+  const issueId = boundRunIssueId(run);
+  const [task] = issueId ? await tx.select().from(issues).where(and(
+    eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("no key update") : [];
+  if (!task || run.status !== "queued" || run.activeIdentityContextId || run.contextSnapshot?.reviewerAssignmentGeneration)
+    throw forbidden("New review identity admission is unavailable");
+  if (task.responsibleUserId !== null) return task;
+  const identity = await initializeRunIdentity(tx, runIdentityInitializationInput(
+    run, run.contextSnapshot ?? {}, task, run.responsibleUserId, retryMessages));
+  if (identity.responsibleUserId) await tx.update(issues).set({ responsibleUserId: identity.responsibleUserId, updatedAt: new Date() })
+    .where(and(eq(issues.id, task.id), eq(issues.companyId, run.companyId), isNull(issues.responsibleUserId)));
+  const [settled] = await tx.select().from(issues).where(and(eq(issues.id, task.id), eq(issues.companyId, run.companyId)));
+  return settled!;
+}
+
+async function appendIdentityMessages(
+  tx: Db,
+  input: Parameters<typeof initializeRunIdentity>[1],
+  current: RunIdentityContext,
+  operatorIdentity: Awaited<ReturnType<typeof explicitOperatorRunIdentity>>,
+) {
+  const ids = [...new Set(input.messageIds ?? [])];
+  const comments = ids.length && input.issueId ? await tx.select().from(issueComments).where(and(
+    eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId), inArray(issueComments.id, ids))) : [];
+  for (const id of ids) {
+    const comment = comments.find(c => c.id === id);
+    if (!comment?.authorUserId) continue;
+    current = await append(tx, { companyId: input.companyId, runId: input.runId,
+      responsibleUserId: operatorIdentity?.actorId ?? comment.authorUserId, messageId: id,
+      parentContextId: current.id, cause: operatorIdentity?.cause ?? "instruction", correlationId: `message:${id}` });
+  }
+  return current;
+}
+
+export async function settleReviewRunClaimIdentity(tx: Db, run: typeof heartbeatRuns.$inferSelect, previousStartedAt: Date | null) {
+  if (!run.activeIdentityContextId || typeof run.contextSnapshot?.reviewerAssignmentGeneration !== "string") return run;
+  const issueId = boundRunIssueId(run);
+  const [task] = issueId ? await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))) : [];
+  if (!task || issueExecutionGeneration(task) !== run.contextSnapshot.reviewerAssignmentGeneration)
+    throw conflict("The review submission changed while its identity was claimed");
+  const [identity] = await tx.select().from(runIdentityContexts).where(and(
+    eq(runIdentityContexts.id, run.activeIdentityContextId), eq(runIdentityContexts.companyId, run.companyId),
+    eq(runIdentityContexts.runId, run.id), eq(runIdentityContexts.status, "accepted")));
+  if (!identity) throw forbidden("The queued review identity is unavailable");
+  let current = identity;
+  if (previousStartedAt === null) {
+    const [origin] = await tx.select().from(runIdentityContexts).where(and(
+      eq(runIdentityContexts.companyId, run.companyId), eq(runIdentityContexts.runId, run.id),
+      eq(runIdentityContexts.correlationId, "dispatch"), eq(runIdentityContexts.status, "accepted")));
+    if (!origin) throw forbidden("The queued review origin identity is unavailable");
+    current = await appendIdentityMessages(tx,
+      runIdentityInitializationInput(run, run.contextSnapshot ?? {}, task, run.responsibleUserId), origin,
+      await explicitOperatorRunIdentity(tx, run));
+  }
+  if (previousStartedAt === null || current.id !== run.activeIdentityContextId || current.responsibleUserId !== run.responsibleUserId)
+    await activate(tx, current);
+  return (await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))))[0]!;
+}
+
 /** Called only for newly dispatched runs. Historical rows are never backfilled. */
 export async function initializeRunIdentity(
   db: Db,
@@ -293,34 +381,7 @@ export async function initializeRunIdentity(
         operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
-    const ids = [...new Set(input.messageIds ?? [])];
-    const comments =
-      ids.length && input.issueId
-        ? await tx
-            .select()
-            .from(issueComments)
-            .where(
-              and(
-                eq(issueComments.companyId, input.companyId),
-                eq(issueComments.issueId, input.issueId),
-                inArray(issueComments.id, ids),
-              ),
-            )
-        : [];
-    for (const id of ids) {
-      const comment = comments.find((c) => c.id === id);
-      if (!comment?.authorUserId) continue;
-      current = await append(tx, {
-        companyId: input.companyId,
-        runId: input.runId,
-        responsibleUserId: operatorIdentity?.actorId ?? comment.authorUserId,
-        messageId: id,
-        parentContextId: current.id,
-        cause: operatorIdentity?.cause ?? "instruction",
-        correlationId: `message:${id}`,
-      });
-    }
-    return current;
+    return appendIdentityMessages(tx as unknown as Db, input, current, operatorIdentity);
   });
 }
 

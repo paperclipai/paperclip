@@ -1,3 +1,5 @@
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { recordReviewQuotaMonitorInstallation } from "./heartbeat/reviewer-quota-monitor.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
@@ -11277,6 +11279,8 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (parseObject(parseObject(patch.executionPolicy).monitor).serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME)
+          await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, existing.companyId)).for("share");
         const changesPrivacy = issueData.visibility !== undefined || issueData.parentId !== undefined || issueData.projectId !== undefined;
         if (changesPrivacy) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
         // The receipt baseline must be read under the same row lock as the
@@ -11469,6 +11473,8 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        const quotaProofPublication = await recordReviewQuotaMonitorInstallation(tx as unknown as Db, receiptExisting, updated);
+        if (quotaProofPublication) activityPublications.push(quotaProofPublication);
         if (updated.status === "done") {
           await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
             publications: activityPublications });

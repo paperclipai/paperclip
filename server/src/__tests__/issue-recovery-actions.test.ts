@@ -1,3 +1,4 @@
+import { issueExecutionGeneration } from "../services/issue-execution-policy.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
@@ -1251,7 +1252,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("schedules a quota monitor for a cross-agent active review participant", async () => {
+  it.each([true, false])("schedules a quota monitor for a cross-agent active review participant only with submission proof (%s)", async (proven) => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -1278,6 +1279,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
+        changesRequestedCount: 0,
       },
     }).where(eq(issues.id, sourceIssueId));
     const [reviewIssueBeforeRecovery] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
@@ -1289,6 +1291,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       },
     });
     const runId = randomUUID();
+    const [submission] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -1300,13 +1303,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
-      contextSnapshot: { issueId: sourceIssueId },
+      contextSnapshot: { issueId: sourceIssueId, ...(proven ? { reviewerAssignmentGeneration: issueExecutionGeneration(submission) } : {}) },
     });
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
+    if (!proven) {
+      expect(result).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+      expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toMatchObject({
+        monitorNextCheckAt: null, executionPolicy: submission.executionPolicy, executionState: submission.executionState,
+      });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+        .toEqual({ issueId: sourceIssueId });
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+      return;
+    }
     expect(result).toMatchObject({ providerQuotaMonitored: 1, reviewParticipantRequeued: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
@@ -1348,9 +1361,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
+        changesRequestedCount: 0,
       },
     }).where(eq(issues.id, sourceIssueId));
     const participantRunId = randomUUID();
+    const [submission] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     await db.insert(heartbeatRuns).values({
       id: participantRunId,
       companyId,
@@ -1362,7 +1377,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       startedAt: new Date("2026-07-15T20:00:00.000Z"),
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
-      contextSnapshot: { issueId: sourceIssueId },
+      contextSnapshot: { issueId: sourceIssueId, reviewerAssignmentGeneration: issueExecutionGeneration(submission) },
     });
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });

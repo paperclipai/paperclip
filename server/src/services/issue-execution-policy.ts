@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   IssueExecutionDecision,
   IssueExecutionMonitorClearReason,
@@ -31,6 +31,17 @@ type IssueLike = AssigneeLike & {
   monitorNotes?: string | null;
   monitorScheduledBy?: string | null;
 };
+
+export function issueExecutionGeneration(task: IssueLike) {
+  function canonical(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+    if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(",")}}`;
+    return JSON.stringify(value ?? null);
+  }
+  return createHash("sha256").update(canonical({ policy: task.executionPolicy, state: task.executionState,
+    agentId: task.assigneeAgentId, userId: task.assigneeUserId, responsibleUserId: task.responsibleUserId })).digest("hex");
+}
 
 type ActorLike = {
   agentId?: string | null;
