@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues, issueWorkProducts } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -47,13 +47,21 @@ const support = await getEmbeddedPostgresTestSupport();
     const denied = await request(app(randomUUID())).get(`/api/issues/${issueId}?view=core`);
     expect([403, 404]).toContain(denied.status);
   });
-  it("includes saved plan content and document metadata in the core read", async () => {
+  it("includes saved plan content, document metadata and work products in the core read", async () => {
     const documents = documentService(db);
     await documents.upsertIssueDocument({ issueId, key: "plan", title: "Saved plan", format: "markdown", body: "# Stable plan" });
     await documents.upsertIssueDocument({ issueId, key: "evidence", title: "Saved evidence", format: "markdown", body: "Long saved evidence".repeat(1000) });
+    const savedProduct = {
+      id: randomUUID(), companyId, issueId, type: "pull_request", provider: "github",
+      title: "Saved investigation fix", status: "merged",
+      url: "https://github.com/example/reproduction/pull/42",
+      metadata: { repository: "example/reproduction", number: 42, additions: 78, deletions: 2 },
+    };
+    await db.insert(issueWorkProducts).values(savedProduct);
     const response = await request(app()).get(`/api/issues/${issueId}?view=core`);
     expect(response.status).toBe(200);
     expect(response.body.planDocument).toMatchObject({ key: "plan", body: "# Stable plan" });
+    expect(response.body.workProducts).toEqual([expect.objectContaining(savedProduct)]);
     expect(response.body.documentSummaries).toEqual(expect.arrayContaining([expect.objectContaining({ key: "evidence", title: "Saved evidence" })]));
     expect(response.body.documentSummaries.every((document: Record<string, unknown>) => !("body" in document))).toBe(true);
     expect(response.body).not.toHaveProperty("ancestors");
