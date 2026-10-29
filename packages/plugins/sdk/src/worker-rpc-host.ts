@@ -1554,6 +1554,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           // channel. A `traceparent` means a host span is active, so this span
           // may record. No `traceparent` means tracing is off: the span is a
           // no-op, so a lifecycle hook can always wrap work in a span.
+          const recordSpan = invocationTracer.captureRecorder();
           const spanInvocation = invocationContextStorage.getStore();
           const hasTraceContext = Boolean(spanInvocation?.traceparent);
           const attributes: Record<string, string | number | boolean> = {
@@ -1590,7 +1591,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
                 startTimeMs,
                 endTimeMs,
               };
-              if (!invocationTracer.recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
+              if (!recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
             },
           };
         },

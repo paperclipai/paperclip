@@ -28,6 +28,12 @@ export function createInvocationTracer(
       if (!parent) { try { record(span); } catch {} }
     }
   }
+  function appendSpan(scope:Scope | undefined, span:PluginSpanRecord):boolean {
+    if (!scope) return false;
+    if (!enabled() || scope.closed || scope.budget.remaining-- <= 0) return true;
+    scope.span.children?.push(span);
+    return true;
+  }
   return {
     withSpan,
     clock: () => {
@@ -36,12 +42,10 @@ export function createInvocationTracer(
     },
     now: () => { const clock=active.getStore()?.clock; return clock ? clock.epoch+performance.now()-clock.origin : Date.now(); },
     isRecording: enabled,
-    recordSpan(span: PluginSpanRecord): boolean {
-      const scope = active.getStore();
-      if (!scope) return false;
-      if (!enabled() || scope.closed || scope.budget.remaining-- <= 0) return true;
-      scope.span.children?.push(span);
-      return true;
+    recordSpan: (span:PluginSpanRecord) => appendSpan(active.getStore(),span),
+    captureRecorder: () => {
+      const scope=active.getStore();
+      return (span:PluginSpanRecord) => appendSpan(scope,span);
     },
   };
 }

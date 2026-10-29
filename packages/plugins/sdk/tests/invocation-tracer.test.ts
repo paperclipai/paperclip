@@ -56,3 +56,13 @@ it("consumes excess legacy records instead of falling back to standalone export"
   for(let n=0;n<300;n++)expect(tracer.recordSpan({name:"pack"})).toBe(true);
  });
 });
+
+it("manual spans retain their creation scope when ended inside a nested operation",async()=>{
+ const records:PluginSpanRecord[]=[];const tracer=createInvocationTracer(()=>true,span=>records.push(span));
+ await tracer.withSpan("root",async()=>{
+  const record=tracer.captureRecorder(),startTimeMs=tracer.now();
+  await tracer.withSpan("nested",async()=>{record({name:"manual",startTimeMs,endTimeMs:tracer.now()});});
+ });
+ expect(records[0].children?.map(span=>span.name)).toEqual(["nested","manual"]);
+ expect(records[0].children?.[0].children).toEqual([]);
+});
