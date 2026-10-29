@@ -394,7 +394,25 @@ pub fn run_durable_runner<E: CommandExecutor>(
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
 ) -> Result<(), DurableRunnerError> {
+    let started = Instant::now();
     config.validate()?;
+    if let Some(admission) = config
+        .acpx_launch_profile
+        .as_ref()
+        .and_then(|profile| profile.candidate_admission.as_ref())
+    {
+        let remaining =
+            Duration::from_millis(admission.expires_at.saturating_sub(current_unix_ms()?));
+        // Candidate authority is absolute. Include startup/state work in this
+        // process deadline, and never let a caller's unlimited runtime widen it.
+        config.max_runtime = if config.max_runtime.is_zero() {
+            remaining.max(Duration::from_nanos(1))
+        } else {
+            config
+                .max_runtime
+                .min(remaining.max(Duration::from_nanos(1)))
+        };
+    }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
     if state.lifecycle == "revoked"
@@ -422,7 +440,6 @@ pub fn run_durable_runner<E: CommandExecutor>(
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
     let mut endpoint = RunnerTransportEndpoint::new(&config.connect_url, &config.run_id)?;
-    let started = Instant::now();
     let mut bootstrap_ticket = Some(bootstrap_ticket);
     let mut lease: Option<LeaseCredential> = None;
     let mut authenticated_once = false;

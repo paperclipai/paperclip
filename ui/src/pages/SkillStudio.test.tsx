@@ -42,6 +42,7 @@ const mockCompanySkillsApi = vi.hoisted(() => ({
   cancelTestRun: vi.fn(),
   deleteTestRun: vi.fn(),
   versions: vi.fn(),
+  version: vi.fn(),
   createVersion: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({

@@ -421,12 +421,33 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         const priorProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });
         await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1) })
           .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        let preparation: NativeExecutionLeaseRenewal | undefined;
         const [claim] = await claimNativeRestartRecoveries({ db: fixture.db,
-          controller: await currentNativeControllerIdentity(), restartKind: "hard", runIds: [fixture.runId] });
+          controller: await currentNativeControllerIdentity(), restartKind: "hard", runIds: [fixture.runId],
+          onClaim: (claim, scope) => {
+            preparation = startNativeSessionExecutionLeaseRenewal({ db: fixture.db, ...scope,
+              runId: claim.runId, leaseOwner: claim.leaseOwner, attempt: claim.providerAttempt,
+              onLost: () => detachNativeSessionsForRestart([claim.runId], claim.leaseOwner) });
+          } });
         if (!claim || claim.kind !== "reattach_remote_runner") {
           throw new Error(`same-server claim missing: ${claim && "reason" in claim ? claim.reason : claim?.kind}`);
         }
-        const result = await executePaperclipNativeSession({ ...firstOptions, leaseOwner: claim.leaseOwner, restartRecovery: claim });
+        const result = await executePaperclipNativeSession({ ...firstOptions, leaseOwner: claim.leaseOwner, restartRecovery: claim,
+          onExecutionLeaseAcquired: () => preparation!.stop(),
+          instructionWorkingCopy: {
+            hasChanges: async () => {
+              // Completion has released the coordinator, but the startup still
+              // owns its session. A leftover preparation timer would detach it.
+              const [settled] = await fixture.db.select().from(nativeRunFinalizations)
+                .where(eq(nativeRunFinalizations.runId, fixture.runId));
+              expect(settled.leaseOwner).toBeNull();
+              await new Promise(resolve => setTimeout(resolve, 21_000));
+              return false;
+            },
+            collectStopped: async () => undefined,
+          },
+        }).finally(() => preparation?.stop().catch(() => undefined));
+        expect(logs.filter(line => line.includes("controller authority detached for restart"))).toHaveLength(1);
         const recoveredCalls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
         expect(recoveredCalls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
         const nextProcess = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-process.identity`] });

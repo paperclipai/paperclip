@@ -8,6 +8,7 @@ import { sql } from "drizzle-orm";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
 import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 
 export interface IdleSleepDrainStatus {
   ownerId?: string;
@@ -213,12 +214,50 @@ const WORK_CHECKS = [
   // label requires its completion stamp and a cleared failure reason.
   `SELECT 1 FROM feedback_exports WHERE (status = 'local_only'
     OR (status = 'sent' AND exported_at IS NOT NULL AND failure_reason IS NULL)) IS NOT TRUE`,
+  // Skill package conversion and retention are optional maintenance. Legacy
+  // contents remain authoritative until verified conversion; retries may wait
+  // for ingress, including when external package storage is disabled.
   `SELECT 1 FROM project_skill_sources b JOIN companies c ON c.id = b.company_id
     WHERE c.status = 'active' AND b.active AND b.source_id IS NULL`,
   `SELECT 1 FROM company_skill_sources s JOIN companies c ON c.id = s.company_id
     WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
       AND (s.access_scope = 'company' OR EXISTS (
         SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`,
+  `SELECT 1 FROM native_run_finalizations f WHERE (
+    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
+    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
+    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
+    AND f.failure_code IS NULL AND f.failure_detail IS NULL
+    AND EXISTS (
+      SELECT 1 FROM heartbeat_runs r
+      JOIN native_run_results result_row ON result_row.id = f.result_id
+        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
+        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
+      JOIN work_assessments assessment ON assessment.id = f.assessment_id
+        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
+        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
+      JOIN status_decisions decision ON decision.id = f.decision_id
+        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
+        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
+      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
+        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
+        AND ${finishedRun("r")}
+        AND r.result_json->>'finalizationPhase' = 'committed'
+        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
+        AND r.result_json->>'originalFailureCode' IS NULL
+        AND result_row.schema_status = 'accepted'
+        AND result_row.result_json->'terminal'->>'runTerminalState' = r.status
+        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM workspace_operations operation
+      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
+        AND operation.heartbeat_run_id = f.run_id
+        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
+    AND NOT EXISTS (
+      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
+        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
+          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
+          OR effect.next_attempt_at IS NOT NULL))
+    ) IS NOT TRUE`,
   // These less common work sources fail closed on any retained state. Their
   // terminal-state exceptions can be added with tests for the owning service.
   ...[
@@ -226,7 +265,7 @@ const WORK_CHECKS = [
     "chat_completion_deliveries", "tool_action_requests", "tool_action_deliveries",
     "workspace_runtime_services",
     "execution_workspace_runtime_leases",
-    "native_run_finalizations", "company_transfer_runs", "decisions", "decision_effect_executions",
+    "company_transfer_runs", "decisions", "decision_effect_executions",
     "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
     "browser_use_browsers",
     "company_secret_proposals",
@@ -285,6 +324,7 @@ export async function readIdleSleepSafety(
       checks.push(sql`EXISTS (SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()})`);
       checks.push(sql`EXISTS (SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()})`);
+      checks.push(sql`EXISTS (${nativeResponsePresentationPendingQuery()})`);
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.
       checks.push(quietPlugins.length === 0

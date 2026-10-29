@@ -1,6 +1,7 @@
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
 import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -609,6 +610,11 @@ const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof cre
 // Closing a remote owner saves its checkpoint asynchronously. A new turn must
 // not inspect or quarantine that owner's state until the save has finished.
 const closingWarmNativeSessions = new Map<string, Promise<void>>();
+
+export function readNativeSessionIdleWork(): IdleLocalWork {
+  return warmNativeSessions.size !== 0 || closingWarmNativeSessions.size !== 0 ? "present" : "none";
+}
+registerIdleLocalWorkProbe(readNativeSessionIdleWork);
 
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
  * task guidance. The final execution/configuration fence still owns admission. */
@@ -7791,6 +7797,8 @@ export async function executePaperclipNativeSession(input: {
   turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
+  /** Release recovery preparation's renewal after execution owns its reference. */
+  onExecutionLeaseAcquired?: () => Promise<void>;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -8395,7 +8403,7 @@ async function executePaperclipNativeSessionWithinScope(
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
           return nextAttempt;
-        }).then(claimedAttempt => {
+        }).then(async claimedAttempt => {
           const startup = nativeSessionStartups.get(input.execution.binding.runId);
           if (!startup) throw new Error("native_session_startup_owner_missing");
           startup.leaseOwner = leaseOwner;
@@ -8410,6 +8418,7 @@ async function executePaperclipNativeSessionWithinScope(
               ? detachNativeSessionsForRestart([input.execution.binding.runId], leaseOwner)
               : cancelNativeSession(input.execution.binding.runId, "native session execution lease lost"),
           });
+          await input.onExecutionLeaseAcquired?.();
           return claimedAttempt;
         }),
       { parentName: "task.prepare" },

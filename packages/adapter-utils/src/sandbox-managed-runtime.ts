@@ -1736,6 +1736,7 @@ export async function prepareSandboxManagedRuntime(input: {
               await runStepSpan("workspace.seed_publish", () => publishWorkspaceSeedGeneration(input.workspaceSeedCacheDirectory!, seedGeneration,
                 { ...seed, gitArchivePath }, {
                   companyDirectory: input.workspaceSeedCacheCompanyDirectory,
+                  scope: input.workspaceSeedCacheScope,
                   verify: () => runStepSpan("seed.verify", async () => {
                     const verifiedRoot = path.join(tempDir, "verify-seed");
                     try {

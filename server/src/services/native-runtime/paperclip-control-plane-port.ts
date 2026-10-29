@@ -29,7 +29,7 @@ import {
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
-import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 
 export interface PaperclipControlPlaneBinding {
   companyId: string;
@@ -262,7 +262,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    event = redactRunnerApiPayloads(event);
+    event = redactRunnerApiEvent(event);
     const persisted = await this.#db.transaction(async tx => {
       this.#assertActive(options);
       const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {

@@ -1,5 +1,5 @@
 {
-  "id": "0ea607c5-70c4-47a2-9db4-559d8353a2c6",
+  "id": "dce41524-29a3-4552-ba5d-f0abefbf1ea1",
   "prevId": "27c9008c-60e3-449b-9630-9e4977fad444",
   "version": "7",
   "dialect": "postgresql",
@@ -19079,7 +19079,46 @@
           "name": "file_inventory",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "storage": {
+          "name": "storage",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "upload": {
+          "name": "upload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "restore": {
+          "name": "restore",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "migration_at": {
+          "name": "migration_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "maintenance_at": {
+          "name": "maintenance_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "restore_retry_at": {
+          "name": "restore_retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -19107,6 +19146,38 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_snapshots_migration_idx": {
+          "name": "company_skill_snapshots_migration_idx",
+          "columns": [
+            {
+              "expression": "migration_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_skill_repository_snapshots\".\"migration_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_snapshots_maintenance_idx": {
+          "name": "company_skill_snapshots_maintenance_idx",
+          "columns": [
+            {
+              "expression": "maintenance_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_skill_repository_snapshots\".\"maintenance_at\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -19999,6 +20070,25 @@
           "primaryKey": false,
           "notNull": false
         },
+        "package_snapshot_id": {
+          "name": "package_snapshot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "package_file_map": {
+          "name": "package_file_map",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "migration_at": {
+          "name": "migration_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
         "revision_number": {
           "name": "revision_number",
           "type": "integer",
@@ -20057,6 +20147,52 @@
         }
       },
       "indexes": {
+        "company_skill_versions_migration_idx": {
+          "name": "company_skill_versions_migration_idx",
+          "columns": [
+            {
+              "expression": "migration_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_skill_versions\".\"migration_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_versions_package_snapshot_idx": {
+          "name": "company_skill_versions_package_snapshot_idx",
+          "columns": [
+            {
+              "expression": "package_snapshot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_versions_repository_snapshot_idx": {
+          "name": "company_skill_versions_repository_snapshot_idx",
+          "columns": [
+            {
+              "expression": "repository_snapshot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "company_skill_versions_skill_revision_idx": {
           "name": "company_skill_versions_skill_revision_idx",
           "columns": [
@@ -20161,6 +20297,19 @@
           "tableTo": "company_skill_repository_snapshots",
           "columnsFrom": [
             "repository_snapshot_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "company_skill_versions_package_snapshot_id_company_skill_repository_snapshots_id_fk": {
+          "name": "company_skill_versions_package_snapshot_id_company_skill_repository_snapshots_id_fk",
+          "tableFrom": "company_skill_versions",
+          "tableTo": "company_skill_repository_snapshots",
+          "columnsFrom": [
+            "package_snapshot_id"
           ],
           "columnsTo": [
             "id"
@@ -20607,6 +20756,78 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.skill_package_deletions": {
+      "name": "skill_package_deletions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "archive_key": {
+          "name": "archive_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "manifest_key": {
+          "name": "manifest_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "delete_after": {
+          "name": "delete_after",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "skill_package_deletions_due_idx": {
+          "name": "skill_package_deletions_due_idx",
+          "columns": [
+            {
+              "expression": "delete_after",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -48727,18 +48948,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "deletion_claim_token": {
-          "name": "deletion_claim_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion_claim_expires_at": {
-          "name": "deletion_claim_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {

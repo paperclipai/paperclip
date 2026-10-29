@@ -73,7 +73,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     lease.leasePolicy === "reuse_by_environment" && ["retained", "expired"].includes(lease.status) &&
     run?.status === "succeeded" && metadata.runnerTaskDispatched === true &&
     (metadata.runnerTaskLifecyclePolicy as {mode?:unknown}|undefined)?.mode === "warm";
-  if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || operation.kind === "connection" || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
+  const retainedConnection = operation.kind === "connection" && environment !== null &&
+    lease.leasePolicy === "reuse_by_environment" && lease.status === "retained" &&
+    run?.status === "succeeded" && savedIdentity?.runId === run.id &&
+    metadata.runnerTaskDispatched === true && metadata.runnerTaskExecutionStopped !== true &&
+    metadata.runnerTaskRetiring !== true && (!lease.expiresAt || lease.expiresAt.getTime() > Date.now()) &&
+    (metadata.runnerTaskLifecyclePolicy as { mode?: unknown } | undefined)?.mode === "warm";
+  if ((operation.kind === "read_file" || operation.kind === "describe" || operation.kind === "prepare" || operation.kind === "submit" || (operation.kind === "connection" && !retainedConnection) || (operation.kind === "read_state" && metadata.runnerTaskExecutionStopped !== true && !retainedCheckpointRead) || operation.kind === "archive_state" || operation.kind === "check_project_auth" || operation.kind === "copilot_metadata") &&
       (metadata.runnerTaskRetiring === true || !environment || (!activeProbe && run?.status !== "running") || lease.status !== "active" || (lease.expiresAt && lease.expiresAt.getTime() <= Date.now()))) throw new Error("Plugin-provided Runner execution lease is not active");
   if (operation.kind === "copilot_metadata" && !activeProbe) throw new Error("Copilot metadata requires a private setup lease");
   const warmAttachment = !!prior && metadata.runnerTaskReused === true &&

@@ -121,6 +121,7 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
   executeRun: (runId: string, options?: {
     nativeLeaseOwner?: string;
     nativeRestartRecovery?: NativeRestartRecoveryClaim;
+    onNativeExecutionLeaseAcquired?: () => Promise<void>;
   }) => Promise<void>;
   scheduleNativeSessionResumeDispatch: (runId: string, nextAttemptAt: Date) => void;
   cancelHeartbeatNativeRun: (input: {
@@ -1052,13 +1053,16 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         const execution = executeRun(claim.runId, {
           nativeLeaseOwner: claim.leaseOwner,
           nativeRestartRecovery: claim,
+          ...(preparationRenewal ? { onNativeExecutionLeaseAcquired: () => preparationRenewal.stop() } : {}),
         }).catch((error) => {
           logger.error(
             { err: error, runId: claim.runId, disposition: claim.kind },
             "native restart recovery execution failed",
           );
         }).finally(() => preparationRenewal?.stop().catch(() => undefined));
-        preparationRenewals.delete(claim.runId); // Execution now owns this reference.
+        // The executor releases preparation only after acquiring its own renewal.
+        // The finalizer above also covers exits before execution can acquire it.
+        preparationRenewals.delete(claim.runId);
         activeRunExecutionPromises.add(execution);
         void execution.finally(() =>
           activeRunExecutionPromises.delete(execution),

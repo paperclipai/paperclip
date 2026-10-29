@@ -189,6 +189,10 @@ export function withRunExecutionTiming<T>(runId: string, work: () => T | Promise
   return measure(runId, "task.execution_attempt", work, true);
 }
 
+export function withRunWorkspaceFinalizationTiming<T>(runId: string, work: () => T | Promise<T>): Promise<T> {
+  return measure(runId, "task.workspace_finalization", work, true);
+}
+
 export async function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promise<T>, counts?: { fileCount?: number; bytes?: number }): Promise<T> {
   const owned = ownership.getStore();
   if (!endpointEnabled() || !owned || owned.ended) return work();

@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import { prepareSandboxManagedRuntime, type SandboxManagedRuntimeClient, type SandboxSyncOperation } from "./sandbox-managed-runtime.js";
-import { readWorkspaceSeedGeneration, workspaceSeedGeneration } from "./workspace-seed-cache.js";
+import { publishWorkspaceSeedGeneration, readWorkspaceSeedGeneration, workspaceSeedGeneration } from "./workspace-seed-cache.js";
 import { captureDirectorySnapshot, disposeDirectorySnapshot } from "./workspace-restore-merge.js";
 import type { GitWorkspaceSnapshot } from "./git-workspace-sync.js";
 import { prepareAdapterExecutionTargetRuntime } from "./execution-target.js";
@@ -69,6 +69,19 @@ it.each([
     await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "Seed");
   }
   const company = path.join(root, "company");
+  const otherWorkspace = path.join(root, "other-workspace"); await fs.mkdir(otherWorkspace);
+  const priorGenerations = new Set<string>();
+  for (let index = 0; index < 16; index++) {
+    await fs.writeFile(path.join(otherWorkspace, "file.txt"), `Other workspace ${index}\n`);
+    const snapshot = await captureDirectorySnapshot(otherWorkspace);
+    const generation = workspaceSeedGeneration(snapshot, null, [], "company");
+    await disposeDirectorySnapshot(snapshot);
+    const archive = path.join(root, `other-${index}.tar`);
+    await exec("tar", ["-cf", archive, "-C", otherWorkspace, "."]);
+    expect(await publishWorkspaceSeedGeneration(path.join(company, "shared-v1"), generation,
+      { workspaceArchivePath: archive }, { companyDirectory: company, scope: "company" })).toBe(true);
+    priorGenerations.add(generation);
+  }
   const prepare = async (name: string, branch: string | null, companyDirectory = company) => {
     const host = path.join(root, name, "host"), remote = path.join(root, name, "remote");
     for (const relative of repositories) {
@@ -124,8 +137,10 @@ it.each([
   expect(second.phases).not.toContain("workspace.git_clone");
   expect(second.phases).not.toContain("workspace.seed_publish");
   const generations = await fs.readdir(path.join(company, "shared-v1"));
-  expect(generations).toHaveLength(1);
-  expect(await readWorkspaceSeedGeneration(path.join(company, "shared-v1"), generations[0]!, { companyDirectory: company })).not.toBeNull();
+  expect(generations).toHaveLength(17);
+  const current = generations.filter(generation => !priorGenerations.has(generation));
+  expect(current).toHaveLength(1);
+  expect(await readWorkspaceSeedGeneration(path.join(company, "shared-v1"), current[0]!, { companyDirectory: company })).not.toBeNull();
   const recovery = path.join(root, "replacement");
   const recovered = await prepareSandboxManagedRuntime({
     ...second.input,

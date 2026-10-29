@@ -40,6 +40,8 @@ Work in this order.
 
    For a native single-task confirmation, call `request_human_input` with arguments like these. Replace `<child-title>` with the proposed title and describe its actual scope in the prompt. Use a new idempotency key for each changed or revised proposal. Reuse a key only for the exact same proposal when reconciling an interrupted call; the example key below is for the first proposal.
 
+   The tool's root fields are `idempotencyKey`, `interactionKind`, `title`, `prompt`, `continuationPolicy`, and `payload`, with optional `targetRevisionId` and `resolverPolicy` as advertised. Put `version` and `supersedeOnUserComment` inside `payload`; neither is a root argument. If validation rejects a proposal, correct its argument placement and keep the confirmation or checkbox approval kind. Switching it to a question form cannot authorize the proposed work. Wait for a successful saved card receipt before claiming you requested approval.
+
    ```json
    {
      "idempotencyKey": "first-task-proposal-confirmation",
@@ -48,6 +50,8 @@ Work in this order.
      "prompt": "Approve creating exactly one child task named \"<child-title>\" for the scope described above?",
      "continuationPolicy": "wake_assignee",
      "payload": {
+       "version": 1,
+       "supersedeOnUserComment": false,
        "acceptLabel": "Approve",
        "rejectLabel": "Revise",
        "rejectRequiresReason": true
@@ -65,6 +69,8 @@ Work in this order.
      "prompt": "Approve the proposed scope in this saved plan?",
      "continuationPolicy": "wake_assignee",
      "payload": {
+       "version": 1,
+       "supersedeOnUserComment": false,
        "options": [{ "id": "scope", "label": "Approve the proposed scope for <child-title>" }],
        "defaultSelectedOptionIds": ["scope"],
        "minSelected": 1,

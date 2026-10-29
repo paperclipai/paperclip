@@ -18,6 +18,7 @@ import { inspectManagedGitWorktreeBranch } from "../workspace-runtime.js";
 import { environmentService } from "../environments.js";
 import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
+import { measureWorkspaceSyncPhase } from "../execution-preparation-timing.js";
 import {
   readNativeWorkspaceSyncReference,
   resumeNativeWorkspaceSync,
@@ -212,6 +213,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
             assertOwnership: ownership.assertHeld,
             restore: () => resumeNativeWorkspaceSync({
               db: input.db, runId: input.runId, target, assertOwnership: ownership.assertHeld,
+              onPhase: measureWorkspaceSyncPhase,
             }),
           });
           await ownership.assertHeld();

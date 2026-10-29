@@ -1,5 +1,5 @@
 /** Standalone source is staged unchanged on local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(): string {
+export function githubLauncherSource(options: { brokerFile?: boolean } = {}): string {
   return String.raw`#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,6 +33,20 @@ function isLocalGit(args) {
 }
 async function main() {
   let env = { ...process.env };
+${options.brokerFile ? String.raw`
+  delete env.PAPERCLIP_API_URL;
+  delete env.PAPERCLIP_API_KEY;
+  delete env.PAPERCLIP_GITHUB_BRIDGE_TOKEN;
+  env.PAPERCLIP_GITHUB_BROKER_URL = '';
+  env.PAPERCLIP_GITHUB_BROKER_TOKEN = '';
+  try {
+    const broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8'));
+    if (typeof broker.url === 'string' && typeof broker.token === 'string') {
+      env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
+      env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
+    }
+  } catch {}
+` : ''}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The

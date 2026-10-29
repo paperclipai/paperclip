@@ -354,7 +354,10 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Claude selection");
     expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000 });
-    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } } });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeResourceDisposition: "keep_running",
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } },
+    });
   });
 
   it("preserves only server-owned admission and dispatch evidence when recording legacy selection", async () => {

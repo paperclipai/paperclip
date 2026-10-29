@@ -328,3 +328,31 @@ process.stdout.write(JSON.stringify({identity, token:process.env.GH_TOKEN ?? nul
     expect((await git("-C", "repo", "log", "-1", "--format=%an <%ae>")).stdout).toBe("Managed <managed@example.test>");
   }, 20_000);
 });
+
+it("captures the current task broker file once per invocation and never falls back to inherited authority", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const captured: string[] = [];
+  const server = createServer((req, res) => {
+    captured.push(req.headers.authorization!);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "available", env: { GH_TOKEN: req.headers.authorization!.slice(7) + "-credential" } }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const env = { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}`, GH_TOKEN: "ambient-secret",
+    PAPERCLIP_GITHUB_BROKER_URL: url, PAPERCLIP_GITHUB_BROKER_TOKEN: "stale-capability", PAPERCLIP_API_KEY: "unrelated-api-key" };
+  const run = () => exec(path.join(bin, "gh"), [], { env });
+  for (const token of ["first-run", "next-run"]) {
+    await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url, token }));
+    expect((await run()).stdout).toBe(token + "-credential");
+  }
+  await rm(path.join(bin, "broker.json"));
+  expect((await run()).stdout).toBe("anonymous");
+  expect(captured).toEqual(["Bearer first-run", "Bearer next-run"]);
+});

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import Ajv2020 from "ajv/dist/2020.js";
 import { eq } from "drizzle-orm";
 import { agentWakeupRequests, authUsers, companyMemberships, heartbeatRuns, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
@@ -13,6 +14,7 @@ import { initializeRunIdentity } from "../services/run-identity.js";
 import { issueService } from "../services/issues.js";
 import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 
 async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevisionId = randomUUID()) {
   const skill = await readFile(new URL("../onboarding-assets/first-task/skills/first-task/SKILL.md", import.meta.url), "utf8");
@@ -25,6 +27,12 @@ async function nativeProposalRecipe(kind: "confirmation" | "checkbox", planRevis
 
 it.each(["confirmation", "checkbox"] as const)("ships a native %s recipe accepted by the production interaction schema", async kind => {
   const recipe = await nativeProposalRecipe(kind);
+  const schema = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === "request_human_input")!.inputSchema;
+  const validator = new Ajv2020({ allErrors: true, strict: false });
+  expect(validator.validate(schema, recipe), JSON.stringify(validator.errors)).toBe(true);
+  expect(recipe).not.toHaveProperty("version");
+  expect(recipe).not.toHaveProperty("supersedeOnUserComment");
+  expect(recipe.payload).toMatchObject({ version: 1, supersedeOnUserComment: false });
   const parsed = createIssueThreadInteractionSchema.parse({ kind: kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation",
     idempotencyKey: recipe.idempotencyKey, title: recipe.title, continuationPolicy: recipe.continuationPolicy,
     payload: { ...(recipe.payload as Record<string, unknown>), version: 1, prompt: recipe.prompt } });
@@ -427,7 +435,10 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
         title: "Approved child plan", format: "markdown", body: "Create one child for the proposed deliverable.",
         createdByAgentId: f.agentId, createdByRunId: f.runId })).document : null;
       const args = await nativeProposalRecipe(kind, plan?.latestRevisionId ?? undefined);
-      const { interaction } = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: args }) as { interaction: { id: string; kind: string } };
+      const receipt = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: args }) as { interaction: { id: string; kind: string } };
+      const { interaction } = receipt;
+      await expect(f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: args })).resolves.toEqual(receipt);
+      expect(await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId))).toHaveLength(1);
       expect(interaction.kind).toBe(kind === "confirmation" ? "request_confirmation" : "request_checkbox_confirmation");
       await expect(create(f)).rejects.toThrow(/proposal.*accept/i);
       const selectedOptionIds = kind === "checkbox" ? ((args.payload as { options: { id: string }[] }).options.map(option => option.id)) : undefined;

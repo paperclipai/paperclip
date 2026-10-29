@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { canonicalGeneratedReportAsset, isTrustedGeneratedReportAsset } from "./manual-private-report-assets.js";
-import { sealManualResultEvidence } from "./manual-private-handoff.js";
+import { canonicalGeneratedReportAsset, isTrustedGeneratedReportAsset, inspectCellReportProducer, privateCellEvidenceOwner, cellTraceAsset, readPrivateCellTraceAsset } from "./manual-private-report-assets.js";
+import { sealManualResultEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { normalizedSecrets } from "./redaction.js";
 import { CREDENTIAL_NAMES } from "./types.js";
 import { isStandardEvidenceFile } from "./evidence.js";
@@ -48,9 +48,13 @@ async function verify(env: NodeJS.ProcessEnv) {
     || identity.runId !== approval.runId || identity.attempt !== "1" || identity.root !== root) throw new Error("Private preflight identity changed");
   const publisher = new BoundedHistoryPublisher(path.join(root, "preflight-requests.json"));
   await verifyPrivateHistory(publisher, bucket);
-  await writeFile(path.join(root, "preflight.json"), JSON.stringify({ ...identity, status: "verified" }), { mode: 0o600, flag: "wx" });
+  const preflight = JSON.stringify({ ...identity, status: "verified", cellReportProducer: await inspectCellReportProducer() });
+  if (Buffer.byteLength(preflight) > 65536) throw new Error("Private preflight exceeds its byte allowance");
+  await writeFile(path.join(root, "preflight.json"), preflight, { mode: 0o600, flag: "wx" });
 }
-export async function validateSealedInventory(directory: string, inventory: string, id?: string, treeKind: "standard" | "generated-report" = "standard") {
+export async function validateSealedInventory(directory: string, inventory: string, id?: string, treeKind: "standard" | "generated-report" = "standard", context?: ManualPrivateHandoff) {
+  const cellOwner = treeKind === "standard" && context?.cellReportProducer
+    ? await privateCellEvidenceOwner(context, id ?? (context.executionIds.length === 1 ? context.executionIds[0]! : "")) : undefined;
   const receipt = JSON.parse(await readFile(path.join(directory, inventory), "utf8"));
   if (receipt.protocol !== MANUAL_PRIVATE_PROTOCOL || id !== undefined && receipt.executionId !== id || receipt.complete !== true
     || !Array.isArray(receipt.files) || !receipt.files.length || receipt.files.length > 4096
@@ -61,15 +65,19 @@ export async function validateSealedInventory(directory: string, inventory: stri
     if (!row || Object.keys(row).sort().join() !== "bytes,path,sha256" || typeof row.path !== "string"
       || row.path.split("/").some((part: string) => !part || part === "." || part === "..") || row.path.includes("\\")
       || expected.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !/^[0-9a-f]{64}$/.test(row.sha256)) throw new Error("Invalid original evidence inventory row");
+    const cellAsset = cellOwner ? cellTraceAsset(row.path, cellOwner, id === undefined ? "final" : "original") : undefined;
+    if (cellAsset?.reserved && !cellAsset.canonical) throw new Error("Invalid private cell trace owner");
     const standard = isStandardEvidenceFile(id === undefined ? `html-report/${row.path}` : row.path);
     const canonical = id === undefined && treeKind === "generated-report" ? canonicalGeneratedReportAsset(row.path) : undefined;
     const staticReportOwner = id === undefined && treeKind === "generated-report" && (row.path.startsWith("html/trace/") || canonical !== undefined);
-    if (staticReportOwner ? !canonical : !standard) throw new Error("Invalid original evidence inventory row");
+    if (cellAsset?.reserved ? !cellAsset.canonical : staticReportOwner ? !canonical : !standard) throw new Error("Invalid original evidence inventory row");
     if (row.bytes > 256 * 1024 * 1024 - bytes) throw new Error("Original evidence byte accounting changed");
     expected.add(row.path); bytes += row.bytes;
     const file = path.join(directory, row.path), metadata = await lstat(file);
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== row.bytes) throw new Error("Original evidence changed after its scan");
-    const data = await readFile(file);
+    const data = cellAsset?.reserved
+      ? (await readPrivateCellTraceAsset({ owner: cellOwner!, layout: id === undefined ? "final" : "original", relative: row.path, file, remaining: row.bytes, secrets: [] }))!
+      : await readFile(file);
     if (hash(data) !== row.sha256) throw new Error("Original evidence changed after its scan");
     if (staticReportOwner && !await isTrustedGeneratedReportAsset(row.path, data)) throw new Error("Invalid original evidence inventory row");
   }
@@ -88,8 +96,8 @@ export async function validateSealedInventory(directory: string, inventory: stri
   if (actual.size !== expected.size) throw new Error("Sealed evidence is incomplete");
   return receipt;
 }
-export async function validateSealedOriginals(root: string, id: string) {
-  const receipt = await validateSealedInventory(path.join(root, "originals", manualCellKind(id)), "original-evidence-inventory.json", id);
+export async function validateSealedOriginals(root: string, id: string, context?: ManualPrivateHandoff) {
+  const receipt = await validateSealedInventory(path.join(root, "originals", manualCellKind(id)), "original-evidence-inventory.json", id, "standard", context);
   const missing = receipt.missingRequiredEvidence;
   const allowed = new Set(["final-state.png", "result.json", "junit.xml", "html-report/index.html", "snapshots/fixtures.json", "snapshots/api-state.json", "blob-report/*.zip"]);
   if (![true, false, null].includes(receipt.requiredEvidenceComplete) || !Array.isArray(missing) || new Set(missing).size !== missing.length
@@ -109,11 +117,11 @@ async function uploadCell(env: NodeJS.ProcessEnv) {
     || context.runId !== approval.runId || context.executionIds.join() !== id || context.root !== root) throw new Error("Private evidence preflight identity changed");
   if (await lstat(path.join(root, "contamination.json")).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; }))
     throw new Error("Contaminated private evidence cannot be uploaded");
-  const originals = await validateSealedOriginals(root, id);
+  const originals = await validateSealedOriginals(root, id, context);
   const evidenceCompleteness = cellCompleteness(id, originals);
   const bundle = path.join(root, "sealed-bundle"); await mkdir(bundle, { mode: 0o700 });
   const results = path.join(root, "sealed-results");
-  await validateSealedInventory(path.join(results, "html-report"), "../result-evidence-inventory.json");
+  await validateSealedInventory(path.join(results, "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
   await mkdir(path.join(bundle, "originals"), { mode: 0o700 });
   await cp(path.join(root, "originals", manualCellKind(id)), path.join(bundle, "originals", manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
   await cp(results, path.join(bundle, "sealed-results"), { recursive: true, errorOnExist: true, force: false });
@@ -146,10 +154,10 @@ async function downloadCell(env: NodeJS.ProcessEnv) {
     const identity = JSON.parse(await readFile(path.join(directory, "identity.json"), "utf8"));
     if (identity.targetSha !== approval.targetSha || identity.workflowSha !== approval.workflowSha || identity.runId !== approval.runId
       || identity.executionIds.join() !== id || identity.protocol !== MANUAL_PRIVATE_PROTOCOL) throw new Error("Private cell archive has a foreign identity");
-    const originals = await validateSealedOriginals(directory, id), summary = cellCompleteness(id, originals);
+    const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory }), summary = cellCompleteness(id, originals);
     if (hash(JSON.stringify(identity.evidenceCompleteness)) !== hash(JSON.stringify(summary))
       || hash(JSON.stringify(receipt.evidenceCompleteness)) !== hash(JSON.stringify(summary))) throw new Error("Private evidence completeness receipt differs from archive");
-    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json");
+    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
     await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
     await writeFile(path.join(root, `manual-cell-completeness-${index}.json`), JSON.stringify(summary), { mode: 0o600, flag: "wx" });
   }

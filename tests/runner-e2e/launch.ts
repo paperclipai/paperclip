@@ -33,6 +33,7 @@ import {
 import { isImmutableDaytonaImage, runnerMatrix } from "./catalog.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import { packageEvidence } from "./evidence.js";
+import { privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { readManualPrivateHandoff, sealManualResultEvidence, preserveOriginalFrameworkResult, sealStandardOriginalEvidence, type ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { requiresPrivateManualEvidence } from "./manual-private-retention.js";
 import { copySharedEvidence } from "./shared-evidence.js";
@@ -837,6 +838,7 @@ async function runAttempt(input: {
         uploadDir,
         secrets: credentials,
         expectPassScreenshot: result.status === "passed",
+        ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
       });
       const originalEvidence = evidence, originalFeaturePassed = result.status === "passed";
       if (evidence.leaks.length > 0 || evidence.missing.length > 0) {
@@ -862,6 +864,7 @@ async function runAttempt(input: {
           uploadDir,
           secrets: credentials,
           expectPassScreenshot: false,
+          ...(manualPrivateHandoff ? { privateCell: { owner: await privateCellEvidenceOwner(manualPrivateHandoff, candidate.id), layout: "original" as const } } : {}),
         });
       }
       if (manualPrivateHandoff) await sealStandardOriginalEvidence({ context: manualPrivateHandoff,

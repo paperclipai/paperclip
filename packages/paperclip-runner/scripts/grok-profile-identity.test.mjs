@@ -47,7 +47,7 @@ test("the generator cannot overwrite a versioned identity after source changes",
   const launcher = `${prefix}src/providers/grok/launcher.cjs`;
   try {
     for (const path of new Set([...GROK_PROFILE_SOURCE_FILES, ...[
-      "acpx-profiles.json", "cursor-distributions.json", "cursor-contract.json", "package.json",
+      "acpx-profiles.json", "cursor-distributions.json", "cursor-contract.json", "antigravity-distributions.json", "package.json",
       "scripts/grok-profile-identity.mjs", "scripts/generate-acpx-profiles.mjs",
       `test/fixtures/copilot-profile-v${manifest.profiles.copilot.agentProfileVersion}-identity.json`,
       `test-fixtures/pi-acp/profile-v${manifest.profiles.pi.agentProfileVersion}-identity.json`,

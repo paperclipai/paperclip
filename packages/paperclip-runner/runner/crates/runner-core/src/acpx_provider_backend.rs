@@ -350,6 +350,18 @@ impl AcpxProviderDescriptor {
         expected_identity: Option<AcpxProviderSessionIdentity>,
         launch_profile: Option<&AcpxLaunchProfile>,
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
+        let candidate_admission =
+            launch_profile.and_then(|profile| profile.candidate_admission.clone());
+        if let Some(admission) = &candidate_admission {
+            admission
+                .validate_binding(
+                    &self.agent,
+                    &self.model,
+                    &self.run_id,
+                    &self.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
         let transport = self.verified_transport(launch_profile)?;
         // Keep the controller's full authority catalog durable so terminal
@@ -375,6 +387,7 @@ impl AcpxProviderDescriptor {
             operations: provider_operations,
         };
         Ok(AcpxProviderSessionConfig {
+            candidate_admission,
             transport,
             agent: self.agent.clone(),
             model: self.model.clone(),
@@ -873,6 +886,14 @@ impl AcpxCommandExecutor {
         self.state_dir.join(ACPX_PROVIDER_STATE_FILE)
     }
 
+    fn candidate_admission(
+        &self,
+    ) -> Option<&crate::acpx_candidate_admission::AcpxCandidateAdmission> {
+        self.launch_profile
+            .as_ref()
+            .and_then(|profile| profile.candidate_admission.as_ref())
+    }
+
     fn launch_profile_digest(&self) -> Result<String, DurableRunnerError> {
         self.launch_profile
             .as_ref()
@@ -915,6 +936,11 @@ impl AcpxCommandExecutor {
                 )))
             }
         };
+        if self.candidate_admission().is_some() {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot adopt a prior durable runner activation",
+            ));
+        }
         let length = file
             .metadata()
             .map_err(|error| {
@@ -1131,6 +1157,16 @@ impl AcpxCommandExecutor {
             DurableRunnerError::invalid(format!("run.prepare ACPX provider is invalid: {error}"))
         })?;
         descriptor.validate(&self.context)?;
+        if let Some(admission) = self.candidate_admission() {
+            admission
+                .validate_binding(
+                    &descriptor.agent,
+                    &descriptor.model,
+                    &descriptor.run_id,
+                    &descriptor.normalized_session_id,
+                )
+                .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        }
         let tool_set = authorized_tool_set(payload)?;
         let launch_profile_digest = self.launch_profile_digest()?;
         if let Some(state) = self.state.as_ref() {
@@ -1160,6 +1196,11 @@ impl AcpxCommandExecutor {
     }
 
     fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+        if self.candidate_admission().is_some() {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot rotate or adopt a live runner authority",
+            ));
+        }
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(
             payload
                 .get("provider")
@@ -1954,6 +1995,9 @@ impl AcpxCommandExecutor {
     }
 
     fn suspend(&mut self) -> Result<CommandExecution, DurableRunnerError> {
+        if self.candidate_admission().is_some() {
+            return self.close_session("candidate runner.suspend retires the owned process");
+        }
         if self
             .state
             .as_ref()
@@ -2189,6 +2233,14 @@ fn goal_terminal_disposition<'a>(
 impl CommandExecutor for AcpxCommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError> {
         self.restore()?;
+        if self.candidate_admission().is_some()
+            && command.command_type == "run.attach"
+            && command.payload.get("paperclipNextAuthority").is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "ACPX candidate cannot rotate a live runner authority",
+            ));
+        }
         if command.command_type != "run.attach"
             && self
                 .state
@@ -2788,6 +2840,7 @@ mod tests {
                 true,
             );
             let launch_profile = AcpxLaunchProfile {
+                candidate_admission: None,
                 authority_digest: format!("sha256:{}", "d".repeat(64)),
                 command: command_path.clone(),
                 args: Vec::new(),
@@ -3246,7 +3299,7 @@ mod tests {
     #[test]
     fn pi_profile_matches_published_identity_and_rejects_prior_profiles() {
         let published: Value = serde_json::from_str(include_str!(
-            "../../../../test-fixtures/pi-acp/profile-v34-identity.json"
+            "../../../../test-fixtures/pi-acp/profile-v35-identity.json"
         ))
         .unwrap();
         let mut value = descriptor("codex");
@@ -3263,6 +3316,7 @@ mod tests {
         current.validate(&context()).unwrap();
 
         for prior in [
+            include_str!("../../../../test-fixtures/pi-acp/profile-v34-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v33-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v32-identity.json"),
             include_str!("../../../../test-fixtures/pi-acp/profile-v31-identity.json"),
@@ -3314,6 +3368,7 @@ mod tests {
         write_artifact(&sidecar, b"qualified sidecar", false);
         let args = vec![sidecar.to_string_lossy().into_owned()];
         let profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: args.clone(),
@@ -3344,6 +3399,36 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_authority_cannot_come_from_descriptor_or_recover_a_prior_runner() {
+        let directory = temporary_directory("candidate-authority");
+        let mut admission = crate::acpx_candidate_admission::test_admission("run-1", "session-1");
+        admission.model = "explicit-test-model".to_owned();
+        let profile = AcpxLaunchProfile {
+            candidate_admission: Some(admission.clone()),
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/qualified/node"),
+            args: vec!["/qualified/acpx-sidecar.js".to_owned()],
+            artifacts: Vec::new(),
+        };
+        let mut injected = descriptor("antigravity");
+        injected["candidateAdmission"] = json!(admission);
+        assert!(serde_json::from_value::<AcpxProviderDescriptor>(injected).is_err());
+        let config = test_config(&directory, Some(profile));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let mut wrong = descriptor("antigravity");
+        wrong["model"] = json!("another-model");
+        assert!(executor.prepare(&json!({"provider":wrong})).is_err());
+        assert!(!executor.state_path().exists());
+        assert!(executor.attach_run(&json!({})).is_err());
+        write_artifact(&executor.state_path(), b"{}", false);
+        let error = executor.restore().unwrap_err().to_string();
+        assert!(error.contains("cannot adopt a prior durable runner"));
+        assert!(executor.session.is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[cfg(target_os = "macos")]
     mod darwin_named_transport_cleanup {
         use super::*;
@@ -3363,6 +3448,7 @@ mod tests {
                 write_artifact(&sidecar, b"qualified sidecar", false);
                 let args = vec![sidecar.to_string_lossy().into_owned()];
                 let profile = AcpxLaunchProfile {
+                    candidate_admission: None,
                     authority_digest: format!("sha256:{}", "d".repeat(64)),
                     command: command.clone(),
                     args: args.clone(),
@@ -3484,6 +3570,7 @@ mod tests {
         write_artifact(&command, b"qualified node", true);
         symlink(&command, &command_link).unwrap();
         let profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command_link.clone(),
             args: Vec::new(),
@@ -3542,6 +3629,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -3824,6 +3912,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4147,6 +4236,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4422,6 +4512,7 @@ mod tests {
             true,
         );
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: command.clone(),
             args: Vec::new(),
@@ -4590,6 +4681,7 @@ mod tests {
         let sidecar = directory.join("sidecar");
         write_artifact(&sidecar, b"qualified sidecar", true);
         let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: sidecar.clone(),
             args: Vec::new(),

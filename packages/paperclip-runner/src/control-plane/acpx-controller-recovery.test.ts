@@ -1,15 +1,18 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { createServer as createNetServer } from "node:net";
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, expect, it, vi } from "vitest";
-import { DurablePrpControlPlane, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
+import { DurablePrpControlPlane, decodeDurablePrpCheckpoint, spawnRunner, type DurablePrpCheckpoint } from "./durable-prp-control-plane.js";
+import { copyOwnedNodeRuntime } from "../test-support/owned-node-runtime.js";
 import { GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
+import { bindAcpxCandidateAdmission, type AcpxCandidateStartupAdmission } from "../drivers/acpx/candidate-admission.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 
 const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
 const binary = process.env.PAPERCLIP_ACPX_REPRO_BINARY ?? resolve(packageRoot, "runner/target/debug/paperclip-runnerd");
@@ -29,11 +32,11 @@ beforeAll(() => {
   expectedRunnerDigest = digest(binary);
 }, 150_000);
 
-function sidecarSource(root: string) {
+function sidecarSource(root: string, selectedProfile = profile, agent = "claude") {
   return [
     "const fs = require('node:fs'); const net = require('node:net'); const rl = require('node:readline'); const {randomInt}=require('node:crypto');",
     "const root = " + JSON.stringify(root) + ";",
-    "const profileDigest = " + JSON.stringify(profile.commandDigest) + ";",
+    "const profileDigest = " + JSON.stringify(selectedProfile.commandDigest) + ";",
     "const protocolVersion = " + GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION + ";",
     "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
     "let identity, runId, turnId = null, sequence = 0, lastAction = '';",
@@ -47,7 +50,7 @@ function sidecarSource(root: string) {
     " const lines=rl.createInterface({input:process.stdin}); lines.on('close',()=>process.exit(0)); lines.on('line', line => {",
     "  const r=JSON.parse(line), p=r.params || {};",
     "  switch(r.command) {",
-    "   case 'initialize': reply(r,{protocolVersion,sidecarPid:process.pid,profile:{agent:'claude'},capabilities:{persistentSessions:true,exactModelVerification:true,permissions:'runner_policy',semanticTools:'runner_bridge',structuredInput:'paperclip.question_set.v1'}});break;",
+    "   case 'initialize': reply(r,{protocolVersion,sidecarPid:process.pid,profile:{agent:" + JSON.stringify(agent) + "},capabilities:{persistentSessions:true,exactModelVerification:true,permissions:'runner_policy',semanticTools:'runner_bridge',structuredInput:'paperclip.question_set.v1'}});break;",
     "   case 'session.open': identity={kind:'acpx',normalizedSessionId:p.normalizedSessionId,acpxRecordId:'record-1',backendSessionId:'backend-1',agentSessionId:'agent-1',profileDigest,workspaceDigest:'sha256:'+'2'.repeat(64),requestedModel:p.model,effectiveModel:p.model,permissionMode:p.permissionMode,mode:p.mode,piThinkingLevel:p.piThinkingLevel,claudeEffort:p.claudeEffort,grokEffort:p.grokEffort,grokDisableWebSearch:p.grokDisableWebSearch,providerLifetimeFenceCandidates:ports};reply(r,{sidecarPid:process.pid,identity,status:{},turnControls:{steering:false,queuedFollowUp:false}});break;",
     "   case 'run.attach': runId=p.runId; reply(r,{runId,catalogRevision:p.catalogRevision});break;",
     "   case 'session.goal.get': reply(r,{schema:'paperclip.session_goal.snapshot.v1',goal:null,workingNow:false,sessionGoals:{availability:'unsupported',actions:[],autonomousUpdates:false,persistentAcrossResume:false,maxObjectiveChars:4000,tokenBudgetControl:false,usageReporting:false}});break;",
@@ -64,22 +67,22 @@ function sidecarSource(root: string) {
   ].join("\n");
 }
 
-async function fixture() {
+async function fixture(maxLifetimeMs?: number, candidateAdmission?: AcpxCandidateStartupAdmission, beforeLaunchDelayMs = 0) {
   const root = mkdtempSync(resolve(tmpdir(), "acpx-controller-recovery-"));
+  const { executable: nodeCommand } = await copyOwnedNodeRuntime(resolve(root, "node"));
   const stateDirectory = resolve(root, "control-plane");
-  const nodeBinary = resolve(root, "node");
-  copyFileSync(process.execPath, nodeBinary);
-  chmodSync(nodeBinary, 0o700);
   const script = resolve(root, "sidecar.cjs");
-  writeFileSync(script, sidecarSource(root), { mode: 0o700 });
+  const agent = candidateAdmission ? "antigravity" : "claude", selectedProfile = profiles.profiles[agent];
+  writeFileSync(script, sidecarSource(root, selectedProfile, agent), { mode: 0o700 });
   const runtime = resolve(root, "runtime");
   const descriptor = { kind: "acpx", provider: "acpx", driver: "acpx_runtime", providerVersion: profiles.acpxVersion,
-    agent: "claude", model: "scripted-model", acpxVersion: profiles.acpxVersion,
-    agentServerPackage: profile.agentServerPackage, agentServerVersion: profile.agentServerVersion,
-    agentRuntimePackage: profile.agentRuntimePackage, agentRuntimeVersion: profile.agentRuntimeVersion,
-    commandDigest: profile.commandDigest, sidecarCommand: nodeBinary, sidecarArgs: [script],
+    agent, model: candidateAdmission?.model ?? "scripted-model", acpxVersion: profiles.acpxVersion,
+    agentServerPackage: selectedProfile.agentServerPackage, agentServerVersion: selectedProfile.agentServerVersion,
+    agentRuntimePackage: selectedProfile.agentRuntimePackage, agentRuntimeVersion: selectedProfile.agentRuntimeVersion,
+    commandDigest: selectedProfile.commandDigest, sidecarCommand: nodeCommand, sidecarArgs: [script],
     runtimeDirectory: runtime, normalizedSessionId: identity.normalizedSessionId, runId: identity.runId,
     cwd: root, instructions: "Do the supplied synthetic task.", permissionMode: "approve-reads", permissionModePinned: true,
+    ...(selectedProfile.requiresProviderPolicy ? { providerPolicy: { readOnly: true } } : {}),
     runtimeContext: null };
   let checkpoint!: DurablePrpCheckpoint;
   const create = () => {
@@ -90,33 +93,59 @@ async function fixture() {
   let controller = create();
   await controller.start();
   const port = Number(new URL(controller.connectUrl).port);
-  const ticket = controller.issueBootstrapTicket();
+  // Establish one absolute fixture grant before issuing its one-use ticket.
+  // Bootstrap preparation and the actual daemon share this deadline.
+  const deadlineAt = candidateAdmission?.expiresAt ?? (maxLifetimeMs === undefined ? undefined : Date.now() + maxLifetimeMs);
+  const ticket = controller.issueBootstrapTicket(deadlineAt === undefined ? 5_000 : deadlineAt - Date.now());
   await controller.flushCheckpoint();
+  if (beforeLaunchDelayMs) await new Promise(resolveDelay => setTimeout(resolveDelay, beforeLaunchDelayMs));
   let diagnostics = "";
   const args = ["--connect-url",controller.connectUrl,"--state-dir",resolve(root,"runner"),
     "--runner-id",identity.runnerInstanceId,"--environment-lease-id",identity.environmentLeaseId,
     "--run-id",identity.runId,"--session-id",identity.normalizedSessionId,"--turn-id",identity.turnId,"--item-id",identity.itemId,
     "--runner-version",expectedRunnerVersion,"--runner-digest",expectedRunnerDigest,"--max-runtime-ms","0",
     "--reconnect-grace-ms","15000","--reconnect-delay-ms","25","--acpx-launch-authority-digest","sha256:"+"d".repeat(64),
-    "--acpx-sidecar-command",nodeBinary,"--acpx-sidecar-command-sha256",digest(nodeBinary),
-    "--acpx-sidecar-script",script,"--acpx-sidecar-script-sha256",digest(script)];
+    "--acpx-sidecar-command",nodeCommand,"--acpx-sidecar-command-sha256",digest(nodeCommand),
+    "--acpx-sidecar-script",script,"--acpx-sidecar-script-sha256",digest(script),
+    ...(candidateAdmission ? ["--acpx-candidate-admission-json", JSON.stringify(candidateAdmission)] : [])];
   const startedAt = new Date().toISOString();
-  const child = spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:ticket},stdio:["ignore","ignore","pipe"],detached:true});
+  // Exercise daemon authority independently of the TypeScript TTL clamp.
+  const bounded = maxLifetimeMs === undefined ? undefined : spawnRunner({
+    connectUrl: controller.connectUrl, stateDirectory: resolve(root, "runner"), identity, ticket,
+    maxOutboxBytes: 16 * 1024 * 1024, p0ReserveBytes: 1024 * 1024,
+    maxRuntimeMs: 0, maxLifetimeMs: deadlineAt! - Date.now(), reconnectGraceMs: 15_000,
+    runnerBinaryPath: binary, runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
+    acpxLaunchProfile: { ...(candidateAdmission ? { candidateAdmission } : {}), authorityDigest: `sha256:${"d".repeat(64)}`, command: nodeCommand, commandSha256: digest(nodeCommand),
+      sidecarScript: script, sidecarScriptSha256: digest(script) },
+    environment: { PATH: process.env.PATH },
+  });
+  const child = bounded?.child as ChildProcess | undefined
+    ?? spawn(binary,args,{env:{PATH:process.env.PATH,PAPERCLIP_RUNNER_BOOTSTRAP_TICKET:ticket},stdio:["ignore","ignore","pipe"],detached:true});
   const exit = once(child,"exit");
   child.stderr!.on("data",bytes=>{diagnostics=(diagnostics+String(bytes)).slice(-4096);});
   let commandNumber=0;
   async function command(type:string,payload:Record<string,unknown>={}) {
     const id="command-"+(++commandNumber);
     controller.queueCommand(type,payload,id,true);
-    await vi.waitFor(()=>{
-      expect(child.exitCode,"runner exit; "+diagnostics).toBeNull();
-      expect(child.signalCode,"runner signal; "+diagnostics).toBeNull();
-      expect(["completed","failed"]).toContain(controller.getCommand(id)?.status);
-    },{timeout:8000});
+    try {
+      await vi.waitFor(()=>{
+        expect(child.exitCode,"runner exit; "+diagnostics).toBeNull();
+        expect(child.signalCode,"runner signal; "+diagnostics).toBeNull();
+        expect(["completed","failed"]).toContain(controller.getCommand(id)?.status);
+      },{timeout:8000});
+    } catch (error) {
+      let runnerDiagnostics: unknown;
+      try { runnerDiagnostics = JSON.parse(readFileSync(resolve(root, "runner/runner-state.json"), "utf8")).diagnostics?.slice(-8); } catch { /* Startup may not have created state. */ }
+      throw new Error("Hermetic Runner command did not settle: " + JSON.stringify({ id, type,
+        authenticatedConnections: controller.activeRunnerConnectionCount(), command: controller.getCommand(id),
+        remainingLifetimeMs: deadlineAt === undefined ? null : deadlineAt - Date.now(),
+        exitCode: child.exitCode, signalCode: child.signalCode, stderr: diagnostics, runnerDiagnostics }).slice(-8192), { cause: error });
+    }
     return controller.getCommand(id)!;
   }
   const ready = async () => {
-    expect(await command("run.prepare",{provider:descriptor})).toMatchObject({status:"completed"});
+    const prepared = await command("run.prepare",{provider:descriptor});
+    expect(prepared, JSON.stringify(prepared)).toMatchObject({status:"completed"});
     const opened = await command("session.open");
     expect(opened, JSON.stringify(opened)).toMatchObject({status:"completed"});
   };
@@ -127,7 +156,7 @@ async function fixture() {
     rmSync(stateDirectory,{recursive:true,force:true});
     decodeDurablePrpCheckpoint(checkpoint.records).restoreSessionDirectory(root);
   };
-  return {root,child,exit,command,ready,startedAt,
+  return {root,child,exit,command,ready,startedAt,deadlineAt,processGroupId: bounded?.processGroupId ?? child.pid,
     controller:()=>controller,
     stopController:stopped,
     restoreCheckpoint,
@@ -162,6 +191,49 @@ async function fixture() {
     },
   };
 }
+
+async function assertActiveExpiry(candidate = false) {
+  // One fixed grant covers the six-second cold delay, four existing eight-
+  // second command budgets, and seven seconds of active-turn headroom. Loaded
+  // CI exhausted the earlier fifteen-second grant before session.open settled.
+  // Never renew this authority after setup or the active-turn witness.
+  const lifetimeMs = 45_000;
+  const candidateAdmission = candidate ? bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-expiry",
+    agent: "antigravity", model: "gemini-3.8-flash-low", profileDigest: profiles.profiles.antigravity.commandDigest,
+    nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
+    platform: "darwin", architecture: "arm64", expiresAt: Date.now() + lifetimeMs }, identity) : undefined;
+  // A controlled cold start outlasts the default five-second bootstrap ticket.
+  // It must still activate inside the original fixed absolute grant.
+  const run = await fixture(candidate ? undefined : lifetimeMs, candidateAdmission, candidate ? 0 : 6_000);
+  const deadlineAt = run.deadlineAt!;
+  try {
+    await run.ready();
+    expect(await run.command("turn.start", { turnId: "provider-expiring-turn", text: "Keep this hermetic turn active" })).toMatchObject({ status: "completed" });
+    const launch = run.launches()[0];
+    expect(launch.pid).toBeGreaterThan(1);
+    expect(() => process.kill(launch.pid, 0)).not.toThrow();
+    expect(await run.command("session.snapshot")).toMatchObject({ result: { result: { activeProviderTurnId: "provider-expiring-turn" } } });
+    expect(Date.now()).toBeLessThan(deadlineAt);
+    // No stop/cancel request is sent. The real daemon must enforce the launch
+    // deadline while the provider is active, then finish physical cleanup.
+    await vi.waitFor(() => expect(run.child.exitCode ?? run.child.signalCode).not.toBeNull(), { timeout: Math.max(1, deadlineAt - Date.now()) + 4_000 });
+    expect(run.child.exitCode).not.toBe(0);
+    expect(() => process.kill(launch.pid, 0)).toThrow();
+    expect(run.processGroupId).toBeGreaterThan(1);
+    expect(() => process.kill(-run.processGroupId!, 0)).toThrow();
+    const fences = await Promise.all((launch.ports as number[]).map(port => new Promise<ReturnType<typeof createNetServer>>((resolveFree, reject) => {
+      const probe = createNetServer(); probe.once("error", reject); probe.listen(port, "127.0.0.1", () => resolveFree(probe));
+    })));
+    await Promise.all(fences.map(server => new Promise<void>((resolveFree, reject) => server.close(error => error ? reject(error) : resolveFree()))));
+    const state = JSON.parse(readFileSync(resolve(run.root, "runner/runner-state.json"), "utf8"));
+    expect(state.recoverableFailure).toBe("transport_reconnect_deadline_exceeded");
+  } finally { await run.cleanup(); }
+}
+
+it("expires an active provider turn after a cold bootstrap delay and physically retires its owned processes", () => assertActiveExpiry(), 60_000);
+it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")(
+  "retires an active exact Antigravity candidate at absolute operator expiry with no caller runtime limit",
+  () => assertActiveExpiry(true), 60_000);
 
 it("keeps the original native ACPX process and active turn through controller replacement",async()=>{
   const run=await fixture();

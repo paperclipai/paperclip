@@ -3061,3 +3061,36 @@ they are not reported as charges or converted into reviewed lifecycle bounds.
 This mode therefore does not certify a full-lifecycle operating-cost ceiling.
 Omitting the policy preserves the stricter full-accounting gate. Historical
 journals and their holds are not rewritten by changing future campaign policy.
+
+## Private catalog metadata preview
+
+The existing dashboard renderer can show a display-only overview without creating
+result rows or discovering historical evidence:
+
+```sh
+pnpm test:e2e:runner:dashboard -- --catalog-overview <display-metadata.json> --output <new-private-directory>
+```
+
+The input must match `CatalogOverview` in `catalog-overview.ts`, contain exactly
+the frozen 244 YAML scenario IDs, and use only the declared outcome, allowance
+and source-readiness enums. Extra fields are rejected. Build this projection
+from authenticated accounting metadata, preserving unknown allowances and the
+original qualification scope. Source review never supplies a result grade. The execution-record column distinguishes
+candidate measurements from never-run cases without changing main qualification.
+Allowance certainty is independent of a recorded measurement: a main pass or fail
+can retain `allowance: "unknown"`. Known exhausted rows bound the accounting total;
+unknown allowances can account for its remaining uncertainty. The optional
+`latestCandidateOutcome` enum (`passed`, `failed`, or `not-projected`) can record a
+later candidate measurement alongside a main outcome. It never changes
+`mainOutcome`, main counters, or the qualification scope. Omit it when no such
+additional outcome is projected; existing projections render unchanged.
+Expandable human requests and expected outcomes come only from the static YAML catalog,
+not from retained conversations or private artifacts.
+The renderer requires a new output directory and makes it private; it does not
+publish the preview or modify existing campaign files. Normal campaign rendering
+and retained result cards continue to use the existing bundle command.
+
+The shared report navigation links the dated, immutable catalog snapshot.
+Deploying this generator does not rewrite existing published history HTML.
+Activating the link on an existing page requires a separately reviewed,
+conditional navigation-only update. The metadata command publishes nothing.

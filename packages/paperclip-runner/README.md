@@ -214,6 +214,21 @@ are unavailable. Accepting a native plan ends the planning run successfully whil
 the task waits for the next instruction. See the
 [Cursor release report](../../doc/plans/2026-10-03-cursor-production-readiness.md).
 
+Google Antigravity is an **unqualified, pending** native ACPX integration. The
+explicit `paperclipai runtime setup antigravity` command installs the verified
+Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
+It verifies both the official vendor closure and the separately pinned patched
+closure; npm installation downloads no Antigravity runtime. This setup installs
+assets only. Global release qualification remains pending and normal execution
+admission stays closed. An isolated operator can admit one company, exact model,
+local platform and pinned native closure/profile until a fixed expiry through
+trusted server startup authority. The candidate supports a managed saved Google
+subscription; the recorded acceptance reused the same owner's personal default
+grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
+consent or the separate API-key route. Google Workspace OAuth does not substitute
+for a runtime credential. See the
+[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
+
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
 binds each daemon path and SHA-256, plus `remoteProviderPacks: {"linux-x64": {path, sha256}, "linux-arm64": {path, sha256}}` for

@@ -23,6 +23,8 @@ import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-w
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
 import { timeStartupRecovery } from "./startup-recovery-timing.js";
+import { runtimeAssetRetention } from "./services/native-runtime/runtime-asset-retention.js";
+import { skillPackageWork } from "./services/skill-package-work.js";
 import { skillSourceSyncService } from "./services/skill-source-sync.js";
 import {
   skillVersionRetentionService,
@@ -32,7 +34,7 @@ import {
   NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS,
   nativeHarnessBackupExpirationService,
 } from "./services/native-runtime/native-harness-backup-expiration.js";
-import { onNativeRunnerEvidence } from "./services/native-runtime/native-runner-evidence-signal.js";
+import { registerNativeRunnerEvidenceRetentionWork } from "./services/native-runtime/native-runner-evidence-retention-work.js";
 import { gitRestorePointRetentionService, registerGitRestorePointWork } from "./services/git-restore-point-ledger.js";
 import {
   nativeWorkspaceSyncRetentionService,
@@ -1259,12 +1261,12 @@ async function startServerWithDatabaseTeardown(
   };
   const skillSourceSync = skillSourceSyncService(db as any);
   const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
+    duty: "backups",
     dryRun: config.nativeHarnessBackupExpirationDryRun,
     closedForDays: config.nativeHarnessBackupExpirationDays,
     evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
     shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
   });
-  const unsubscribeNativeRunnerEvidence = onNativeRunnerEvidence(nativeHarnessBackupExpiration.noteEvidence);
   let nativeHarnessBackupExpirationInFlight = false;
   let nativeHarnessBackupExpirationContinuation: ReturnType<typeof setTimeout> | undefined;
   const sweepNativeHarnessBackups = () => {
@@ -1344,6 +1346,13 @@ async function startServerWithDatabaseTeardown(
   server.on("close", () => { void taskDrainExpiryWork.stop(); });
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
+  const nativeRunnerEvidenceRetentionWorker = config.nativeHarnessBackupExpirationEnabled
+    ? registerNativeRunnerEvidenceRetentionWork(deliveryWork, db as any, {
+      dryRun: config.nativeHarnessBackupExpirationDryRun,
+      evidenceRetentionDays: config.nativeRunnerEvidenceRetentionDays,
+    }, () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby())
+    : null;
+  if (nativeRunnerEvidenceRetentionWorker) trackHeartbeatSchedulerWork(nativeRunnerEvidenceRetentionWorker.ready);
   const skillVersionRetentionWorker = config.skillVersionRetentionEnabled
     ? registerSkillVersionRetentionWork(deliveryWork, skillVersionRetentionService(db as any, {
       dryRun: config.skillVersionRetentionDryRun,
@@ -1371,6 +1380,9 @@ async function startServerWithDatabaseTeardown(
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);
+  skillPackageWork(db).start(deliveryWork);
+  const runtimeAssetCleanup = runtimeAssetRetention(db).start(deliveryWork);
+  server.on("close", () => { void runtimeAssetCleanup.stop(); });
   const caseHandoffDeliveries = caseHandoffDeliveryService(db as any, { heartbeat: environmentLeaseCleanupHeartbeat });
   deliveryWork.register(DELIVERY_QUEUES.caseHandoffs, {
     retryMs: 5_000,
@@ -2191,7 +2203,7 @@ async function startServerWithDatabaseTeardown(
     clearInterval(nativeHarnessBackupExpirationInterval);
     clearTimeout(nativeHarnessBackupExpirationStartup);
     clearTimeout(nativeHarnessBackupExpirationContinuation);
-    unsubscribeNativeRunnerEvidence();
+    nativeRunnerEvidenceRetentionWorker?.unsubscribe();
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
     unsubscribeNativeResponsePresentation?.();

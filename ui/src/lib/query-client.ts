@@ -101,9 +101,12 @@ export function reconnectDelayFor(failureCount: number, error: unknown): number 
   return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_PROBE_DELAY_MS);
 }
 
+/** A successful response whose expected state has not arrived yet. */
+export class QueryNotReadyError extends Error {}
+
 /** Query errors worth a Sentry event: not outages, not denials or missing items. */
 export function shouldReportQueryError(error: unknown): boolean {
-  return classifyError(error) === "unknown";
+  return !(error instanceof QueryNotReadyError) && classifyError(error) === "unknown";
 }
 
 export interface MutationErrorToast {

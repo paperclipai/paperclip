@@ -85,6 +85,15 @@ mutations. Qualify a useful model task separately from saving the account.
 
 ### `session`
 
+Recover an in-flight remote runner after controller restart, then let it finish
+with slow instruction collection. Send two follow-ups without resetting its
+session. Verify that completion does not detach the retained runner and that
+provider history survives with one turn per wake. Preparation must retain its
+lease until execution owns renewal; a genuine ownership loss must still detach.
+The [remote continuity regression](../../doc/testing-native-remote-continuity.md)
+uses a real Linux runner and deterministic provider. Live provider acceptance is
+a separate check.
+
 For a plugin computer, complete a task, let its warm session suspend, then send
 two follow-ups within the next warm window. Verify the first resumes the saved
 session and the second keeps the same provider history without an identity

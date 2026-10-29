@@ -3525,3 +3525,15 @@ writer inventory, module contracts, local acceptance, and limitations. Remote
 review and checks remain pending. The user's October 27 instruction now authorizes
 merging qualifying sleep PRs in dependency order after Greptile 5/5 and any
 present Ponytail review passes, with all required CI checks passing.
+
+## Slice 65 — archived runner evidence retention (2026-10-27)
+
+Split evidence retention from native-harness backup eligibility in their shared
+legacy service. Evidence now reconstructs once, wakes from the existing archive/
+quarantine publication signal, and uses saved retention timestamps. Busy or failed
+items retain recovery and bounded continuation. The backup timer selects only its
+own duty and remains for the next slice. See the
+[evidence audit](2026-10-27-runner-evidence-retention-sleep-audit.md) for producer,
+clock-boundary, interrupted-cursor, writer-model, and verification evidence.
+Local acceptance passes 158 cases plus server typechecking/build. Remote review
+and CI are pending; this is not a deployed sleep claim.

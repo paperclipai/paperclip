@@ -1,3 +1,5 @@
+import { bindAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../drivers/acpx/generated-profiles.js";
 import { canonicalNativeRuntimeContextDigest } from "../contracts/runtime-context.js";
 import { acpxProfileActivity } from "../drivers/acpx/profile-activity.js";
 import { redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
@@ -1269,6 +1271,30 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(ACPX_CAPABILITY_PROFILES[agent].qualification).toBe(agent === "cursor" ? "qualified" : "pending");
   });
 
+  it("refuses pending Antigravity bootstrap before any native process opens", async () => {
+    const sidecar = startSidecar();
+    sidecar.write(initializeRequest(1, "antigravity", "caller-exact-model"));
+    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ id: 1, ok: false,
+      error: { message: expect.stringContaining("qualification is pending"), retryable: false } });
+  });
+
+  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("admits only matching candidate startup and rejects session replay before provider launch", async () => {
+    const sidecar = startSidecar();
+    const model = "gemini-3.8-flash-low";
+    const candidateAdmission = bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model,
+      profileDigest: resolveQualifiedAcpxProfile("antigravity", model).commandDigest,
+      nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
+      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 }, { runId: "run-candidate", normalizedSessionId: "session-candidate" });
+    const request = initializeRequest(1, "antigravity", model);
+    sidecar.write({ ...request, params: { ...request.params, candidateAdmission } });
+    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true, result: { profile: { agent: "antigravity", qualificationStatus: "pending", reportedModelId: model } } });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.open", params: {
+      runtimeDirectory: "/unused", workingDirectory: "/unused", normalizedSessionId: "other-session", agent: "antigravity", model,
+      candidateAdmission, permissionMode: "deny-all", permissionModePinned: true, providerPolicy: { readOnly: true }, systemInstructions: "", tools: [],
+    } });
+    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false, error: { message: expect.stringContaining("candidate admission") } });
+  });
+
   it("fails closed after an unsupported provider bootstrap", async () => {
     const sidecar = startSidecar();
     sidecar.write(
@@ -1286,7 +1312,7 @@ describe("qualified ACPX runtime sidecar", () => {
       ok: false,
       error: {
         code: "acpx_sidecar_command_failed",
-        message: "ACPX agent must be claude, codex, grok, cursor, copilot, or pi",
+        message: "ACPX agent must be claude, codex, grok, cursor, copilot, pi, or antigravity",
         retryable: false,
       },
     });

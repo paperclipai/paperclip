@@ -39,8 +39,19 @@ Agent access: [companion](../agent-access-map/recovery.md).
   workspace link when the destination is disabled. Local PostgreSQL and real
   filesystem regressions cover native and legacy recovery and one-time delivery;
   hosted provider recovery remains separate acceptance.
+  Daytona directory export can stream its archive when the sandbox cannot store
+  a temporary tar. The transfer remains bounded and validates archive completion
+  and paths before import. The [capacity regression](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.test.ts)
+  exercises a real local PTY and file-size limit. The credential-gated
+  [provider test](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.live.test.ts)
+  covers stop/start, an ENOSPC archive sink, safe-link filtering, and a second
+  export. Neither test proves the original task's continuation or repairs lost
+  provider session state.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
+  A blocked native restart records that preservation obligation atomically with
+  its failure. PostgreSQL regressions cover exact source binding, live ownership,
+  rollback, and no replacement run or wake from file preservation.
   Retry reconstructs missing preservation for historical failures only from an
   exact prepared source without a live finalization owner.
   New messages and orphan cleanup can register missing preservation automatically

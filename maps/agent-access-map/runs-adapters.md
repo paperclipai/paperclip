@@ -286,6 +286,13 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Scoped source evidence: restart preparation transfers its lease renewal to the
+native executor after the executor acquires its own reference. Completion stops
+renewal before coordinator release, while real ownership loss retains the detach
+guard. This changes no actor permission or session-reset authority. Follow the
+[session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
+ordinary turns; deterministic runner checks do not establish live provider access.
+
 Plugin suspension receipts remain required through recovery and admission, then
 are removed when the admitted session becomes live. A later warm run therefore
 does not inherit an obsolete stopped-run identity. Repository-free fresh plugin

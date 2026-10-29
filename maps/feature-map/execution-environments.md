@@ -185,3 +185,11 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
+a live-run capability during preparation. This adds no agent management API.
+Core resolves accepted identity, grants, company scope and trust at command time.
+The plugin owns the command implementation; no particular script is required.
+[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
+checks capability changes across warm turns. This is contract coverage, not live
+authenticated push acceptance.

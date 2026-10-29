@@ -14,6 +14,14 @@ Recovery can restart a provider to refresh its tool contract; process reuse is
 required for ordinary healthy follow-ups.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
+The same-server case also starts preparation lease renewal during recovery and
+holds instruction collection open past a renewal tick after coordinator release.
+The executor must acquire renewal before preparation releases its reference, then
+stop renewal before releasing the coordinator. Completion must not detach the
+retained runner or strand the next turn.
+Buffered transport messages and close notifications can arrive synchronously on
+subscription. The controller must register the connection before subscribing so
+completed message processing can drain and the suspended session can retire.
 It does not qualify a live model or a sandbox provider API.
 
 Per-turn plugin continuation uses a stopped checkpoint on a replacement lease.

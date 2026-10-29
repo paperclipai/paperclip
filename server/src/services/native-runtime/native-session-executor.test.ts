@@ -1,4 +1,5 @@
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
+import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
@@ -349,6 +350,7 @@ import {
   nativeSessionWorkspaceScope,
   reserveWarmNativeInstructionDirectory,
   closeIdleWarmNativeSessionsForRestart,
+  readNativeSessionIdleWork,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
@@ -9240,6 +9242,38 @@ describe("native warm session supervision", () => {
     expect(onGoalCheckpoint).toHaveBeenCalledOnce();
   });
 
+  it("blocks idle sleep for a released local warm session until its close checkpoint finishes", async () => {
+    await closeIdleWarmNativeSessionsForRestart();
+    markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: false });
+    let finishClose!: () => void;
+    const checkpoint = new Promise<void>(resolve => { finishClose = resolve; });
+    const close = vi.fn(() => checkpoint);
+    const warmExecution = { ...execution, binding: { ...execution.binding,
+      runId: "run-local-idle-sleep", executionWorkspaceId: "workspace-local-idle-sleep" },
+      session: { ...execution.session, normalizedSessionId: "session-local-idle-sleep",
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } } as NativeExecutionInputV1;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close });
+      return { result: { summary: "Completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-local-idle-sleep", normalizedSessionId: warmExecution.session.normalizedSessionId,
+        providerSessionId: "provider-local-idle-sleep", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    try {
+      expect(readNativeSessionIdleWork()).toBe("none");
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: "runner" });
+      expect(close).not.toHaveBeenCalled();
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await readIdleLocalWork()).toBe("present");
+      const closing = closeIdleWarmNativeSessionsForRestart();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(readNativeSessionIdleWork()).toBe("present");
+      expect(await readIdleLocalWork()).toBe("present");
+      finishClose(); await closing;
+      expect(readNativeSessionIdleWork()).toBe("none");
+    } finally { finishClose(); await closeIdleWarmNativeSessionsForRestart(); }
+  });
+
   it.each(["environment deletion", "controller restart"])("closes an idle warm session before %s", async (shutdownKind) => {
     const close = vi.fn(async () => undefined);
     const warmExecution = {
@@ -10373,10 +10407,15 @@ describe("native session bounded recovery", () => {
     });
     const stop = vi.fn(async () => undefined);
     const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop });
+    const releasePreparation = vi.fn(async () => {
+      expect(renew).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+    });
     let reached!: () => void, release!: () => void;
     const claiming = new Promise<void>(resolve => { reached = resolve; });
     const preparation = new Promise<void>(resolve => { release = resolve; });
     const running = executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "fresh-runner",
+      onExecutionLeaseAcquired: releasePreparation,
       runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "fresh-environment", leaseId: "fresh-lease" },
       onEvent: async event => {
         if (event.payload?.span === "native.coordinator.claim") { reached(); await preparation; }
@@ -10388,6 +10427,7 @@ describe("native session bounded recovery", () => {
         db, runId: fresh.binding.runId, attempt: 1, remote: true,
       }));
       expect(stop).not.toHaveBeenCalled();
+      expect(releasePreparation).toHaveBeenCalledOnce();
       release();
       expect(await running).toBe(failure);
       expect(stop).toHaveBeenCalledOnce();

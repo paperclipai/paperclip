@@ -1,3 +1,4 @@
+import { nativeHarnessBackupExpirationService } from "../services/native-runtime/native-harness-backup-expiration.js";
 import { skillVersionRetentionService } from "../services/skill-version-retention.js";
 import { approvalQueueSeedingService } from "../services/approval-queue-seeding-work.js";
 import { joinRequestRetentionService } from "../services/join-request-retention.js";
@@ -539,6 +540,18 @@ vi.mock("../board-claim.js", () => ({
   initializeBoardClaimChallenge: vi.fn(async () => undefined),
 }));
 
+vi.mock("../services/native-runtime/native-harness-backup-expiration.js", () => ({
+  NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS: 60 * 60_000,
+  NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS: 2 * 60_000,
+  NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS: 7,
+  NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS: 7,
+  nativeHarnessBackupExpirationService: vi.fn(() => ({
+    tick: vi.fn(async () => ({ checked: 0, candidates: 0, evidenceCandidates: 0, failed: 0, truncated: false })),
+    noteEvidence: vi.fn(), nextEvidenceAt: vi.fn(() => null),
+    tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn(),
+  })),
+}));
+
 vi.mock("../services/skill-version-retention.js", () => ({
   skillVersionRetentionService: vi.fn(() => ({
     listCompanies: vi.fn(async () => []), pruneCompany: vi.fn(async () => ({ checked: 0, truncated: false, nextRunAt: null })),
@@ -580,6 +593,31 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it.each([false, true])("registers runner evidence independently from the backup scan (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(deliveryWorkRegisterMock.mock.calls.filter(([queue]) => queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toHaveLength(enabled ? 1 : 0);
+    expect(vi.mocked(nativeHarnessBackupExpirationService).mock.calls.map(([, options]) => options?.duty)).toEqual(enabled ? ["backups", "evidence"] : ["backups"]);
+    const backups = vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value;
+    expect(backups.registerCheckpointExpiration).toHaveBeenCalledTimes(enabled ? 1 : 0);
+  });
+
+  it("tracks held evidence reconstruction after HTTP readiness", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ nativeHarnessBackupExpirationEnabled: true }));
+    const pending = Promise.withResolvers<{ truncated: boolean }>();
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
+      tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    vi.mocked(nativeHarnessBackupExpirationService).mockReturnValueOnce({ tick: vi.fn(() => pending.promise), noteEvidence: vi.fn(), nextEvidenceAt: () => null,
+      tickCheckpoints: vi.fn(), registerCheckpointExpiration: vi.fn() } as never);
+    try {
+      await startServer(); await settleStartupHousekeeping();
+      expect(getStartupRecoveryState().phase).toBe("ready"); expect(idleWorkSnapshot().active).toBe(1);
+      expect(vi.mocked(nativeHarnessBackupExpirationService).mock.results[0]!.value.registerCheckpointExpiration).toHaveBeenCalledOnce();
+    } finally { pending.resolve({ truncated: false }); await settleStartupHousekeeping(); }
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(deliveryWorkErrors.filter(error => error.queue === DELIVERY_QUEUES.nativeRunnerEvidenceRetention)).toEqual([]);
   });
 
   it.each([false, true])("registers skill cache retention only when enabled (%s)", async enabled => {
