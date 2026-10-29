@@ -1,0 +1,33 @@
+import type { Page } from "@playwright/test";
+type Row = Record<string, any>;
+
+/** Shared story order; target adapters supply authoritative retirement observations. */
+export async function stopAndRedirectThroughUi(input: {
+  page: Page; nonce: string;
+  awaitRetirement(): Promise<void>;
+  beforeRedirect(): Promise<void>;
+  reply(message: string): Promise<unknown>;
+}) {
+  await input.page.getByTestId("task-chat-composer-stop").last().click();
+  await input.awaitRetirement();
+  await input.beforeRedirect();
+  const marker = `The studio is ready. Reference ${input.nonce}.`;
+  const reply = await input.reply(`Change direction. Leave the project as it is. Reply with just this short note: "${marker}"`);
+  await input.page.reload();
+  return { marker, reply };
+}
+
+/** The native control plane must acknowledge this run's Stop, including resource release. */
+export function nativeStopAcknowledged(run: Row, companyId: string, issueId: string, userId?: string) {
+  const stop = run.resultJson?.nativeCancellation;
+  const startup = run.resultJson?.startupCancellation;
+  return run.runtimeMode === "native" && run.status === "cancelled" && run.companyId === companyId && run.issueId === issueId
+    && stop?.schema === "paperclip.native-cancellation.v1" && stop.companyId === companyId
+    && stop.runId === run.id && stop.issueId === issueId && stop.scope === "run" && stop.dispatched === true
+    && stop.dispatchState === "acknowledged" && stop.reasonCode === "cancellation_run_only"
+    && stop.effects?.length === 1 && stop.effects[0] === "release_run_resources"
+    && typeof stop.intentAuditId === "string" && typeof stop.acknowledgementAuditId === "string"
+    && stop.intentAuditId !== stop.acknowledgementAuditId
+    && (!userId || startup?.requestedBy?.type === "board" && startup.requestedBy.userId === userId
+      && stop.intentId === `native-cancellation:${startup.cancellationRequestId}`);
+}

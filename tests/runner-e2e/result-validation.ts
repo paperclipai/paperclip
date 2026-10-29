@@ -1,3 +1,4 @@
+import { agentJourneyRuns, journeyRequiredChecks } from "./product-journeys/success-contract.js";
 import { validateWorkerTiming } from "./worker-timing.js";
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
 import { githubJourneyCheckpoints, gradeGitHubReviewJourney } from "./github-review-evidence.js";
@@ -429,13 +430,11 @@ export function validateRetainedRunnerResult(
   if (checked.suiteId === "product-journeys" && checked.status === "passed") {
     const evidence = checked.productJourney;
     if (!evidence) return invalid("result.productJourney");
-    const required = checked.caseId === "task-properties" ? ["assignment-persisted", "no-agent-work"]
-      : checked.caseId === "task-create" ? ["browser-created-task-persisted", "no-agent-work"]
-      : checked.caseId === "ask-question" ? ["question-answer-persisted", "one-bound-successful-run", "configured-model-and-environment"]
-      : ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"];
-    if (evidence.outcome !== "passed" || !evidence.deployment || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
+    const required = journeyRequiredChecks[checked.caseId];
+    if (evidence.outcome !== "passed" || !evidence.deployment || !required || !required.every(id => evidence.checks.some(c => c.id === id && c.passed)) || evidence.checks.some(check => !check.passed) || evidence.phases.some(p => p.outcome !== "passed") || checked.cleanup !== "passed") invalid("result.productJourney");
     if (["task-properties", "task-create"].includes(checked.caseId) && (checked.runtimeMode !== "none" || checked.provider !== null || checked.model !== null || checked.runIds?.length)) invalid("result.browserOnly");
-    if (checked.caseId === "ask-question" && (checked.runIds?.length !== 1 || !checked.model || !checked.provider || checked.runtimeMode === "none")) invalid("result.questionRun");
+    if (Object.hasOwn(agentJourneyRuns, checked.caseId) && (checked.runIds?.length !== agentJourneyRuns[checked.caseId as keyof typeof agentJourneyRuns]
+      || !checked.model || !checked.provider || checked.runtimeMode !== "native")) invalid("result.agentJourneyRun");
     if (checked.caseId === "cloud-onboarding" && (!checked.runIds?.length || !evidence.operations || !evidence.operations.requestCount || !evidence.operations.traceIds.length || evidence.operations.campaignId !== evidence.campaignId || evidence.operations.attemptId !== evidence.attemptId)) invalid("result.paidJourneyReceipt");
   }
   if (checked.suiteId === "provider-connections" && checked.status === "passed" && (!checked.providerConnection || !connectionEvidencePasses(checked.providerConnection))) invalid("result.providerConnection");

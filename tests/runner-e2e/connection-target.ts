@@ -34,6 +34,24 @@ export class ConnectionApi {
   async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
   async delete(route: string) { await this.response(route, "DELETE"); }
   async bytes(route: string) { return (await this.response(route)).body(); }
+  /** Keep fixture credentials out of Playwright request traces. */
+  async postSensitive<T = any>(route: string, data: unknown): Promise<T> {
+    const target = new URL(route, this.origin);
+    if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
+    const { cookies } = await this.request.storageState();
+    const cookie = cookies.filter(c => (target.hostname === c.domain || c.domain.startsWith(".") && target.hostname.endsWith(c.domain))
+      && target.pathname.startsWith(c.path) && (!c.secure || target.protocol === "https:")
+      && (c.expires === -1 || c.expires * 1000 > Date.now())).map(c => `${c.name}=${c.value}`).join("; ");
+    try {
+      const response = await fetch(target, { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
+        headers: { "content-type": "application/json", Origin: this.origin, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(data) });
+      if (!response.ok) { await response.body?.cancel(); throw new ConnectionFailure(`api_status_${response.status}`); }
+      return await response.json() as T;
+    } catch (error) {
+      if (error instanceof ConnectionFailure) throw error;
+      throw new ConnectionFailure("sensitive_api_request_failed");
+    }
+  }
 }
 
 async function stopOwnedServer(child: ChildProcess) {
