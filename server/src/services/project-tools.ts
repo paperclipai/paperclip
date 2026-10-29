@@ -1,4 +1,4 @@
-import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
+import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -42,7 +42,11 @@ export async function callProjectTool(input: {
     body = createIssueSchema.parse({
       title: args.title, description: args.description, priority: args.priority,
       projectId: args.projectId, initialPlan: args.initialPlan,
-      assigneeAgentId: args.assigneeActorId ?? input.agentId,
+      ...(args.requiredQualityReview !== undefined ? {
+        executionPolicy: { requiredQualityReview: requiredQualityReviewSchema.parse(args.requiredQualityReview) },
+      } : {}),
+      assigneeAgentId: args.assigneeActorId ?? (args.assigneeUserId ? null : input.agentId),
+      assigneeUserId: args.assigneeUserId,
       parentId: input.conversation ? null : input.issueId,
       status: Array.isArray(args.blockedByTaskIds) && args.blockedByTaskIds.length ? "blocked" : "todo",
       blockedByIssueIds: args.blockedByTaskIds,

@@ -138,6 +138,14 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
         await expect(page.getByRole("button", { name: "Interrupt", exact: true })).toHaveCount(0);
       }
       if (action === "message") expect(prompts).toContain("Please continue the pending follow-up.");
+      const resumedRunId = runs.find(run => run.id !== sourceRunId)!.id;
+      await expect.poll(async () => {
+        const replies = await db.select({ body: issueComments.body }).from(issueComments).where(and(
+          eq(issueComments.companyId, company.id), eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorAgentId, agent.id), eq(issueComments.createdByRunId, resumedRunId),
+        ));
+        return replies.filter(reply => reply.body.includes("Answered the pending follow-up once.")).length;
+      }, { timeout: 45_000 }).toBe(1);
       await page.reload();
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible();
     } finally {

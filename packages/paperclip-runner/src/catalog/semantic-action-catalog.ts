@@ -247,6 +247,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         title: text("Interaction card title.", 300),
         prompt: text("Question or decision prompt.", 10_000),
         payload: openObject,
+        resolverPolicy: { const: "human_only", description: "Optionally require an authenticated human response." },
         targetRevisionId: nullableText(
           "Optional bound document revision.",
           240,
@@ -537,6 +538,10 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
         projectId: nullableText("Project identifier for the new task."),
         initialPlan: nullableText("Remaining execution steps to persist as the task plan. Exclude completed planning, approval, and handoff steps; cite the source plan revision and approval. A copied plan is not a new approval gate."),
         description: nullableText("Child task description."),
+        requiredQualityReview: object({
+          version: { const: 1 },
+          deliverables: { type: "array", minItems: 1, maxItems: 10, items: object({ key: text("Stable output key, e.g. copy or visual.", 80), label: text("Human-readable output name.", 120) }, ["key", "label"]) },
+        }, ["version", "deliverables"]),
         assigneeActorId: nullableText("Optional actor assignee. Mutually exclusive with assigneeUserId.", 200),
         assigneeUserId: nullableText("Company person ID from list_people. Mutually exclusive with assigneeActorId.", 200),
         status: { enum: ["backlog", "todo"], description: "Initial status. Use backlog to save work without execution. Defaults to todo (blocked when dependencies are unresolved)." },

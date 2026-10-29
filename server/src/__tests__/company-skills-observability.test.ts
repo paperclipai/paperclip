@@ -78,8 +78,9 @@ describeDatabase("runtime skill observability", () => {
     return { companyId, service, options };
   }
 
-  it("parents real preparation work and ends acquisition before the consumer settles", async () => {
+  it.each([false,true])("parents real preparation work and ends acquisition before the consumer settles (reuse=%s)", async reused => {
     const f = await fixture();
+    if (!reused) f.options.onlyKeys.add("fixture/missing-selection");
     exporter.reset();
     lifecycle.length = 0;
     const entered = deferred(), release = deferred();
@@ -99,11 +100,6 @@ describeDatabase("runtime skill observability", () => {
     const span = (name: string) => { const found = spans.find(candidate => candidate.name === name); assert.ok(found, name); return found; };
     for (const [child, parent] of [
       ["heartbeat.prepare.configuration_skills", "task.execution_attempt"],
-      ["skills.inventory", "heartbeat.prepare.configuration_skills"],
-      ["skills.inventory.bundled", "skills.inventory"],
-      ["skills.inventory.releases", "skills.inventory"],
-      ["skills.inventory.folders", "skills.inventory"],
-      ["skills.inventory.local_sources", "skills.inventory"],
       ["skills.cache.acquire", "heartbeat.prepare.configuration_skills"],
       ["skills.rows", "heartbeat.prepare.configuration_skills"],
       ["skills.version.read", "heartbeat.prepare.configuration_skills"],
@@ -112,6 +108,14 @@ describeDatabase("runtime skill observability", () => {
       ["skills.version.verify", "skills.version.materialize"],
       ["skills.consume", "heartbeat.prepare.configuration_skills"],
     ]) expect(span(child!).parentSpanContext?.spanId, child).toBe(span(parent!).spanContext().spanId);
+    if (reused) expect(spans.some(value => value.name.startsWith("skills.inventory"))).toBe(false);
+    else for (const [child,parent] of [
+      ["skills.inventory", "heartbeat.prepare.configuration_skills"],
+      ["skills.inventory.bundled", "skills.inventory"],
+      ["skills.inventory.releases", "skills.inventory"],
+      ["skills.inventory.folders", "skills.inventory"],
+      ["skills.inventory.local_sources", "skills.inventory"],
+    ]) expect(span(child!).parentSpanContext?.spanId,child).toBe(span(parent!).spanContext().spanId);
     const acquisition = span("skills.cache.acquire");
     expect(acquisition.status.code).not.toBe(SpanStatusCode.ERROR);
     // SDK timestamps can differ by less than a millisecond at this boundary.

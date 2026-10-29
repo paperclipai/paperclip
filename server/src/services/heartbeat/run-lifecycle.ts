@@ -1,3 +1,7 @@
+import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
+import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import os from "node:os";
@@ -1013,14 +1017,22 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
-  async function writeRunStatus<T>(status: string, companyId: string | undefined, write: (tx: Db) => Promise<T>) {
+  async function writeRunStatus<T>(status: string, previous: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "nativeIssueId" | "issueId" | "contextSnapshot"> | null,
+    write: (tx: Db) => Promise<T>) {
+    const companyId = previous?.companyId;
     // Register on the outer transaction before the terminal write. An unknown
     // commit cannot strand newly-actionable accounting after the live event.
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
+      if (previous && previous.status !== status) await notifyUnsafeWorkspaceExportRunChange(tx, previous);
+      if (previous && (previous.status === "scheduled_retry" || status === "scheduled_retry"))
+        await notifyScheduledRetryCancellation(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous) await notifyInstructionCollection(tx, { companyId: previous.companyId, runId: previous.id });
+      if (previous) await notifyCancelledWorkspacePreservation(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
       await notifyExecutionRunWork(tx);
-      if (companyId) await notifyChatRunMilestones(tx, { companyId });
+      if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,
+        issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined });
       return write(tx);
     });
   }
@@ -1065,7 +1077,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus?.companyId, writer =>
+    const updated = await writeRunStatus(status, previousStatus, writer =>
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
@@ -1161,7 +1173,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus?.companyId, writer =>
+    const updated = await writeRunStatus(status, previousStatus, writer =>
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
@@ -2353,7 +2365,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     const contextSnapshot = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const retryContextSnapshot = withRecoveryContext(
+    const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
@@ -2363,6 +2375,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       },
       "status_only",
     );
+    delete retryContextSnapshot.skillVersions;
+    delete retryContextSnapshot.skillSelectionSnapshot;
+    delete retryContextSnapshot.shadowedSkills;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,

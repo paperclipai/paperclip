@@ -1,4 +1,8 @@
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { nativeResponsePresentationWork } from "../services/native-runtime/native-response-presentation-work.js";
 import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
+import { registerGitHubReviewProjectionWork } from "../services/chat-channels/github/review-projection-work.js";
+import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task-preparation.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
@@ -14,13 +18,13 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { claimTaskRetryInput, releaseUnadmittedTaskRetryInput } from "../services/chat-channels/task-retry-input.js";
 import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
 import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
+import { configureAgentLifecycle, createAgentLifecycle, processAgentLifecycle } from "../services/agent-lifecycle.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { chatRunSourceMessageId } from "../services/chat-channels/run-origin.js";
 import * as durableChatWakeup from "../services/durable-chat-wakeup.js";
 import { conflict } from "../errors.js";
 import * as githubTaskPreparation from "../services/chat-channels/github/task-preparation.js";
-import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { budgetPolicies } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -148,6 +152,8 @@ import {
   issues,
   nativeRunResults,
   nativeRunFinalizations,
+  statusDecisions,
+  statusDecisionEffects,
   environmentLeases,
   environments,
   principalPermissionGrants,
@@ -265,6 +271,7 @@ import type {
 import {
   finalizeNativeRun,
   repairCommittedNativeChatResponse,
+  recoverCommittedNativeChatResponse,
 } from "../services/native-runtime/native-run-finalizer.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
@@ -4112,7 +4119,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
       try {
         await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
-        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }))
+        await expect.poll(() => ({ next: coordinator.nextWakeAt(), active: idleWorkSnapshot().active }), { timeout: 5000 })
           .toEqual({ next: null, active: 0 });
         expect(f.responseWrites).toHaveLength(baseline);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
@@ -7481,6 +7488,223 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await expect.poll(async () => (await f.action()).status, { timeout: 5000 }).toBe("processed");
         expect(f.writes).toHaveLength(1); expect(errors).toEqual([]);
       } finally { release(); await coordinator.stop(); }
+    });
+
+    async function reviewProjectionFixture(cancelFirst = true) {
+      const f = await reviewBotFixture();
+      const deliveryId = randomUUID();
+      const payload = { action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: { number: 82, title: "Rapid pushes", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "b".repeat(40) },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [] } };
+      f.setSupplementalProviderFetch(async input => String(input).endsWith("/pulls/82")
+        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } }) : undefined);
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const event = githubAutomaticReviewEvent(payload, deliveryId)!;
+      await checks.enqueue(endpoint, event, true, "authorized");
+      const action = async () => (await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, endpoint.id), eq(chatActions.kind, "github_review_check"))))[0];
+      if (cancelFirst) await checks.processPending();
+      const admit = async () => {
+        expect((await f.service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+          event: "pull_request", delivery: deliveryId, payload, webhookSecret: f.webhookSecret,
+        }))).status).toBeLessThan(300);
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(endpoint.id)).length,
+          { timeout: 10_000 }).toBe(1);
+        return (await readChatGitHubReviewsByEndpointId(endpoint.id))[0];
+      };
+      const read = async (id: string) => (await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, id)))[0];
+      return { ...f, endpoint, event, action, checks, admit, read };
+    }
+
+    it("wakes stale GitHub review projection repair from real admission and leaves settled history quiet", async () => {
+      const f = await reviewProjectionFixture();
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        const review = await f.admit();
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        await f.service.shutdown();
+        const [manual] = await db.insert(chatGitHubReviews).values({ ...review, id: randomUUID(),
+          deliveryId: "run:" + randomUUID() + ":" + review.headSha, state: "queued" }).returning();
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect((await f.read(manual.id)).state).toBe("queued"); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("wakes stale GitHub review projection repair when cancellation commits after the review is admitted", async () => {
+      const f = await reviewProjectionFixture(false);
+      let entered!: () => void, release!: () => void;
+      const enteredHead = new Promise<void>(resolve => { entered = resolve; });
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const provider: typeof fetch = async (input, init) => {
+        if (String(input).endsWith("/pulls/82")) { entered(); await hold; }
+        return f.providerFetch(input, init);
+      };
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      let dispatch: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        dispatch = githubReviewCheckService(db, provider).processPending();
+        await enteredHead;
+        const review = await f.admit();
+        expect((await f.read(review.id)).state).toBe("queued");
+        release(); await dispatch;
+        await expect.poll(async () => (await f.read(review.id)).state, { timeout: 5000 }).toBe("superseded");
+        expect((await f.action()).result).toMatchObject({ code: "stale_head" }); expect(errors).toEqual([]);
+      } finally { release(); await dispatch; await coordinator.stop(); }
+    });
+
+    it("holds stale GitHub review projection receipt repair until the outer commit and discards rollback", async () => {
+      const f = await reviewProjectionFixture();
+      const review = await f.admit(); await f.service.shutdown();
+      await db.delete(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id));
+      const receipt = (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => retainGitHubReviewReceipt(tx, f.endpoint,
+        review.issueId, review.deliveryId, { context: review.event, revision: review.configurationRevision, policy: review.policySnapshot });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(receipt); throw new Error("rollback projection receipt"); }))
+          .rejects.toThrow("rollback projection receipt");
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(receipt); entered(); await wait; });
+        await held;
+        expect(await readChatGitHubReviewsByEndpointId(f.endpoint.id)).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await readChatGitHubReviewsByEndpointId(f.endpoint.id))[0]?.state, { timeout: 5000 }).toBe("superseded");
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("recovers stale GitHub review projection through %s", async mode => {
+      const f = await reviewProjectionFixture();
+      let canRun = mode === "restart";
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const review = await f.admit(); await f.service.shutdown();
+        await vi.advanceTimersByTimeAsync(60_000);
+        await vi.waitFor(() => {
+          if (mode === "standby") expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+          else expect(idleWorkSnapshot().active).toBe(0);
+        });
+        expect((await f.read(review.id)).state).toBe("queued");
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains failed stale GitHub review projection repair across drain without passive SQL", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+      const failure = new Error("projection write unavailable");
+      const update = vi.spyOn(db, "update").mockImplementationOnce(() => { throw failure; });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1); expect((await f.read(review.id)).state).toBe("queued");
+        canRun = false; update.mockRestore();
+        await vi.advanceTimersByTimeAsync(30_000); await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); writes.mockRestore(); }
+        canRun = true; await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.read(review.id)).state).toBe("superseded"); });
+        expect(errors).toHaveLength(1);
+      } finally { update.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each([false, true])("rechecks assessment ownership after stale GitHub review projection selection waits for a row lock (shutdown: %s)", async shutdown => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const assessment: NonNullable<typeof review.assessment> = { reviewedCommit: review.headSha, score: 4, complete: true,
+        summary: "Reviewed", rationale: "Covered changes", coverage: { reviewedPaths: ["src/a.ts"], omittedPaths: [], limitations: [] }, findings: [] };
+      let locked!: () => void, release!: () => void;
+      const ready = new Promise<void>(resolve => { locked = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+      const pending = db.transaction(async tx => {
+        await tx.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)).for("update");
+        locked(); await held;
+        await tx.update(chatGitHubReviews).set({ assessment }).where(eq(chatGitHubReviews.id, review.id));
+      });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      const updates = vi.spyOn(db, "update");
+      try {
+        await ready;
+        const starting = registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await expect.poll(() => updates.mock.calls.length, { timeout: 5000 }).toBe(1);
+        await expect.poll(async () => {
+          const rows = await db.execute<{ waiting: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and wait_event_type = 'Lock' and query like 'update %chat_github_reviews%') as waiting`);
+          return rows[0].waiting;
+        }, { timeout: 5000 }).toBe(true);
+        let stopped = false;
+        const stopping = shutdown ? coordinator.stop().then(() => { stopped = true; }) : undefined;
+        await Promise.resolve(); expect(stopped).toBe(false);
+        release(); await pending; await starting; await stopping;
+        expect(await f.read(review.id)).toMatchObject({ state: "queued", assessment });
+        expect(coordinator.nextWakeAt()).toBeNull();
+      } finally { release(); await pending; await coordinator.stop(); updates.mockRestore(); }
+    });
+
+    it("drains more than one page of stale GitHub review projections without touching manual history", async () => {
+      const f = await reviewProjectionFixture(); const review = await f.admit(); await f.service.shutdown();
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, review.deliveryId));
+      const action = await f.action();
+      const extra = Array.from({ length: 105 }, () => ({ id: randomUUID(), receipt: randomUUID() }));
+      await db.insert(chatDeliveries).values(extra.map(item => ({ ...delivery, id: item.id, providerEventId: item.receipt,
+        deduplicationKey: item.receipt, normalizedEvent: { ...delivery.normalizedEvent,
+          githubAutomatic: { context: { ...review.event, deliveryId: item.receipt }, revision: review.configurationRevision, policy: review.policySnapshot } } })));
+      await db.insert(chatActions).values(extra.map(item => ({ ...action, id: randomUUID(), providerActionId: "github-check:" + item.receipt,
+        payload: { ...action.payload, event: { ...review.event, deliveryId: item.receipt } } })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: item.id })));
+      await db.insert(chatGitHubReviews).values(extra.map(item => ({ ...review, id: randomUUID(), deliveryId: "run:" + item.id + ":" + review.headSha })));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await registerGitHubReviewProjectionWork(db, coordinator, () => true).ready;
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          const rows = await readChatGitHubReviewsByEndpointId(f.endpoint.id);
+          expect(rows.filter(row => row.state === "superseded")).toHaveLength(106);
+          expect(rows.filter(row => row.state === "queued")).toHaveLength(105);
+          expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+        }, { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
     it("supersedes a late review projection after its check already rejected the old head", async () => {
@@ -14602,6 +14826,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     });
     await qualifySetupRoundTrip(service, endpoint.id);
     await service.test(endpoint.id, "owner-user");
+    const recovery = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    onTestFinished(() => recovery.stop());
+    await service.registerGitHubWebhookRecoveryWork(recovery, () => true).ready;
+    await expect.poll(() => (recovery.nextWakeAt() ?? 0) - Date.now(), { timeout: 5000 }).toBeGreaterThan(30_000);
+    await expect.poll(() => idleWorkSnapshot().active).toBe(0);
     const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
     const credentialRefsBeforeDeletion = await db
       .select({ refs: toolConnections.credentialSecretRefs })
@@ -14628,6 +14857,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       status: "revoked",
       healthMessage: "GitHub App installation was removed",
     });
+    await expect.poll(() => recovery.nextWakeAt(), { timeout: 5000 }).toBeNull();
     await expect(
       db
         .select({
@@ -15892,6 +16122,347 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(recoveredRuntime.webhookRequest).toBeNull();
     await restarted.shutdown();
     await configured.service.shutdown();
+  });
+
+  describe("GitHub webhook recovery scheduling", () => {
+    it.each(["unconfigured", "cloud", "disabled"] as const)("leaves %s recovery quiet", async mode => {
+      const f = mode === "unconfigured" ? null : await githubPreIngressRecoveryFixture();
+      const service = f?.service ?? createService().service;
+      if (f) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        if (mode === "cloud") await db.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          github: { ...endpoint.setup.github, cloudRegistrationId: "relay-owned" } } }).where(eq(chatEndpoints.id, endpoint.id));
+        else await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+        f.requests.length = 0;
+      }
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "update");
+        try {
+          await vi.advanceTimersByTimeAsync(120_000);
+          expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+        } finally { reads.mockRestore(); writes.mockRestore(); vi.useRealTimers(); }
+        expect(f?.requests ?? []).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each(["null", "missing", "deleted"] as const)("rejects a %s assigned agent before GitHub recovery can become orphaned", async mode => {
+      const f = await githubPreIngressRecoveryFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      await f.makeScanDue();
+
+
+      const mutation = mode === "null"
+        ? db.execute(sql`update ${chatEndpoints} set assigned_agent_id = null where ${chatEndpoints.id} = ${endpoint.id}`)
+        : mode === "missing"
+          ? db.update(chatEndpoints).set({ assignedAgentId: randomUUID() }).where(eq(chatEndpoints.id, endpoint.id))
+          : db.delete(agents).where(eq(agents.id, endpoint.assignedAgentId));
+      const integrityCode = mode === "null" ? "23502"
+        : mode === "deleted" ? expect.stringMatching(/^(23001|23503)$/) : "23503";
+      await expect(mutation).rejects.toMatchObject({ cause: { code: integrityCode } });
+      expect((await readChatEndpointsById(endpoint.id))[0].assignedAgentId).toBe(endpoint.assignedAgentId);
+      expect(await db.select({ id: agents.id }).from(agents).where(eq(agents.id, endpoint.assignedAgentId)))
+        .toEqual([{ id: endpoint.assignedAgentId }]);
+      f.requests.length = 0;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active,
+          scheduled: (coordinator.nextWakeAt() ?? 0) > Date.now() + 30_000 }), { timeout: 5000 })
+          .toEqual({ active: 0, scheduled: true });
+        expect(f.posts).toHaveLength(1);
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); vi.useRealTimers(); }
+        expect(f.posts).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("waits for the saved recovery deadline and requests a genuine GitHub redelivery", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      const state = await f.checkpoint();
+      const dueAt = Date.now() + 30_000;
+      await db.update(chatSdkState).set({ value: { ...(state.value as Record<string, unknown>),
+        nextScanAt: new Date(dueAt).toISOString() } }).where(eq(chatSdkState.id, state.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBe(dueAt);
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        await vi.advanceTimersByTimeAsync(16_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect(f.posts).toHaveLength(1); });
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(await f.ingress()).toBeUndefined(); expect(f.wakeup).not.toHaveBeenCalled();
+        expect((await f.callback()).status).toBe(202);
+        expect(await f.ingress()).toBeDefined();
+        expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reactivates recovery from real resume and cancels its deadline on pause", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      await db.update(chatEndpoints).set({ setup: { ...endpoint.setup, step: "complete" } }).where(eq(chatEndpoints.id, endpoint.id));
+      await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect.poll(() => coordinator.nextWakeAt(), { timeout: 5000 }).toBeNull();
+        const oldVersion = (await f.checkpoint()).version;
+        await f.service.configure(f.endpoint.id, { action: "resume" }, "owner-user");
+        await expect.poll(async () => (await f.checkpoint()).version, { timeout: 5000 }).toBeGreaterThan(oldVersion);
+        await expect.poll(() => {
+          const next = coordinator.nextWakeAt();
+          return { active: idleWorkSnapshot().active, future: next !== null && next > Date.now() + 30_000 };
+        }, { timeout: 5000 }).toEqual({ active: 0, future: true });
+        await f.service.configure(f.endpoint.id, { action: "pause" }, "owner-user");
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+          .toEqual({ active: 0, next: null });
+      } finally { await coordinator.stop(); }
+    });
+
+    it.each(["restart", "drain", "standby"] as const)("reconstructs due GitHub recovery through %s", async mode => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      let canRun = false;
+      const errors: unknown[] = [];
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun,
+        canReconcile: () => mode !== "standby" || canRun, onError: error => errors.push(error) });
+      try {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        if (mode === "restart") await coordinator.stop();
+        const reads = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(reads).not.toHaveBeenCalled(); }
+        finally { reads.mockRestore(); }
+        expect(f.requests).toEqual([]);
+        canRun = true;
+        if (mode === "restart") {
+          coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+          await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        }
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(f.posts).toHaveLength(1); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("retains GitHub recovery configuration intent through nested commit and rollback", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const change = async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+        await notifyChatEndpointConfiguration(tx, endpoint);
+        await tx.update(chatEndpoints).set({ setup: { ...endpoint.setup,
+          runtimeGeneration: Number(oldWindow.generation) + 1 } as typeof endpoint.setup }).where(eq(chatEndpoints.id, endpoint.id));
+      };
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      let release!: () => void;
+      let pending: Promise<unknown> | undefined;
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        await expect(db.transaction(async tx => { await tx.transaction(change); throw new Error("rollback epoch"); })).rejects.toThrow("rollback epoch");
+        expect((await f.checkpoint()).version).toBe(old.version);
+        let entered!: () => void;
+        const held = new Promise<void>(resolve => { entered = resolve; });
+        const wait = new Promise<void>(resolve => { release = resolve; });
+        pending = db.transaction(async tx => { await tx.transaction(change); entered(); await wait; });
+        await held;
+        expect((await f.checkpoint()).version).toBe(old.version);
+        expect(f.requests).toEqual([]);
+        release(); await pending;
+        await expect.poll(async () => (await f.checkpoint()).value, { timeout: 5000 }).toMatchObject({
+          generation: Number(oldWindow.generation) + 1, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+        expect(coordinator.nextWakeAt()!).toBeLessThan(Date.now() + 90_000);
+      } finally { release?.(); await pending; await coordinator.stop(); }
+    });
+
+    it("preempts a future GitHub recovery window when only credential references change", async () => {
+      const f = await githubPreIngressRecoveryFixture();
+      const old = await f.checkpoint();
+      const oldWindow = old.value as Record<string, unknown>;
+      await db.update(chatSdkState).set({ value: { ...oldWindow,
+        nextScanAt: new Date(Date.now() + 86_400_000).toISOString() } }).where(eq(chatSdkState.id, old.id));
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, f.endpoint.connectionId));
+        await db.transaction(async tx => {
+          await notifyChatEndpointConfiguration(tx, f.endpoint);
+          await tx.update(toolConnections).set({ credentialSecretRefs: connection.credentialSecretRefs.map(ref => ({ ...ref,
+            versionSelector: ref.versionSelector === "1" ? "latest" : "1" })) }).where(eq(toolConnections.id, connection.id));
+        });
+        await expect.poll(async () => ((await f.checkpoint()).value as Record<string, unknown>).credentialFingerprint,
+          { timeout: 5000 }).not.toBe(oldWindow.credentialFingerprint);
+        expect((await f.checkpoint()).value).toMatchObject({ generation: oldWindow.generation, outcome: "epoch_initialized" });
+        expect(f.requests).toEqual([]);
+      } finally { await coordinator.stop(); }
+    });
+
+    it("recovers a failed GitHub deadline reconstruction after drain without passive SQL", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let canRun = true;
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: error => errors.push(error) });
+      const reads = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("recovery inventory unavailable"); });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        expect(errors).toHaveLength(1);
+        reads.mockRestore(); canRun = false;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+        const passive = vi.spyOn(db, "select");
+        try { await vi.advanceTimersByTimeAsync(60_000); expect(passive).not.toHaveBeenCalled(); }
+        finally { passive.mockRestore(); }
+        canRun = true;
+        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(10); expect((await f.receipt())?.status).toBe("processed"); });
+        expect(errors).toHaveLength(1);
+      } finally { reads.mockRestore(); await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it("reconstructs more than one page of GitHub recovery deadlines and dispatches fair batches of five", async () => {
+      const first = await githubPreIngressRecoveryFixture(), second = await githubPreIngressRecoveryFixture();
+      const ids: string[] = [];
+      for (const [f, count] of [[first, 103], [second, 3]] as const) {
+        const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+        const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+        const copies = Array.from({ length: count }, () => ({ id: randomUUID(), connectionId: randomUUID(),
+          appId: BigInt("0x" + randomUUID().replaceAll("-", "").slice(0, 12)).toString() }));
+        await db.insert(toolConnections).values(copies.map(copy => ({ ...connection, id: copy.connectionId, uid: copy.connectionId })));
+        await db.insert(chatEndpoints).values(copies.map(copy => ({ ...endpoint, id: copy.id, connectionId: copy.connectionId,
+          publicId: copy.id, botExternalId: copy.appId, botUsername: "recovery-" + copy.id })));
+        ids.push(...copies.map(copy => copy.id));
+      }
+      const windows = () => db.select({ companyId: chatSdkState.companyId }).from(chatSdkState).where(and(
+        inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      try {
+        await first.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        const initial = await windows();
+        expect(initial).toHaveLength(5);
+        expect(new Set(initial.map(row => row.companyId)).size).toBe(2);
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(1000);
+          expect(await windows()).toHaveLength(106);
+        }, { timeout: 10_000 });
+        expect(first.requests).toEqual([]); expect(second.requests).toEqual([]); expect(errors).toEqual([]);
+      } finally { await coordinator.stop(); vi.useRealTimers(); }
+    });
+
+    it.each([
+      ["drain", false, false], ["shutdown", false, false],
+      ["drain", true, false], ["shutdown", true, false],
+      ["drain", false, true], ["shutdown", true, true],
+    ] as const)("preserves a GitHub redelivery stopped before transport (%s, prior receipt: %s, superseded: %s)", async (mode, priorReceipt, superseded) => {
+      const f = await githubPreIngressRecoveryFixture();
+      await f.makeScanDue();
+      if (priorReceipt) {
+        await f.service.processFailedGitHubWebhookDeliveries(5, f.endpoint.id);
+        const sent = (await f.receipt())!;
+        await db.update(chatActions).set({ result: { ...sent.result, retryAt: new Date(0).toISOString(),
+          requestedAt: new Date(Date.now() - 60_000).toISOString() } }).where(eq(chatActions.id, sent.id));
+        f.setDeliveries([{ ...f.original, id: "9007199254740994", redelivery: true,
+          delivered_at: new Date(Date.now() - 15_000).toISOString() }, f.original]);
+        await f.makeScanDue();
+      }
+      const previous = await f.receipt();
+      let successor: Awaited<ReturnType<typeof f.receipt>>;
+      f.posts.length = 0;
+      let canRun = true, stoppedAfterClaim = false;
+      let coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true,
+        onError: () => undefined });
+      let stopping: Promise<void> | undefined;
+      const transaction = db.transaction.bind(db);
+      const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        const result = await transaction(callback, options);
+        if (typeof result === "string" && !stoppedAfterClaim) {
+          const receipt = await f.receipt();
+          if (receipt?.id === result && receipt.status === "processing") {
+            if (superseded) {
+              await db.update(chatActions).set({ result: { ...receipt.result,
+                requestedAt: new Date(Date.now() + 1000).toISOString() } }).where(eq(chatActions.id, receipt.id));
+              successor = await f.receipt();
+            }
+            stoppedAfterClaim = true; canRun = false;
+            if (mode === "shutdown") stopping = coordinator.stop();
+          }
+        }
+        return result;
+      }) as Db["transaction"]);
+      try {
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => canRun).ready;
+        await stopping;
+        expect(stoppedAfterClaim).toBe(true); expect(f.posts).toEqual([]);
+        if (superseded) expect(await f.receipt()).toEqual(successor);
+        else if (previous) expect(await f.receipt()).toMatchObject({ status: previous.status,
+          result: previous.result, payload: previous.payload });
+        else expect(await f.receipt()).toBeUndefined();
+        transactions.mockRestore();
+        await coordinator.stop();
+        await f.makeScanDue();
+        canRun = true;
+        coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+        await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
+        if (superseded) {
+          expect(f.posts).toEqual([]);
+          expect(await f.receipt()).toEqual(successor);
+        } else {
+          expect(f.posts).toHaveLength(1);
+          expect(await f.receipt()).toMatchObject({ status: "processed", result: { attempts: priorReceipt ? 2 : 1 } });
+        }
+      } finally { transactions.mockRestore(); await coordinator.stop(); await stopping; }
+    });
+
+    it("joins held GitHub history at shutdown without starting another HTTP request", async () => {
+      const f = await githubPreIngressRecoveryFixture(); await f.makeScanDue();
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      f.setBeforeList(async () => { entered(); await held; });
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+      let deliveries = 0;
+      const unrelated = coordinator.register(DELIVERY_QUEUES.feedback, { retryMs: 1000,
+        run: async () => { deliveries++; }, hasPending: async () => false });
+      await unrelated.ready;
+      const worker = f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true);
+      let stopping: Promise<void> | undefined;
+      try {
+        await started;
+        unrelated.wake();
+        await expect.poll(() => deliveries).toBe(2);
+        const count = f.requests.length;
+        let stopped = false;
+        stopping = coordinator.stop().then(() => { stopped = true; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(stopped).toBe(false);
+        release(); await worker.ready; await stopping;
+        expect(f.requests).toHaveLength(count); expect(f.posts).toEqual([]);
+        expect((await f.checkpoint()).value).toMatchObject({ outcome: "scan_failed" });
+      } finally { release(); await (stopping ?? coordinator.stop()); }
+    });
   });
 
   it("leaves Cloud-managed GitHub webhook recovery to the relay", async () => {
@@ -65996,6 +66567,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const input = { companyId: context.fixture.companyId, issueId: context.issue.id,
         agentId: context.fixture.assignedAgentId, failedRunId: context.runId, initiatedByUserId: "owner-user" };
       const stage = () => db.transaction(tx => context.service.prepareFailedChatRunRetry(tx, input));
+      const observedResponseAdmissions: string[] = [];
+      const responseHints: string[] = [];
+      await coordinator.register(DELIVERY_QUEUES.nativeResponsePresentation, {
+        retryMs: 30_000,
+        onSettled: hints => { responseHints.push(...hints ?? []); },
+        run: async () => {
+          const admitted = await db.select({ id: chatActions.id }).from(chatActions).where(and(
+            eq(chatActions.companyId, context.fixture.companyId), eq(chatActions.kind, "failed_run_retry"), eq(chatActions.status, "processed"),
+          ));
+          observedResponseAdmissions.push(...admitted.map(row => row.id));
+        },
+        hasPending: async () => false,
+      }).ready;
       context.wakeup.mockClear();
       try {
         let actionId: string;
@@ -66041,6 +66625,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(action?.result.attemptCount).toBe(mode === "retry" ? 2 : 1);
           expect(coordinator.nextWakeAt()).toBeNull();
         }, { timeout: 10_000 });
+        await vi.waitFor(() => expect(observedResponseAdmissions).toContain(actionId), { timeout: 5000 });
+        expect(responseHints.map(hint => JSON.parse(hint))).toContainEqual({ companyId: context.fixture.companyId, issueId: context.issue.id });
         expect(context.wakeup).toHaveBeenCalledTimes(mode === "retry" ? 2 : 1);
         const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, actionId));
         expect(receipts).toHaveLength(1);
@@ -73689,6 +74275,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       context: Awaited<ReturnType<typeof failedChatRetryFixture>>,
     ) => Promise<void>,
     summary?: (issueId: string) => string,
+    finalize = true,
   ) {
     const context = await failedChatRetryFixture(
       provider,
@@ -73843,7 +74430,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .from(nativeRunResults)
       .where(eq(nativeRunResults.runId, context.runId));
     const accepted = { resultId: acceptedRow.id };
-    await finalizeNativeRun({
+    if (finalize) await finalizeNativeRun({
       db,
       runId: context.runId,
       workspaceFinalizeStatus: "succeeded",
@@ -73852,7 +74439,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .select()
       .from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, context.runId));
-    expect(coordinator.phase).toBe("committed");
+    if (finalize) expect(coordinator.phase).toBe("committed");
+    else expect(coordinator.phase).not.toBe("committed");
     await db
       .update(heartbeatRuns)
       .set({
@@ -74050,6 +74638,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 })
               : context.repair(),
         ).resolves.toBe(false);
+        await expect(recoverCommittedNativeChatResponse(db, {
+          companyId: mutation === "cross_company" ? randomUUID() : context.fixture.companyId,
+          issueId: context.issue.id,
+          runId: mutation === "cross_run" ? randomUUID() : context.runId,
+        })).resolves.toBe(false);
         await expect(
           db
             .select()
@@ -74691,6 +75284,519 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each(["none", "reuse"] as const)("preserves a recorded %s presentation instead of recovering an unsolicited answer", async commentAction => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const presentationDecision = { commentAction, commentId: null, reasonCodes: ["interaction_owns_response"] };
+    try {
+      await db.update(heartbeatRuns).set({ resultJson: { presentationDecision } }).where(eq(heartbeatRuns.id, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, { companyId: context.fixture.companyId,
+        issueId: context.issue.id, runId: context.runId })).resolves.toBe(false);
+      expect(await nativeResponsePresentationWork(db).load({ companyId: context.fixture.companyId, runId: context.runId })).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toEqual({ presentationDecision });
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["create", "legacy", "missing"] as const)("recovers a genuine unanswered %s presentation", async action => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    try {
+      await db.update(heartbeatRuns).set({ resultJson: action === "missing" ? {} : {
+        presentationDecision: { commentId: null, ...(action === "create" ? { commentAction: "create" } : {}) },
+      } }).where(eq(heartbeatRuns.id, context.runId));
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await expect(context.repair()).resolves.toBe(false);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["conversation_done", "attention_request", "same_agent_reason", "monitor_reason", "skip_comment"] as const)(
+    "does not lock durably ineligible %s history on repeated issue milestones", async kind => {
+      const context = await committedChatResponseRecoveryFixture("telegram");
+      await context.service.shutdown();
+      await db.update(heartbeatRuns).set({ status: "succeeded",
+        ...(kind === "skip_comment" ? { contextSnapshot: { skipIssueComment: true } } : {}) }).where(eq(heartbeatRuns.id, context.runId));
+      const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, context.accepted.resultId));
+      const envelope = accepted.resultJson as { result: PrpStructuredRunResult; terminal: PrpTerminalState };
+      if (kind === "conversation_done") {
+        envelope.result = { ...envelope.result, reportedWorkDisposition: "done" };
+        envelope.terminal = { ...envelope.terminal, reportedWorkDisposition: "done" };
+        await db.update(issues).set({ conversationAgentId: context.fixture.assignedAgentId, conversationUserId: "owner-user", conversationState: "active", assigneeUserId: null })
+          .where(eq(issues.id, context.issue.id));
+      } else if (kind === "attention_request") {
+        envelope.result = { ...envelope.result, attentionRequests: [{ kind: "review", summary: "Needs a decision", ownerClass: "human" }] };
+      } else if (kind === "same_agent_reason" || kind === "monitor_reason") {
+        envelope.result = { ...envelope.result, continuation: { ...envelope.result.continuation,
+          kind: kind === "same_agent_reason" ? "same_agent" : "monitor" } as PrpStructuredRunResult["continuation"] };
+        await db.update(statusDecisions).set({ reasonCode: "external_chat_response_waiting" })
+          .where(eq(statusDecisions.id, context.coordinator.decisionId!));
+      }
+      await db.update(nativeRunResults).set({ resultJson: envelope }).where(eq(nativeRunResults.id, accepted.id));
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      const work = nativeResponsePresentationWork(db);
+      const worker = work.register(coordinator, () => true);
+      const debug = db.$client.options.debug;
+      const locks: string[] = [];
+      try {
+        await worker.ready;
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+          .toEqual({ active: 0, next: null });
+        db.$client.options.debug = (_connection, query) => {
+          if (query.startsWith("select") && query.includes("for update") && /"(?:issues|heartbeat_runs|native_run_finalizations)"/.test(query)) locks.push(query);
+        };
+        for (let i = 0; i < 3; i++) {
+          await db.transaction(tx => notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id }));
+          await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+            .toEqual({ active: 0, next: null });
+        }
+        expect(locks).toEqual([]);
+        expect(await work.load({ companyId: context.fixture.companyId, issueId: context.issue.id })).toEqual([]);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+        expect(errors).toEqual([]);
+      } finally { db.$client.options.debug = debug; worker.stop(); await coordinator.stop(); }
+    });
+
+  it("leaves fresh-commit accepted-response presentation to the worker when periodic replay skips it", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram", "coordinator", false, undefined, undefined, false);
+    try {
+      await finalizeNativeRun({ db, runId: context.runId, workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true, skipNativeResponsePresentation: true });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toEqual([]);
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["reconciler", "finalizer"])("leaves accepted-response presentation to its worker during periodic %s replay", async caller => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    try {
+      if (caller === "reconciler") {
+        await reconcileNativeFinalizations(db, [context.runId], { skipNativeResponsePresentation: true });
+      } else {
+        await finalizeNativeRun({ db, runId: context.runId, workspaceFinalizeStatus: "succeeded",
+          projectRunStatus: true, skipNativeResponsePresentation: true });
+      }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: context.fixture.companyId, runId: context.runId });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      await expect(context.repair()).resolves.toBe(false);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it("recovers accepted-response work on startup and leaves selected history quiet", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId));
+      expect(comments).toHaveLength(1);
+      expect(comments[0].body).toBe(context.result.summary);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+      expect(await work.load({ companyId: context.fixture.companyId })).toEqual([]);
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reactivates dormant accepted-response work when the live chat authority registers", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    let replacement: ReturnType<typeof createService> | undefined;
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      replacement = createService(new FakeChatSdkRuntime(), fakeTelegramFetch() as typeof fetch);
+      await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await replacement?.service.shutdown(); }
+  });
+
+  it.each(["issue", "run"])("does not reload dormant accepted-response history for an unrelated %s wake", async scope => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
+      const previousDebug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+      };
+      try {
+        await db.transaction(tx => notifyChatRunMilestones(tx, { companyId: context.fixture.companyId,
+          ...(scope === "issue" ? { issueId: randomUUID() } : { runId: randomUUID() }) }));
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, next: null });
+        expect(queries).toHaveLength(1);
+      } finally { db.$client.options.debug = previousDebug; }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); }
+  });
+
+  it.each(["milestone", "finalization"] as const)("ignores repeated unscoped routine %s hints without rebuilding dormant accepted-response history", async source => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await context.service.shutdown();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+        .toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, runId: context.runId })).toHaveLength(1);
+      const debug = db.$client.options.debug;
+      const queries: string[] = [];
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && query.includes("native_run_finalizations")) queries.push(query);
+      };
+      try {
+        for (let i = 0; i < 3; i++) {
+          await db.transaction(tx => source === "milestone"
+            ? notifyChatRunMilestones(tx, { companyId: context.fixture.companyId })
+            : notifyNativeFinalizationWork(tx, { companyId: context.fixture.companyId }));
+          await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+            .toEqual({ active: 0, next: null });
+        }
+        expect(queries).toEqual([]);
+      } finally { db.$client.options.debug = debug; }
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); }
+  });
+
+  it("wakes dormant accepted-response history from the real company membership restoration owner", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, context.fixture.companyId), eq(companyMemberships.principalId, "owner-user")));
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 10_000 })
+        .toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await accessService(db).updateMember(context.fixture.companyId, membership.id, { status: "active" });
+      await expect.poll(async () => ({ count: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ count: 1, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it.each(["commit", "rollback"])("keeps accepted-response work behind the outer %s boundary", async outcome => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      const transaction = db.transaction(async tx => {
+        await tx.transaction(async nested => {
+          await notifyChatRunMilestones(nested, { companyId: context.fixture.companyId, issueId: context.issue.id, runId: randomUUID() });
+          await nested.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+        });
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+        if (outcome === "rollback") throw new Error("response fixture rollback");
+      });
+      if (outcome === "rollback") await expect(transaction).rejects.toThrow("response fixture rollback");
+      else await transaction;
+      await expect.poll(async () => ({
+        publications: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active,
+        next: coordinator.nextWakeAt(),
+      }), { timeout: 5000 }).toEqual({ publications: outcome === "commit" ? 1 : 0, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("retains the first accepted-response wake through idle drain without passive SQL", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, context.runId));
+    let canRun = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      canRun = false;
+      await db.transaction(async tx => {
+        await notifyChatRunMilestones(tx, { companyId: context.fixture.companyId, issueId: context.issue.id });
+        await tx.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, context.runId));
+      });
+      await expect.poll(() => idleWorkSnapshot().active, { timeout: 5000 }).toBe(0);
+      expect(coordinator.nextWakeAt()).not.toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("retains a failed accepted-response attempt across drain and retries after resume", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    let release!: () => void, observed!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { observed = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select().from(chatActions).where(eq(chatActions.id, context.action.id)).for("update");
+      observed();
+      await hold;
+    });
+    await locked;
+    let canRun = true;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => canRun, canReconcile: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => canRun);
+    try {
+      await worker.ready;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(errors).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      canRun = false;
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try {
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled();
+      } finally { reads.mockRestore(); writes.mockRestore(); }
+      release(); await holder;
+      canRun = true; worker.wake();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toHaveLength(1);
+    } finally { release(); await holder; worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("reconstructs a future accepted-response deadline without early publication", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const at = new Date(Date.now() + 60_000);
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: at }).where(eq(nativeRunFinalizations.runId, context.runId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: at.getTime() });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(Math.max(0, at.getTime() - Date.now()));
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("retains an accepted-response deadline that elapses during the locked recovery check", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: context.fixture.companyId });
+    expect(entry?.id).toBe(context.runId);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const due = new Date(Date.now() + 1000);
+    const transaction = db.transaction.bind(db);
+    const intercept = vi.spyOn(db, "transaction").mockImplementationOnce((async (callback, options) => {
+      await transaction(async tx => {
+        await tx.update(nativeRunFinalizations).set({ nextAttemptAt: due }).where(eq(nativeRunFinalizations.runId, context.runId));
+      });
+      const result = await transaction(callback, options);
+      vi.setSystemTime(due.getTime() + 1);
+      return result;
+    }) as Db["transaction"]);
+    try {
+      const deferred = await work.check(entry);
+      intercept.mockRestore();
+      expect(deferred).toEqual({ ...entry, dueAt: due.getTime() });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await expect(work.check(deferred!)).resolves.toBeNull();
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { intercept.mockRestore(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes dormant accepted-response recovery after agent resume", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused", lifecycleHolds: ["manual"], lifecycleOperation: null })
+      .where(eq(agents.id, context.binding.agentId));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const work = nativeResponsePresentationWork(db);
+    const worker = work.register(coordinator, () => true);
+    const lifecycle = configureAgentLifecycle(db, {
+      requiredPluginIds: async () => [], runHost: async () => "complete", runPlugin: async () => "complete",
+    });
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await work.load({ companyId: context.fixture.companyId, agentId: randomUUID() })).toEqual([]);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await createAgentLifecycle(db).resumeAgent(context.binding.agentId);
+      await processAgentLifecycle(db, context.binding.agentId);
+      await expect.poll(async () => (await db.select().from(agents).where(eq(agents.id, context.binding.agentId)))[0].status).toBe("idle");
+      await expect.poll(async () => (await readChatPublicationsByEndpointId(context.endpoint.id)).length, { timeout: 5000 }).toBe(1);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { await lifecycle.stop(); worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("wakes accepted-response recovery from the real coordinator retry release", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const store = new NativeRunCoordinatorStore(db, context.binding);
+    await store.claimFinalization({ leaseOwner: "response-recovery-fixture", leaseTtlMs: 1000 });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
+      await store.markFinalizationRetry({ leaseOwner: "response-recovery-fixture", failureCode: "response_fixture_retry", retryAfterMs: 1000 });
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); vi.useRealTimers(); await context.service.shutdown(); }
+  });
+
+  it("wakes accepted-response recovery when its authenticated accepted-result journal arrives late", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram", "port");
+    await db.delete(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, context.runId), eq(heartbeatRunEvents.eventType, "run.result.accepted")));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }),
+        { timeout: 10_000 }).toEqual({ active: 0, next: null });
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      const port = new PaperclipControlPlanePort(db, {
+        companyId: context.binding.companyId, issueId: context.binding.issueId,
+        runId: context.runId, agentId: context.binding.agentId, sessionId: context.binding.normalizedSessionId,
+        completionContractId: context.binding.completionContractId,
+        completionContractSha256: context.binding.completionContractSha256,
+        sourceInstanceId: context.binding.runnerSourceInstanceId, controlPlaneSourceInstanceId: `control-${context.runId}`,
+      });
+      await port.appendEvent({
+        schema: "paperclip.prp.event.v1", sourceEventId: `accepted-${context.runId}`, sourceSeq: 1,
+        sourceInstanceId: `control-${context.runId}`, sourceKind: "control_plane",
+        runId: context.runId, normalizedSessionId: context.binding.normalizedSessionId,
+        turnId: `turn-${context.runId}`, eventType: "run.result.accepted", schemaVersion: 1,
+        priority: 0, emittedAt: new Date().toISOString(), payload: { result: context.result },
+      });
+      await expect.poll(async () => ({
+        publications: (await readChatPublicationsByEndpointId(context.endpoint.id)).length,
+        active: idleWorkSnapshot().active, next: coordinator.nextWakeAt(),
+      }), { timeout: 5000 }).toEqual({ publications: 1, active: 0, next: null });
+      expect(errors).toEqual([]);
+    } finally { worker.stop(); await coordinator.stop(); await context.service.shutdown(); }
+  });
+
+  it("defers scheduled accepted-response recovery until the persisted retry is due", async () => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, context.runId));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(1);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
+  it.each(["pending", "failed"])("defers scheduled accepted-response recovery behind %s status effects", async deliveryState => {
+    const context = await committedChatResponseRecoveryFixture("telegram");
+    const input = { companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId, onlyWhenDue: true };
+    try {
+      const [effect] = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, context.coordinator.decisionId!));
+      expect(effect).toBeDefined();
+      await db.update(statusDecisionEffects).set({ deliveryState }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(false);
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, context.runId))).toHaveLength(0);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(0);
+      await db.update(statusDecisionEffects).set({ deliveryState: "delivered" }).where(eq(statusDecisionEffects.id, effect.id));
+      await expect(recoverCommittedNativeChatResponse(db, input)).resolves.toBe(true);
+      expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toHaveLength(1);
+    } finally { await context.service.shutdown(); }
+  });
+
   it("leaves a contended accepted response retryable without reclassifying or partially publishing it", async () => {
     const context = await committedChatResponseRecoveryFixture("telegram");
     let release!: () => void;
@@ -74713,6 +75819,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     try {
       await locked;
       await expect(context.repair()).resolves.toBe(false);
+      await expect(recoverCommittedNativeChatResponse(db, {
+        companyId: context.fixture.companyId, issueId: context.issue.id, runId: context.runId,
+      })).rejects.toThrow();
       await expect(
         db
           .select()

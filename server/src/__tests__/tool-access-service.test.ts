@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -10086,6 +10087,45 @@ describeEmbeddedPostgres("tool access service", () => {
     });
 
 
+  });
+
+  it.each(["creation", "reopening", "rollback"] as const)("signals native review recovery after OAuth card %s settles", async mode => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const connected = await createTestToolAccessService(db).connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth" });
+    if (mode !== "creation") await db.insert(issueThreadInteractions).values({ companyId: company.id,
+      issueId: issue.id, kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Previous authorization" },
+      idempotencyKey: `connection-authorization:${connected.connectionId}:user-for-run`, sourceRunId: run.id });
+    const reassessment = vi.fn(), reviewResponse = vi.fn();
+    const unsubscribe = [subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, reassessment),
+      subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeReviewResponse, reviewResponse)];
+    const rollback = new Error("rollback OAuth reopening");
+    try {
+      const operation = db.transaction(async tx => {
+        const started = await createTestToolAccessService(tx as unknown as typeof db).startOAuth(company.id, connected.connectionId, {
+          redirectUri: "https://paperclip.example/api/tools/oauth/callback", actor: { actorType: "agent", actorId: agent.id, sessionId: run.id },
+          issueId: issue.id, subjectUserId: "user-for-run", scopes: ["channels:read"],
+        });
+        const [inside] = await tx.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+        expect(inside.status).toBe("pending");
+        expect(inside.payload).toMatchObject({ target: { href: started.authorizationUrl } });
+        expect(reassessment).not.toHaveBeenCalled(); expect(reviewResponse).not.toHaveBeenCalled();
+        const [outside] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+        expect(outside?.status).toBe(mode === "creation" ? undefined : "accepted");
+        if (mode === "rollback") throw rollback;
+      });
+      if (mode === "rollback") await expect(operation).rejects.toBe(rollback); else await operation;
+
+
+      expect(reassessment).toHaveBeenCalledTimes(1); expect(reviewResponse).toHaveBeenCalledTimes(1);
+      const [persisted] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issue.id));
+      expect(persisted.status).toBe(mode === "rollback" ? "accepted" : "pending");
+      expect(await db.select().from(toolOauthStates).where(eq(toolOauthStates.issueId, issue.id)))
+        .toHaveLength(mode === "rollback" ? 0 : 1);
+    } finally { unsubscribe.forEach(stop => stop()); }
   });
 
   it("creates and resolves an agent-initiated user authorization grant card", async () => {

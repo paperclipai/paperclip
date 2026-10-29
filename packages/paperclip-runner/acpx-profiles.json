@@ -5,39 +5,39 @@
   "protocolVersion": 1,
   "profiles": {
     "grok": {
-      "agentProfileVersion": 7,
+      "agentProfileVersion": 11,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:6fcf754bf85aaca0b35ba6bad9926f11c60bdda5f7b180158c8f8b1be5e57d36",
+      "commandDigest": "sha256:f43a6f5a583972cdcb422784969cd6a97654655b0f135f1cf178317909c404f8",
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 30,
+      "agentProfileVersion": 33,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d",
+      "commandDigest": "sha256:0260d5810e9247986800ad46c1f9b3511a5abd06cb8f142405d5caacbc3960fc",
       "requiresProviderPolicy": true
     },
     "cursor": {
-      "agentProfileVersion": 15,
+      "agentProfileVersion": 16,
       "agentServerPackage": "cursor-agent",
       "agentServerVersion": "2026.09.26-dd393fe",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:ac8092119542c8fbe95dae18ba5ef4d3689803fec56b7d2735fa193eea42f59b",
+      "commandDigest": "sha256:759e7415fea8ed2b6b0e6f362b57652b8768835f9d1fdae4a94c1b5eb3669301",
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 71,
+      "agentProfileVersion": 79,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:b7a25fe627daf3857ac8097d9a374b1ba15355176389b92457838bf19e9d91bd",
+      "commandDigest": "sha256:a0e9f339935f6ee616fee644c45cb09353e9aed1d1f22215739f9504153ceca1",
       "requiresProviderPolicy": true
     },
     "claude": {

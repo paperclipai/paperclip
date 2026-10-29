@@ -45,6 +45,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { decisionHistoryService } from "../services/decision-history.js";
 import { listAttentionExhaustedRuns } from "../services/attention-exhausted-runs.js";
 import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
@@ -269,6 +270,84 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.subject.id === harnessIssueId)).toBe(false);
     expect(feed.countsBySourceKind.review ?? 0).toBe(0);
     expect(feed.items.flatMap((item) => item.queues).some((queue) => queue.key === "internal-review")).toBe(false);
+  });
+
+  it("includes existing pending chat questions and confirmations, then retains answered questions in history", async () => {
+    const { companyId, workerId } = await seedCompany("CHQ");
+    const issueId = randomUUID(), questionId = randomUUID(), confirmationId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, identifier: "CHQ-1", title: "Chat with Worker", status: "in_review",
+      conversationAgentId: workerId, conversationUserId: "board-user", conversationState: "waiting", assigneeAgentId: workerId,
+    });
+    await db.insert(issueThreadInteractions).values([
+      { id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending", title: "Choose the screen",
+        createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+        payload: { version: 1, questions: [{ id: "screen", prompt: "Which screen should we redesign?", options: [], selectionMode: "single", required: true, allowOther: true }] } },
+      { id: confirmationId, companyId, issueId, kind: "request_confirmation", status: "pending", title: "Approve the plan",
+        createdByAgentId: workerId, addresseeUserId: "board-user", payload: { version: 1, prompt: "Approve this plan?" } },
+    ]);
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId] };
+    const options = { userId: actor.userId, actor };
+    const service = attentionService(db);
+    const feed = await service.list(companyId, options);
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id).sort())
+      .toEqual([questionId, confirmationId].sort());
+    expect(feed.items.find((item) => item.subject.id === questionId)).toMatchObject({
+      inlineResolvable: true,
+      relatedIssue: { id: issueId, identifier: "CHQ-1", href: "/CHQ/issues/CHQ-1" },
+      subject: { href: `/CHQ/issues/CHQ-1#interaction-${questionId}`, metadata: { kind: "ask_user_questions", issueId } },
+      detail: { kind: "questions", questionCount: 1, firstQuestionText: "Which screen should we redesign?" },
+      resolverAudience: { effectiveResolverPolicy: "human_only" },
+    });
+    expect(feed.countsBySourceKind.issue_thread_interaction).toBe(2);
+    expect(feed.countsBySourceKind.review).toBe(0);
+
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: new Date(), resolvedByUserId: actor.userId,
+      result: { version: 1, answers: [{ questionId: "screen", optionIds: [], otherText: "Agent detail" }] } }).where(eq(issueThreadInteractions.id, questionId));
+    const after = await service.list(companyId, options);
+    expect(after.items.some((item) => item.subject.id === questionId)).toBe(false);
+    expect(after.countsBySourceKind.issue_thread_interaction).toBe(1);
+    const history = await decisionHistoryService(db).list(companyId, options);
+    expect(history.items).toEqual([expect.objectContaining({ sourceId: questionId, issueId, outcome: "answered", label: "Answers recorded" })]);
+  });
+
+  it("keeps chat attention company, issue visibility, and addressee filters while ignoring idle chats without requests", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("CHA");
+    const other = await seedCompany("CHB");
+    const scenarios = [
+      { user: "board-user", allowed: true },
+      { user: "other-user", addresseeUserId: "other-user" },
+      { user: "private-owner", visibility: "private", createdByUserId: "private-owner" },
+      { user: "hidden-owner", hiddenAt: new Date() },
+      { user: "harness-owner", harnessKind: "skill_test" },
+      { user: "agent-addressee", addresseeAgentId: reviewerId },
+      { user: "idle-owner", idle: true },
+      { user: "other-company", companyId: other.companyId, agentId: other.workerId },
+    ];
+    const expected: string[] = [];
+    for (const [index, scenario] of scenarios.entries()) {
+      const issueId = randomUUID(), interactionId = randomUUID();
+      const scopedCompanyId = scenario.companyId ?? companyId, agentId = scenario.agentId ?? workerId;
+      await db.insert(issues).values({
+        id: issueId, companyId: scopedCompanyId, identifier: `CH-${index}`, title: `Chat ${scenario.user}`, status: "in_review",
+        conversationAgentId: agentId, conversationUserId: scenario.user, conversationState: "waiting", assigneeAgentId: agentId,
+        visibility: scenario.visibility ?? "open", createdByUserId: scenario.createdByUserId,
+        hiddenAt: scenario.hiddenAt, harnessKind: scenario.harnessKind,
+      });
+      if (scenario.idle) continue;
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId, companyId: scopedCompanyId, issueId, kind: "ask_user_questions", status: "pending",
+        title: `Question ${scenario.user}`, createdByAgentId: agentId,
+        addresseeUserId: scenario.addresseeUserId ?? (scenario.addresseeAgentId ? null : "board-user"),
+        addresseeAgentId: scenario.addresseeAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      if (scenario.allowed) expected.push(interactionId);
+    }
+    const actor = { type: "board" as const, source: "session" as const, userId: "board-user", companyIds: [companyId], ignoreInstanceAdmin: true };
+    const feed = await attentionService(db).list(companyId, { actor, userId: actor.userId });
+    expect(feed.items.filter((item) => item.sourceKind === "issue_thread_interaction").map((item) => item.subject.id)).toEqual(expected);
+    expect(feed.countsBySourceKind.review).toBe(0);
   });
 
   it("returns ranked decision-only items for every active source and excludes non-human or transient rows", async () => {
@@ -1464,6 +1543,25 @@ describeEmbeddedPostgres("attention service", () => {
     expect(interactionIds).toContain(newerConfirmationId);
     expect(interactionIds).toContain(checkboxId);
     expect(interactionIds).not.toContain(olderConfirmationId);
+  });
+
+  it("retains every independently bound quality approval alongside the newest ordinary confirmation", async () => {
+    const { companyId, workerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Review copy and visual", status: "in_review", assigneeAgentId: workerId });
+    const ids = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issueThreadInteractions).values(ids.map((id, index) => ({
+      id, companyId, issueId, kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: workerId,
+      payload: { version: 1, prompt: "Approve output?", ...(index < 2 ? { qualityReview: { key: index === 0 ? "copy" : "visual", requirementHash: "a".repeat(64) } } : {}) },
+      createdAt: new Date(Date.UTC(2026, 6, 9, 12, index)),
+    })));
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactions = feed.items.filter(item => item.sourceKind === "issue_thread_interaction");
+    expect(interactions.map(item => item.subject.id).sort()).toEqual([ids[0], ids[1], ids[3]].sort());
+    // Resolving one output removes only that decision, leaving the other output
+    // and the ordinary confirmation independently actionable.
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() }).where(eq(issueThreadInteractions.id, ids[0]));
+    const remaining = await attentionService(db).list(companyId, { userId: "board-user" });
+    expect(remaining.items.filter(item => item.sourceKind === "issue_thread_interaction").map(item => item.subject.id).sort()).toEqual([ids[1], ids[3]].sort());
   });
 
   it("uses inbox_dismissals with attention-prefixed dedup keys and resurfaces newer activity", async () => {

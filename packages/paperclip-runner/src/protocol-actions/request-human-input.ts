@@ -119,6 +119,10 @@ export const requestHumanInputAction = {
             "maxLength": 10000
           },
           "payload": questionPayloadSchema,
+          "resolverPolicy": {
+            "const": "human_only",
+            "description": "Optionally require an authenticated human response. Required output-quality bindings also enforce this server-side."
+          },
           "targetRevisionId": {
             "type": [
               "string",

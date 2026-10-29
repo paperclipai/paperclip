@@ -1,3 +1,5 @@
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import * as pluginWorkspaces from "../plugin-workspaces.js";
 import * as platformProof from "./native-workspace-platform-proof.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
@@ -38,7 +40,8 @@ import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 
 describe("native workspace finalization recovery", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let connectionString: string;
   let db: ReturnType<typeof createDb>;
   let workspaceRoot: string;
   let priorLogRoot: string | undefined;
@@ -125,10 +128,10 @@ describe("native workspace finalization recovery", () => {
       workspaceRoot,
       "operation-logs",
     );
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "paperclip-native-workspace-finalizer-",
-    );
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_WORKSPACE_FINALIZER_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-workspace-finalizer-");
+    connectionString = external ?? temporary!.connectionString;
+    db = createDb(connectionString);
 
     await db.insert(companies).values([
       { id: companyId, name: "Native workspace owner", issuePrefix: "NWO" },
@@ -162,7 +165,8 @@ describe("native workspace finalization recovery", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await temporary.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
     await fs.rm(workspaceRoot, { recursive: true, force: true });
     if (priorLogRoot === undefined) {
       delete process.env.WORKSPACE_OPERATION_LOG_BASE_PATH;
@@ -210,7 +214,17 @@ describe("native workspace finalization recovery", () => {
     const seed = await seedAbandonedCopyback();
     const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
     expect(await withNativeWorkspaceFinalizationOwnership(seed, async () => "unexpected")).toEqual({ acquired: false });
-    const receipt = await resumeNativeWorkspaceAfterOwnerStop(seed);
+    const observed: Array<Promise<unknown>> = [];
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, () => {
+      observed.push(db.select({ profile: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, seed.runId)).then(rows => rows[0].profile));
+    });
+    let receipt: Awaited<ReturnType<typeof resumeNativeWorkspaceAfterOwnerStop>>;
+    try {
+      receipt = await resumeNativeWorkspaceAfterOwnerStop(seed);
+      await vi.waitFor(() => expect(observed).toHaveLength(1));
+      expect(await Promise.all(observed)).toEqual([{ preserved: "workspace descriptor" }]);
+    } finally { stop(); }
     expect(receipt).toEqual({ runId: seed.runId, resultId: before.resultId, status: "queued" });
     const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId));
     expect(after).toEqual(before);
@@ -425,7 +439,7 @@ describe("native workspace finalization recovery", () => {
 
   it("keeps ordinary progress writable even when the application pool has one connection", async () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Small application pool" });
-    const smallPool = createDb(temporary.connectionString, { maxConnections: 1 });
+    const smallPool = createDb(connectionString, { maxConnections: 1 });
     const result = await withNativeWorkspaceFinalizationOwnership({ db: smallPool, companyId, runId: seeded.runId }, async (ownership) => {
       await ownership.assertHeld();
       await smallPool.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, seeded.runId));
@@ -438,7 +452,7 @@ describe("native workspace finalization recovery", () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Live copyback" });
     const live = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async (ownership) => {
       await ownership.assertHeld();
-      expect(await resumeNativeWorkspaceFinalization({ db: createDb(temporary.connectionString), runId: seeded.runId })).toBeNull();
+      expect(await resumeNativeWorkspaceFinalization({ db: createDb(connectionString), runId: seeded.runId })).toBeNull();
       expect(await db.select().from(workspaceOperations).where(eq(workspaceOperations.heartbeatRunId, seeded.runId))).toEqual([]);
       return "copied";
     });
@@ -462,7 +476,7 @@ describe("native workspace finalization recovery", () => {
     try {
       await entered;
       await db.execute(sql`select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database()) and pid <> pg_backend_pid()`);
-      const second = await withNativeWorkspaceFinalizationOwnership({ db: createDb(temporary.connectionString), companyId, runId: seeded.runId }, async () => "must not run");
+      const second = await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString), companyId, runId: seeded.runId }, async () => "must not run");
       expect(second).toEqual({ acquired: false });
       const [held] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
       expect(held.runnerProfileJson?.nativeWorkspaceFinalizationOwner).toBeTruthy();
@@ -475,7 +489,7 @@ describe("native workspace finalization recovery", () => {
 
   it("recovers its own joined copyback receipt after the application pool disconnects during cleanup", async () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Reconnect joined copyback" });
-    const interruptedDb = createDb(temporary.connectionString);
+    const interruptedDb = createDb(connectionString);
     let joined = false;
     await expect(withNativeWorkspaceFinalizationOwnership({ db: interruptedDb, companyId, runId: seeded.runId }, async () => {
       await fs.writeFile(path.join(workspaceRoot, "joined-copyback.txt"), "durable work");
@@ -493,7 +507,7 @@ describe("native workspace finalization recovery", () => {
         .toEqual({ acquired: false });
     }
     await db.update(heartbeatRuns).set({ runnerProfileJson: beforeReconnect.runnerProfileJson }).where(eq(heartbeatRuns.id, seeded.runId));
-    expect(await withNativeWorkspaceFinalizationOwnership({ db: createDb(temporary.connectionString), companyId, runId: seeded.runId }, async () => "resumed"))
+    expect(await withNativeWorkspaceFinalizationOwnership({ db: createDb(connectionString), companyId, runId: seeded.runId }, async () => "resumed"))
       .toEqual({ acquired: true, value: "resumed" });
   });
 

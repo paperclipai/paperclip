@@ -1,3 +1,4 @@
+import { notifyGitHubReviewProjection, repairSupersededGitHubReviews } from "./chat-channels/github/review-projection-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { notifyGitHubReviewChecks, registerGitHubReviewCheckWork } from "./chat-channels/github/review-check-work.js";
 import { githubReviewCheckState } from "./chat-channels/github/review-check-state.js";
@@ -5,10 +6,9 @@ import {
   GitHubPublicationLeaseLost,
   withGitHubPublicationLease,
 } from "./chat-github-publication-lease.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
   chatActions,
-  chatDeliveries,
   chatEndpoints,
   chatGitHubConfigurations,
   chatGitHubReviews,
@@ -163,6 +163,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   );
               });
             await lease.commit(async (tx) => {
+              await notifyGitHubReviewProjection(tx, { companyId: action.companyId, endpointId: action.endpointId });
               await tx
                 .update(chatActions)
                 .set({
@@ -226,6 +227,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
             );
             if (review)
               await lease.commit(async (tx) => {
+                await notifyGitHubReviewProjection(tx, { companyId: action.companyId, endpointId: action.endpointId });
                 await tx
                   .update(chatGitHubReviews)
                   .set({
@@ -285,42 +287,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
       },
     );
   }
-  async function repairSupersededReviews() {
-    // Check delivery and task admission run independently. A rapid push can
-    // cancel an obsolete check before admission inserts its review projection.
-    // Reconcile that late row from the durable cancellation receipt, without
-    // starting work or borrowing another delivery's authority.
-    await db
-      .update(chatGitHubReviews)
-      .set({
-        state: "superseded",
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          inArray(chatGitHubReviews.state, ["queued", "running"]),
-          isNull(chatGitHubReviews.assessment),
-          sql`${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`,
-          sql`(
-        select action.id from ${chatActions} action
-        where action.company_id = ${chatGitHubReviews.companyId}
-          and action.endpoint_id = ${chatGitHubReviews.endpointId}
-          and action.kind = 'github_review_check'
-          and action.status = 'cancelled'
-          and action.result->>'code' = 'stale_head'
-          and action.payload->'event'->>'deliveryId' = (
-            select delivery.normalized_event->'githubAutomatic'->'context'->>'deliveryId'
-            from ${chatDeliveries} delivery
-            where delivery.id = case
-              when ${chatGitHubReviews.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-              then ${chatGitHubReviews.deliveryId}::uuid end
-              and delivery.endpoint_id = ${chatGitHubReviews.endpointId}
-          )
-        limit 1
-      ) is not null`,
-        ),
-      );
-  }
+  const repairSupersededReviews = () => repairSupersededGitHubReviews(db);
   async function processPending(limit = 10) {
     await repairSupersededReviews();
     const rows = await db

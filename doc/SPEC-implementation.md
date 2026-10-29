@@ -2125,6 +2125,12 @@ The Chat navigation entry reopens the last agent conversation visited by the cur
 
 The server owns conversation state: `waiting` plus `in_review` denotes a healthy idle conversation, and `active` denotes an unanswered or executing turn. Successful replies settle a turn; they do not finish the issue. Idle containers are excluded from execution-work counts, ordinary task lists, timer work, and recovery invocations. Failed/unanswered turns retain normal handling. Child completion never wakes or completes the conversation. Search and direct task access preserve history.
 
+Explicit pending interactions in these conversations, including agent question forms,
+remain in the canonical attention feed under the existing company, task-read, and
+addressee checks. A conversation's idle review status or ordinary question text
+alone does not create attention. Answered forms leave pending attention and remain
+in decision history.
+
 Standalone `/new` is an ordered queue command with no model response. It advances a durable session generation and boundary comment, resets only this issue's provider context, and preserves the issue ID and history. Generation checks reject stale context writes and replies. Fresh replay excludes earlier messages and summaries. The shared transcript renders a session divider.
 
 Chat prompts retain agent instructions and tools while directing clarification and task creation. Substantial execution belongs to linked, assigned ordinary issues. Ask mode remains non-mutating. Feature disablement prevents new turns and resets while retaining data and lifecycle protection; already-running turns may settle normally.
@@ -2623,6 +2629,23 @@ optionally classifies existing tool-result boundaries through a shared OpenRoute
 connection. Settings → Connections is permanent; valid model verdicts take
 precedence and dependency failures use the original built-in detector.
 
+
+### Personal experimental workspace preference
+
+Settings → Experimental can opt the current human into the Coordinator workspace.
+The choice defaults off and is saved per user across companies on an instance in
+`user_workspace_preferences`; it is not an instance feature or a company capability.
+Turning it off restores the classic shell without modifying canonical tasks, agents,
+artifacts, permissions, or runs. Local-trusted development uses the existing shared
+`local-board` identity, explicitly identified in Settings. Anonymous and agent actors
+cannot read or update this personal choice.
+
+`GET /api/workspace-preferences/me` reads only the caller's choice.
+`PUT /api/companies/{companyId}/workspace-preferences/me` updates it with authorized
+company audit context; active viewers may update their own presentation. The preference
+and sparse audit event commit atomically. Client caches are keyed by human identity,
+and switching waits for successful persistence; unavailable preferences fall back to
+the classic shell. This preference does not replace `enableClassicTaskInterface`.
 ## Agent connection administration (2026-10-13)
 
 Standard agents can configure connections through the same domain APIs used by the app, bounded by their grants and their responsible user's current authority. Fresh standard agents for default Operators can manage app/tool connections, chat/email channels, AI accounts and pools, profiles and gateways without additional grants. Existing grants are not backfilled; explicit restrictions persist. Gateway administration retains the responsible human's administrative permission and does not grant agents blanket `tools:admin`.

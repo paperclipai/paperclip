@@ -71,7 +71,7 @@ export const runControlPostgresSupport = externalTestDatabaseUrl ? { supported: 
 if (!runControlPostgresSupport.supported) console.warn(`Skipping run-control database tests: ${runControlPostgresSupport.reason}`);
 
 export function setupRunControlDatabase(name: string, ready: (db: Db) => void) {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
     if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);

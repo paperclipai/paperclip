@@ -10,6 +10,7 @@ import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import type { TaskChatInteractionItem } from "./task-chat-model";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 
 type InteractionCardProps = Omit<
   ComponentProps<typeof IssueThreadInteractionCard>,
@@ -46,7 +47,13 @@ export function TaskChatInteractionCard({
   draftKey,
   ...cardProps
 }: TaskChatInteractionCardProps) {
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const interaction = item.interaction;
+  if (coordinatorEnabled && interaction.kind === "suggest_tasks" && !shouldHideInteractionCard(interaction)) {
+    return <div id={`interaction-${interaction.id}`} data-testid="task-chat-interaction" className="w-full">
+      <TaskChatCompactInteractionCard interaction={interaction} presentation={presentation} draftKey={draftKey} {...cardProps} />
+    </div>;
+  }
   if (presentation === "timeline" && showUnansweredQuestion && !shouldHideInteractionCard(interaction) && interaction.kind === "ask_user_questions" && interaction.status === "pending") {
     const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? "Question";
     return (
@@ -147,12 +154,13 @@ export function TaskChatInteractionCard({
     interaction.payload.target.key === "plan";
   const resolvedPlanMatchesDocument =
     isResolvedPlanReview &&
+    interaction.kind === "request_confirmation" && interaction.payload.target?.type === "issue_document" &&
     planDocument != null &&
     (planDocument.latestRevisionId
       ? interaction.payload.target?.revisionId === planDocument.latestRevisionId
       : interaction.payload.target?.revisionNumber ===
         planDocument.latestRevisionNumber);
-  if (isResolvedPlanReview) {
+  if (isResolvedPlanReview && !coordinatorEnabled) {
     if (resolvedPlanMatchesDocument && showPlanPreview && planDocument) {
       return (
         <div

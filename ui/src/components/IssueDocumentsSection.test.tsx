@@ -26,6 +26,7 @@ const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
   /** Typed into the editor on mount, for forms the test cannot type into. */
   emitMountValue: null as string | null,
+  changeBody: null as null | ((body: string) => void),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,9 +61,8 @@ vi.mock("../api/auth", () => ({
   },
 }));
 
-vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ hash: "" }),
-}));
+const mockLocation = vi.hoisted(() => ({ hash: "" }));
+vi.mock("@/lib/router", () => ({ useLocation: () => mockLocation }));
 
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({
@@ -103,6 +103,7 @@ vi.mock("./MarkdownEditor", async () => {
         onChange?.("");
       }, []);
 
+      markdownEditorMockState.changeBody = onChange ?? null;
       return (
         <div className={contentClassName} data-testid="markdown-editor">
           {value || placeholder || ""}
@@ -301,11 +302,89 @@ describe("IssueDocumentsSection", () => {
     vi.clearAllMocks();
     markdownEditorMockState.emitMountEmptyChange = false;
     markdownEditorMockState.emitMountValue = null;
+    markdownEditorMockState.changeBody = null;
     mockSession.unreachable = false;
+    mockLocation.hash = "";
   });
 
   afterEach(() => {
     container.remove();
+  });
+
+  it("unfolds a Classic confirmation link and loads its bound revision rather than the latest text", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-1";
+    localStorage.setItem("paperclip:issue-document-folds:issue-1", JSON.stringify(["plan"]));
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Newer unreviewed text" })]);
+    let loadHistory!: (value: DocumentRevision[]) => void;
+    mockIssuesApi.listDocumentRevisions.mockReturnValue(new Promise<DocumentRevision[]>((resolve) => { loadHistory = resolve; }));
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    await flush();
+    expect(mockIssuesApi.listDocumentRevisions).toHaveBeenCalledWith("issue-1", "plan");
+    expect(scroll).toHaveBeenCalled();
+    expect(container.textContent).toContain("Loading reviewed revision");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    await act(async () => loadHistory([createRevision({ body: "Exact reviewed text" })]));
+    await flush();
+    expect(container.textContent).toContain("Viewing revision 3");
+    expect(container.textContent).toContain("Exact reviewed text");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    const latest = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Return to latest"));
+    expect(latest).toBeTruthy();
+    await act(async () => latest!.click());
+    expect(container.textContent).toContain("Newer unreviewed text");
+    await act(async () => root.unmount());
+    scroll.mockRestore();
+    queryClient.clear();
+  });
+
+  it("does not substitute newer content when a Classic review revision is missing", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockLocation.hash = "#document-plan&revision=missing&interaction=review-1";
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Newer unreviewed text" })]);
+    mockIssuesApi.listDocumentRevisions.mockResolvedValue([]);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>));
+    await flush();
+    await flush();
+    expect(container.textContent).toContain("The reviewed revision is unavailable");
+    expect(container.textContent).not.toContain("Newer unreviewed text");
+    await act(async () => root.unmount());
+    queryClient.clear();
+  });
+
+  it.each(["loaded", "failed"])("preserves an unsaved draft when linked revision loading %s", async (outcome) => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const storageKey = "paperclip:document-draft:v2:user-1:issue-1:plan";
+    localStorage.setItem(storageKey, JSON.stringify({ key: "plan", title: "Plan", body: "My unsaved draft", baseRevisionId: "revision-4", isNew: false }));
+    mockIssuesApi.listDocuments.mockResolvedValue([createIssueDocument({ body: "Saved latest body" })]);
+    let load!: (value: DocumentRevision[]) => void;
+    let fail!: (error: Error) => void;
+    mockIssuesApi.listDocumentRevisions.mockReturnValue(new Promise<DocumentRevision[]>((resolve, reject) => { load = resolve; fail = reject; }));
+    const show = () => root.render(<QueryClientProvider client={queryClient}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} /></QueryClientProvider>);
+    await act(async () => show());
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    mockLocation.hash = "#document-plan&revision=revision-3&interaction=review-1";
+    await act(async () => show());
+    await flush();
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    expect(JSON.parse(localStorage.getItem(storageKey)!).body).toBe("My unsaved draft");
+    await act(async () => outcome === "loaded" ? load([createRevision()]) : fail(new Error("Disconnected")));
+    await flush();
+    await flush();
+    expect(container.textContent).toContain(outcome === "loaded" ? "Save or cancel your local changes" : "Could not load the reviewed revision");
+    expect(container.querySelector('[data-testid="markdown-editor"]')?.textContent).toBe("My unsaved draft");
+    await act(async () => markdownEditorMockState.changeBody!("My unsaved draft, continued"));
+    await flush();
+    expect(JSON.parse(localStorage.getItem(storageKey)!).body).toBe("My unsaved draft, continued");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    queryClient.clear();
   });
 
   it("keeps system handoff documents out of the normal document surface", async () => {

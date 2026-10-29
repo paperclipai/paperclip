@@ -61,6 +61,21 @@ afterEach(() => {
 });
 
 describe("composer assignee picker", () => {
+  it.each([false, true])("allows model and effort changes with a fixed conversation agent (mobile: %s)", async (mobile) => {
+    const onAssigneeChange = vi.fn();
+    const onSettingsChange = vi.fn();
+    render(onAssigneeChange, onSettingsChange, false, { allowAssigneeChange: false, mobile,
+      modelOptionsOverride: [{ id: "gpt-6-astra", label: "GPT-6 Astra" }] });
+    expect(container!.querySelector('[aria-label="Select assignee"]')).toBeNull();
+    await click("Select model and effort");
+    expect(document.querySelector('[aria-label="Choose assignee"]')).toBeNull();
+    expect(document.querySelector('input[aria-label="Effort"]')).not.toBeNull();
+    await click("Choose exact model");
+    await click("GPT-6 Astra");
+    expect(onSettingsChange).toHaveBeenLastCalledWith({ model: "gpt-6-astra", effort: "high", fast: false });
+    expect(onAssigneeChange).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("keeps the trigger stable until the picker closes (mobile: %s)", async (mobile) => {
     function ControlledPicker() {
       const [settings, setSettings] = useState({ model: "gpt-6-sol", effort: "high", fast: false });

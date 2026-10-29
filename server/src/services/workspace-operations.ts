@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { workspaceOperations } from "@paperclipai/db";
@@ -476,6 +477,14 @@ export function workspaceOperationService(db: Db) {
         },
 
         async recordOperation(recordInput) {
+          async function writeState<T>(write: (database: Db) => Promise<T>): Promise<T> {
+            if (recordInput.phase !== "workspace_finalize" || !input.heartbeatRunId) return write(db);
+            return db.transaction(async tx => {
+              await notifyNativeStatusReassessment(tx, { companyId: input.companyId,
+                runId: input.heartbeatRunId!, issueId: input.issueId ?? undefined });
+              return write(tx as unknown as Db);
+            });
+          }
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
           };
@@ -521,7 +530,7 @@ export function workspaceOperationService(db: Db) {
           if (runtimeControlAction) liveRuntimeControlOperationIds.add(id);
 
           try {
-            await db.insert(workspaceOperations).values({
+            await writeState(database => database.insert(workspaceOperations).values({
               id,
               companyId: input.companyId,
               executionWorkspaceId,
@@ -539,7 +548,7 @@ export function workspaceOperationService(db: Db) {
               ) as Record<string, unknown> | null,
               startedAt,
               updatedAt: startedAt,
-            });
+            }));
           } catch (insertError) {
             liveRuntimeControlOperationIds.delete(id);
             throw insertError;
@@ -630,7 +639,7 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", result.stderr ?? null);
             const finalized = await logStore.finalize(handle);
             const finishedAt = new Date();
-            const row = await db
+            const row = await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -650,7 +659,7 @@ export function workspaceOperationService(db: Db) {
               })
               .where(eq(workspaceOperations.id, id))
               .returning()
-              .then((rows) => rows[0] ?? null);
+              .then((rows) => rows[0] ?? null));
             if (!row) throw notFound("Workspace operation not found");
             return toWorkspaceOperation(row);
           } catch (error) {
@@ -660,7 +669,7 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", error instanceof Error ? error.message : String(error)).catch(() => undefined);
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
-            await db
+            await writeState(database => database
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -687,7 +696,7 @@ export function workspaceOperationService(db: Db) {
                 finishedAt,
                 updatedAt: finishedAt,
               })
-              .where(eq(workspaceOperations.id, id));
+              .where(eq(workspaceOperations.id, id)));
             throw error;
           } finally {
             // Releasing the in-process claim before the request unwinds is what lets the very

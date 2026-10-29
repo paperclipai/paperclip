@@ -218,7 +218,7 @@ describe("live-event run read boundaries", () => {
     }
   });
 
-  it.each(["authenticated", "local_trusted"] as const)("redacts native live rows like history reads for %s viewers", async deploymentMode => {
+  it.each([["authenticated", "native"], ["local_trusted", "native"], ["authenticated", "panel"], ["local_trusted", "panel"]] as const)("redacts %s live rows like history reads for %s events", async (deploymentMode, kind) => {
     const companyId = randomUUID(), viewer = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Live redaction", issuePrefix: `LR${companyId.slice(0, 6)}` });
     await db.insert(authUsers).values({ id: viewer, name: "Fixture viewer", email: `${viewer}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -229,9 +229,10 @@ describe("live-event run read boundaries", () => {
     const registry = createRunSecretRedactionRegistry(db);
     await registry.register(companyId, run.id, registered);
     await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
-    const body = { prpEvent: { eventType: "item.delta", payload: { kind: "agentMessage",
-      text: `${homedir()}/synthetic.txt ${registered}`, password: "sensitive-key-sentinel" } } };
-    const sourcePayload = { runId: run.id, agentId: agent.id, seq: 1, eventType: "item.delta", payload: body };
+    const body = kind === "panel" ? { prpEvent: { eventType: "runtime.activity.recorded", sourceKind: "runner", payload: { namespace: `example.${registered}`, activityKey: `${homedir()}/synthetic.txt` } } }
+      : { prpEvent: { eventType: "item.delta", payload: { kind: "agentMessage",
+        text: `${homedir()}/synthetic.txt ${registered}`, password: "sensitive-key-sentinel" } } };
+    const sourcePayload = { runId: run.id, agentId: agent.id, seq: 1, eventType: kind === "panel" ? "runtime.activity.recorded" : "item.delta", payload: body };
     const expected = await registry.redactForRun(companyId, run.id,
       redactCurrentUserValue({ ...sourcePayload, payload: redactEventPayload(body) }, { enabled: true }));
     const queries: string[] = [];

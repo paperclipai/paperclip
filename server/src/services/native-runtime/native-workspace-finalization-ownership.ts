@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { beginRunPhase } from "../execution-preparation-timing.js";
 import { logActivity } from "../activity-log.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -21,6 +22,12 @@ const OWNER_KEY = "nativeWorkspaceFinalizationOwner";
 export function nativeWorkspaceFinalizationLockKey(companyId: string, runId: string): string {
   return `native-workspace-finalization:${companyId}:${runId}`;
 }
+export async function tryLockNativeWorkspaceFinalization(tx: Db, input: { companyId: string; runId: string }): Promise<boolean> {
+  const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+    ${nativeWorkspaceFinalizationLockKey(input.companyId, input.runId)}, 0)) as acquired`) as unknown as Array<{ acquired: boolean }>;
+  return lock.acquired;
+}
+
 const activeOwnerTokens = new Set<string>();
 // Positive same-boot evidence, retained only when durable cleanup could not be
 // confirmed. Absence from the active set alone never proves another token joined.
@@ -258,9 +265,12 @@ export async function withNativeWorkspaceFinalizationOwnership<T>(
       activeOwnerTokens.delete(owner.token);
       joinedOwnerTokens.add(owner.token);
       try {
-        await input.db.update(heartbeatRuns).set({
-          runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) - ${OWNER_KEY}`,
-        }).where(owned);
+        await input.db.transaction(async tx => {
+          await notifyNativeStatusReassessment(tx, { companyId: input.companyId, runId: input.runId });
+          await tx.update(heartbeatRuns).set({
+            runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) - ${OWNER_KEY}`,
+          }).where(owned);
+        });
         joinedOwnerTokens.delete(owner.token);
       } catch {
         // A reconnect in this exact controller boot can use the positive join

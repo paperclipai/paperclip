@@ -1,3 +1,4 @@
+import { notifyGitHubReviewProjection } from "./chat-channels/github/review-projection-work.js";
 import { notifyGitHubReviewChecks } from "./chat-channels/github/review-check-work.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { githubRunReplyState } from "./chat-run-publications.js";
@@ -352,6 +353,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     if (prior && prior.runId === source.run.id) return prior;
     if (prior && !prior.runId && prior.deliveryId === source.delivery.id) {
       const [claimed] = await db.transaction(async tx => {
+        await notifyGitHubReviewProjection(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id });
         await notifyGitHubReviewChecks(tx, { companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
           repositoryId: source.repositoryId, number: source.number });
         return tx
