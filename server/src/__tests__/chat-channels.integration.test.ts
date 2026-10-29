@@ -64563,7 +64563,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed after Retry acceptance" }).where(eq(issueComments.id, String(f.action.payload.commentId)));
         await f.service.processFailedChatRunRetry(response.body.chatActionId);
       }
-      if (!["contained", "prior_denied_intent", "observability_warning"].includes(mode)) {
+      if (!["contained", "prior_denied_intent", "observability_opencode", "observability_warning"].includes(mode)) {
         expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
         return;
       }
