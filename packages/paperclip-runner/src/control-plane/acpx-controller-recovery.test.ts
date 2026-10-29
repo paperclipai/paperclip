@@ -27,7 +27,7 @@ beforeAll(() => {
       "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { timeout: 120_000, stdio: "pipe" });
   }
   expectedRunnerDigest = digest(binary);
-}, 120_000);
+}, 150_000);
 
 function sidecarSource(root: string) {
   return [

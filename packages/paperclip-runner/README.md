@@ -973,6 +973,11 @@ pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/control-plane/acpx-controller-recovery.test.ts --maxWorkers=1
 ```
 
+Set `PAPERCLIP_ACPX_REPRO_BINARY` to an existing Runner executable to skip the
+Cargo build. All five tests still run. Set `PAPERCLIP_ACPX_REPRO_PROFILES` to an
+alternate `acpx-profiles.json` when that executable uses a different profile
+manifest. Both overrides are optional.
+
 The failure controls distinguish a lost provider from a controller outage;
 matching a diagnostic after explicit close does not identify the cause of a
 hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
