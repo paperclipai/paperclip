@@ -140,6 +140,8 @@ async function readPiNodeArchive(url, fetchImpl, timeoutMs) {
   try { response = await fetchImpl(url, { redirect: "error", signal: AbortSignal.timeout(timeoutMs) }); }
   catch (error) { throw error?.name === "TimeoutError" || error instanceof TypeError ? new RetryablePiNodeDownloadError(error.message, { cause: error }) : error; }
   if (!response.ok) {
+    // Release the rejected response's connection before any retry starts.
+    await response.body?.cancel().catch(() => {});
     const message = `Pinned Pi Node download returned HTTP ${response.status}`;
     throw response.status >= 500 || response.status === 429 ? new RetryablePiNodeDownloadError(message) : new Error(message);
   }
