@@ -1330,6 +1330,7 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
  */
 export const PLUGIN_CAPABILITIES = [
   "ai.connections.route",
+  "agent.runs.configure",
   // Data Read
   "companies.read",
   "projects.read",
