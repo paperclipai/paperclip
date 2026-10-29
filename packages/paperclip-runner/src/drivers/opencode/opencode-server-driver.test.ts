@@ -2957,3 +2957,67 @@ describe("OpenCodeServerDriver", () => {
     expect(error).not.toContain(key);
   });
 });
+
+it.each([false, true])("keeps company export credentials out of the actual fake child with performance=%s", async performance => {
+  await chmod(fixture, 0o755);
+  const received: Array<{ auth: string | undefined; body: unknown }> = [];
+  const receiver = createHttpServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received.push({ auth: request.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString()) }); response.end("{}");
+  });
+  await new Promise<void>(resolve => receiver.listen(0, "127.0.0.1", resolve));
+  const address = receiver.address(); if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const root = await mkdtemp(join(tmpdir(), "opencode-company-export-")); roots.push(root);
+  const endpoint = `http://127.0.0.1:${address.port}/v1/traces`;
+  const secret = "synthetic-company-destination-key";
+  const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeDirectory: root, command: fixture,
+    environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-provider-key",
+      PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: performance ? "1" : "0",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `Authorization=${encodeURIComponent(secret)}`,
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://must-not-reach-child.invalid", OTEL_EXPORTER_OTLP_HEADERS: "Authorization=ambient-secret",
+      OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision-one" } });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  try {
+    session = await driver.openSession({ runId: "export", normalizedSessionId: "export", workingDirectory: root });
+    const environment = JSON.parse(await readFile(join(root, "export", "data", "fake-environment.json"), "utf8"));
+    const config = await readFile(join(root, "export", "config", "opencode", "opencode.json"), "utf8");
+    expect(environment.observability.OTEL_EXPORTER_OTLP_ENDPOINT).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(environment.observability).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+    expect(environment.observability).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+    expect(JSON.stringify(environment) + config).not.toMatch(/synthetic-company-destination-key|ambient-secret|must-not-reach-child/);
+    expect(config).not.toContain(endpoint);
+    await session.startTurn({ message: { role: "user", text: "finish" } });
+    await collectTurnEvents(session.events());
+    await expect.poll(() => received.length).toBe(1);
+    expect(received[0]!.auth).toBe(secret);
+    expect(JSON.stringify(received[0]!.body)).toContain("revision-one");
+    expect(JSON.stringify(received[0]!.body)).not.toContain("private-performance-sentinel");
+    const localEndpoint = environment.observability.OTEL_EXPORTER_OTLP_ENDPOINT;
+    await session.close({ reason: "test" }); session = undefined;
+    await expect(fetch(localEndpoint + "/v1/traces")).rejects.toThrow();
+    const disabled = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeDirectory: root, command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-provider-key", PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: performance ? "1" : "0" } });
+    session = await disabled.openSession({ runId: "disabled", normalizedSessionId: "disabled", workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: "finish" } }); await collectTurnEvents(session.events());
+    expect(received).toHaveLength(1);
+  } finally { await session?.close({ reason: "test" }); await new Promise<void>(resolve => { receiver.close(() => resolve()); receiver.closeAllConnections(); }); }
+});
+
+it.each(["attribution", "header"])("keeps work available and reports a closed diagnostic when requested company export cannot start: %s", async failure => {
+  await chmod(fixture, 0o755);
+  const root = await mkdtemp(join(tmpdir(), "opencode-export-unavailable-")); roots.push(root);
+  const diagnostics: string[] = [];
+  const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeDirectory: root, command: fixture,
+    onDiagnostic: message => diagnostics.push(message), environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-provider-key",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.invalid/v1/traces", OTEL_EXPORTER_OTLP_TRACES_HEADERS: `Authorization=${encodeURIComponent(failure === "header" ? "synthetic-private-Ā" : "synthetic-private-header")}`,
+      OTEL_RESOURCE_ATTRIBUTES: failure === "header" ? "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision" : "paperclip.company.id=company" } });
+  let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+  try {
+    session = await driver.openSession({ runId: "unavailable", normalizedSessionId: "unavailable", workingDirectory: root });
+    await session.startTurn({ message: { role: "user", text: "finish" } }); await collectTurnEvents(session.events());
+    const environment = await readFile(join(root, "unavailable", "data", "fake-environment.json"), "utf8");
+    expect(environment).not.toMatch(/collector.invalid|synthetic-private/);
+    expect(diagnostics).toContain("OpenCode company trace export unavailable: local metadata sink could not start. Agent work continues.");
+    expect(diagnostics.join("\n")).not.toMatch(/collector.invalid|synthetic-private|paperclip.company/);
+  } finally { await session?.close({ reason: "test" }); }
+});

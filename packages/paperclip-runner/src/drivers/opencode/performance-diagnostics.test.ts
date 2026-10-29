@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { describe, expect, it } from "vitest";
 import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../../contracts/provider-performance.js";
 import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
@@ -62,4 +63,102 @@ describe("OpenCode content-free performance sink",()=>{
     expect(parsed).toEqual([{name:safe.name,startedAtMs:now-20,endedAtMs:now,outcome:"ok"}]);
     expect(parseProviderPerformanceSpans({code:"other",spans:[safe]},now)).toEqual([]);
   });
+});
+
+it("forwards real metadata with parent-held auth, strips content and isolates collection from redirects", async () => {
+  const received: Array<{authorization: string | undefined; token: string | string[] | undefined; body: unknown}> = [];
+  let redirect = false;
+  const upstream = createServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    received.push({ authorization: request.headers.authorization, token: request.headers["x-auth_token"], body: JSON.parse(Buffer.concat(chunks).toString()) });
+    response.writeHead(redirect ? 302 : 200, redirect ? { Location: "http://127.0.0.1:1/must-not-follow" } : {}).end("{}");
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address(); if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const sink = await startOpenCodePerformanceDiagnostics({
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: `Authorization=${encodeURIComponent("Bearer synthetic-upstream-secret")},x-auth_token=${encodeURIComponent("synthetic-header-café")}`,
+    OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision",
+  }, false);
+  const nativeSpan = span("ai.streamText", { traceId: "1".repeat(32), spanId: "2".repeat(16), parentSpanId: "3".repeat(16), status: { code: 2, message: "private" } });
+  const post = () => fetch(sink.environment.OTEL_EXPORTER_OTLP_ENDPOINT + "/v1/traces", { method: "POST",
+    headers: { Authorization: sink.environment.OTEL_EXPORTER_OTLP_HEADERS.slice("Authorization=".length) },
+    body: JSON.stringify(batch([nativeSpan, span("private"), span("ai.streamText", { traceId: "bad", spanId: "bad" })])) });
+  try {
+    expect(JSON.stringify(sink.environment)).not.toContain("synthetic-upstream-secret");
+    expect((await post()).status).toBe(200);
+    await expect.poll(() => received.length).toBe(1);
+    expect(received[0]!.authorization).toBe("Bearer synthetic-upstream-secret");
+    expect(received[0]!.token).toBe("synthetic-header-café");
+    const body = received[0]!.body as {resourceSpans: Array<{resource: unknown; scopeSpans: Array<{spans: unknown[]}>}>};
+    expect(body.resourceSpans[0]!.scopeSpans[0]!.spans).toEqual([{ traceId: nativeSpan.traceId, spanId: nativeSpan.spanId,
+      parentSpanId: nativeSpan.parentSpanId, name: nativeSpan.name, startTimeUnixNano: nativeSpan.startTimeUnixNano,
+      endTimeUnixNano: nativeSpan.endTimeUnixNano, status: { code: 2 } }]);
+    expect(JSON.stringify(body)).toContain('"paperclip.observability.revision"');
+    expect(JSON.stringify(body)).not.toMatch(/private|Authorization|prompt|credential|synthetic-upstream/);
+    expect(sink.take()).toBeNull();
+    redirect = true; expect((await post()).status).toBe(200);
+    await expect.poll(() => received.length).toBe(2);
+  } finally { await sink.close(); await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); }); }
+});
+it("accepts configured internal HTTP collectors without contacting them during setup", async () => {
+  const sink = await startOpenCodePerformanceDiagnostics({
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.internal/otel/v1/traces",
+    OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision",
+  }, false);
+  await sink.close();
+});
+it("refuses incomplete attribution and unsafe destination URLs", async () => {
+  for (const environment of [
+    ... ["ftp://collector.test/v1/traces", "https://user:password@collector.test/v1/traces", "https://collector.test/v1/traces?token=secret"].map(endpoint => ({
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint,
+      OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision",
+    })),
+    { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.test/v1/traces", OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company" },
+  ]) await expect(startOpenCodePerformanceDiagnostics(environment)).rejects.toThrow();
+});
+
+it("caps outstanding export requests and closes a stalled destination without blocking native ingestion", async () => {
+  let accepted = 0;
+  const diagnostics: string[] = [];
+  const upstream = createServer((request, _response) => { accepted++; request.resume(); });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address(); if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const sink = await startOpenCodePerformanceDiagnostics({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+    OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision" }, false, reason => diagnostics.push(reason));
+  const post = () => fetch(sink.environment.OTEL_EXPORTER_OTLP_ENDPOINT + "/v1/traces", { method: "POST",
+    headers: { Authorization: sink.environment.OTEL_EXPORTER_OTLP_HEADERS.slice("Authorization=".length) },
+    body: JSON.stringify(batch([span("ai.streamText", {traceId: "1".repeat(32), spanId: "2".repeat(16)})])) });
+  try {
+    expect((await post()).status).toBe(200); expect((await post()).status).toBe(200);
+    await expect.poll(() => accepted).toBe(2);
+    expect((await post()).status).toBe(200); expect(accepted).toBe(2);
+    expect(diagnostics).toEqual(["capacity"]);
+  } finally { await sink.close(); await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); }); }
+}, 5000);
+
+it("bounds each export batch without permanently exhausting later session exports", async () => {
+  const sizes: number[] = [], diagnostics: string[] = [];
+  const upstream = createServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const data = JSON.parse(Buffer.concat(chunks).toString());
+    sizes.push(data.resourceSpans[0].scopeSpans[0].spans.length); response.end("{}");
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address(); if (!address || typeof address === "string") throw new Error("Missing fixture address");
+  const sink = await startOpenCodePerformanceDiagnostics({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${address.port}/v1/traces`,
+    OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision" }, false, reason => diagnostics.push(reason));
+  const post = (count: number) => fetch(sink.environment.OTEL_EXPORTER_OTLP_ENDPOINT + "/v1/traces", { method: "POST",
+    headers: { Authorization: sink.environment.OTEL_EXPORTER_OTLP_HEADERS.slice("Authorization=".length) },
+    body: JSON.stringify(batch(Array.from({length: count}, () => span("ai.streamText", {traceId: "1".repeat(32), spanId: "2".repeat(16)})))) });
+  try {
+    for (let index = 0; index < 3; index++) { expect((await post(129)).status).toBe(200); await expect.poll(() => sizes.length).toBe(index + 1); }
+    expect(sizes).toEqual([128, 128, 128]); expect(diagnostics).toEqual(["batch_limit"]);
+  } finally { await sink.close(); await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); }); }
+});
+
+it("rejects non-ByteString collector headers before declaring the sink available", async () => {
+  await expect(startOpenCodePerformanceDiagnostics({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.internal/v1/traces",
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS: `Authorization=${encodeURIComponent("synthetic-header-Ā")}`,
+    OTEL_RESOURCE_ATTRIBUTES: "paperclip.company.id=company,paperclip.agent.id=agent,paperclip.observability.revision=revision" }, false)).rejects.toThrow();
 });

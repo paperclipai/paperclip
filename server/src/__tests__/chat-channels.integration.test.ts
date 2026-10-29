@@ -64432,6 +64432,51 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each(["metadata", "userPrompts", "assistantResponses", "toolDetails", "toolContent"] as const)(
+    "prepares OpenCode metadata export or explicitly rejects unsupported content capture: %s", async captureMode => {
+    const f = await failedChatRetryFixture("github", "42", true, false, true);
+    const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
+    const revision = randomUUID();
+    try {
+      await initializeRunIdentity(db, { companyId, runId: f.runId, issueId, responsibleUserId: "owner-user",
+        messageIds: [String(f.action.payload.commentId)], cause: "chat_message" });
+      await db.insert(companyObservability).values({ companyId, revision, enabled: true,
+        destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
+        capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false,
+          ...(captureMode === "metadata" ? {} : { [captureMode]: true }) } });
+      const [agent] = await db.update(agents).set({ adapterConfig: { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" } })
+        .where(eq(agents.id, agentId)).returning();
+      const [run] = await readHeartbeatRunsById(f.runId);
+      const prepared = await prepareHeartbeatExecutionConfiguration(db, { run, agent,
+        task: { issueId, context: { ...run.contextSnapshot }, responsibleUserId: "owner-user",
+          acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
+          routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
+        config: { sourceWorkspaceConfig: agent.adapterConfig, aiBinding: undefined },
+        policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+          useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
+        environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
+          resolvedInstanceSettings: await instanceSettingsService(db).get(), persistedNativeExecutionInput: null },
+        services: { secretsSvc: secretService(db), companySkills: companySkillService(db),
+          appendRunEvent: async (source, event) => { await appendHeartbeatRunEvent(db, { companyId: source.companyId,
+            agentId: source.agentId, runId: source.id, ...event }); }, finalizeAiConnectionBusyDeferral: vi.fn() },
+        onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
+      });
+      expect(prepared.prepared).toBe(true);
+      if (!prepared.prepared) throw new Error("Configuration preparation did not finish");
+      expect(prepared.observability?.kind).toBe("opencode");
+      const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+      if (captureMode === "metadata") {
+        expect(prepared.observability?.environment.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe("https://collector.example/otel/v1/traces");
+        expect(events.filter(event => event.eventType === "agent_observability.unavailable")).toHaveLength(0);
+      } else {
+        for (const key of ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_RESOURCE_ATTRIBUTES"])
+          expect(prepared.observability?.environment).not.toHaveProperty(key);
+        expect(events).toMatchObject([{ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_capture_policy", revision } }]);
+      }
+      expect(JSON.stringify(prepared.runtimeConfig)).not.toContain("collector.example");
+    } finally { await f.service.shutdown(); }
+  });
+
   it.each(["contained", "prior_denied_intent", "observability_warning", "observability_reason", "observability_revision", "observability_provenance", "observability_extra", "other_reason", "wrong_issue", "provider_started", "result_extra", "profile", "usage", "output",
     "process", "controller", "active_control", "lease", "accepted_result", "event_source", "extra_event", "source_edited", "principal_revoked"] as const)(
     "retries an authenticated GitHub request after isolated-directory validation failed before allocation: %s", async mode => {
@@ -64452,7 +64497,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.insert(companyObservability).values({ companyId, revision: randomUUID(), enabled: true,
           destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
           capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
-        const [agent] = await db.update(agents).set({ adapterConfig: { provider: "opencode", model: "openrouter/synthetic", homeMode: "preconfigured" } })
+        const [agent] = await db.update(agents).set({ adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "synthetic", homeMode: "preconfigured" } })
           .where(eq(agents.id, agentId)).returning();
         const [run] = await readHeartbeatRunsById(f.runId);
         const prepared = await prepareHeartbeatExecutionConfiguration(db, { run, agent,

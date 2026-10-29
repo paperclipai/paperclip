@@ -90,7 +90,7 @@ export type AgentObservabilitySettings = {
 export type AgentObservabilitySettingsResponse = { canManage: boolean; settings: AgentObservabilitySettings | null };
 
 export type AgentObservabilityUnavailableReason =
-  | "configuration_invalid" | "credentials_unavailable" | "unsupported_harness" | "unsupported_home_mode";
+  | "configuration_invalid" | "credentials_unavailable" | "unsupported_harness" | "unsupported_home_mode" | "unsupported_capture_policy";
 export type AgentObservabilityErrorCode =
   | "observability_revision_conflict" | "observability_credentials_required" | "observability_header_value_required"
   | AgentObservabilityUnavailableReason | "timeout" | "network_error" | "receiver_rejected" | "partial_rejection" | "invalid_response";

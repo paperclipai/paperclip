@@ -215,6 +215,8 @@ Agent access: `operator-only` — configuration and tests require board context.
 
 Policy: Company access and Manage connections permission; non-managing board readers receive no settings.
 Credentials are write-only and stored through company secret bindings.
+Native OpenCode supports metadata-only traces; its parent proxy holds destination credentials
+and forwards only allowed real native metadata. Content-capture requests remain unavailable.
 
 Evidence: `source-only` — [routes](../../server/src/routes/agent-observability.ts).
 

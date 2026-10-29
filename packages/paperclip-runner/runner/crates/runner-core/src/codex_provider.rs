@@ -48,6 +48,9 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
     "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
 ];
 const TRUSTED_OPENCODE_EXECUTABLE_ARG: &str = "--paperclip-trusted-opencode-executable";
 const MAX_PROVIDER_STDERR_LINES: usize = 32;
@@ -4743,6 +4746,13 @@ done
 
     #[test]
     fn does_not_forward_an_ambient_opencode_command_override() {
+        for key in [
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+            "OTEL_RESOURCE_ATTRIBUTES",
+        ] {
+            assert!(OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&key));
+        }
         assert!(!OPENCODE_PROVIDER_ENVIRONMENT_KEYS.contains(&"PAPERCLIP_OPENCODE_COMMAND"));
     }
 

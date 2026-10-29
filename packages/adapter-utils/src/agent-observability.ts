@@ -2,7 +2,7 @@ import type { AgentObservabilityCapture } from "@paperclipai/shared";
 
 /** Secret-bearing, controller-owned launch material. Never persist or merge into adapter config. */
 export type ProviderObservabilityLaunch = {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   compatibilityKey: string;
   otelConfig?: Record<string, unknown>;
   environment: Readonly<Record<string, string>>;
@@ -33,7 +33,7 @@ export function applyObservabilityEnvironment(env: NodeJS.ProcessEnv, launch: Pr
 export function observabilitySecretValues(launch: ProviderObservabilityLaunch | undefined): string[] {
   if (!launch) return [];
   const headers = ((launch.otelConfig?.exporter as Record<string, unknown> | undefined)?.["otlp-http"] as { headers?: Record<string, string> } | undefined)?.headers;
-  const encoded = launch.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+  const encoded = launch.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS ?? launch.environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS;
   const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
   const values = [...Object.values(headers ?? {}).flatMap(value => [value, decoded(value)]), ...(encoded ? [encoded, ...encoded.split(",").flatMap(item => {
     const value = item.slice(item.indexOf("=") + 1);
@@ -43,7 +43,7 @@ export function observabilitySecretValues(launch: ProviderObservabilityLaunch | 
 }
 
 export function buildProviderObservabilityLaunch(input: {
-  kind: "codex" | "claude"; companyId: string; agentId: string; revision: string | null;
+  kind: "codex" | "claude" | "opencode"; companyId: string; agentId: string; revision: string | null;
   compatibilityKey: string; enabled: boolean; capture: AgentObservabilityCapture;
   logsEndpoint?: string; tracesEndpoint?: string; headers?: Readonly<Record<string, string>>;
 }): ProviderObservabilityLaunch {
@@ -52,6 +52,15 @@ export function buildProviderObservabilityLaunch(input: {
   const environment: Record<string, string> = {
     OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000", OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: "3000",
   };
+  if (kind === "opencode") {
+    if (enabled && Object.values(capture).some(Boolean)) throw new Error("OpenCode supports metadata-only company observability");
+    if (enabled) Object.assign(environment, {
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: input.tracesEndpoint,
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+      OTEL_RESOURCE_ATTRIBUTES: Object.entries(attributes).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join(","),
+    });
+    return { kind, compatibilityKey, environment };
+  }
   if (kind === "codex") {
     if (enabled) Object.assign(environment, {
       OTEL_EXPORTER_OTLP_LOGS_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),

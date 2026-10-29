@@ -1,7 +1,8 @@
 # Company agent observability
 
 Company Settings → General → Agent observability configures one company-owned
-OTLP destination for Paperclip-managed Codex and Claude Code executions. Export
+OTLP destination for Paperclip-managed Codex and Claude Code executions, and
+metadata-only native OpenCode executions. Export
 is disabled by default. Choose Braintrust (US) or a custom HTTP(S) OTLP base URL;
 use your own collector when you need fan-out. Braintrust EU and self-hosted
 installations can use Custom OTLP with their required routing/authentication
@@ -37,8 +38,28 @@ them once to preserve literal percent sequences. Credentials remain literal
 values in the company secret; config-file environment interpolation is not used.
 A caller-owned/preconfigured Codex home cannot be automatically configured in
 this version: its files remain untouched and execution emits a diagnostic.
-Other harnesses, personal Codex desktop sessions and hosted claude_managed are
-outside this feature.
+Native OpenCode 1.18.34 supports metadata-only traces when all four content
+capture options are disabled. A content-capture request is explicitly reported
+as unavailable for that harness; it is never silently treated as metadata-only.
+The runner-owned OpenCode proxy receives native OTLP over an authenticated
+loopback sink, then forwards only recognized operation names, original trace/span
+identities and timestamps, outcome codes, and the controller-bound company,
+agent and settings revision. Native attributes, events, links, status text and
+log bodies are discarded. The external destination and its headers remain in
+the proxy; the actual OpenCode child receives only the loopback endpoint/token.
+This is application-level credential custody, not OS-level isolation. The local
+token remains a credential and retains normal diagnostic redaction treatment.
+Forwarding has no retries, at most two concurrent requests, a one-second request
+deadline and at most 128 recognized spans per native request. Excess batch
+spans or requests beyond the concurrent limit are dropped without blocking agent
+work. A closed diagnostic reports each limit or destination failure once per
+owned runtime; sink startup failure is also reported. These limits do not claim
+complete trace delivery. Closing the owned runtime aborts outstanding exports
+and closes the sink. Company export and performance diagnostics share
+one native exporter; enabling either does not enable the other.
+
+Other harnesses, legacy OpenCode adapters, personal Codex desktop sessions and
+hosted claude_managed are outside this feature.
 
 ## Changes and process lifetime
 
@@ -75,7 +96,7 @@ run/config snapshots, argv, activity records, recovery configuration and query
 cache data. Export credentials are necessarily accessible to the exporting
 harness itself. Both Codex and Claude Code receive these headers through their
 process environment, which their tools can inherit or inspect.
-This feature does not isolate export credentials from agent code. Use a credential
+The Codex and Claude Code paths do not isolate export credentials from agent code. Use a credential
 limited to telemetry ingestion for the selected destination; do not supply a broad
 organization administration key. A user-operated collector can hold upstream
 credentials when a deployment requires a separate trust boundary.

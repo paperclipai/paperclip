@@ -96,13 +96,17 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
   const initialHarness = agentHarnessType(agent.adapterType, sourceWorkspaceConfig);
-  const unsupportedObservability = !["codex_local", "claude_local"].includes(initialHarness)
+  const supportsOpenCodeObservability = agent.adapterType === "paperclip_runner" && initialHarness === "opencode_local";
+  const unsupportedObservability = !["codex_local", "claude_local"].includes(initialHarness) && !supportsOpenCodeObservability
     ? "unsupported_harness" as const : preconfiguredHome && initialHarness === "codex_local" ? "unsupported_home_mode" as const : undefined;
-  const observabilitySnapshot: ResolvedAgentObservability = await agentObservabilityService(db).resolve(agent.companyId, { runId: run.id, agentId: agent.id, responsibleUserId, issueId, unavailableReason: unsupportedObservability })
+  let observabilitySnapshot: ResolvedAgentObservability = await agentObservabilityService(db).resolve(agent.companyId, { runId: run.id, agentId: agent.id, responsibleUserId, issueId, unavailableReason: unsupportedObservability })
     .catch(() => unavailableAgentObservability(agent.companyId, "configuration_invalid"));
+  if (supportsOpenCodeObservability && observabilitySnapshot.state === "enabled" && Object.values(observabilitySnapshot.capture).some(Boolean)) {
+    observabilitySnapshot = unavailableAgentObservability(agent.companyId, "unsupported_capture_policy", observabilitySnapshot.revision);
+  }
   const identityRedactor = createAgentIdentityRedactor();
-  const earlyObservability = unsupportedObservability === undefined && (initialHarness === "codex_local" || initialHarness === "claude_local")
-    ? agentObservabilityLaunch(observabilitySnapshot, { kind: initialHarness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  const earlyObservability = unsupportedObservability === undefined && (initialHarness === "codex_local" || initialHarness === "claude_local" || supportsOpenCodeObservability)
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: initialHarness === "codex_local" ? "codex" : initialHarness === "claude_local" ? "claude" : "opencode", companyId: agent.companyId, agentId: agent.id }) : undefined;
   identityRedactor.values.push(...observabilitySecretValues(earlyObservability));
   onIdentityRedactorPrepared(identityRedactor);
   // The executor keeps these values in its failure redactor before any later
@@ -335,8 +339,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : undefined;
   identityRedactor.values.push(...createAgentIdentityRedactor(agentIdentity?.privateKeyPem).values);
   const harness = agentHarnessType(agent.adapterType, runtimeConfig);
-  const observability = unsupportedObservability !== "unsupported_home_mode" && (harness === "codex_local" || harness === "claude_local")
-    ? agentObservabilityLaunch(observabilitySnapshot, { kind: harness === "codex_local" ? "codex" : "claude", companyId: agent.companyId, agentId: agent.id }) : undefined;
+  const observability = unsupportedObservability !== "unsupported_home_mode" && (harness === "codex_local" || harness === "claude_local" || (supportsOpenCodeObservability && harness === "opencode_local"))
+    ? agentObservabilityLaunch(observabilitySnapshot, { kind: harness === "codex_local" ? "codex" : harness === "claude_local" ? "claude" : "opencode", companyId: agent.companyId, agentId: agent.id }) : undefined;
   identityRedactor.values.push(...observabilitySecretValues(observability));
   identityRedactor.values.sort((a, b) => b.length - a.length);
   if (observabilitySnapshot.state === "unavailable") {
@@ -345,6 +349,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     await appendRunEvent(run, { eventType: "agent_observability.unavailable", stream: "system", level: "warn",
       message: reason === "unsupported_home_mode"
         ? "Company observability was not applied: automatic configuration of caller-owned Codex homes is unsupported."
+        : reason === "unsupported_capture_policy" ? "Company observability was not applied: OpenCode supports metadata-only trace capture."
         : reason === "unsupported_harness" ? "Company observability was not applied: this harness is not supported."
           : "Company observability is unavailable. Execution continues without company export.",
       payload: { reason, revision: observabilitySnapshot.revision } }).catch(() => {

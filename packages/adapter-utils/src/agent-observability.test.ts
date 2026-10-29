@@ -113,3 +113,16 @@ it.each([true, false])("preserves refreshed Codex credentials across repeated an
     expect(JSON.parse(await readFile(join(prepared, "auth.json"), "utf8")).tokens.refresh_token).toBe("refreshed-fixture-token");
   }
 });
+
+it("launches OpenCode metadata-only and explicitly rejects content capture", () => {
+  const metadata = { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false };
+  const launch = buildProviderObservabilityLaunch({ ...input, capture: metadata, kind: "opencode" });
+  expect(launch.otelConfig).toBeUndefined();
+  expect(launch.environment.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe(input.tracesEndpoint);
+  expect(observabilitySecretValues(launch)).toContain(input.headers.authorization);
+  expect(launch.environment.OTEL_RESOURCE_ATTRIBUTES).toContain("paperclip.observability.revision=revision");
+  for (const key of Object.keys(metadata)) expect(() => buildProviderObservabilityLaunch({ ...input, kind: "opencode", capture: { ...metadata, [key]: true } })).toThrow(/metadata-only/);
+  const disabled = buildProviderObservabilityLaunch({ ...input, kind: "opencode", enabled: false });
+  expect(disabled.environment).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+  expect(disabled.environment).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+});

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 /** Controller-owned, secret-bearing options; excluded from all durable descriptors. */
 export interface ProviderObservabilityLaunch {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   compatibilityKey: string;
   otelConfig?: Record<string, unknown>;
   environment: Readonly<Record<string, string>>;
@@ -66,7 +66,7 @@ export function writeManagedCodexObservability(home: string, config: Record<stri
 }
 
 /** Exact values, including encoded header bundles, must be removed before diagnostics persist. */
-export function redactObservabilityDiagnostic(message: string, environment: NodeJS.ProcessEnv | undefined, config?: Record<string, unknown>): string {
+export function observabilityDiagnosticSecrets(environment: NodeJS.ProcessEnv | undefined, config?: Record<string, unknown>): string[] {
   const values = new Set<string>();
   for (const key of ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"]) {
     const value = environment?.[key];
@@ -88,6 +88,10 @@ export function redactObservabilityDiagnostic(message: string, environment: Node
   }
   for (const value of [...values]) if (/^Bearer /i.test(value)) values.add(value.slice(7));
   for (const value of [...values]) values.add(JSON.stringify(value).slice(1, -1));
-  for (const value of [...values].filter(Boolean).sort((a, b) => b.length - a.length)) message = message.replaceAll(value, "[REDACTED]");
+  return [...values].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+export function redactObservabilityDiagnostic(message: string, environment: NodeJS.ProcessEnv | undefined, config?: Record<string, unknown>): string {
+  for (const value of observabilityDiagnosticSecrets(environment, config)) message = message.replaceAll(value, "[REDACTED]");
   return message;
 }

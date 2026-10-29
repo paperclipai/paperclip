@@ -101,6 +101,7 @@ await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    observability: Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("OTEL_"))),
     noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,
@@ -139,7 +140,7 @@ function emit(value) {
       const i=entry.indexOf("=");return [entry.slice(0,i),entry.slice(i+1)];
     }));
     void fetch(`${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}/v1/traces`,{method:"POST",headers,
-      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",
+      body:JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[{name:"ai.streamText",traceId:"1".repeat(32),spanId:"2".repeat(16),
         startTimeUnixNano:String(BigInt(now-22)*1000000n),endTimeUnixNano:String(BigInt(now)*1000000n),
         attributes:[{key:"prompt",value:{stringValue:"private-performance-sentinel"}}],
       }]}]}]})}).then(response=>{
