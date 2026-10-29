@@ -812,7 +812,7 @@ const recoveryFakeCodex = resolve(
       expect(() => parseNativeExecutionInput(firstExecution)).not.toThrow();
       const runnerInstanceId = randomUUID();
       const environment = {
-        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}:${Array.from({ length: 600 }, (_, i) => `/tools/toolchain-${i}/bin`).join(":")}`,
         HOME: sourceHome,
         CODEX_HOME: sourceHome,
       };
@@ -919,6 +919,8 @@ const recoveryFakeCodex = resolve(
       const runner = JSON.parse(await readFile(runnerPath, "utf8"));
       const provider = JSON.parse(await readFile(providerPath, "utf8"));
       expect(runner.lifecycle).toBe("suspended");
+      expect(provider.config.commandEnvironment.PATH).toBe(environment.PATH);
+      expect(provider.config.args.every((arg: string) => Buffer.byteLength(arg) <= 4096)).toBe(true);
 
       // Reproduce only in a generated disposable root the historical failure:
       // an unacknowledged input whose digest predates bounded sanitization.
@@ -1117,19 +1119,18 @@ const recoveryFakeCodex = resolve(
         ),
         previousDriverSessionId: checkpoint.sessionId,
       });
-      const [epoch] = await readdir(join(root, "authority-epochs"));
+      const [continuityArchive] = await readdir(join(root, "continuity-breaks"));
+      const archivedEpochs = join(root, "continuity-breaks", continuityArchive!, "authority-epochs");
+      const [epoch] = await readdir(archivedEpochs);
       const digest = (value: Buffer) =>
         createHash("sha256").update(value).digest("hex");
       expect(
         digest(
           await readFile(
-            join(root, "authority-epochs", epoch!, "runner-state.json"),
+            join(archivedEpochs, epoch!, "runner-state.json"),
           ),
         ),
       ).toBe(digest(damagedRunnerBytes));
-      const [continuityArchive] = await readdir(
-        join(root, "continuity-breaks"),
-      );
       const archivedProvider = JSON.parse(
         await readFile(
           join(

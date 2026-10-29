@@ -58,6 +58,7 @@ import type {
   CodexTransportProcessInfo,
 } from "../drivers/codex/app-server-transport.js";
 import { createSanitizedCodexEnvironment } from "../drivers/codex/app-server-transport.js";
+import { codexCommandEnvironment } from "../drivers/codex/codex-security-config.js";
 import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
@@ -7301,6 +7302,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // These controller-owned, token-free paths belong to the new run.
         // Keep the durable provider profile and thread identity unchanged.
         const recordedCommand = record(runAttachTemplate.provider).command;
+        const providerConfig = record(runAttachTemplate.provider);
+        if (providerConfig.commandEnvironment != null) {
+          providerConfig.driver = "codex_app_server_command_environment_v2";
+          providerConfig.instructionWorkingCopyRoot = codexCommandEnvironment(
+            this.options.environment ?? {},
+            runtimeContext?.instructions.workingCopy?.rootPath,
+          ).AGENT_HOME ?? null;
+        }
         runAttachTemplate.runtimeLaunchArgs =
           createRunnerdCodexAppServerArgs({
             args: this.options.codexArgs,
@@ -7310,6 +7319,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             workingDirectory: this.options.resumeWorkingDirectory,
             runtimeStateRoot: this.options.runnerFilesystemRoot ?? this.#root,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
+            persistedCommandEnvironment: record(providerConfig.commandEnvironment),
+            commandEnvironmentTransport:
+              providerConfig.commandEnvironment == null ? "argv" : "thread",
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             disableProjectInstructions: this.options.disableCodexProjectInstructions,
             readOnlyRoots: [
