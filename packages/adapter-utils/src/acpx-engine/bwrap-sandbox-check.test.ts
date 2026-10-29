@@ -54,11 +54,16 @@ function buildFakeCodexTree(root: string, probeBehavior: ProbeBehavior, sleepBin
   const acpDist = path.join(nodeModules, "@fake", "codex-acp", "dist");
   const acpAnchor = path.join(acpDist, "index.js");
   const codexPkg = path.join(nodeModules, "@openai", "codex");
-  const platformPkg = path.join(nodeModules, "@openai", "codex-linux-x64");
+  // The resolver builds the platform package name from the host's own
+  // process.arch (the tests only stub process.platform), so the fake tree
+  // must match the host architecture — x64 and ARM64 alike.
+  const platformPkgName = `@openai/codex-linux-${process.arch}`;
+  const platformPkg = path.join(nodeModules, platformPkgName);
+  const vendorArch = process.arch === "x64" ? "x86_64" : process.arch;
   const vendorBwrap = path.join(
     platformPkg,
     "vendor",
-    "x86_64-unknown-linux-musl",
+    `${vendorArch}-unknown-linux-musl`,
     "codex-resources",
     "bwrap",
   );
@@ -82,12 +87,12 @@ function buildFakeCodexTree(root: string, probeBehavior: ProbeBehavior, sleepBin
     JSON.stringify({
       name: "@openai/codex",
       version: "0.0.0",
-      optionalDependencies: { "@openai/codex-linux-x64": "0.0.0" },
+      optionalDependencies: { [platformPkgName]: "0.0.0" },
     }),
   );
   writeFileSync(
     path.join(platformPkg, "package.json"),
-    JSON.stringify({ name: "@openai/codex-linux-x64", version: "0.0.0" }),
+    JSON.stringify({ name: platformPkgName, version: "0.0.0" }),
   );
   // The probe child inherits the test's stripped PATH, so pin the stall to
   // an absolute sleep binary; a bare "sleep" would fail to resolve and the

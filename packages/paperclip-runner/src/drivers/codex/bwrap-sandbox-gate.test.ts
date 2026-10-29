@@ -22,6 +22,7 @@ describe("assertCodexBwrapSandboxReady", () => {
   let originalCheckDisabled: string | undefined;
   let originalOptOut: string | undefined;
   let originalVitest: string | undefined;
+  let originalPlatform: NodeJS.Platform;
 
   beforeEach(() => {
     verifyMock.mockReset();
@@ -35,9 +36,14 @@ describe("assertCodexBwrapSandboxReady", () => {
     // clear it to simulate a non-vitest process.
     originalVitest = process.env.VITEST;
     delete process.env.VITEST;
+    // The gate is Linux-only; pin the platform so the production path runs
+    // on non-Linux dev and CI hosts (macOS, Windows) as well.
+    originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
   });
 
   afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform });
     if (originalCheckDisabled === undefined) delete process.env.PAPERCLIP_RUNNER_BWRAP_CHECK_DISABLED;
     else process.env.PAPERCLIP_RUNNER_BWRAP_CHECK_DISABLED = originalCheckDisabled;
     if (originalOptOut === undefined) delete process.env.PAPERCLIP_RUNNER_BWRAP_OPTOUT;
@@ -108,6 +114,15 @@ describe("assertCodexBwrapSandboxReady", () => {
     const controller = new AbortController();
     await assertCodexBwrapSandboxReady({ signal: controller.signal });
     expect(verifyMock).toHaveBeenCalledWith({ anchorPath: undefined, signal: controller.signal });
+  });
+
+  it("reports cancellation, not a sandbox failure, when the run is stopped during the probe", async () => {
+    verifyMock.mockResolvedValue(probeFailure);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      assertCodexBwrapSandboxReady({ signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("passes the launched command anchor through to the probe", async () => {

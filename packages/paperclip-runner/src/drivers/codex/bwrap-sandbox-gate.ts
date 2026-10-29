@@ -63,6 +63,10 @@ export async function assertCodexBwrapSandboxReady(
     anchorPath: options.anchorPath,
     signal: options.signal,
   });
+  // A stop during the probe window is a cancellation, not a sandbox
+  // failure: propagate the abort so the caller's stop handling applies
+  // (same semantics as the ACPX engine gate).
+  options.signal?.throwIfAborted();
   if (check.ok) return;
   const optedOut =
     options.environment?.PAPERCLIP_RUNNER_BWRAP_OPTOUT === "1" ||

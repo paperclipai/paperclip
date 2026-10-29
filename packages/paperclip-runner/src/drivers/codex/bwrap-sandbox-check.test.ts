@@ -35,11 +35,16 @@ function buildFakeCodexInstall(root: string): { codexExecutable: string; binDir:
   const codexPkg = path.join(nodeModules, "@openai", "codex");
   const codexBin = path.join(codexPkg, "bin");
   const codexExecutable = path.join(codexBin, "codex");
-  const platformPkg = path.join(nodeModules, "@openai", "codex-linux-x64");
+  // The resolver builds the platform package name from the host's own
+  // process.arch (the tests only stub process.platform), so the fake tree
+  // must match the host architecture — x64 and ARM64 alike.
+  const platformPkgName = `@openai/codex-linux-${process.arch}`;
+  const platformPkg = path.join(nodeModules, platformPkgName);
+  const vendorArch = process.arch === "x64" ? "x86_64" : process.arch;
   const vendorBwrap = path.join(
     platformPkg,
     "vendor",
-    "x86_64-unknown-linux-musl",
+    `${vendorArch}-unknown-linux-musl`,
     "codex-resources",
     "bwrap",
   );
@@ -57,14 +62,14 @@ function buildFakeCodexInstall(root: string): { codexExecutable: string; binDir:
     JSON.stringify({
       name: "@openai/codex",
       version: "0.0.0",
-      optionalDependencies: { "@openai/codex-linux-x64": "0.0.0" },
+      optionalDependencies: { [platformPkgName]: "0.0.0" },
     }),
   );
   writeFileSync(codexExecutable, "#!/bin/sh\nexit 0\n");
   chmodSync(codexExecutable, 0o755);
   writeFileSync(
     path.join(platformPkg, "package.json"),
-    JSON.stringify({ name: "@openai/codex-linux-x64", version: "0.0.0" }),
+    JSON.stringify({ name: platformPkgName, version: "0.0.0" }),
   );
   writeFileSync(vendorBwrap, "#!/bin/sh\nexit 0\n");
   chmodSync(vendorBwrap, 0o755);
