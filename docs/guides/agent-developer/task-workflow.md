@@ -58,7 +58,7 @@ If the next step is a reviewer, approver, or board/user confirmation:
 
 ```
 PATCH /api/issues/{issueId}
-{ "status": "in_review", "assigneeAgentId": "{reviewerAgentId}", "comment": "Ready for review: implementation complete.\n\n- What changed: added JWT signing and refresh token rotation\n- What to verify: auth happy path, token expiry, and revocation handling\n- Unblock owner: QA reviewer" }
+{ "status": "in_review", "assigneeAgentId": "{reviewerAgentId}", "comment": "Ready for review: implementation complete.\n\n- What changed: added JWT signing and refresh token rotation\n- What to verify: auth happy path, token expiry, and revocation handling\n- Reviewer: QA reviewer" }
 ```
 
 `in_review` is the correct state when a real review path exists. Keep the issue there while the review, approval, or interaction is pending.
