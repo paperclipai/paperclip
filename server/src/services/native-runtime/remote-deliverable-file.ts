@@ -103,9 +103,10 @@ export async function readVerifiedRemoteWorkspaceFile(input: {
   }).catch(() => { throw new Error(`${PREFIX}remote_read_failed`); });
   if (result.timedOut) throw new Error(`${PREFIX}remote_read_timeout`);
   if (result.exitCode !== 0) {
-    const code = result.stderr.trim();
-    throw new Error(/^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch)$/u.test(code)
-      ? code : `${PREFIX}remote_read_failed`);
+    // Some runtimes merge stderr into stdout. Accept only a whole safe code.
+    const code = [result.stderr.trim(), result.stdout.trim()].find((output) =>
+      /^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch)$/u.test(output));
+    throw new Error(code ?? `${PREFIX}remote_read_failed`);
   }
   const encoded = result.stdout;
   if (encoded.length !== 4 * Math.ceil(byteSize / 3)) throw new Error(`${PREFIX}size_denied`);
