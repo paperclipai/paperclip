@@ -146,7 +146,12 @@ script is required. Discovery and credential-free checks do no provider work:
 pnpm test:e2e:runner -- --list --suite antigravity-agent-journey
 pnpm test:e2e:runner:typecheck
 pnpm test:e2e:runner:unit
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/antigravity-journey-browser.smoke.ts
 ```
+
+The explicit browser calibration uses local fixtures, including the real activity
+renderer. It checks selectors and stale UI states without an account connection,
+an agent setup or a provider run; it is separate from live qualification.
 
 Read-only readiness validates the target revision/mode, signed-in consuming
 identity, exact personal default grant, local environment and candidate catalog.
@@ -189,12 +194,22 @@ input/output/cache tokens and unknown prices. A rebuilt dashboard is a
 presentation check, not another provider measurement. Missing final proof cannot
 be repaired by inventing a screenshot or rewriting an old grade.
 
+If packaging fails, `attempt-result.json` preserves the primary measurement and
+`packaging-error.json` records the separate reporting failure. Any partially
+written result and manifest are copied before the retained presentation is
+marked failed with `journey_report_packaging_failed`. Cleanup, usage and original
+screenshots remain available; the normal importer can rebuild that failed
+presentation without changing the original outcome or supplying missing proof.
+
 ## Independent acceptance and retained evidence
 
 Success requires the correct browser controls and persisted object identity,
 exact actual downloaded bytes for both distinct run-bound artifacts, requested
 and effective low model, same full tagged native conversation, accepted result,
 committed finalization and an applied Done decision for each own settlement.
+The session-ID equality gate is an observed property of this exact native `.5`
+integration, corroborated by both retained real task checkpoints; it is not a
+general ACP invariant.
 The first settlement is captured before reopening; later legitimate reassessment
 may supersede its current pointer without invalidating that historical lineage.
 The final task's visible status and both outputs must survive reload. Narrative

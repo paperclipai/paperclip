@@ -228,9 +228,53 @@ export async function runAntigravityJourneyCampaign(input: {
         if (result.status === "passed" && !result.matcherResults.every(check => check.passed)) {
           result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "candidate_failure"; result.error = "antigravity_journey_proof_incomplete";
         }
-        const packaged = await writeAntigravityJourneyReport({ output, campaignId, result, resources, catalog: input.catalog, secrets: [] });
-        if (packaged.status !== "passed" || packaged.cleanup !== "passed") process.exitCode = 1;
-        console.log(`[antigravity-agent-journey] ${packaged.status}: ${path.join(output, "dashboard.html")}`);
+        const primary = structuredClone(result);
+        try {
+          await save("attempt-result.json", primary);
+          const packaged = await writeAntigravityJourneyReport({ output, campaignId, result, resources, catalog: input.catalog, secrets: [] });
+          if (packaged.status !== "passed" || packaged.cleanup !== "passed") process.exitCode = 1;
+          console.log(`[antigravity-agent-journey] ${packaged.status}: ${path.join(output, "dashboard.html")}`);
+        } catch {
+          process.exitCode = 1;
+          const code = "journey_report_packaging_failed";
+          let retainedFailure = false;
+          try {
+            // Keep partially written normal evidence before replacing its
+            // presentation grade with an explicit packaging failure.
+            const sources: Record<string, string> = {};
+            let manifest: Row = {};
+            for (const name of ["result.json", "evidence-manifest.json"]) {
+              const bytes = await readFile(path.join(output, "evidence", name)).catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return undefined;
+                throw error;
+              });
+              if (!bytes) continue;
+              await writeFile(path.join(output, `packaging-source-${name}`), bytes, { mode: 0o600 });
+              sources[name] = createHash("sha256").update(bytes).digest("hex");
+              if (name === "evidence-manifest.json") {
+                try {
+                  const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+                  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) manifest = parsed;
+                } catch { /* Retain malformed source bytes; packaging remains failed. */ }
+              }
+            }
+            const failed: RunnerE2EResult = { ...primary, status: "failed",
+              failureClass: primary.failureClass ?? "permanent_infrastructure",
+              error: `${primary.error ? `${primary.error}; ` : ""}${code}` };
+            await mkdir(path.join(output, "evidence"), { recursive: true, mode: 0o700 });
+            await save("evidence/result.json", failed);
+            await save("evidence/evidence-manifest.json", { ...manifest,
+              files: Array.isArray(manifest.files) ? [...new Set([...manifest.files, "result.json"])] : ["result.json"],
+              leaks: Array.isArray(manifest.leaks) ? manifest.leaks : [],
+              missing: [...new Set([...(Array.isArray(manifest.missing) ? manifest.missing : []), code])] });
+            await save("packaging-error.json", { version: 1, code, sources,
+              primary: { status: primary.status, error: primary.error ?? null, failureClass: primary.failureClass ?? null,
+                outcome: primary.antigravityJourney?.outcome, cleanup: primary.cleanup },
+              presentationOnlyRecovery: true });
+            retainedFailure = true;
+          } catch { /* Disk or permission failure cannot replace the primary outcome or the failed exit code. */ }
+          console.log(`[antigravity-agent-journey] failed: ${code}; ${retainedFailure ? "retained evidence/result.json" : "retained diagnostics unavailable"}: ${output}`);
+        }
       }
     }
     return output;

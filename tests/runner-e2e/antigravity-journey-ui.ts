@@ -56,32 +56,58 @@ export async function assertAntigravityTaskDone(page: Page, timeout = 30_000) {
 
 export async function assertAntigravityFileActivity(page: Page, timeout = 30_000) {
   const histories = page.getByTestId("task-chat-activity-phase-toggle");
+  const older = page.getByRole("button", { name: "More messages", exact: true });
+  await expect.poll(async () => await older.isVisible() || await histories.count() > 0, { timeout }).toBe(true);
+  if (await older.isVisible()) await older.click();
   await expect.poll(() => histories.count(), { timeout }).toBeGreaterThan(0);
   for (const toggle of await histories.all()) if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-  const items = page.locator("li[data-activity-item-id]:visible").filter({ has: page.locator('[data-activity-family="tool_execution"]') });
+  const items = page.locator("li[data-activity-item-id]:visible").filter({ has: page.locator("[data-activity-row]") });
   await expect.poll(() => items.count(), { timeout }).toBeGreaterThanOrEqual(2);
   await expect.poll(async () => {
     let reads = 0, edits = 0;
     for (const item of await items.all()) {
+      const row = item.locator("[data-activity-row]");
+      const family = await row.getAttribute("data-activity-family");
+      if (family !== null && family !== "tool_execution") continue;
+      let name: string | undefined;
+      if (family === null) {
+        // Persisted native tool_call/result entries use the legacy tool model.
+        // Its mono target is the adapter's summarized real call input.
+        const input = row.locator("span[title].font-mono");
+        if (await input.count() !== 1) continue;
+        const match = /^operation:\s*(read|edit|write),\s*target:\s*([^,]+)(?:,|$)/u.exec(await input.getAttribute("title") ?? "");
+        if (!match || match[2]!.trim() !== "antigravity-proof.txt") continue;
+        name = match[1]!;
+      }
       const toggle = item.locator(":scope > button");
       await expect(toggle).toHaveCount(1, { timeout });
       if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-      const details = item.getByTestId("task-chat-provider-detail-list");
-      const value = (label: string) => details.locator(":scope > div").filter({ has: page.locator("dt").getByText(label, { exact: true }) }).locator("dd");
-      const operation = value("Operation");
-      if (await operation.count() !== 1) continue;
-      const name = (await operation.innerText()).trim();
-      if (!["read", "edit", "write"].includes(name)) continue;
-      const target = value("Target");
-      await expect(target).toHaveCount(1, { timeout });
-      if ((await target.innerText()).trim() !== "antigravity-proof.txt") continue;
-      // The shipped renderer presents friendly labels and structured details;
-      // serialized event text and unrelated finish failures are not file proof.
-      await expect(value("Status")).toHaveText("completed", { timeout });
-      const row = item.locator('[data-activity-row][data-activity-family="tool_execution"]');
+      if (family === "tool_execution") {
+        const details = item.getByTestId("task-chat-provider-detail-list");
+        const value = (label: string) => details.locator(":scope > div").filter({ has: page.locator("dt").getByText(label, { exact: true }) }).locator("dd");
+        const operation = value("Operation");
+        if (await operation.count() !== 1) continue;
+        name = (await operation.innerText()).trim();
+        if (!["read", "edit", "write"].includes(name)) continue;
+        const target = value("Target");
+        await expect(target).toHaveCount(1, { timeout });
+        if ((await target.innerText()).trim() !== "antigravity-proof.txt") continue;
+        await expect(value("Status")).toHaveText("completed", { timeout });
+      } else {
+        // A non-latest legacy call can display completed-style copy while its
+        // phase is live. Require the visible settled-phase summary as well.
+        const phase = item.locator('xpath=ancestor::section[@data-testid="task-chat-activity-phase"][1]');
+        await expect(phase.locator("[data-completed-summary]")).toBeVisible({ timeout });
+        const result = item.getByTestId("task-chat-runner-activity-detail").locator("pre");
+        await expect(result).toBeVisible({ timeout });
+        await expect(result).toContainText(/\S/u, { timeout });
+        await expect(row.locator(":scope > span:nth-child(2) > span:first-child"))
+          .toHaveText(/^(?:Ran|Read|Edited|Wrote|Updated|Applied|Created)\b/u, { timeout });
+      }
       await expect(row).toBeVisible({ timeout });
       await expect(row).not.toContainText(/·\s*(?:failed|stopped)/u, { timeout });
-      if (name === "read") reads++; else edits++;
+      await expect(row.locator('[data-conversation-tool-running="true"]')).toHaveCount(0, { timeout });
+      if (name === "read") reads++; else if (name === "edit" || name === "write") edits++;
     }
     return reads > 0 && edits > 0;
   }, { timeout }).toBe(true);
@@ -104,7 +130,8 @@ export async function inspectAntigravityArtifact(page: Page, attachmentId: strin
   const raw = page.locator('pre[aria-label="antigravity-proof.txt raw text"]:visible');
   await expect(raw).toHaveCount(1, { timeout });
   await expect(raw).toHaveText(expected.toString("utf8"), { useInnerText: false });
-  const download = page.getByRole("link", { name: "Download antigravity-proof.txt", exact: true });
+  const download = page.getByRole("link", { name: "Download antigravity-proof.txt", exact: true })
+    .and(page.locator(`a[download][href="${contentPath}?download=1"]`));
   await expect(download).toHaveAttribute("href", `${contentPath}?download=1`);
   const [file] = await Promise.all([page.waitForEvent("download"), download.click()]);
   const downloaded = await file.path();

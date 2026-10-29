@@ -222,7 +222,7 @@ export function gradeAntigravityJourney(evidence: AntigravityJourneyEvidence) {
     { matcher: { kind: "json_path", path: "antigravityJourney.turnEvidence", expected: 2 } as Matcher,
       passed: evidence.turnEvidence.length === 2 && sameAntigravityConversation(first!, second!) && Boolean(fileSequence), detail: "Two independently observed turns in the same tagged native conversation with exact original and appended bytes" },
     { matcher: { kind: "json_path", path: "antigravityJourney.cleanup", expected: true } as Matcher,
-      passed: Object.values(evidence.cleanup).every(Boolean), detail: "Owned agent and runs retired; shared saved connection preserved" }];
+      passed: Object.values(evidence.cleanup).every(Boolean), detail: "Owned runs retired and agent cleanup completed; shared saved connection preserved" }];
 }
 
 /** Closed retained projection; reject arbitrary native payloads before rendering. */

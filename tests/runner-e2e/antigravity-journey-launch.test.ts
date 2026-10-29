@@ -2,13 +2,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { runnerMatrix } from "./catalog.js";
 import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
 import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { runAntigravityJourneyCampaign } from "./antigravity-journey-launch.js";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
+import { ConnectionFailure } from "./connection-config.js";
 
-const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn(), cleanup: vi.fn() }));
+const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn(), cleanup: vi.fn(), reportOutput: "", failBranding: false }));
 vi.mock("./antigravity-journey-config.js", async original => ({ ...await original<typeof import("./antigravity-journey-config.js")>(),
   loadAntigravityJourneyConfig: async () => scenario.config }));
 vi.mock("./antigravity-journey-fixtures.js", async original => ({ ...await original<typeof import("./antigravity-journey-fixtures.js")>(),
@@ -26,6 +28,20 @@ vi.mock("./connection-launch.js", () => ({
   } }),
 }));
 vi.mock("./connection-target.js", async original => ({ ...await original<typeof import("./connection-target.js")>(), connectionDelay: async () => {} }));
+vi.mock("./antigravity-journey-report.js", async original => {
+  const actual = await original<typeof import("./antigravity-journey-report.js")>();
+  return { ...actual, writeAntigravityJourneyReport: async (input: Parameters<typeof actual.writeAntigravityJourneyReport>[0]) => {
+    scenario.reportOutput = input.output;
+    return actual.writeAntigravityJourneyReport(input);
+  } };
+});
+vi.mock("./report-assets.js", async original => {
+  const actual = await original<typeof import("./report-assets.js")>();
+  return { ...actual, stageDashboardBrandAssets: async (...args: Parameters<typeof actual.stageDashboardBrandAssets>) => {
+    if (scenario.failBranding) throw new Error("fixture late branding failure");
+    return actual.stageDashboardBrandAssets(...args);
+  } };
+});
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const outputs: string[] = [];
@@ -34,6 +50,8 @@ beforeEach(() => {
   originalExitCode = process.exitCode;
   scenario.authReads = 0; scenario.prepare.mockReset(); scenario.flow.mockReset(); scenario.close.mockReset();
   scenario.cleanup.mockReset();
+  scenario.reportOutput = "";
+  scenario.failBranding = false;
   scenario.config = parseAntigravityJourneyConfig({ version: 1, setupId: "assisted-login-calibration", hosting: "self-hosted", executionEnvironment: "local",
     target: { mode: "attach", baseURL: "http://127.0.0.1:3104", expectedCommit: "a".repeat(40), deploymentMode: "authenticated",
       companyId: "11111111-1111-4111-8111-111111111111", environmentId: "22222222-2222-4222-8222-222222222222" },
@@ -46,7 +64,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   process.exitCode = originalExitCode;
-  await Promise.all(outputs.splice(0).map(output => rm(output, { recursive: true, force: true })));
+  await Promise.all([...new Set([...outputs.splice(0), scenario.reportOutput].filter(Boolean))].map(output => rm(output, { recursive: true, force: true })));
 });
 
 const executions = () => selectRunnerExecutions(parseRunnerSelectors(["--id", ANTIGRAVITY_JOURNEY_EXECUTION]), runnerMatrix);
@@ -108,4 +126,43 @@ it("retains cleanup-discovered run identities with unknown usage when their publ
   expect(result.billing.complete).toBe(false);
   expect(result.runtimeUsage.agentRunDurationMs).toBeNull();
   expect(result.cleanup).toBe("failed");
+});
+it.each(["missing_screenshot", "late_assets"])("preserves the primary failure and accounting when real report packaging fails at %s", async failure => {
+  scenario.authReads = 1;
+  const run = { id: "44444444-4444-4444-8444-444444444444", agentId: "66666666-6666-4666-8666-666666666666",
+    companyId: scenario.config.target.companyId, status: "failed", costAccountingPending: false,
+    usageJson: { inputTokens: 100, outputTokens: 20, costUsd: 0.25 }, startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" };
+  scenario.flow.mockImplementationOnce(async ({ resources, observeRun, checkpoint }) => {
+    resources.agentId = run.agentId;
+    await observeRun(run);
+    if (failure === "missing_screenshot") await checkpoint("ordinary_picker", { url: () => `${scenario.config.target.baseURL}/QA/agents`,
+      locator: () => ({ count: async () => 0 }), screenshot: async () => Buffer.from("fixture screenshot was not saved") });
+    throw new ConnectionFailure("fixture_primary_failure");
+  });
+  scenario.failBranding = failure === "late_assets";
+  scenario.cleanup.mockImplementationOnce(async ({ cleanup }) => Object.assign(cleanup, { agent: true, runs: true, connectionPreserved: true }));
+  const output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot }); outputs.push(output);
+  expect(process.exitCode).toBe(1);
+  const source = JSON.parse(await readFile(path.join(output, "attempt-result.json"), "utf8"));
+  const retained = JSON.parse(await readFile(path.join(output, "evidence/result.json"), "utf8"));
+  expect(source).toMatchObject({ status: "failed", cleanup: "passed", failureClass: "candidate_failure", error: "fixture_primary_failure",
+    antigravityJourney: { outcome: "failed" }, billing: { llm: { reportedCostUsd: 0.25 } } });
+  expect(retained).toMatchObject({ status: "failed", cleanup: "passed", failureClass: "candidate_failure",
+    error: "fixture_primary_failure; journey_report_packaging_failed" });
+  for (const key of ["usage", "runtimeUsage", "billing", "screenshots", "antigravityJourney"]) expect(retained[key]).toEqual(source[key]);
+  expect(JSON.parse(await readFile(path.join(output, "attempt-error.json"), "utf8")).error).toBe("fixture_primary_failure");
+  expect(JSON.parse(await readFile(path.join(output, "packaging-error.json"), "utf8"))).toMatchObject({ code: "journey_report_packaging_failed",
+    primary: { status: "failed", error: "fixture_primary_failure", outcome: "failed" } });
+  if (failure === "late_assets") {
+    expect(JSON.parse(await readFile(path.join(output, "packaging-source-result.json"), "utf8"))).toMatchObject({ error: "fixture_primary_failure" });
+    expect(JSON.parse(await readFile(path.join(output, "packaging-source-evidence-manifest.json"), "utf8")).missing).toEqual([]);
+  }
+  const env = Object.fromEntries(["PATH", "HOME", "USER", "TMPDIR", "LANG"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []));
+  Object.assign(env, { PAPERCLIP_RUNNER_E2E_REPORT_ROOT: output, PAPERCLIP_RUNNER_E2E_REPORT_OUT: path.join(output, "rebuilt"),
+    PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([ANTIGRAVITY_JOURNEY_EXECUTION]), PAPERCLIP_E2E_CAMPAIGN_ID: path.basename(output) });
+  const rebuilt = spawnSync(process.execPath, ["cli/node_modules/tsx/dist/cli.mjs", "tests/runner-e2e/report.ts"], { cwd: repositoryRoot, env, timeout: 25_000, encoding: "utf8" });
+  expect(rebuilt.status).toBe(1);
+  const normalized = JSON.parse(await readFile(path.join(output, "rebuilt/normalized-results.json"), "utf8")).results[0];
+  expect(normalized).toMatchObject({ status: "failed", cleanup: "passed", error: retained.error, usage: retained.usage, runtimeUsage: retained.runtimeUsage });
+  expect(normalized.billing.llm.reportedCostUsd).toBe(0.25);
 });
