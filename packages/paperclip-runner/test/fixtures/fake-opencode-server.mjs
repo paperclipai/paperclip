@@ -101,6 +101,8 @@ await writeFile(
   join(process.env.XDG_DATA_HOME, "fake-environment.json"),
   JSON.stringify({
     keys: Object.keys(process.env).sort(),
+    notificationContext: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT,
+    notificationHelper: process.env.PAPERCLIP_RUNTIME_NOTIFICATION_HELPER,
     noProxy: process.env.NO_PROXY,
     home: process.env.HOME,
     configHome: process.env.XDG_CONFIG_HOME,

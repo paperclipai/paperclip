@@ -653,3 +653,9 @@ The ordinary authenticated Runner event is the durable record. Normal source-eve
 acknowledgement and replay deduplicate delivery. Existing run-read authorization
 and secret redaction apply to saved and live events. Recording reported activity
 is not independent proof that it happened and grants no resource permission.
+
+Runner accepts local activity records only with an opaque context
+captured before the operation. Warm run attachment and process recovery rotate
+that authority. Runner supplies the run identity from its active authenticated
+binding. Optional hint failure does not fail the underlying operation. No output
+text is scanned and no synthetic receipt is written.

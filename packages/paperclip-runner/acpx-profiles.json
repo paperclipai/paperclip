@@ -5,21 +5,21 @@
   "protocolVersion": 1,
   "profiles": {
     "grok": {
-      "agentProfileVersion": 11,
+      "agentProfileVersion": 12,
       "agentServerPackage": "builtin:grok-acp",
       "agentServerVersion": "1",
       "agentRuntimePackage": "native:grok",
       "agentRuntimeVersion": "1.0.13",
-      "commandDigest": "sha256:f43a6f5a583972cdcb422784969cd6a97654655b0f135f1cf178317909c404f8",
+      "commandDigest": "sha256:3dc83b2c3493913748cacb09025a8c97b74f3b5bbb1dc204072d1a773fa9af3a",
       "requiresProviderPolicy": false
     },
     "pi": {
-      "agentProfileVersion": 33,
+      "agentProfileVersion": 34,
       "agentServerPackage": "pi-acp",
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:0260d5810e9247986800ad46c1f9b3511a5abd06cb8f142405d5caacbc3960fc",
+      "commandDigest": "sha256:ed4b32cc8fbf36309d38b3bd378f41f8e7b9e96a2405d275cc55e89042d94c7f",
       "requiresProviderPolicy": true
     },
     "cursor": {
@@ -32,12 +32,12 @@
       "requiresProviderPolicy": true
     },
     "copilot": {
-      "agentProfileVersion": 80,
+      "agentProfileVersion": 81,
       "agentServerPackage": "@github/copilot",
       "agentServerVersion": "1.0.88",
       "agentRuntimePackage": null,
       "agentRuntimeVersion": null,
-      "commandDigest": "sha256:7b8a6a31925256d225ea3d72fdcfd81b70a45c4b67d3eb0ee5073efff9ac8f8b",
+      "commandDigest": "sha256:a51bdf77bba778c4d0265bbfd92a0e6c146f9de5debc3b4a2a268c34e5576e0c",
       "requiresProviderPolicy": true
     },
     "claude": {

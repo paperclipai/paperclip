@@ -142,3 +142,11 @@ the run's company, task and agent through its existing authorized run binding;
 callers cannot supply those identities in the payload. Recording activity does
 not independently verify the reported action or grant access to any resource.
 The event uses the ordinary durable outbox, acknowledgement and replay contract.
+
+Local clients capture an opaque context with `paperclip-runnerd notification-context`
+before an operation and invoke `record-activity CONTEXT NAMESPACE ACTIVITY_KEY`
+after success. Runner publishes its matching absolute executable as host-owned
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER` and the stable endpoint descriptor path
+as `PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
+override either value. Context is invalidated on warm attachment and process
+recovery, so a caller cannot attribute a later completion to a different run.

@@ -8,7 +8,7 @@ export async function notifyEnvironmentCleanup(transaction: object, scope?: Nati
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.historicalCleanup);
 }
 
-export function writeEnvironmentCleanup<T>(db: Db, write: (tx: Db) => PromiseLike<T>, scope?: NativeEnvironmentSettlementScope): Promise<T> {
+export function writeEnvironmentCleanup<T>(db: Db, write: (tx: Db) => PromiseLike<T>, scope: NativeEnvironmentSettlementScope): Promise<T> {
   return db.transaction(async tx => {
     await notifyEnvironmentCleanup(tx, scope);
     return write(tx as unknown as Db);

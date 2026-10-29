@@ -3509,3 +3509,19 @@ cluster ran the same acceptance suites. No further IPC cleanup was performed.
 Remote checks/review and full-stack acceptance remain pending. See the
 [routine scheduling audit](2026-10-27-routine-schedule-sleep.md) for producer coverage,
 lifecycle evidence, harness corrections and the supported single-process writer model.
+
+
+## Slice 64 — skill-version cache retention (2026-10-27)
+
+The hourly cache scan now reconstructs once and wakes from cache changes,
+transaction-owned version/pin changes, and saved grace or terminal-controller
+lease deadlines. The existing prune service retains all deletion safety checks.
+One active company iterator prevents the 16-cursor cap from restarting a large
+multi-company backlog. Unknown pins and failed inspections retain scoped retries;
+permanent pins and fully settled history become quiet. This reason is separate
+from the still-pending native-harness backup retention duty. See
+[the slice audit](2026-10-27-skill-version-retention-sleep-audit.md) for the full
+writer inventory, module contracts, local acceptance, and limitations. Remote
+review and checks remain pending. The user's October 27 instruction now authorizes
+merging qualifying sleep PRs in dependency order after Greptile 5/5 and any
+present Ponytail review passes, with all required CI checks passing.
