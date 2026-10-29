@@ -1856,6 +1856,10 @@ For an ordinary review monitor, scheduling supplies a scoped claim to the queue.
 The queue consumes that exact monitor and captures the new run's complete
 post-consumption generation in one company-scoped issue transaction. Existing
 runs retain their original generation. Dispatch starts after the outer commit.
+Before coalescing a fresh wake, queue admission retires a queued review whose
+complete generation no longer matches the task, even when the reviewer is
+unchanged. Retirement and fresh admission share the issue transaction. A failed
+admission rolls both back; running turns are not retired by this path.
 
 For legacy tasks with no responsible user, the identity owner initializes the
 NEW review run through the same operator/origin/message selection as dispatch.

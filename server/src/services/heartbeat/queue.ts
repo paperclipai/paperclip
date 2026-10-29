@@ -3497,41 +3497,47 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
-          const cancelStaleScheduledRetry = async (
-            scheduledRun: typeof heartbeatRuns.$inferSelect,
+          const cancelStalePendingRun = async (
+            pendingRun: typeof heartbeatRuns.$inferSelect,
           ) => {
             const issueCancelled = issue.status === "cancelled";
+            const generation = pendingRun.contextSnapshot?.reviewerAssignmentGeneration;
+            const staleReview = pendingRun.status === "queued" && typeof generation === "string" &&
+              generation !== issueExecutionGeneration(issue);
             if (
-              scheduledRun.status !== "scheduled_retry" ||
-              (scheduledRun.agentId === issue.assigneeAgentId &&
-                !issueCancelled)
+              !staleReview &&
+              (pendingRun.status !== "scheduled_retry" ||
+                (pendingRun.agentId === issue.assigneeAgentId && !issueCancelled))
             ) {
               return false;
             }
 
             const now = new Date();
-            const reason = issueCancelled
+            const reason = staleReview
+              ? "The review submission changed before execution. This queued review no longer matches the task."
+              : issueCancelled
               ? "Cancelled because the issue was cancelled before the scheduled retry became due"
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
-            await notifyInstructionCollection(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
-            await notifyCancelledWorkspacePreservation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
-            await notifyScheduledRetryCancellation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
-            await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
+            await notifyInstructionCollection(tx, { companyId: pendingRun.companyId, runId: pendingRun.id });
+            await notifyCancelledWorkspacePreservation(tx, { companyId: pendingRun.companyId, runId: pendingRun.id });
+            if (pendingRun.status === "scheduled_retry") await notifyScheduledRetryCancellation(tx, { companyId: pendingRun.companyId, runId: pendingRun.id });
+            await notifyChatRunMilestones(tx, { companyId: pendingRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
               .set({
                 status: "cancelled",
                 finishedAt: now,
                 error: reason,
-                errorCode: issueCancelled
+                errorCode: staleReview ? "issue_review_participant_changed" : issueCancelled
                   ? "issue_cancelled"
                   : "issue_reassigned",
                 updatedAt: now,
               })
               .where(
                 and(
-                  eq(heartbeatRuns.id, scheduledRun.id),
-                  eq(heartbeatRuns.status, "scheduled_retry"),
+                  eq(heartbeatRuns.id, pendingRun.id),
+                  eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.status, pendingRun.status),
                 ),
               )
               .returning()
@@ -3539,7 +3545,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
             if (!cancelled) return false;
 
-            if (scheduledRun.wakeupRequestId) {
+            if (pendingRun.wakeupRequestId) {
               await tx
                 .update(agentWakeupRequests)
                 .set({
@@ -3549,11 +3555,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   updatedAt: now,
                 })
                 .where(
-                  eq(agentWakeupRequests.id, scheduledRun.wakeupRequestId),
+                  eq(agentWakeupRequests.id, pendingRun.wakeupRequestId),
                 );
             }
 
-            if (issue.executionRunId === scheduledRun.id) {
+            if (issue.executionRunId === pendingRun.id) {
               await tx
                 .update(issues)
                 .set({
@@ -3565,7 +3571,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(
                   and(
                     eq(issues.id, issue.id),
-                    eq(issues.executionRunId, scheduledRun.id),
+                    eq(issues.executionRunId, pendingRun.id),
                   ),
                 );
             }
@@ -3583,7 +3589,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
-              message: issueCancelled
+              message: staleReview ? reason : issueCancelled
                 ? "Scheduled retry cancelled because issue was cancelled before it became due"
                 : "Scheduled retry cancelled because issue ownership changed before it became due",
               payload: {
@@ -3627,7 +3633,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
           if (
             activeExecutionRun &&
-            (await cancelStaleScheduledRetry(activeExecutionRun))
+            (await cancelStalePendingRun(activeExecutionRun))
           ) {
             activeExecutionRun = null;
           }
@@ -3729,7 +3735,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               .then((rows) => rows[0] ?? null);
 
             if (legacyRun) {
-              if (await cancelStaleScheduledRetry(legacyRun)) {
+              if (await cancelStalePendingRun(legacyRun)) {
                 activeExecutionRun = null;
               } else {
                 activeExecutionRun = legacyRun;

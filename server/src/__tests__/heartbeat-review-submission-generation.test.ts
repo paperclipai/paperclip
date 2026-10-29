@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, afterEach } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createRunDispatch } from "../modules/run-dispatch/index.js";
@@ -71,6 +74,75 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(after).toMatchObject({ status: "cancelled", errorCode: "issue_review_participant_changed" });
       expect(invoke).not.toHaveBeenCalled();
     } finally { await service.drainActiveRunExecutions(); }
+  });
+  it.each([false, true])("delivers fresh comments after the submission changes with the same reviewer (locked: %s)", async locked => {
+    const f = await seed();
+    const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();
+    const marker = join(tmpdir(), `submission-comment-${randomUUID()}`);
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(marker)},process.env.PAPERCLIP_RUN_ID+'\\n')`] } }).where(eq(agents.id, f.agentId));
+    const service = heartbeatService(db, { runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" } });
+    async function commentWake(body: string) {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorUserId: "board", body }).returning();
+      const run = await service.wakeup(f.agentId, { source: "automation", reason: "issue_commented",
+        payload: { issueId: f.issueId, commentId: comment.id }, contextSnapshot: { wakeCommentId: comment.id },
+        requestedByActorType: "user", requestedByActorId: "board" });
+      return { run, comment };
+    }
+    try {
+      const original = await service.wakeup(f.agentId, { source: "assignment", reason: "execution_review_requested",
+        payload: { issueId: f.issueId }, requestedByActorType: "agent", requestedByActorId: f.source.agentId });
+      expect(original).toBeTruthy();
+      const before = await commentWake("Comment on the old submission");
+      expect(before.run?.id).toBe(original!.id);
+      const [oldQueued] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id));
+      expect(oldQueued.contextSnapshot?.wakeCommentIds).toContain(before.comment.id);
+      if (locked) await db.update(issues).set({ executionRunId: original!.id }).where(eq(issues.id, f.issueId));
+      await db.update(issues).set({ executionState: { ...f.issue.executionState!, reviewRequest: { instructions: "A new submission" } } }).where(eq(issues.id, f.issueId));
+      const fresh = await commentWake("Please review the new submission");
+      expect(fresh.run).toBeTruthy();
+      expect(fresh.run!.id).not.toBe(original!.id);
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, busy.id));
+      await service.resumeQueuedRuns(); await service.drainActiveRunExecutions();
+      expect(await readFile(marker, "utf8")).toBe(`${fresh.run!.id}\n`);
+      const [retired] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id));
+      expect(retired).toMatchObject({ status: "cancelled", errorCode: "issue_review_participant_changed", contextSnapshot: oldQueued.contextSnapshot });
+      const [finished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fresh.run!.id));
+      expect(finished.status).toBe("succeeded");
+      expect(finished.contextSnapshot?.reviewerAssignmentGeneration).not.toBe(oldQueued.contextSnapshot?.reviewerAssignmentGeneration);
+      expect(finished.contextSnapshot?.wakeCommentIds).toContain(fresh.comment.id);
+      const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+      expect(wakes.find(wake => wake.payload?.commentId === fresh.comment.id)?.runId).toBe(fresh.run!.id);
+      expect(wakes.find(wake => wake.payload?.commentId === before.comment.id)?.runId).toBe(original!.id);
+    } finally { await service.drainActiveRunExecutions(); await rm(marker, { force: true }); }
+  });
+  it("rolls back retiring the old review when fresh admission fails", async () => {
+    const f = await seed();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const original = await heartbeatService(db).wakeup(f.agentId, { source: "assignment", reason: "execution_review_requested",
+      payload: { issueId: f.issueId }, requestedByActorType: "agent", requestedByActorId: f.source.agentId });
+    await db.update(issues).set({ executionRunId: original!.id,
+      executionState: { ...f.issue.executionState!, reviewRequest: { instructions: "A new submission" } } }).where(eq(issues.id, f.issueId));
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorUserId: "board", body: "Review again" }).returning();
+    const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, original!.wakeupRequestId!));
+    const observed = new Proxy(db, { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return (...args: Parameters<typeof db.transaction>) => target.transaction(async tx => {
+        const result = await args[0](tx);
+        if (result && typeof result === "object" && "kind" in result && result.kind === "queued") throw new Error("synthetic fresh admission failure");
+        return result;
+      }, args[1]);
+    } });
+    const options = { source: "automation" as const, reason: "issue_commented", payload: { issueId: f.issueId, commentId: comment.id },
+      contextSnapshot: { wakeCommentId: comment.id }, requestedByActorType: "user" as const, requestedByActorId: "board" };
+    await expect(heartbeatService(observed).wakeup(f.agentId, options)).rejects.toThrow("synthetic fresh admission failure");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, original!.id)))[0])
+      .toMatchObject({ status: "queued", contextSnapshot: original!.contextSnapshot });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(original!.id);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, before.id)))[0]).toEqual(before);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect((await heartbeatService(db).wakeup(f.agentId, options))?.id).not.toBe(original!.id);
   });
   it.each((["none", "question", "tree", "dependency", "authority", "project", "recovery", "agent chain"] as const)
     .flatMap(kind => [false, true].map(crossAgent => [kind, crossAgent] as const)))("rechecks a new %s hold before handoff (cross-agent: %s)", async (kind, crossAgent) => {
