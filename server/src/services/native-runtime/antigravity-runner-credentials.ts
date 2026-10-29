@@ -1,10 +1,12 @@
 import { constants } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeAntigravityCredential, verifyAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanupForHome, retainGoogleCredentialCleanup, type RetainedGoogleCleanupScope } from "../retained-google-credential-cleanup.js";
+import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
@@ -106,6 +108,7 @@ export function antigravityCredentialTurn(input: {
 }) {
   const runtimeDirectory = join(input.runtimeHome, "antigravity-acp");
   const destination = join(input.managedHome, "antigravity-acp", TOKEN_FILE);
+  let pendingStage: { path: string; directoryDev: number; directoryIno: number; dev?: number; ino?: number } | undefined;
   return {
     copyBack: async () => {
       let serialized: string;
@@ -117,42 +120,145 @@ export function antigravityCredentialTurn(input: {
         }
       } catch (error) {
         // A provider that never started has no refresh to preserve.
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        if ((error as NodeJS.ErrnoException).code === "ENOENT" && !pendingStage) return;
         throw new Error("Google Antigravity credential refresh handoff is invalid.");
       }
       const refreshed = sanitizeAntigravityCredential(serialized);
-      if (refreshed === input.credential) return;
-      const file = await openRunnerWorkspaceFile(destination, constants.O_RDWR);
-      try {
-        const metadata = await file.stat();
-        if (!metadata.isFile() || metadata.uid !== process.getuid?.() || (metadata.mode & 0o777) !== 0o600 || metadata.size > 65_536) {
-          throw new Error("Google Antigravity credential destination is invalid.");
+      if (refreshed === input.credential) {
+        if (pendingStage) throw new Error("Google Antigravity credential refresh handoff is invalid.");
+        return;
+      }
+      const destinationDirectory = join(input.managedHome, "antigravity-acp");
+      await withDirectoryMergeLock(destinationDirectory, async () => {
+        const directory = await openRunnerWorkspaceFile(destinationDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+        let staged: Awaited<ReturnType<typeof openRunnerWorkspaceFile>> | undefined;
+        let stagedOwned = false;
+        const stagedPath = join(destinationDirectory, `.acp_token.copyback-${randomUUID()}.tmp`);
+        let cleanupStage: (() => Promise<void>) | undefined;
+        try {
+          const owner = await directory.stat();
+          if (!owner.isDirectory() || owner.uid !== process.getuid?.() || (owner.mode & 0o077) !== 0) {
+            throw new Error("Google Antigravity credential destination is invalid.");
+          }
+          const assertDirectoryOwner = async () => {
+            const current = await openRunnerWorkspaceFile(destinationDirectory, constants.O_RDONLY | constants.O_DIRECTORY);
+            try {
+              const metadata = await current.stat();
+              if (metadata.dev !== owner.dev || metadata.ino !== owner.ino || metadata.uid !== owner.uid || (metadata.mode & 0o077) !== 0) {
+                throw new Error("Google Antigravity credential destination changed during execution.");
+              }
+            } finally { await current.close(); }
+          };
+          cleanupStage = async () => {
+            if (!pendingStage) return;
+            if (pendingStage.directoryDev !== owner.dev || pendingStage.directoryIno !== owner.ino) {
+              throw new Error("Google Antigravity credential staging ownership changed.");
+            }
+            if (pendingStage.dev === undefined || pendingStage.ino === undefined) {
+              if (!staged) throw new Error("Google Antigravity credential staging ownership is unavailable.");
+              const created = await staged.stat();
+              pendingStage.dev = created.dev; pendingStage.ino = created.ino;
+            }
+            const previous = await openRunnerWorkspaceFile(pendingStage.path, constants.O_RDONLY)
+              .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+            if (previous) {
+              try {
+                const metadata = await previous.stat();
+                if (!metadata.isFile() || metadata.dev !== pendingStage.dev || metadata.ino !== pendingStage.ino
+                  || metadata.nlink !== 1 || metadata.uid !== owner.uid || (metadata.mode & 0o777) !== 0o600) {
+                  throw new Error("Google Antigravity credential staging ownership changed.");
+                }
+              } finally { await previous.close(); }
+            }
+            await rm(pendingStage.path, { force: true });
+            pendingStage = undefined;
+          };
+          // A failed removal remains this owner's obligation on the next retry.
+          await cleanupStage();
+          const readDestination = async (sync = false) => {
+            const file = await openRunnerWorkspaceFile(destination, constants.O_RDONLY);
+            const bytes = Buffer.alloc(65_537);
+            try {
+              const metadata = await file.stat();
+              if (!metadata.isFile() || metadata.nlink !== 1 || metadata.uid !== process.getuid?.() || (metadata.mode & 0o777) !== 0o600 || metadata.size > 65_536) {
+                throw new Error("Google Antigravity credential destination is invalid.");
+              }
+              let size = 0;
+              while (size < bytes.length) {
+                const result = await file.read(bytes, size, bytes.length - size, size);
+                if (!result.bytesRead) break;
+                size += result.bytesRead;
+              }
+              if (size > 65_536) throw new Error("Google Antigravity credential destination changed during execution.");
+              const current = sanitizeAntigravityCredential(bytes.subarray(0, size).toString("utf8"));
+              if (current !== input.credential && current !== refreshed) {
+                throw new Error("Google Antigravity credential destination changed during execution.");
+              }
+              if (sync) await file.sync();
+              return { metadata, current };
+            } finally { bytes.fill(0); await file.close(); }
+          };
+          const original = await readDestination();
+          if (original.current === refreshed) {
+            // A previous rename may have committed before its directory fsync
+            // or close failed. Confirm exactly that generation before cleanup.
+            const synced = await readDestination(true);
+            await directory.sync();
+            await assertDirectoryOwner();
+            const confirmed = await readDestination();
+            if (synced.current !== refreshed || confirmed.current !== refreshed || confirmed.metadata.dev !== original.metadata.dev
+              || confirmed.metadata.ino !== original.metadata.ino || confirmed.metadata.mtimeMs !== original.metadata.mtimeMs
+              || confirmed.metadata.ctimeMs !== original.metadata.ctimeMs) {
+              throw new Error("Google Antigravity credential destination changed during execution.");
+            }
+            return;
+          }
+          staged = await openRunnerWorkspaceFile(stagedPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+          stagedOwned = true;
+          pendingStage = { path: stagedPath, directoryDev: owner.dev, directoryIno: owner.ino };
+          const created = await staged.stat();
+          pendingStage.dev = created.dev; pendingStage.ino = created.ino;
+          const replacement = Buffer.from(refreshed);
+          let stagedMetadata;
+          try {
+            let written = 0;
+            while (written < replacement.length) {
+              const result = await staged.write(replacement, written, replacement.length - written, written);
+              if (!result.bytesWritten) throw new Error("Google Antigravity credential copy-back failed.");
+              written += result.bytesWritten;
+            }
+            await staged.sync();
+            stagedMetadata = await staged.stat();
+            if (!stagedMetadata.isFile() || stagedMetadata.nlink !== 1 || stagedMetadata.uid !== owner.uid
+              || (stagedMetadata.mode & 0o777) !== 0o600 || stagedMetadata.size !== replacement.length) {
+              throw new Error("Google Antigravity credential staging file is invalid.");
+            }
+          } finally { replacement.fill(0); }
+          await staged.close();
+          staged = undefined;
+          await assertDirectoryOwner();
+          const current = await readDestination();
+          if (current.current !== original.current || current.metadata.dev !== original.metadata.dev || current.metadata.ino !== original.metadata.ino
+            || current.metadata.mtimeMs !== original.metadata.mtimeMs || current.metadata.ctimeMs !== original.metadata.ctimeMs) {
+            throw new Error("Google Antigravity credential destination changed during execution.");
+          }
+          // Never truncate the selected token. Publish only the fully synced
+          // private same-directory file, then make its directory entry durable.
+          await rename(stagedPath, destination);
+          await directory.sync();
+          await assertDirectoryOwner();
+          const published = await readDestination();
+          if (published.current !== refreshed || published.metadata.dev !== stagedMetadata.dev || published.metadata.ino !== stagedMetadata.ino) {
+            throw new Error("Google Antigravity credential destination changed during execution.");
+          }
+        } finally {
+          try {
+            if (stagedOwned) await cleanupStage?.();
+          } finally {
+            try { await staged?.close(); } finally { await directory.close(); }
+          }
         }
-        const bytes = Buffer.alloc(65_537);
-        let size = 0;
-        while (size < bytes.length) {
-          const result = await file.read(bytes, size, bytes.length - size, size);
-          if (!result.bytesRead) break;
-          size += result.bytesRead;
-        }
-        if (size > 65_536) throw new Error("Google Antigravity credential destination changed during execution.");
-        const current = sanitizeAntigravityCredential(bytes.subarray(0, size).toString("utf8"));
-        if (current !== input.credential && current !== refreshed) {
-          throw new Error("Google Antigravity credential destination changed during execution.");
-        }
-        // A prior write can succeed before fsync/close reports failure. Only
-        // the exact same refresh may confirm that handoff on retry.
-        if (current === refreshed) { await file.sync(); return; }
-        const replacement = Buffer.from(refreshed);
-        let written = 0;
-        while (written < replacement.length) {
-          const result = await file.write(replacement, written, replacement.length - written, written);
-          if (!result.bytesWritten) throw new Error("Google Antigravity credential copy-back failed.");
-          written += result.bytesWritten;
-        }
-        await file.truncate(replacement.length);
-        await file.sync();
-      } finally { await file.close(); }
+      });
     },
     remove: async () => {
       const directory = await openRunnerWorkspaceFile(runtimeDirectory, constants.O_RDONLY | constants.O_DIRECTORY)

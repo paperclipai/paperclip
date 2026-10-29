@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiConnectionLoginIntent } from "@paperclipai/shared";
 import type { LocalBrowserLoginState } from "../services/local-ai-browser-login.js";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const mocks = vi.hoisted(() => ({ root: vi.fn(), browser: vi.fn(), credential: vi.fn(), save: vi.fn(), notify: vi.fn(), activity: vi.fn() }));
 vi.mock("../home-paths.js", () => ({ resolvePaperclipInstanceRoot: mocks.root }));
@@ -29,29 +30,46 @@ function database() {
     expiredSessions: undefined as Record<string, any>[] | undefined,
     expiredReads: [] as Record<string, any>[],
     activeTransactions: 0,
+    peakTransactions: 0,
     get session() { return session; },
     async transaction(run: (tx: unknown) => unknown) {
       db.activeTransactions += 1;
+      db.peakTransactions = Math.max(db.peakTransactions, db.activeTransactions);
       try { return await run(db); }
       finally { db.activeTransactions -= 1; }
     },
     async execute() {},
     select(fields?: unknown) {
       let values: unknown[];
-      if (fields && db.expiredSessions) {
-        db.expiredReads = [...db.expiredSessions];
-        values = db.expiredSessions.map((row: Record<string, any>) => ({ id: row.id }));
+      let tableRows = false;
+      if ((fields && db.expiredSessions) || db.expiryTable) {
+        tableRows = true;
+        values = [...db.expiredSessions];
       } else if (db.expiredReads.length) values = [db.expiredReads.shift()];
       else {
         if (!selections.length) throw new Error("Unexpected test database selection");
         values = selections.shift()!;
       }
-      const result: any = { from: () => result, where: () => result, for: () => result, orderBy: () => result, limit: () => result,
-        then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(values).then(resolve, reject) };
+      const result: any = { from: () => result, where: (condition: any) => {
+        if (tableRows) {
+          const query = new PgDialect().sqlToQuery(condition);
+          const excluded = query.sql.includes("not in") ? query.params.filter(value => typeof value === "string" && value !== "local_subscription") : [];
+          if (fields) values = values.filter((row: any) => row.expiresAt && !excluded.includes(row.id));
+          else values = values.filter((row: any) => query.params.includes(row.id));
+          if (query.sql.includes(" <= ")) values = values.filter((row: any) => row.expiresAt <= new Date());
+        }
+        return result;
+      }, for: () => result, orderBy: () => result, limit: (count: number) => { values = values.slice(0, count); return result; },
+        then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(tableRows && fields
+          ? values.map((row: any) => (fields as any).at ? { at: row.expiresAt } : { id: row.id }) : values).then(resolve, reject) };
       return result;
     },
     insert() { return { async values(value: Record<string, unknown>) { session = { ...value, createdAt: new Date() }; } }; },
-    update() { return { set(value: Record<string, unknown>) { return { async where() { Object.assign(session, value); } }; } }; },
+    update() { return { set(value: Record<string, unknown>) { return { async where(condition: any) {
+      const params = new PgDialect().sqlToQuery(condition).params;
+      const target = db.expiredSessions?.find((row: any) => params.includes(row.id)) ?? session;
+      Object.assign(target, value);
+    } }; } }; },
   };
   return db;
 }
@@ -160,6 +178,64 @@ describe("Google local sign-in service admission", () => {
     } finally { f.release(); release(); await reaping; }
     await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(access(join(f.home, "..", second.sessionId))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("bounds an expiry sweep and wakes the same worker only when retained physical retirement settles", async () => {
+    const f = await fixture(), original = f.db.session;
+    original.expiresAt = new Date(Date.now() - 1);
+    const originalExpiry = original.expiresAt;
+    f.db.expiredSessions = [original];
+    f.db.expiryTable = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let settled = false;
+    const reaping = f.service.reapExpired().then(() => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(f.browser.abort).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(settled).toBe(true);
+      expect(original.status).toBe("waiting_for_user");
+      expect(original.expiresAt).toBe(originalExpiry);
+      expect(f.db.activeTransactions).toBe(0);
+      await expect(access(f.home)).resolves.toBeUndefined();
+      const wake = vi.fn(), otherWake = vi.fn();
+      const unsubscribe = f.service.subscribeCleanupReady(wake);
+      const unsubscribeOther = localAiLoginService(database()).subscribeCleanupReady(otherWake);
+      try {
+        // Pending physical ownership has no retry deadline or recurring SQL.
+        expect(await f.service.nextCleanupAt()).toBeNull();
+        const later = { ...original, id: "later-expired-attempt", expiresAt: new Date(Date.now() - 1) };
+        f.db.expiredSessions.push(later);
+        await mkdir(join(f.home, "..", later.id), { mode: 0o700 });
+        await f.service.reapExpired();
+        expect(later.status).toBe("timed_out");
+        expect(original.status).toBe("waiting_for_user");
+        expect(wake).not.toHaveBeenCalled();
+        expect(await f.service.nextCleanupAt()).toBeNull();
+        f.release();
+        await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
+        expect(otherWake).not.toHaveBeenCalled();
+        expect(await f.service.nextCleanupAt()).toBe(originalExpiry.getTime());
+        await f.service.reapExpired();
+        expect(original.status).toBe("timed_out");
+        await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await f.service.nextCleanupAt()).toBeNull();
+      } finally { unsubscribe(); unsubscribeOther(); }
+    } finally { f.release(); await reaping; }
+  });
+
+  it("limits concurrent expiry cleanup transactions within a batch", async () => {
+    const f = await fixture();
+    f.release();
+    const sessions = Array.from({ length: 16 }, (_, index) => ({ ...f.db.session,
+      id: index ? `bounded-expiry-${index}` : f.attempt.sessionId, expiresAt: new Date(Date.now() - 1),
+    }));
+    await Promise.all(sessions.slice(1).map(session => mkdir(join(f.home, "..", session.id), { mode: 0o700 })));
+    f.db.expiredSessions = sessions;
+    f.db.expiryTable = true;
+    await f.service.reapExpired();
+    expect(sessions.every(session => session.status === "timed_out" && session.expiresAt === null)).toBe(true);
+    expect(f.db.peakTransactions).toBeLessThanOrEqual(4);
+    expect(await f.service.nextCleanupAt()).toBeNull();
   });
 
   it.each(["cancel", "restart"] as const)("bounds %s without holding a transaction and keeps the claim for maintenance", async action => {

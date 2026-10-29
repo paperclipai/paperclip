@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
-import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, environments, type Db } from "@paperclipai/db";
+import { and, eq, inArray, isNotNull, lte, notInArray, sql } from "drizzle-orm";
+import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, databaseWorkScopeKey, environments, type Db } from "@paperclipai/db";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -19,6 +19,8 @@ const LOCAL_LOGIN_METHOD = "local_subscription";
 const ATTEMPT_DURATION_MS = 30 * 60 * 1000;
 const BROWSER_STOP_WAIT_MS = 5_000;
 const RETIREMENT_PENDING = "local_login_retirement_pending";
+const CLEANUP_BATCH_SIZE = 16;
+const CLEANUP_CONCURRENCY = 4;
 function loginHome(id: string) {
   const root = resolvePaperclipInstanceRoot();
   // macOS exposes /var through a system symlink to /private/var. Credential
@@ -55,17 +57,54 @@ function sameTarget(a: AiConnectionLoginIntent, b: AiConnectionLoginIntent) {
 // shared so status polling and code submission can reach the original process.
 const browserLogins = new Map<string, LocalBrowserLoginState>();
 const browserRetirements = new Map<string, Promise<void>>();
-registerIdleLocalWorkProbe(() => browserRetirements.size ? "present" : "none");
+const deferredRetirements = new Map<string, { scope: object; retirement: Promise<void>; ready: boolean }>();
+const cleanupReadyListeners = new WeakMap<object, Set<() => void>>();
+registerIdleLocalWorkProbe(() => browserRetirements.size || deferredRetirements.size ? "present" : "none");
 
 /** Local sign-ins share the durable attempt/credential lifecycle, but never seed
  * their home from the operator's rotating CLI credential. */
 export function localAiLoginService(db: Db) {
+  const scope = databaseWorkScopeKey(db);
+  function retirementReady(id: string) {
+    const retained = deferredRetirements.get(id);
+    if (!retained || retained.scope !== scope || retained.ready) return;
+    retained.ready = true;
+    for (const wake of cleanupReadyListeners.get(scope) ?? []) {
+      try { wake(); } catch { process.emitWarning("Local sign-in cleanup wake failed"); }
+    }
+  }
+  function retainRetirement(id: string, retirement: Promise<void>) {
+    if (deferredRetirements.get(id)?.retirement === retirement) return;
+    const retained = { scope, retirement, ready: false };
+    deferredRetirements.set(id, retained);
+    void retirement.then(() => {
+      if (deferredRetirements.get(id) === retained) retirementReady(id);
+    }, () => { /* Failed proof stays owned until an explicit retry succeeds. */ });
+  }
+  function subscribeCleanupReady(wake: () => void) {
+    let listeners = cleanupReadyListeners.get(scope);
+    if (!listeners) cleanupReadyListeners.set(scope, listeners = new Set());
+    listeners.add(wake);
+    return () => { listeners.delete(wake); };
+  }
+  function waitingRetirementIds() {
+    return [...deferredRetirements].filter(([, owner]) => owner.scope === scope && !owner.ready).map(([id]) => id);
+  }
+  async function nextCleanupAt() {
+    const waiting = waitingRetirementIds();
+    const rows = await db.select({ at: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(
+      eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD), isNotNull(adapterAuthSessions.expiresAt),
+      waiting.length ? notInArray(adapterAuthSessions.id, waiting) : undefined,
+    )).orderBy(adapterAuthSessions.expiresAt).limit(1);
+    return rows[0]?.at?.getTime() ?? null;
+  }
   function stopBrowserLogin(id: string): Promise<void> {
     const pending = browserRetirements.get(id);
     if (pending) return pending;
     const owner = browserLogins.get(id);
     const retirement = Promise.resolve().then(() => owner?.abort()).then(() => {
       if (browserLogins.get(id) === owner) browserLogins.delete(id);
+      retirementReady(id);
     });
     browserRetirements.set(id, retirement);
     const release = () => { if (browserRetirements.get(id) === retirement) browserRetirements.delete(id); };
@@ -74,11 +113,13 @@ export function localAiLoginService(db: Db) {
   }
   async function retireOwnedAttempt(companyId: string, userId: string, id: string, managementContext?: ConnectionManagementContext) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    const retirement = stopBrowserLogin(id);
     try {
-      await Promise.race([stopBrowserLogin(id), new Promise<never>((_resolve, reject) => {
+      await Promise.race([retirement, new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error(RETIREMENT_PENDING)), BROWSER_STOP_WAIT_MS);
       })]);
     } catch {
+      retainRetirement(id, retirement);
       // Keep the active claim and private home. The existing expiry worker may
       // join the original retirement without holding a database transaction.
       await db.transaction(async tx => {
@@ -88,7 +129,9 @@ export function localAiLoginService(db: Db) {
         )).for("update");
         if (!session) return;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.localLoginCleanup);
-        await tx.update(adapterAuthSessions).set({ expiresAt: new Date(), failureReason: RETIREMENT_PENDING, updatedAt: new Date() })
+        const now = new Date();
+        await tx.update(adapterAuthSessions).set({ expiresAt: session.expiresAt && session.expiresAt < now ? session.expiresAt : now,
+          failureReason: RETIREMENT_PENDING, updatedAt: now })
           .where(eq(adapterAuthSessions.id, id));
         await logActivity(tx as unknown as Db, {
           companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
@@ -104,27 +147,49 @@ export function localAiLoginService(db: Db) {
     browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
   }
   async function reapExpired() {
-    // Bounded batches use the existing expires-at index. Replaying is safe.
+    // Waiting native owners have a completion wake, not a retry deadline. The
+    // durable expiry remains unchanged and reconstructs cleanup after restart.
+    const waiting = waitingRetirementIds();
     const rows = await db.select({ id: adapterAuthSessions.id }).from(adapterAuthSessions)
       .where(and(eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
-        lte(adapterAuthSessions.expiresAt, new Date())))
-      .orderBy(adapterAuthSessions.expiresAt).limit(100);
-    await Promise.all(rows.map(async row => {
-      // Physical retirement can remain pending. It must not hold a row lock
-      // or prevent other expired attempts in this bounded batch from settling.
-      await stopBrowserLogin(row.id);
+        lte(adapterAuthSessions.expiresAt, new Date()), waiting.length ? notInArray(adapterAuthSessions.id, waiting) : undefined))
+      .orderBy(adapterAuthSessions.expiresAt).limit(CLEANUP_BATCH_SIZE);
+    // Include completed owners even if a prior cleanup committed but its reply
+    // was lost. Only a durable read may release that uncertain obligation.
+    const ready = [...deferredRetirements].filter(([, owner]) => owner.scope === scope && owner.ready).map(([id]) => id);
+    const ids = [...new Set([...ready.slice(0, CLEANUP_BATCH_SIZE), ...rows.map(row => row.id)])];
+    if (!ids.length) return;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), BROWSER_STOP_WAIT_MS); });
+    async function cleanup(id: string) {
+      const retirement = stopBrowserLogin(id);
+      const retired = await Promise.race([retirement.then(() => true, () => false), budget]);
+      if (!retired) { retainRetirement(id, retirement); return; }
       await db.transaction(async (tx) => {
         const [session] = await tx.select().from(adapterAuthSessions)
-          .where(eq(adapterAuthSessions.id, row.id)).for("update");
-        if (!session || !session.expiresAt || session.expiresAt.getTime() > Date.now()) return;
-        await rm(loginHome(row.id), { recursive: true, force: true });
+          .where(eq(adapterAuthSessions.id, id)).for("update");
+        if (!session || session.connectionMethod !== LOCAL_LOGIN_METHOD || !session.expiresAt) {
+          deferredRetirements.delete(id);
+          return;
+        }
+        if (session.expiresAt.getTime() > Date.now()) return;
+        await rm(loginHome(id), { recursive: true, force: true });
         await tx.update(adapterAuthSessions).set({
           status: session.connectionId ? "authenticated" : session.failureReason === RETIREMENT_PENDING ? "cancelled" : "timed_out",
           failureReason: null,
           expiresAt: null, finishedAt: session.finishedAt ?? new Date(), updatedAt: new Date(),
-        }).where(eq(adapterAuthSessions.id, row.id));
+        }).where(eq(adapterAuthSessions.id, id));
       });
-    }));
+      deferredRetirements.delete(id);
+    }
+    try {
+      const failures: unknown[] = [];
+      for (let offset = 0; offset < ids.length; offset += CLEANUP_CONCURRENCY) {
+        const results = await Promise.allSettled(ids.slice(offset, offset + CLEANUP_CONCURRENCY).map(cleanup));
+        for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+      }
+      if (failures.length) throw new AggregateError(failures, "Local sign-in expiry cleanup failed");
+    } finally { clearTimeout(timeout); }
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false, managementContext?: ConnectionManagementContext): Promise<LocalAiLoginAttempt> {
@@ -199,6 +264,7 @@ export function localAiLoginService(db: Db) {
       }
       return presentAttempt(id, expiresAt, intent.provider);
     });
+    if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
     ensureBrowserLogin(attempt.sessionId, intent.provider);
     return attempt;
   }
@@ -294,6 +360,7 @@ export function localAiLoginService(db: Db) {
     // Failed cleanup can be retried by the same completed attempt or reaper.
     await stopBrowserLogin(id);
     await rm(loginHome(id), { recursive: true, force: true });
+    deferredRetirements.delete(id);
     return result;
   }
 
@@ -324,6 +391,7 @@ export function localAiLoginService(db: Db) {
         });
       }
     });
+    deferredRetirements.delete(id);
   }
-  return { start, check, submitCode, complete, cancel, reapExpired };
+  return { start, check, submitCode, complete, cancel, reapExpired, nextCleanupAt, subscribeCleanupReady };
 }
