@@ -49,6 +49,7 @@ import {
   writeImportTransferPart,
 } from "../services/company-import-transfers.js";
 import { companyTransferRunService } from "../services/company-transfer-runs.js";
+import { filterStaffCompanyIds } from "../services/company-member-roles.js";
 import { agentInstructionsBundleMode } from "../services/agent-instructions.js";
 import { resolvePortableExportAgentSelection } from "../services/company-portability-agent-selection.js";
 import {
@@ -401,9 +402,13 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
 
   router.get("/stats", async (req, res) => {
     assertBoard(req);
+    // Counts of agents and issues are a read of the company's work, so a
+    // client membership must not widen this scope. The company list above is
+    // deliberately role-blind (a client has to see the company it belongs to);
+    // this route is not, because it reports what is inside the company.
     const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
       ? null
-      : new Set(req.actor.companyIds ?? []);
+      : new Set(filterStaffCompanyIds(req.actor.companyIds, req.actor.memberships));
     const stats = await svc.stats();
     if (!allowed) {
       res.json(stats);
