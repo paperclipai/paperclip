@@ -216,6 +216,27 @@ This starts:
 
 `pnpm dev` runs the server in watch mode and restarts on changes from workspace packages (including adapter packages). Use `pnpm dev:once` to run without file watching.
 
+In `local_trusted` mode, server startup prepares the signing secret used for
+agent run credentials. Existing `PAPERCLIP_AGENT_JWT_SECRET` or `BETTER_AUTH_SECRET`
+values are reused. If neither exists, Paperclip generates a secret and saves it
+to the `.env` beside the active instance config with owner-only permissions.
+This also covers direct server starts that do not run CLI onboarding. Back up
+the instance `.env`; the signing secret must stay stable across restarts.
+
+`local_trusted` trusts the local OS account and its processes. Owner-only file
+permissions protect the secret from other OS users, not same-user provider
+processes. Local requests without bearer credentials already have implicit Board
+access in this mode. Isolating agents from the control plane requires separate
+OS identities or sandboxed runtimes; this bootstrap does not create that boundary.
+
+If the generated secret cannot be saved, startup stops with a configuration
+error instead of using a temporary secret. Check the instance directory's
+permissions, or provide `PAPERCLIP_AGENT_JWT_SECRET` through the server environment.
+A local adapter that still cannot obtain run credentials fails before provider
+execution and records a configuration blocker. Repair the server configuration,
+restart it, and retry the task. Native tool-authenticated runtimes do not require
+the legacy run JWT. Authenticated deployments keep their existing secret setup.
+
 `pnpm dev:once` auto-applies pending local migrations by default before starting the dev server.
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.

@@ -810,6 +810,56 @@ describe("startServer feedback export wiring", () => {
     expect(idleWorkSnapshot().active).toBe(before);
   });
 
+  async function withUnconfiguredJwtInstance(work: (envPath: string) => Promise<void>) {
+    const keys = ["PAPERCLIP_CONFIG", "PAPERCLIP_AGENT_JWT_SECRET", "BETTER_AUTH_SECRET"] as const;
+    const previous = keys.map(key => process.env[key]);
+    const directory = mkdtempSync(path.join(tmpdir(), "paperclip-startup-jwt-"));
+    const envPath = path.join(directory, ".env");
+    process.env.PAPERCLIP_CONFIG = path.join(directory, "config.json");
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.BETTER_AUTH_SECRET;
+    try { await work(envPath); }
+    finally {
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it("persists local run signing credentials before opening the database or starting recovery", async () => {
+    await withUnconfiguredJwtInstance(async envPath => {
+      loadConfigMock.mockReturnValue(buildTestConfig({ deploymentMode: "local_trusted" }));
+      createDbMock.mockImplementationOnce(() => {
+        expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toMatch(/^[0-9a-f]{64}$/);
+        expect(readFileSync(envPath, "utf8")).toContain(process.env.PAPERCLIP_AGENT_JWT_SECRET!);
+        throw new Error("fixture reached database after JWT bootstrap");
+      });
+      await expect(startServer()).rejects.toThrow("fixture reached database after JWT bootstrap");
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("refuses local startup before database access when the signing secret cannot be saved", async () => {
+    await withUnconfiguredJwtInstance(async envPath => {
+      loadConfigMock.mockReturnValue(buildTestConfig({ deploymentMode: "local_trusted" }));
+      mkdirSync(envPath);
+      await expect(startServer()).rejects.toThrow("Cannot initialize the agent JWT signing secret");
+      expect(createDbMock).not.toHaveBeenCalled();
+      expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+    });
+  });
+
+  it("leaves authenticated deployment credentials under the existing configuration policy", async () => {
+    await withUnconfiguredJwtInstance(async envPath => {
+      createDbMock.mockImplementationOnce(() => { throw new Error("fixture reached authenticated database"); });
+      await expect(startServer()).rejects.toThrow("fixture reached authenticated database");
+      expect(existsSync(envPath)).toBe(false);
+      expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+    });
+  });
+
   it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {
     const originalHome = process.env.PAPERCLIP_HOME;
     const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
