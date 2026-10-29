@@ -1,6 +1,14 @@
 import type { Page } from "@playwright/test";
 type Row = Record<string, any>;
 
+/** Work emitted by a retired turn, excluding accounting and control-plane bookkeeping. */
+export function nativeWorkEvents<T extends Row>(events: T[]): T[] {
+  return events.filter(row => {
+    const kind = row.payload?.prpEvent?.eventType;
+    return typeof kind === "string" && /^(tool\.execution\.|turn\.|message\.|item\.)/.test(kind);
+  });
+}
+
 /** Shared story order; target adapters supply authoritative retirement observations. */
 export async function stopAndRedirectThroughUi(input: {
   page: Page; nonce: string;

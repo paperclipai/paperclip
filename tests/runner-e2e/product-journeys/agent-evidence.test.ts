@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAgentTaskState } from "./agent-flows.js";
-import { nativeStopAcknowledged } from "../stop-redirect-flow.js";
+import { nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { parseTargetConfig } from "./catalog.js";
 import type { JourneyContext } from "./types.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -15,6 +15,12 @@ function state() {
     comments: [], interactions: [], attachments: [] };
 }
 describe("deployed agent journey evidence", () => {
+  it.each(["tool.execution.started", "turn.started", "message.delta", "item.delta", "item.completed"])("rejects a quiet-Stop claim when the retired turn emits %s", eventType => {
+    const event = (type: string) => ({ id: type, payload: { prpEvent: { eventType: type, payload: { text: "old turn kept writing" } } } });
+    const before = [event("turn.cancelled")];
+    expect(nativeWorkEvents([...before, event(eventType)])).not.toEqual(nativeWorkEvents(before));
+    expect(nativeWorkEvents([...before, event("usage.reported")])).toEqual(nativeWorkEvents(before));
+  });
   it("accepts bound native work and fails plausible passes from a different target, agent, model or task", () => {
     expect(() => validateAgentTaskState(context, "owned-task", state(), 3)).not.toThrow();
     const substitutions = [

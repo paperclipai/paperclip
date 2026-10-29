@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
-import { nativeStopAcknowledged, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
+import { nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
 import { runnerTasks } from "../catalog.js";
 import { everydayTasks, SLUGIFY_REQUIREMENTS, SLUGIFY_REVISION } from "../everyday-cases.js";
 import { latestStoryDelivery, type StoryDelivery } from "../everyday-delivery.js";
@@ -192,11 +192,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await retain("stop-before.json", state);
     await open(issue);
     cancelled.push(original.id);
-    const runActivity = async () => (await collectRunEvents<Row>((afterSeq, limit) =>
-      context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`))).filter(row => {
-        const kind = row.payload?.prpEvent?.eventType;
-        return typeof kind === "string" && /^(tool\.execution\.|turn\.|message\.)/.test(kind);
-      });
+    const runActivity = async () => nativeWorkEvents(await collectRunEvents<Row>((afterSeq, limit) =>
+      context.api.get(`/api/heartbeat-runs/${original.id}/events?afterSeq=${afterSeq}&limit=${limit}`)));
     let beforeEvents: Row[];
     const redirected = await stopAndRedirectThroughUi({ page: context.page, nonce,
       awaitRetirement: async () => {
