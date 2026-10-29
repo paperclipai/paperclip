@@ -16,11 +16,13 @@ export async function openAntigravityAgentFromRoster(page: Page, agentName: stri
 }
 
 /** Both sidebar presentations use ordinary task links: the coordinator uses
- * the identifier and the recent-task list can retain the immutable issue ID. */
+ * the identifier and recent lists can repeat the same task or its immutable ID. */
 export async function openAntigravityCreatedTask(page: Page, issue: { id: string; identifier?: string | null }, timeout = 30_000) {
   const paths = [issue.id, issue.identifier].filter((value): value is string => Boolean(value))
     .map(value => `a[href$="/issues/${encodeURIComponent(value)}"]:visible`);
-  const task = page.locator("aside").locator(paths.join(", "));
+  // Every match is an exact alias of this captured task. Recents and expanded
+  // project lists may legitimately expose it more than once.
+  const task = page.locator("aside").locator(paths.join(", ")).first();
   await expect(task).toHaveCount(1, { timeout });
   await task.click({ timeout });
 }

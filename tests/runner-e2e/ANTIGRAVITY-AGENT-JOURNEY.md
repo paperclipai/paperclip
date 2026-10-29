@@ -146,12 +146,12 @@ script is required. Discovery and credential-free checks do no provider work:
 pnpm test:e2e:runner -- --list --suite antigravity-agent-journey
 pnpm test:e2e:runner:typecheck
 pnpm test:e2e:runner:unit
-node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/antigravity-journey-browser.smoke.ts
+pnpm test:e2e:runner:browser-support -- antigravity-journey-browser.spec.ts
 ```
 
-The explicit browser calibration uses local fixtures, including the real activity
-renderer. It checks selectors and stale UI states without an account connection,
-an agent setup or a provider run; it is separate from live qualification.
+The browser calibration is included in the canonical browser-support target and
+uses local fixtures, including the real activity renderer. It checks selectors
+and stale UI states without an account connection, an agent setup or a provider run; it is separate from live qualification.
 
 Read-only readiness validates the target revision/mode, signed-in consuming
 identity, exact personal default grant, local environment and candidate catalog.
