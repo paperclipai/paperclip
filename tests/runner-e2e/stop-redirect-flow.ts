@@ -18,16 +18,22 @@ export async function stopAndRedirectThroughUi(input: {
 }
 
 /** The native control plane must acknowledge this run's Stop, including resource release. */
-export function nativeStopAcknowledged(run: Row, companyId: string, issueId: string, userId?: string) {
+export function nativeStopAcknowledged(run: Row, companyId: string, issueId: string, userId: string) {
   const stop = run.resultJson?.nativeCancellation;
-  const startup = run.resultJson?.startupCancellation;
-  return run.runtimeMode === "native" && run.status === "cancelled" && run.companyId === companyId && run.issueId === issueId
+  const result = run.resultJson ?? {};
+  const startup = result.startupCancellation;
+  const cancellation = result.cancellation;
+  return run.runtimeMode === "native" && run.status === "cancelled" && run.companyId === companyId && (run.nativeIssueId ?? run.issueId) === issueId
     && stop?.schema === "paperclip.native-cancellation.v1" && stop.companyId === companyId
     && stop.runId === run.id && stop.issueId === issueId && stop.scope === "run" && stop.dispatched === true
     && stop.dispatchState === "acknowledged" && stop.reasonCode === "cancellation_run_only"
     && stop.effects?.length === 1 && stop.effects[0] === "release_run_resources"
     && typeof stop.intentAuditId === "string" && typeof stop.acknowledgementAuditId === "string"
     && stop.intentAuditId !== stop.acknowledgementAuditId
-    && (!userId || startup?.requestedBy?.type === "board" && startup.requestedBy.userId === userId
-      && stop.intentId === `native-cancellation:${startup.cancellationRequestId}`);
+    && /^native-cancellation:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(stop.intentId ?? "")
+    && result.cancelledByActorType === "user" && result.cancelledByUserId === userId
+    && cancellation?.source === "operator" && cancellation.expected === true
+    && cancellation.initiator?.type === "user" && cancellation.initiator.id === userId
+    && typeof startup?.requestedAt === "string" && Number.isFinite(Date.parse(startup.requestedAt))
+    && startup.beforeNativeSelection === false;
 }

@@ -46,15 +46,18 @@ describe("deployed agent journey evidence", () => {
     expect(() => parseTargetConfig({ ...config, limits: { ...config.limits, maxRuns: 1 } })).toThrow("agent_journeys_require_bounded_runs");
   });
   it("does not mistake a cancelled status or pending native intent for an acknowledged Stop", () => {
-    const run = { id: "run", companyId: "qa-company", issueId: "owned-task", status: "cancelled", runtimeMode: "native", resultJson: { nativeCancellation: {
-      schema: "paperclip.native-cancellation.v1", companyId: "qa-company", runId: "run", issueId: "owned-task", scope: "run",
+    const run = { id: "run", companyId: "qa-company", issueId: "owned-task", status: "cancelled", runtimeMode: "native", resultJson: { cancelledByActorType: "user", cancelledByUserId: "qa-user",
+      cancellation: { source: "operator", expected: true, initiator: { type: "user", id: "qa-user" } },
+      startupCancellation: { requestedAt: "2026-10-29T00:00:00Z", beforeNativeSelection: false }, nativeCancellation: {
+      schema: "paperclip.native-cancellation.v1", intentId: "native-cancellation:00000000-0000-4000-8000-000000000001", companyId: "qa-company", runId: "run", issueId: "owned-task", scope: "run",
       dispatched: true, dispatchState: "acknowledged", reasonCode: "cancellation_run_only", effects: ["release_run_resources"], intentAuditId: "intent", acknowledgementAuditId: "ack" } } };
-    expect(nativeStopAcknowledged(run, "qa-company", "owned-task")).toBe(true);
+    expect(nativeStopAcknowledged(run, "qa-company", "owned-task", "qa-user")).toBe(true);
     for (const change of [{ dispatchState: "pending" }, { runId: "other" }, { scope: "task" }, { effects: [] }, { acknowledgementAuditId: "intent" }]) {
       const changed = structuredClone(run); Object.assign(changed.resultJson.nativeCancellation, change);
-      expect(nativeStopAcknowledged(changed, "qa-company", "owned-task")).toBe(false);
+      expect(nativeStopAcknowledged(changed, "qa-company", "owned-task", "qa-user")).toBe(false);
     }
-    expect(nativeStopAcknowledged({ ...run, resultJson: {} }, "qa-company", "owned-task")).toBe(false);
+    expect(nativeStopAcknowledged(run, "qa-company", "owned-task", "other-user")).toBe(false);
+    expect(nativeStopAcknowledged({ ...run, resultJson: {} }, "qa-company", "owned-task", "qa-user")).toBe(false);
   });
   it.each(Object.keys(agentJourneyRuns))("retained %s successes require every story check and the exact run receipts", id => {
     const count = agentJourneyRuns[id as keyof typeof agentJourneyRuns];
