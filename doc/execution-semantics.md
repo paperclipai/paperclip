@@ -1379,6 +1379,14 @@ termination or saved files; the existing stop-and-save worker must establish bot
 before workspace selection can proceed. Both callers hold the task, coordinator
 and source-run locks throughout retirement and preservation registration.
 
+A settled native bootstrap failure does not keep a workspace change blocked
+solely because startup recorded `workspace_finalize=failed`. Admission requires
+an explicit no-provider-work bootstrap receipt, a finished failed run, an unowned
+terminal coordinator without a result, and no recorded provider events or process.
+A restore failure, sync descriptor, copyback owner, unfinished operation, or pending
+lease cleanup still blocks the change. This applies to next-admission selections
+and legacy binding updates. Historical failure records remain unchanged.
+
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
 lifecycle evidence. This includes retries after a provider turn omitted its
