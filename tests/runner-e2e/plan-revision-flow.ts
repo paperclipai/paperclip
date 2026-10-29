@@ -32,6 +32,7 @@ export async function runPlanRevisionAcceptance<S extends PlanState>(input: {
   issue: { id: string; identifier?: string | null }; issuePrefix: string; native: boolean;
   planMarkers: { draft: string; revised: string }; revisionRequest: string; deadlineAt: number;
   load(): Promise<S>;
+  retryOnError?: (error: unknown) => boolean;
   reject(state: { taskRuns: S["taskRuns"]; interactions: S["interactions"]; minimumRunCount: number }): string | undefined;
   capture(id: string, label: string, file: string): Promise<void>;
 }) {
@@ -40,7 +41,7 @@ export async function runPlanRevisionAcceptance<S extends PlanState>(input: {
     label: `initial plan confirmation for issue ${issue.id}`,
     deadlineAt,
     load,
-    retryOnError: () => false,
+    retryOnError: input.retryOnError,
     accept: ({ currentIssue, taskRuns, interactions }) =>
       currentIssue.status !== "done" &&
       taskRuns.length >= 1 &&
@@ -119,7 +120,7 @@ export async function runPlanRevisionAcceptance<S extends PlanState>(input: {
     label: `revised plan confirmation for issue ${issue.id}`,
     deadlineAt,
     load,
-    retryOnError: () => false,
+    retryOnError: input.retryOnError,
     accept: ({ currentIssue, taskRuns, interactions }) =>
       currentIssue.status !== "done" &&
       taskRuns.length >= 2 &&

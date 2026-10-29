@@ -111,7 +111,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const receipt = await runPlanRevisionAcceptance({ page: context.page, api: context.api, origin: context.api.origin,
       issue: { id: issue.id, identifier: issue.identifier }, issuePrefix: context.company.issuePrefix, native: true,
       planMarkers: fixture.buildPlanMarkers!(nonce), revisionRequest: fixture.buildRevisionRequest!(nonce), deadlineAt: options.deadlineAt,
-      load: () => read(issue), reject: () => undefined, capture: options.capture });
+      load: () => read(issue), retryOnError: error => !(error instanceof JourneyError), reject: () => undefined, capture: options.capture });
     await retain("plan-revision.json", receipt);
     const final = await settled(issue, 3);
     const marker = fixture.buildVisibleMarker(nonce);

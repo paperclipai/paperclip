@@ -5,7 +5,7 @@ import { ConnectionApi } from "./connection-target.js";
 afterEach(() => vi.unstubAllGlobals());
 it("uses same-origin session cookies without sending fixture credentials through the traced request transport", async () => {
   const cookie = (domain: string, path = "/") => ({ name: domain, value: "session", domain, path, expires: -1, secure: true });
-  const request = { storageState: vi.fn(async () => ({ cookies: [cookie("qa.example.test"), cookie("other.example.test"), cookie("qa.example.test", "/other")] })),
+  const request = { storageState: vi.fn(async () => ({ cookies: [cookie("qa.example.test"), cookie("other.example.test"), cookie("qa.example.test", "/other"), cookie("qa.example.test", "/api/company")] })),
     fetch: vi.fn(() => { throw new Error("Sensitive body reached the traced transport"); }) };
   const send = vi.fn(async (_url: URL, options: RequestInit) => {
     expect(options.redirect).toBe("error");
@@ -20,6 +20,16 @@ it("uses same-origin session cookies without sending fixture credentials through
   await expect(api.postSensitive("https://other.example.test/api/key", {})).rejects.toThrow("invalid_api_route");
   await expect(api.postSensitive("/login", {})).rejects.toThrow("invalid_api_route");
   expect(send).toHaveBeenCalledTimes(1);
+});
+it.each(["/api/companies", "/api/companies/", "/api/companies/owned/tools/apps/connect"])("sends a cookie scoped to the exact path or a containing directory: %s", async (path) => {
+  const request = { storageState: async () => ({ cookies: [{ name: "scoped", value: "session", domain: "qa.example.test", path, expires: -1, secure: true }] }) } as unknown as APIRequestContext;
+  const send = vi.fn(async (_url: URL, options: RequestInit) => {
+    expect(options.headers).toMatchObject({ Cookie: "scoped=session" });
+    return Response.json({ id: "owned" });
+  });
+  vi.stubGlobal("fetch", send);
+  await new ConnectionApi(request, "https://qa.example.test").postSensitive("/api/companies/owned/tools/apps/connect", {});
+  expect(send).toHaveBeenCalledOnce();
 });
 it("withholds provider bodies and thrown transport details on sensitive failures", async () => {
   const request = { storageState: async () => ({ cookies: [] }) } as unknown as APIRequestContext;

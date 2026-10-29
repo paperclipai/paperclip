@@ -40,7 +40,8 @@ export class ConnectionApi {
     if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
     const { cookies } = await this.request.storageState();
     const cookie = cookies.filter(c => (target.hostname === c.domain || c.domain.startsWith(".") && target.hostname.endsWith(c.domain))
-      && target.pathname.startsWith(c.path) && (!c.secure || target.protocol === "https:")
+      && (target.pathname === c.path || target.pathname.startsWith(c.path.endsWith("/") ? c.path : `${c.path}/`))
+      && (!c.secure || target.protocol === "https:")
       && (c.expires === -1 || c.expires * 1000 > Date.now())).map(c => `${c.name}=${c.value}`).join("; ");
     try {
       const response = await fetch(target, { method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
