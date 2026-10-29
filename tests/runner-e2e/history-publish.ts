@@ -121,7 +121,7 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
 }
 
 export function assertPublicCampaign(campaign: Pick<RunnerE2ECampaign, "results">) {
-  if (campaign.results.some(result => result.productJourney?.privacy === "private")) {
+  if (campaign.results.some(result => result.productJourney?.privacy === "private" || result.antigravityJourney?.privacy === "private")) {
     throw new Error("Private Product E2E campaigns cannot enter the public history publisher");
   }
 }

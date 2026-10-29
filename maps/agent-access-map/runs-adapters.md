@@ -123,6 +123,12 @@ Policy: Environment tests follow agent creation/configuration authority. Support
 managed-account login initiation follows `model-accounts` below; human codes and
 consent, raw host login and adapter installation retain their specific gates.
 
+The board-driven [Antigravity saved-subscription journey](../../tests/runner-e2e/ANTIGRAVITY-AGENT-JOURNEY.md)
+uses this ordinary environment Test after selecting the same signed-in owner's
+saved personal Google grant. It also verifies actual task outputs and native
+settlement independently. This does not establish agent-authored environment
+validation, fresh provider consent or access under another owner's grant.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
 

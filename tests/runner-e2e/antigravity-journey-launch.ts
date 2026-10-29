@@ -1,0 +1,191 @@
+import { createHash, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
+import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, loadAntigravityJourneyConfig } from "./antigravity-journey-config.js";
+import { gradeAntigravityJourney, type AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
+import { cleanupAntigravityJourney, observeAntigravityRun, parseAntigravityOwnedResources, prepareAntigravityJourney, type AntigravityJourneyResources, type AntigravityProcessObservers } from "./antigravity-journey-fixtures.js";
+import { runAntigravityJourneyFlow } from "./antigravity-journey-flow.js";
+import { writeAntigravityJourneyReport } from "./antigravity-journey-report.js";
+import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
+import { ConnectionBlock, ConnectionFailure, assertPrivateFile } from "./connection-config.js";
+import { openConnectionBrowser, withConnectionCampaignCancellation } from "./connection-launch.js";
+import { ConnectionApi, connectionDelay, verifyConnectionTarget } from "./connection-target.js";
+import { FixtureRegistry } from "./fixture-registry.js";
+import { assertSecretFree, sanitizeJson } from "./redaction.js";
+import type { MatrixExecution, RunnerE2EResult } from "./types.js";
+
+type Row = Record<string, any>;
+async function sourceProvenance(repositoryRoot: string, suiteDefinitionHash: string) {
+  const git = (args: string[]) => execFileSync("git", args, { cwd: repositoryRoot, maxBuffer: 64 * 1024 * 1024 });
+  const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"]).toString("utf8").split("\0").filter(Boolean)
+    .filter(file => /^(?:packages|server|ui|cli|tests|doc|maps|rules)\//.test(file) && /\.(?:md|ts|tsx|js|mjs|cjs|json|toml|rs|yaml|yml|sh|py|sql|css|html)$/.test(file)).sort();
+  const hash = createHash("sha256"); let count = 0;
+  for (const file of untracked) {
+    const absolute = path.resolve(repositoryRoot, file);
+    if (!absolute.startsWith(`${path.resolve(repositoryRoot)}${path.sep}`)) throw new ConnectionFailure("unsafe_source_provenance_path");
+    const stat = await lstat(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw new ConnectionFailure("untracked_source_provenance_unavailable");
+    hash.update(file).update("\0").update(await readFile(absolute)).update("\0"); count++;
+  }
+  return { head: git(["rev-parse", "HEAD"]).toString("utf8").trim(), trackedDiffSha256: createHash("sha256").update(git(["diff", "--binary", "HEAD"])).digest("hex"),
+    untrackedSourceSha256: hash.digest("hex"), untrackedSourceFileCount: count, suiteDefinitionHash, dirty: git(["status", "--porcelain"]).length > 0 };
+}
+export async function runAntigravityJourneyCampaign(input: {
+  executions: readonly MatrixExecution[]; catalog: readonly MatrixExecution[]; configFile?: string; repositoryRoot: string;
+  preflight?: boolean; recoverFile?: string;
+}) {
+  if (input.executions.length !== 1 || input.executions[0]!.id !== ANTIGRAVITY_JOURNEY_EXECUTION)
+    throw new ConnectionFailure("Select exactly the registered Antigravity journey cell separately");
+  if (process.env.PAPERCLIP_E2E_OPERATIONS_MANIFEST) throw new ConnectionFailure("Antigravity journey has no budgeted routing qualification");
+  if (input.preflight && input.recoverFile) throw new ConnectionFailure("Preflight and recovery are separate operations");
+  const config = await loadAntigravityJourneyConfig(input.configFile);
+  return withConnectionCampaignCancellation(async campaignSignal => {
+    const execution = input.executions[0]!;
+    const startedAt = new Date().toISOString(), nonce = randomBytes(6).toString("hex");
+    const campaignId = `antigravity-journey-${startedAt.replace(/[:.]/g, "-")}-${nonce}`;
+    const output = path.join(input.repositoryRoot, "tests/runner-e2e/results", campaignId);
+    await mkdir(output, { recursive: true, mode: 0o700 });
+    const provenance = await sourceProvenance(input.repositoryRoot, execution.suiteDefinitionHash);
+    const save = async (name: string, value: unknown) => {
+      const text = JSON.stringify(sanitizeJson(value, []), null, 2) + "\n";
+      assertSecretFree(text, [], name); await writeFile(path.join(output, name), text, { mode: 0o600 });
+    };
+    const deadline = new AbortController(), signal = AbortSignal.any([campaignSignal, deadline.signal]);
+    const timer = setTimeout(() => deadline.abort(), config.limits.durationMs);
+    const evidence: AntigravityJourneyEvidence = { version: 1, setupId: config.setupId, hosting: "self-hosted", targetCommit: null,
+      phase: "configuration", outcome: "running", assisted: false, privacy: "private", authentication: "saved-subscription", model: ANTIGRAVITY_JOURNEY_MODEL,
+      companyId: config.target.companyId, connectionId: config.savedConnection.id, checkpoints: {}, turnEvidence: [],
+      cleanup: { agent: true, runs: true, connectionPreserved: false } };
+    const resources: AntigravityJourneyResources = { version: 1, executionId: execution.id, origin: config.target.baseURL,
+      companyId: config.target.companyId, environmentId: config.target.environmentId, connectionId: config.savedConnection.id,
+      agentName: `Antigravity QA ${nonce}`, runIds: [], retained: false, setupProbe: "not_started", processes: {}, sourceProvenance: provenance };
+    const result: RunnerE2EResult = { schema: "paperclip.runner-e2e.result/v2", executionId: execution.id, suiteId: execution.suite.id,
+      suiteDefinitionHash: execution.suiteDefinitionHash, source: { sha: provenance.head,
+        ref: `${execFileSync("git", ["branch", "--show-current"], { cwd: input.repositoryRoot, encoding: "utf8" }).trim()}${provenance.dirty ? " (working tree)" : ""}`, workflowRunUrl: null }, attempt: 1, status: "failed", profileId: execution.profile.id, environmentId: execution.environment.id,
+      caseId: execution.task.id, provider: "acpx", model: ANTIGRAVITY_JOURNEY_MODEL, runtimeMode: "native", startedAt, finishedAt: startedAt,
+      durationMs: 0, cleanup: "not_started", antigravityJourney: evidence, screenshots: [] };
+    const observed = new Map<string, Row>(), observers: AntigravityProcessObservers = new Map();
+    let browser: Awaited<ReturnType<typeof openConnectionBrowser>> | undefined;
+    let fixtures: Awaited<ReturnType<FixtureRegistry["setupAll"]>> | undefined;
+    let api: ConnectionApi | undefined;
+    let operationOnly = Boolean(input.preflight || input.recoverFile), operationPassed = false;
+    const assertActive = () => { if (signal.aborted) throw new ConnectionBlock("blocked_target", campaignSignal.aborted ? "test_interrupted" : "journey_deadline_reached"); };
+    const persistResources = () => save("owned-resources.json", resources);
+    const abort = () => { for (const page of browser?.context.pages() ?? []) void page.close().catch(() => {}); };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      assertActive();
+      await save("setup.json", { version: 1, setupId: config.setupId, hosting: config.hosting, executionEnvironment: config.executionEnvironment,
+        target: config.target, candidate: config.candidate, limits: config.limits, authentication: "saved-subscription", realProductAgent: true, sourceProvenance: provenance,
+        configSha256: createHash("sha256").update(JSON.stringify(config)).digest("hex"), browser: { freshness: config.browser.freshness, accountAlias: config.browser.accountAlias } });
+      await persistResources();
+      browser = await openConnectionBrowser(antigravityConnectionConfig(config), input.repositoryRoot, config.target.baseURL);
+      const page = browser.context.pages()[0] ?? await browser.context.newPage();
+      await page.goto(config.target.baseURL);
+      api = new ConnectionApi(browser.context.request, config.target.baseURL);
+      evidence.phase = "board_authentication";
+      const loginDeadline = Date.now() + config.browser.loginTimeoutMs;
+      while (true) {
+        assertActive();
+        try { await api.get("/api/auth/get-session"); break; }
+        catch (error) {
+          if (!(error instanceof ConnectionFailure) || !["api_status_401", "api_status_403"].includes(error.message)) throw error;
+          if (!config.browser.headed || Date.now() >= loginDeadline) throw new ConnectionBlock("awaiting_user", "board_login_required");
+          if (!evidence.assisted) {
+            evidence.assisted = true;
+            console.log("[antigravity-agent-journey] Complete board sign-in in the dedicated QA browser; no Google provider login is measured.");
+            await save("progress.json", evidence);
+          }
+          await connectionDelay(1000);
+        }
+      }
+      evidence.phase = "preflight";
+      if (input.recoverFile) {
+        evidence.phase = "recovery";
+        // Recovery must still stop owned work after admission expires or a
+        // budget becomes blocked. It needs authenticated target identity only.
+        await verifyConnectionTarget(api.origin, antigravityConnectionConfig(config), api.request);
+        if (process.platform !== "darwin" || process.arch !== "arm64") throw new ConnectionBlock("blocked_target", "same_host_darwin_arm64_required");
+        await assertPrivateFile(input.recoverFile);
+        const owned = parseAntigravityOwnedResources(JSON.parse(await readFile(input.recoverFile, "utf8")), config);
+        Object.assign(resources, owned);
+        await persistResources();
+        await cleanupAntigravityJourney({ api, config, resources, cleanup: evidence.cleanup, persistResources, observers });
+        await save("recovery.json", { version: 1, outcome: "released", cleanup: evidence.cleanup, sourceReceipt: createHash("sha256").update(await readFile(input.recoverFile)).digest("hex") });
+        operationPassed = true; console.log(`[antigravity-agent-journey] Owned resource recovery complete: ${output}`); return output;
+      }
+      const registry = new FixtureRegistry();
+      registry.register({ id: "antigravity-existing-state", setup: () => prepareAntigravityJourney(api!, config) });
+      if (!operationOnly) registry.register({ id: "antigravity-owned-resources", dependencies: ["antigravity-existing-state"], setup: async () => resources,
+        teardown: () => cleanupAntigravityJourney({ api: api!, config, resources, cleanup: evidence.cleanup, persistResources, observers }) });
+      fixtures = await registry.setupAll();
+      const prepared = fixtures.values.get("antigravity-existing-state") as Awaited<ReturnType<typeof prepareAntigravityJourney>>;
+      evidence.targetCommit = prepared.identity.commit;
+      evidence.checkpoints.target = true; evidence.checkpoints.dependencies = true; evidence.cleanup.connectionPreserved = true;
+      await save("preflight.json", { version: 1, outcome: "ready", setupId: config.setupId, measured: false, providerPrompts: 0,
+        targetCommit: prepared.identity.commit, actor: "browser_operator", savedConnection: { id: prepared.connection.id, grantId: prepared.connection.grantId,
+          ownerUserId: prepared.connection.ownerUserId, isDefault: prepared.connection.isDefault, method: prepared.connection.method },
+        accounting: prepared.accounting, candidate: config.candidate });
+      if (input.preflight) { operationPassed = true; console.log(`[antigravity-agent-journey] Read-only preflight ready: ${output}`); return output; }
+      await runAntigravityJourneyFlow({ page, api, config, prepared, resources, evidence, assertActive, persistResources,
+        phase: async id => { assertActive(); evidence.phase = id; await save("progress.json", evidence); },
+        observeRun: async run => {
+          assertActive();
+          observed.set(run.id, run); observeAntigravityRun(resources, run, observers); await persistResources();
+          if (observed.size > config.limits.maxRuns) throw new ConnectionFailure("provider_run_limit_exceeded");
+        }, checkpoint: async (id, tab) => {
+          evidence.phase = id; evidence.checkpoints[id] = true;
+          const url = new URL(tab.url());
+          if (url.origin === config.target.baseURL && url.pathname.startsWith(`/${prepared.company.issuePrefix}/`)
+            && !await tab.locator('input[type="password"]:visible,input[autocomplete="one-time-code"]:visible').count()) {
+            const file = `${id}.png`, bytes = await tab.screenshot({ path: path.join(output, file) });
+            result.screenshots!.push({ id, label: id.replaceAll("_", " "), file, sha256: createHash("sha256").update(bytes).digest("hex") });
+          }
+          await save("progress.json", evidence); await persistResources();
+        } });
+      result.issueId = resources.issueId;
+      evidence.outcome = "passed"; result.status = "passed";
+    } catch (caught) {
+      const error = signal.aborted ? new ConnectionBlock("blocked_target", campaignSignal.aborted ? "test_interrupted" : "journey_deadline_reached") : caught;
+      evidence.outcome = error instanceof ConnectionBlock ? error.reason : "failed";
+      result.failureClass = error instanceof ConnectionBlock ? "permanent_infrastructure" : "candidate_failure";
+      if (resources.setupProbe === "pending") resources.setupProbe = "retirement_unconfirmed";
+      if (evidence.phase === "recovery") { result.cleanup = "failed"; result.failureClass = "cleanup_failure"; resources.retained = Boolean(resources.agentId); }
+      result.error = error instanceof ConnectionBlock ? error.code : error instanceof ConnectionFailure ? error.message
+        : error instanceof Error && /^antigravity_evidence_[a-z0-9_]+$/.test(error.message) ? error.message : `${evidence.phase}_failed`;
+      await save("attempt-error.json", { error: result.error, phase: evidence.phase, outcome: evidence.outcome });
+      await persistResources();
+    } finally {
+      clearTimeout(timer); signal.removeEventListener("abort", abort);
+      try { await fixtures?.teardown(); if (result.cleanup !== "failed") result.cleanup = "passed"; }
+      catch (error) { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure";
+        const code = error instanceof AggregateError && error.errors[0] instanceof ConnectionFailure ? error.errors[0].message : "fixture_cleanup_failed";
+        result.error = `${result.error ? `${result.error}; ` : ""}${code}`; resources.retained = Boolean(resources.agentId); await persistResources(); }
+      for (const runId of resources.runIds) if (api) {
+        try { observed.set(runId, await api.get<Row>(`/api/heartbeat-runs/${runId}`)); } catch { /* Deleted owned agents may remove their public logs; retained observations own billing. */ }
+      }
+      try { await browser?.close(); }
+      catch { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
+      result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);
+      await save("progress.json", evidence);
+      if (operationOnly) {
+        if (!operationPassed || result.cleanup === "failed") process.exitCode = 1;
+      } else {
+        result.runIds = [...observed.keys()];
+        result.usage = { runs: [...observed.values()].map(run => ({ usage: run.usageJson })) };
+        result.runtimeUsage = buildRuntimeUsage({ environmentId: execution.environment.id, runs: [...observed.values()], fallbackFinishedAt: result.finishedAt });
+        result.billing = summarizeExecutionBilling(result);
+        result.matcherResults = gradeAntigravityJourney(evidence);
+        if (result.status === "passed" && !result.matcherResults.every(check => check.passed)) {
+          result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "candidate_failure"; result.error = "antigravity_journey_proof_incomplete";
+        }
+        const packaged = await writeAntigravityJourneyReport({ output, campaignId, result, resources, catalog: input.catalog, secrets: [] });
+        if (packaged.status !== "passed" || packaged.cleanup !== "passed") process.exitCode = 1;
+        console.log(`[antigravity-agent-journey] ${packaged.status}: ${path.join(output, "dashboard.html")}`);
+      }
+    }
+    return output;
+  });
+}

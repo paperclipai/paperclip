@@ -1,0 +1,197 @@
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
+import { ANTIGRAVITY_DISTRIBUTION_PINS } from "../../packages/paperclip-runner/src/drivers/acpx/generated-profiles.js";
+import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { ANTIGRAVITY_JOURNEY_EXECUTION } from "./antigravity-journey-cases.js";
+import { ANTIGRAVITY_JOURNEY_MODEL, antigravityConnectionConfig, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
+import { ConnectionBlock, ConnectionFailure } from "./connection-config.js";
+import { ConnectionApi, connectionDelay, verifyConnectionTarget } from "./connection-target.js";
+import type { AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
+import { reacquireAntigravityNativeFences } from "./antigravity-journey-evidence.js";
+import { observeRunProcesses } from "./copilot-local-fixtures.js";
+
+type Row = Record<string, any>;
+export interface AntigravityJourneyResources {
+  version: 1; executionId: string; origin: string; companyId: string; environmentId: string; connectionId: string;
+  agentName: string; agentId?: string; issueId?: string; issueIdentifier?: string; runIds: string[];
+  retained: boolean; setupProbe: "not_started" | "pending" | "retired" | "retirement_unconfirmed"; processes: Record<string, AntigravityProcessReceipt>;
+  sourceProvenance?: { head: string; trackedDiffSha256: string; untrackedSourceSha256: string; untrackedSourceFileCount: number; suiteDefinitionHash: string; dirty: boolean };
+}
+export interface AntigravityProcessReceipt {
+  captured: boolean; identityChanged: boolean; journal: Array<{ pid: number; parent: number; start: string }>;
+}
+export type AntigravityProcessObservers = Map<string, ReturnType<typeof observeRunProcesses>>;
+export function selectAntigravityJourneyEnvironment(allowedEnvironments: Row[], environmentId: string): Row {
+  const matches = allowedEnvironments.filter(environment => environment.id === environmentId && environment.driver === "local" && environment.status === "active");
+  if (matches.length !== 1) throw new ConnectionBlock("blocked_target", "configured_execution_environment_unavailable");
+  return matches[0]!;
+}
+export function observeAntigravityRun(resources: AntigravityJourneyResources, run: Row, observers: AntigravityProcessObservers) {
+  if (run.companyId !== resources.companyId || run.agentId !== resources.agentId || (resources.issueId && run.issueId !== resources.issueId))
+    throw new ConnectionFailure("observed_run_owner_mismatch");
+  if (!resources.runIds.includes(run.id)) resources.runIds.push(run.id);
+  let observer = observers.get(run.id);
+  if (!observer && !run.processPid) {
+    resources.processes[run.id] ??= { captured: false, identityChanged: false, journal: [] };
+    return;
+  }
+  if (!observer) { observer = observeRunProcesses(); observers.set(run.id, observer); }
+  const observation = observer.sample(run.processPid ? { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt, runId: run.id } : undefined);
+  const previous = resources.processes[run.id];
+  const journal = previous?.journal ?? [];
+  for (const process of observation.journal) if (!journal.some(row => row.pid === process.pid && row.start === process.start)) journal.push({ pid: process.pid, parent: process.parent, start: process.start });
+  resources.processes[run.id] = { captured: Boolean(previous?.captured || observation.captured),
+    identityChanged: Boolean(previous?.identityChanged || observation.identityChanged), journal };
+}
+
+/** Read only the same host's kernel birth identities; never signal a reported PID. */
+function remainingRecordedProcesses(receipt: AntigravityProcessReceipt) {
+  const table = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,lstart="], { encoding: "utf8", timeout: 3000, maxBuffer: 8 * 1024 * 1024,
+    env: { PATH: "/usr/bin:/bin", LC_ALL: "C" } }).split("\n").flatMap(line => {
+    const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/u.exec(line);
+    return row ? [{ pid: Number(row[1]), start: row[3] }] : [];
+  });
+  return { live: receipt.journal.filter(process => table.some(row => row.pid === process.pid && row.start === process.start)),
+    identityChanged: receipt.identityChanged || receipt.journal.some(process => table.some(row => row.pid === process.pid && row.start !== process.start)) };
+}
+
+/** Read-only fixture readiness. No credential read, refresh, model discovery,
+ * setup Test, admission override or measured-agent provisioning occurs here. */
+export async function prepareAntigravityJourney(api: ConnectionApi, config: AntigravityJourneyConfig) {
+  if (process.platform !== "darwin" || process.arch !== "arm64" || new URL(api.origin).hostname !== "127.0.0.1")
+    throw new ConnectionBlock("blocked_target", "same_host_darwin_arm64_required");
+  const identity = await verifyConnectionTarget(api.origin, antigravityConnectionConfig(config), api.request);
+  if (config.candidate.profileDigest !== QUALIFIED_ACPX_PROFILES.antigravity.commandDigest
+    || config.candidate.nativeClosureDigest !== `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`)
+    throw new ConnectionBlock("blocked_target", "candidate_pin_mismatch");
+  const distribution = JSON.parse(await readFile(new URL("../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
+  if (distribution.platforms?.["darwin-arm64"]?.patchVersion !== config.candidate.nativeVersion)
+    throw new ConnectionBlock("blocked_target", "candidate_native_version_mismatch");
+  const session = await api.get<Row>("/api/auth/get-session");
+  const company = await api.get<Row>(`/api/companies/${config.target.companyId}`);
+  // Environments are instance-scoped. This company-filtered list establishes
+  // permission; a fabricated environment.companyId would reject valid locals.
+  const environment = selectAntigravityJourneyEnvironment(await api.get<Row[]>(`/api/companies/${company.id}/environments`), config.target.environmentId);
+  const connections = await api.get<Row>(`/api/companies/${company.id}/ai-connections`);
+  const connection = connections.connections.find((row: Row) => row.id === config.savedConnection.id);
+  if (session.user?.id !== config.savedConnection.ownerUserId || connections.currentUserId !== session.user.id
+    || company.id !== config.target.companyId || environment.id !== config.target.environmentId
+    || environment.driver !== "local" || environment.status !== "active")
+    throw new ConnectionBlock("blocked_target", "configured_actor_or_environment_unavailable");
+  if (!connection || connection.companyId !== company.id || connection.name !== config.savedConnection.name
+    || connection.provider !== "google" || connection.method !== "subscription" || connection.ownership !== "personal"
+    || connection.ownerUserId !== session.user.id || connection.status !== "connected" || connection.isDefault !== true || !connection.grantId)
+    throw new ConnectionBlock("missing_credential", "same_user_saved_google_default_required");
+  const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
+  if (!agents.some(agent => agent.status !== "terminated")) throw new ConnectionBlock("blocked_target", "additional_agent_requires_existing_roster");
+  const budgets = await api.get<Row>(`/api/companies/${company.id}/budgets/overview`);
+  const companyPolicies = budgets.policies.filter((policy: Row) => policy.scopeType === "company" && policy.scopeId === company.id && policy.isActive);
+  if (company.status !== "active" || companyPolicies.some((policy: Row) => policy.hardStopEnabled && (policy.status === "hard_stop"
+    || policy.remainingAmount <= 0 || policy.pendingRunCount > 0 || (policy.unpricedUsagePolicy !== "allow" && policy.unpricedEventCount > 0))))
+    throw new ConnectionBlock("blocked_target", "company_budget_admission_blocked");
+  const adapters = await api.get<Row[]>(`/api/adapters?${new URLSearchParams({ companyId: company.id, environmentId: environment.id })}`);
+  const runner = adapters.find(adapter => adapter.type === "paperclip_runner");
+  if (!runner?.loaded || runner.disabled || !runner.candidateHarnesses?.some((candidate: Row) => candidate.agent === "antigravity" && candidate.model === ANTIGRAVITY_JOURNEY_MODEL))
+    throw new ConnectionBlock("blocked_target", "trusted_antigravity_candidate_admission_required");
+  const accounting = companyPolicies.map((policy: Row) => ({ scopeType: "company", amount: policy.amount, remainingAmount: policy.remainingAmount,
+    hardStopEnabled: policy.hardStopEnabled, unpricedUsagePolicy: policy.unpricedUsagePolicy, pendingRunCount: policy.pendingRunCount, unpricedEventCount: policy.unpricedEventCount }));
+  return { company, environment, connection, identity, accounting };
+}
+
+/** Recovery accepts only the current attempt's persisted exact identities. */
+export function parseAntigravityOwnedResources(input: unknown, config: AntigravityJourneyConfig): AntigravityJourneyResources {
+  const v = input as Partial<AntigravityJourneyResources> | null;
+  const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
+  const allowed = ["version", "executionId", "origin", "companyId", "environmentId", "connectionId", "agentName", "agentId", "issueId", "issueIdentifier", "runIds", "retained", "setupProbe", "processes", "sourceProvenance"];
+  if (!v || typeof v !== "object" || Array.isArray(v) || Object.keys(v).some(key => !allowed.includes(key)) || v.version !== 1 || v.executionId !== ANTIGRAVITY_JOURNEY_EXECUTION
+    || v.origin !== config.target.baseURL || v.companyId !== config.target.companyId || v.environmentId !== config.target.environmentId
+    || v.connectionId !== config.savedConnection.id || !/^Antigravity QA [a-f0-9]{12}$/.test(v.agentName ?? "")
+    || (v.agentId !== undefined && !uuid.test(v.agentId)) || (v.issueId !== undefined && !uuid.test(v.issueId))
+    || !Array.isArray(v.runIds) || v.runIds.length > 100 || new Set(v.runIds).size !== v.runIds.length || v.runIds.some(id => typeof id !== "string" || !uuid.test(id)) || typeof v.retained !== "boolean"
+    || !["not_started", "pending", "retired", "retirement_unconfirmed"].includes(v.setupProbe ?? "")
+    || !v.processes || typeof v.processes !== "object" || Array.isArray(v.processes)
+    || Object.entries(v.processes).some(([runId, receipt]) => !uuid.test(runId) || typeof receipt?.captured !== "boolean" || typeof receipt.identityChanged !== "boolean"
+      || !Array.isArray(receipt.journal) || receipt.journal.length > 1000 || receipt.journal.some(process => !Number.isSafeInteger(process.pid)
+        || process.pid <= 1 || !Number.isSafeInteger(process.parent) || process.parent < 0 || typeof process.start !== "string" || !Number.isFinite(Date.parse(process.start)))))
+    throw new ConnectionFailure("invalid_antigravity_owned_resources");
+  if (v.sourceProvenance && (Object.keys(v.sourceProvenance).some(key => !["head", "trackedDiffSha256", "untrackedSourceSha256", "untrackedSourceFileCount", "suiteDefinitionHash", "dirty"].includes(key))
+    || !/^[a-f0-9]{40}$/.test(v.sourceProvenance.head) || [v.sourceProvenance.trackedDiffSha256, v.sourceProvenance.untrackedSourceSha256, v.sourceProvenance.suiteDefinitionHash].some(value => !/^[a-f0-9]{64}$/.test(value))
+    || !Number.isSafeInteger(v.sourceProvenance.untrackedSourceFileCount) || v.sourceProvenance.untrackedSourceFileCount < 0 || typeof v.sourceProvenance.dirty !== "boolean"))
+    throw new ConnectionFailure("invalid_antigravity_owned_resources");
+  return v as AntigravityJourneyResources;
+}
+
+export async function cleanupAntigravityJourney(input: {
+  api: ConnectionApi; config: AntigravityJourneyConfig; resources: AntigravityJourneyResources;
+  cleanup: AntigravityJourneyEvidence["cleanup"]; persistResources(): Promise<void>;
+  observers?: AntigravityProcessObservers;
+}) {
+  const { api, config, resources, cleanup } = input;
+  cleanup.connectionPreserved = false;
+  if (resources.agentId) cleanup.agent = false;
+  if (resources.runIds.length) cleanup.runs = false;
+  const agents = await api.get<Row[]>(`/api/companies/${resources.companyId}/agents`);
+  const named = agents.filter(agent => agent.name === resources.agentName);
+  if (!resources.agentId && named.length) throw new ConnectionFailure("cleanup_requires_agent_creation_receipt");
+  const agent = agents.find(agent => agent.id === resources.agentId);
+  if (agent && (agent.companyId !== resources.companyId || agent.name !== resources.agentName || named.length !== 1))
+    throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+  if (agent) {
+    cleanup.agent = false; cleanup.runs = false;
+    await api.patch(`/api/agents/${agent.id}`, { status: "paused" });
+    const runs = await api.get<Row[]>(`/api/companies/${resources.companyId}/heartbeat-runs?agentId=${agent.id}&limit=100`);
+    for (const run of runs) {
+      if (run.agentId !== agent.id || run.companyId !== resources.companyId) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+      if (!resources.runIds.includes(run.id)) resources.runIds.push(run.id);
+      observeAntigravityRun(resources, await api.get<Row>(`/api/heartbeat-runs/${run.id}`), input.observers ?? new Map());
+      await input.persistResources();
+      if (["queued", "running"].includes(run.status)) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+    }
+    await input.persistResources();
+    const deadline = Date.now() + 60_000;
+    while (true) {
+      const latest = await api.get<Row[]>(`/api/companies/${resources.companyId}/heartbeat-runs?agentId=${agent.id}&limit=100`);
+      let retired = !latest.some(run => run.agentId === agent.id && ["queued", "running"].includes(run.status));
+      for (const runId of resources.runIds) {
+        const run = await api.get<Row>(`/api/heartbeat-runs/${runId}`);
+        if (run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        const receipt = resources.processes[runId];
+        if (!receipt?.captured || receipt.journal.length < 2) throw new ConnectionFailure("cleanup_physical_owner_not_captured");
+        const observed = remainingRecordedProcesses(receipt);
+        if (observed.identityChanged) throw new ConnectionFailure("cleanup_physical_identity_changed");
+        if (observed.live.length) { retired = false; continue; }
+        const leaseId = run.contextSnapshot?.paperclipEnvironment?.leaseId;
+        if (typeof leaseId !== "string") throw new ConnectionFailure("cleanup_lease_identity_missing");
+        const lease = await api.get<Row>(`/api/environment-leases/${leaseId}`);
+        if (lease.companyId !== resources.companyId || lease.heartbeatRunId !== runId || lease.environmentId !== resources.environmentId)
+          throw new ConnectionFailure("cleanup_lease_owner_mismatch");
+        if (lease.status !== "released") { retired = false; continue; }
+        try { await reacquireAntigravityNativeFences(run.runnerProfileJson?.sessionCheckpoint?.providerIdentity?.providerLifetimeFenceCandidates); }
+        catch { throw new ConnectionFailure("cleanup_native_fences_unconfirmed"); }
+      }
+      if (retired) break;
+      if (Date.now() > deadline) throw new ConnectionFailure("cleanup_run_retirement_unconfirmed");
+      await connectionDelay(250);
+    }
+    cleanup.runs = true;
+    if (resources.issueId) {
+      const issue = await api.get<Row>(`/api/issues/${resources.issueId}`);
+      if (issue.companyId !== resources.companyId || issue.assigneeAgentId !== agent.id) throw new ConnectionFailure("cleanup_issue_owner_mismatch");
+      if (!["done", "cancelled"].includes(issue.status)) await api.patch(`/api/issues/${issue.id}`, { status: "cancelled" });
+    }
+    if (["pending", "retirement_unconfirmed"].includes(resources.setupProbe)) throw new ConnectionFailure("setup_probe_retirement_unconfirmed");
+    if (!config.retainAgent) await api.delete(`/api/agents/${agent.id}`);
+    resources.retained = config.retainAgent;
+    cleanup.agent = true;
+  } else {
+    if (resources.runIds.length) throw new ConnectionFailure("cleanup_agent_removed_before_retirement_verification");
+    cleanup.agent = true; cleanup.runs = true;
+  }
+  if (["pending", "retirement_unconfirmed"].includes(resources.setupProbe)) throw new ConnectionFailure("setup_probe_retirement_unconfirmed");
+  const accounts = await api.get<Row>(`/api/companies/${resources.companyId}/ai-connections`);
+  const connection = accounts.connections.find((row: Row) => row.id === config.savedConnection.id);
+  cleanup.connectionPreserved = Boolean(connection && connection.provider === "google" && connection.method === "subscription"
+    && connection.ownerUserId === config.savedConnection.ownerUserId && connection.isDefault === true && connection.status === "connected");
+  if (!cleanup.connectionPreserved) throw new ConnectionFailure("existing_connection_not_preserved");
+  await input.persistResources();
+}

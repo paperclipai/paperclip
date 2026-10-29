@@ -20,6 +20,9 @@ export interface RunnerSelectorOptions {
   connectionConfig?: string;
   githubReviewConfig?: string;
   provisionGitHubRepository?: boolean;
+  antigravityJourneyConfig?: string;
+  antigravityJourneyPreflight?: boolean;
+  antigravityJourneyRecover?: string;
 }
 
 export class RunnerSelectorError extends Error {}
@@ -69,6 +72,15 @@ export function parseRunnerSelectors(
       index += 1;
     }
     else if (flag === "--provision-github-repository") options.provisionGitHubRepository = true;
+    else if (flag === "--antigravity-journey-config") {
+      options.antigravityJourneyConfig = valueFor(args, index, flag);
+      index += 1;
+    }
+    else if (flag === "--antigravity-journey-preflight") options.antigravityJourneyPreflight = true;
+    else if (flag === "--antigravity-journey-recover") {
+      options.antigravityJourneyRecover = valueFor(args, index, flag);
+      index += 1;
+    }
     else if (flag === "--max-parallel") {
       const value = valueFor(args, index, flag);
       index += 1;
