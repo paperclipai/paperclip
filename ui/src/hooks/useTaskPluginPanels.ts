@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { api, ApiError } from "@/api/client";
 import { heartbeatsApi } from "@/api/heartbeats";
-import { useHasCompanyLiveConnection, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
+import { useTaskRunLiveUpdates, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
+import { createLiveQueryRecovery } from "@/lib/live-query-recovery";
+import { QueryNotReadyError } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots, type ResolvedPluginSlot } from "@/plugins/slots";
 
@@ -23,12 +25,15 @@ export function taskPluginPanelId(panel: TaskPluginPanel) {
 export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = true): TaskPluginPanel[] {
   const queryClient = useQueryClient();
   const savedTask = enabled && !!issue && !issue.id.startsWith("chat:");
-  const connected = useHasCompanyLiveConnection(issue?.companyId);
   const { slots: declaredSlots, errorMessage } = usePluginSlots({
     slotTypes: ["detailTab"], entityType: "agent", taskSidePanel: true,
     companyId: issue?.companyId, enabled: savedTask,
   });
   const slots = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel?.activation), [declaredSlots]);
+  const connected = useTaskRunLiveUpdates({
+    companyId: savedTask && slots.length > 0 && !errorMessage ? issue?.companyId : null,
+    issueId: issue?.id, issueQueryRef: issue?.id ?? "pending", assigneeAgentId: issue?.assigneeAgentId,
+  });
   const { data: runs, isError: runsError } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
@@ -77,14 +82,13 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
         && !(state.error instanceof ApiError && state.error.status >= 400 && state.error.status < 500),
     });
   });
-  const previousStream = useRef(stream);
   useEffect(() => {
-    const previous = previousStream.current;
-    previousStream.current = stream;
-    if (active && stream.healthy && (!previous.healthy || previous.epoch !== stream.epoch)) {
-      void queryClient.invalidateQueries({ queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["task-plugin-panel-activations", issue?.companyId, issue?.id, run?.id, run?.agentId] });
-    }
+    if (!active || !stream.healthy) return;
+    let current = true;
+    void queryClient.invalidateQueries({ queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId] });
+    // A pre-subscription history read must settle before the recovery read.
+    createLiveQueryRecovery(queryClient, () => current, { queryKey: activationKey, exact: true })();
+    return () => { current = false; };
   }, [active, stream.healthy, stream.epoch, queryClient, issue?.companyId, issue?.id, run?.id, run?.agentId]);
   const availability = useQueries({ queries: slots.map(slot => ({
     queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId, slot.pluginKey, slot.id, slot.pluginVersion],
@@ -93,7 +97,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
         `/plugins/${encodeURIComponent(slot.pluginId)}/api${slot.taskSidePanel!.availabilityPath.replace(":entityId", encodeURIComponent(run!.agentId))}?runId=${encodeURIComponent(run!.id)}&issueId=${encodeURIComponent(issue!.id)}`,
         { signal, cache: "no-store" },
       );
-      if (result.available !== true) throw new Error("Plugin panel is not ready");
+      if (result.available !== true) throw new QueryNotReadyError("Plugin panel is not ready");
       return result;
     },
     enabled: active && !activationsError && activations.some(panel => panel.pluginKey === slot.pluginKey && panel.slotId === slot.id),

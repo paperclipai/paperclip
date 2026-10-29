@@ -6,6 +6,8 @@ import type { Issue, LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
 import { api, ApiError } from "@/api/client";
 import { heartbeatsApi, type LiveRunForIssue } from "@/api/heartbeats";
+import { useTaskRunLiveUpdates } from "@/context/LiveUpdatesProvider";
+import { createAppQueryClient } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
 import type { ResolvedPluginSlot } from "@/plugins/slots";
 import { useTaskPluginPanels, type TaskPluginPanel } from "./useTaskPluginPanels";
@@ -13,9 +15,9 @@ import { useTaskPluginPanels, type TaskPluginPanel } from "./useTaskPluginPanels
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const plugin = vi.hoisted(() => ({ connected: true, slots: [] as ResolvedPluginSlot[], healthy: true, epoch: 0, handler: null as ((event: LiveEvent) => void) | null, errorMessage: null as string | null }));
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => plugin }));
-vi.mock("@/context/LiveUpdatesProvider", () => ({ useHasCompanyLiveConnection: () => plugin.connected, useTranscriptLiveStream: (_ids: string[], _options: unknown, handler: (event: LiveEvent) => void) => { plugin.handler = handler; return { healthy: plugin.healthy, epoch: plugin.epoch }; } }));
+vi.mock("@/context/LiveUpdatesProvider", () => ({ useTaskRunLiveUpdates: vi.fn(() => plugin.connected), useTranscriptLiveStream: (_ids: string[], _options: unknown, handler: (event: LiveEvent) => void) => { plugin.handler = handler; return { healthy: plugin.healthy, epoch: plugin.epoch }; } }));
 const slot = { pluginId: "example-plugin", pluginKey: "example.live-view", id: "screen", pluginVersion: "1.0.0", taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } } as ResolvedPluginSlot;
-const issue = { id: "task", companyId: "company", executionRunId: "run" } as Issue;
+const issue = { id: "task", companyId: "company", executionRunId: "run", assigneeAgentId: "agent" } as Issue;
 const run = { id: "run", agentId: "agent", status: "running" } as LiveRunForIssue;
 let root: Root, container: HTMLDivElement, client: QueryClient;
 let current: TaskPluginPanel[];
@@ -35,7 +37,7 @@ async function refresh() {
   await act(async () => { if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30); else await new Promise(resolve => setTimeout(resolve, 30)); });
 }
 beforeEach(() => {
-  plugin.slots = [slot]; plugin.errorMessage = null; plugin.connected = true; plugin.healthy = true; plugin.epoch = 0; plugin.handler = null;
+  plugin.slots = [slot]; plugin.errorMessage = null; plugin.connected = true; plugin.healthy = false; plugin.epoch = 0; plugin.handler = null;
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   get = vi.spyOn(api, "get").mockResolvedValue({ available: true });
@@ -239,4 +241,49 @@ it("does not discover a task view without a declared activity mapping", async ()
   await render();
   expect(list).not.toHaveBeenCalled(); expect(history).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled(); expect(current).toEqual([]);
+});
+
+
+it("observes run lifecycle updates using the same UUID key as panel discovery", async () => {
+  await render({ ...issue, identifier: "DEMO-1" });
+  expect(useTaskRunLiveUpdates).toHaveBeenLastCalledWith({ companyId: "company", issueId: "task", issueQueryRef: "task", assigneeAgentId: "agent" });
+});
+
+it.each(["initial", "reconnect"])("reads again after pending history settles across %s subscription", async phase => {
+  vi.useFakeTimers();
+  let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  if (phase === "initial") plugin.healthy = true;
+  await render();
+  if (phase === "reconnect") { plugin.healthy = true; plugin.epoch++; await render(); }
+  expect(history).toHaveBeenCalledTimes(1);
+  // The first snapshot predates activity that arrived before subscription.
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(history).toHaveBeenCalledTimes(2);
+  expect(list).toHaveBeenCalledTimes(1);
+  expect(current).toHaveLength(1);
+});
+
+it("discards pending subscription recovery after the task changes", async () => {
+  vi.useFakeTimers(); plugin.healthy = true;
+  let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  await render();
+  await render({ ...issue, id: "next-task" });
+  const reads = history.mock.calls.length;
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(history).toHaveBeenCalledTimes(reads);
+});
+
+it.each(["not-ready", "server-error"])("reports unexpected failures only after bounded %s readiness checks", async failure => {
+  vi.useFakeTimers();
+  const reportError = vi.fn();
+  client = createAppQueryClient({ connectivity: { reportError: vi.fn(), getSnapshot: () => ({ status: "online" } as never) }, reportError });
+  if (failure === "not-ready") get.mockResolvedValue({ available: false });
+  else get.mockRejectedValue(new ApiError("Unexpected failure", 500, {}));
+  await render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(3);
+  expect(current).toEqual([]);
+  expect(reportError).toHaveBeenCalledTimes(failure === "not-ready" ? 0 : 1);
 });
