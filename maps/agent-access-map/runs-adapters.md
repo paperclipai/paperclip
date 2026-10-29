@@ -299,6 +299,13 @@ guard. This changes no actor permission or session-reset authority. Follow the
 [session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
 ordinary turns; deterministic runner checks do not establish live provider access.
 
+Sandbox export carries shallow Git boundaries through the full-bundle fallback
+and uses normal Git fetch connectivity checks. Existing host ancestry and merge
+guards remain effective. This grants no task retry or operator recovery authority;
+the saved-result export API still requires board runtime management permission.
+Follow the [session recipe](../feature-map/runs-adapters.md#session) for separately
+fetched shallow history; filesystem controls do not establish live recovery.
+
 Plugin suspension receipts remain required through recovery and admission, then
 are removed when the admitted session becomes live. A later warm run therefore
 does not inherit an obsolete stopped-run identity. Repository-free fresh plugin

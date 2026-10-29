@@ -102,6 +102,13 @@ The [remote continuity regression](../../doc/testing-native-remote-continuity.md
 uses a real Linux runner and deterministic provider. Live provider acceptance is
 a separate check.
 
+In a fresh sandbox workspace, fetch a different published branch with depth one,
+then save a local result and finish. Verify export imports the shallow history,
+retains host-only edits, and completes finalization without another provider turn.
+Repeat when the host already has that branch history; its ancestry must remain
+available. The filesystem sandbox regression covers transfer and merge behavior,
+not live provider acceptance.
+
 For a plugin computer, complete a task, let its warm session suspend, then send
 two follow-ups within the next warm window. Verify the first resumes the saved
 session and the second keeps the same provider history without an identity
