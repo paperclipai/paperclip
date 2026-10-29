@@ -161,7 +161,7 @@ fixture setup. Every one of the 47 numbered steps appears once below.
 | A18 | Actual ready; assignment enabled | measured / readiness | observation | Same persisted agent becomes invokable |
 | A19 | Open first composer; no paused warning | measured / first-composer | retain | Correct agent/model and no stale pause |
 | A20 | Escape empty composer | measured / configure-before-work | retain detour | No task created before instructions |
-| A21 | Open agent from sidebar | measured / agent-overview | retain | Follow visible route to new agent |
+| A21 | Open agent from sidebar | measured / agent-overview | adapt | Follow ordinary Agents roster and search the exact owned name; the recent sidebar list is bounded |
 | A22 | Idle/configured; no runs | measured / agent-overview | observation | Same owned Google agent and exact model |
 | A23 | Open Instructions | measured / instructions | retain | Entry AGENTS.md and edit controls |
 | A24 | Edit existing entry text | measured / instructions | retain | Preserve default instruction text |

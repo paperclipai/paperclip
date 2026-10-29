@@ -226,7 +226,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
-  if (executions.some(e => ["provider_connection", "github_review_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
+  if (executions.some(e => ["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,

@@ -13,6 +13,7 @@ const rec = (value: unknown): Row => value && typeof value === "object" && !Arra
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 const requireProof = (condition: unknown, code: string) => { if (!condition) throw new Error(`antigravity_evidence_${code}`); };
 const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(value);
+const eventId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 160 && !/[\x00-\x20\x7f]/u.test(value);
 
 export const antigravityJourneyCheckpoints = ["target", "dependencies", "ordinary_picker", "saved_subscription", "exact_model", "setup_probe", "agent_ready", "clean_composer", "instructions_saved", "first_run", "first_artifact", "followup_run", "followup_artifact", "persisted"] as const;
 export interface AntigravityJourneyTurnEvidence {
@@ -78,7 +79,7 @@ export function gradeAntigravityJourneyTurn(input: TurnScope & {
     && rec(registrations[0]!.input).filename === a.originalFilename && rec(registrations[0]!.input).byteSize === a.byteSize
     && rec(registrations[0]!.input).sha256 === a.sha256, "registered_delivery");
   requireProof(input.events.length > 0 && input.events.length <= 20_000, "bounded_events");
-  const seen = new Set<string>(); let lastSeq = 0;
+  const seen = new Set<string>(), sourceSequences = new Map<string, number>(); let lastSeq = 0;
   const tools: Array<{ event: Row; payload: Row; seq: number }> = [];
   const accepted: Array<{ event: Row; seq: number }> = [], terminals: Array<{ event: Row; seq: number }> = [];
   for (const row of input.events) {
@@ -86,10 +87,13 @@ export function gradeAntigravityJourneyTurn(input: TurnScope & {
     if (!Object.keys(event).length) continue;
     requireProof(row.companyId === input.companyId && row.runId === r.id && event.runId === r.id
       && isValidNativePrpEnvelope(event, row.protocolSchemaVersion) && row.eventType === event.eventType
-      && Number.isSafeInteger(row.seq) && row.seq > lastSeq && !seen.has(event.sourceEventId)
+      && Number.isSafeInteger(row.seq) && row.seq > lastSeq && eventId(event.sourceEventId) && !seen.has(event.sourceEventId)
       && row.sourceEventId === event.sourceEventId && row.sourceInstanceId === event.sourceInstanceId
-      && row.sourceSeq === event.sourceSeq && event.sourceEventId === `${event.sourceInstanceId}:${r.id}:${event.sourceSeq}`, "event_binding");
-    lastSeq = row.seq; seen.add(event.sourceEventId);
+      && row.sourceSeq === event.sourceSeq && Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > (sourceSequences.get(event.sourceInstanceId) ?? 0)
+      && ((event.sourceKind === "runner" && event.sourceInstanceId === r.runnerInstanceId)
+        || (event.sourceKind === "control_plane" && event.sourceInstanceId === `${r.runnerInstanceId}:control`))
+      && event.normalizedSessionId === r.nativeSessionId, "event_binding");
+    lastSeq = row.seq; seen.add(event.sourceEventId); sourceSequences.set(event.sourceInstanceId, event.sourceSeq);
     if (event.eventType === "run.result.accepted") accepted.push({ event, seq: row.seq });
     if (event.eventType === "run.terminal") terminals.push({ event, seq: row.seq });
     if (event.eventType.startsWith("tool.execution.")) tools.push({ event, payload: rec(event.payload), seq: row.seq });

@@ -5,7 +5,7 @@ import { ConnectionApi } from "./connection-target.js";
 import { ANTIGRAVITY_JOURNEY_MODEL, type AntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { verifyAntigravityJourneyTurn, type AntigravityJourneyEvidence } from "./antigravity-journey-evidence.js";
 import type { AntigravityJourneyResources, prepareAntigravityJourney } from "./antigravity-journey-fixtures.js";
-import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
+import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, inspectAntigravityArtifact, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
 import { submitTaskReply } from "./user-actions.js";
 
 type Row = Record<string, any>;
@@ -106,9 +106,11 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   await page.getByRole("button", { name: `Assign ${resources.agentName} a Task`, exact: true }).click();
   await assertAntigravityCleanComposer(page, resources.agentName, ANTIGRAVITY_JOURNEY_MODEL);
   await checkpoint("clean_composer");
+  await input.phase("close_empty_composer");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "New task", exact: true })).toBeHidden();
-  await page.getByRole("link", { name: resources.agentName, exact: true }).click();
+  await input.phase("agent_navigation");
+  await openAntigravityAgentFromRoster(page, resources.agentName);
   await input.phase("instructions");
   await page.getByRole("link", { name: "Instructions", exact: true }).click();
   await page.getByRole("group", { name: "Instruction file view", exact: true }).getByRole("button", { name: "edit", exact: true }).click();

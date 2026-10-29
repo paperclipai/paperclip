@@ -2,6 +2,17 @@ import { expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { ConnectionFailure } from "./connection-config.js";
 
+/** Recent sidebar entries are bounded; the searchable roster contains every
+ * agent. Scope the exact visible name to the main roster, not sidebar recency. */
+export async function openAntigravityAgentFromRoster(page: Page, agentName: string, timeout = 30_000) {
+  await page.getByRole("link", { name: "Agents", exact: true }).click({ timeout });
+  const toolbar = page.getByRole("toolbar", { name: "Agents controls", exact: true });
+  await toolbar.getByRole("textbox", { name: "Search agents", exact: true }).fill(agentName, { timeout });
+  const row = page.getByRole("main").getByRole("link").filter({ has: page.getByText(agentName, { exact: true }) });
+  await expect(row).toHaveCount(1, { timeout });
+  await row.click({ timeout });
+}
+
 /** The ordinary picker is measured before any direct setup-route navigation. */
 export async function selectAntigravityFromOrdinaryPicker(page: Page, timeout = 30_000) {
   const dialog = page.getByRole("dialog", { name: "Choose an adapter", exact: true });

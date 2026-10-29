@@ -3,10 +3,13 @@
 import { createServer } from "node:http";
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
-import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
+import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
 
 const agent = "Antigravity QA synthetic", model = "gemini-3.8-flash-low";
 const fixtures: Record<string, string> = {
+  dashboard: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">An older agent</a></aside><main>Dashboard</main>`,
+  roster: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">${agent}</a></aside><main><div role="toolbar" aria-label="Agents controls"><input aria-label="Search agents"></div><a href="/wrong-agent"><span>${agent} older</span>Engineer idle</a><a href="/owned-agent"><span>${agent}</span>Engineer idle</a><a hidden href="/wrong-agent"><span>${agent}</span>Engineer idle</a></main>`,
+  "owned-agent": `<main><h1>${agent}</h1></main>`,
   picker: `<div role="dialog" aria-labelledby="picker"><h2 id="picker">Choose an adapter</h2><label><input type="radio" name="adapter">Google Antigravity Candidate</label><details><summary>Advanced</summary><label><input type="radio" name="adapter">Other harness</label></details><button>Configure agent</button></div><div hidden><label><input type="radio">Google Antigravity Candidate</label></div>`,
   "advanced-only": `<div role="dialog" aria-labelledby="picker"><h2 id="picker">Choose an adapter</h2><details open><summary>Advanced</summary><label><input type="radio">Google Antigravity Candidate</label></details><button>Configure agent</button></div>`,
   ready: `<div hidden><h2>Finishing agent setup</h2><button disabled>Assign ${agent} a Task</button></div><h2>Your agent is ready</h2><button>Assign ${agent} a Task</button>`,
@@ -30,6 +33,8 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const visit = async (fixture: string) => page.goto(`${origin}/${fixture}`);
+  await visit("dashboard"); await openAntigravityAgentFromRoster(page, agent, 300);
+  assert.equal(new URL(page.url()).pathname, "/owned-agent");
   await visit("picker"); await selectAntigravityFromOrdinaryPicker(page, 300);
   assert.equal(await page.getByRole("radio", { name: "Google Antigravity Candidate", exact: true }).isChecked(), true);
   await visit("advanced-only"); await assert.rejects(selectAntigravityFromOrdinaryPicker(page, 300));
@@ -42,7 +47,7 @@ try {
   await visit("wrong-model"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
   await visit("activity"); await assertAntigravityFileActivity(page, 300);
   await visit("wrong-file-activity"); await assert.rejects(assertAntigravityFileActivity(page, 300));
-  console.log("PASS synthetic Antigravity browser calibration: ordinary picker, readiness, actual Done, stale pause, exact Low model and file-activity status");
+  console.log("PASS synthetic Antigravity browser calibration: roster navigation, ordinary picker, readiness, actual Done, stale pause, exact Low model and file-activity status");
 } finally {
   await browser?.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

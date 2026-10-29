@@ -77,6 +77,10 @@ Create an owner-only regular JSON file outside the repository (`chmod 600`).
 Replace every placeholder with an authorized binding; never put token/cookie,
 password, OAuth code or startup authority bytes in it. Relative `profileDir` is
 resolved against this file's directory. The browser must declare `signed-in`.
+If board sign-in needs assistance, use setup-only `--antigravity-journey-preflight`
+to save the dedicated browser session, then start a fresh measured attempt.
+A measured attempt that needed assisted sign-in stops before agent or provider
+setup and retains a blocked report.
 
 ```json
 {

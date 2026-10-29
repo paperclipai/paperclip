@@ -58,6 +58,26 @@ it("retains an owned failed run when physical ownership was never captured", asy
     .rejects.toThrow("cleanup_physical_owner_not_captured");
   expect(remove).not.toHaveBeenCalled(); expect(patch).toHaveBeenCalledWith(`/api/agents/${agentId}`, { status: "paused" });
 });
+
+it("terminates the owned ready agent before purge and preserves the shared account", async () => {
+  const owned = resources(); owned.setupProbe = "retired";
+  const cleanup = { agent: false, runs: false, connectionPreserved: false };
+  let lifecycleState = "ready";
+  const agent = () => ({ id: agentId, companyId, name: owned.agentName, lifecycleState });
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [agent()];
+    if (route.includes("heartbeat-runs?")) return [];
+    if (route === `/api/agents/${agentId}`) return agent();
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error("Unexpected cleanup read");
+  });
+  const post = vi.fn(async (route: string) => { expect(route).toBe(`/api/agents/${agentId}/terminate`); lifecycleState = "terminated"; return agent(); });
+  const remove = vi.fn(async () => { expect(lifecycleState).toBe("terminated"); });
+  await cleanupAntigravityJourney({ api: { get, post, patch: async () => { lifecycleState = "paused"; }, delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup, persistResources: async () => {} });
+  expect(remove).toHaveBeenCalledWith(`/api/agents/${agentId}`);
+  expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true });
+});
 it("does not erase a failed native setup Test's unconfirmed cleanup with an empty task-run list", async () => {
   const owned = resources(); owned.setupProbe = "retirement_unconfirmed";
   const agent = { id: agentId, companyId, name: owned.agentName }, remove = vi.fn();

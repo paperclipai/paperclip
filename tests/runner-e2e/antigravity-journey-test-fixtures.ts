@@ -20,10 +20,10 @@ export function antigravityTurnFixture(second = false) {
       nativeResult: { schema: "paperclip.run_result.v1" }, nativeTerminal: { runTerminalState: "succeeded" },
       semanticToolReceipts: { register: { operationId: "register_deliverable", input: { filename: "antigravity-proof.txt", byteSize: expectedBytes.length, sha256 }, result: { attachmentId, disposition: "applied" } } } } };
   const event = (operation: string, seq: number, status = "completed", name = `client_${operation}_file`, execution = `call-${seq}`) => ({
-    companyId: "company", runId, seq, sourceInstanceId: runnerInstanceId, sourceSeq: seq, sourceEventId: `${runnerInstanceId}:${runId}:${seq}`,
+    companyId: "company", runId, seq, sourceInstanceId: runnerInstanceId, sourceSeq: seq, sourceEventId: executorSourceEventId(runnerInstanceId, seq),
     protocolSchemaVersion: 1, eventType: status === "running" ? "tool.execution.started" : "tool.execution.completed", payload: { prpEvent: {
       schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: status === "running" ? "tool.execution.started" : "tool.execution.completed", runId, sourceKind: "runner", sourceInstanceId: runnerInstanceId,
-      sourceSeq: seq, sourceEventId: `${runnerInstanceId}:${runId}:${seq}`, normalizedSessionId: "native-session", turnId: `turn-${runId}`,
+      sourceSeq: seq, sourceEventId: executorSourceEventId(runnerInstanceId, seq), normalizedSessionId: "native-session", turnId: `turn-${runId}`,
       payload: { operation, status, name, target: "antigravity-proof.txt", executionId: execution } } } });
   const events = second ? [event("read", 1, "running", "client_read_file", "before-read"), event("read", 2, "completed", "client_read_file", "before-read"),
     event("edit", 3, "running", "client_edit_file", "edit-call"), event("edit", 4, "completed", "client_edit_file", "edit-call"),
@@ -47,6 +47,12 @@ export function antigravityTurnFixture(second = false) {
     downloadedBytes: Buffer.from(expectedBytes), events,
     lease: { id: `lease-${runId}`, companyId: "company", environmentId: "environment", heartbeatRunId: runId, status: "released", releasedAt: "2026-10-29T00:00:00Z" },
     retirement: { captured: true, observedProcessCount: 3, remainingProcessCount: 0, identityChanged: false, nativeFencesReacquired: true, nativeFenceCount: 3 } };
+}
+
+/** Rust durable/state.rs hashes the ACPX executor's stable event identity. */
+function executorSourceEventId(runnerInstanceId: string, seq: number) {
+  return `event_executor_${createHash("sha256").update("paperclip.executor-event.v1\0").update(runnerInstanceId)
+    .update("\0").update(`acpx_provider_${String(seq).padStart(16, "0")}`).digest("hex")}`;
 }
 
 export function antigravityEvidenceFixture(): AntigravityJourneyEvidence {

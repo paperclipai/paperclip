@@ -113,6 +113,7 @@ export async function runAntigravityJourneyCampaign(input: {
           await connectionDelay(1000);
         }
       }
+      if (evidence.assisted && !operationOnly) throw new ConnectionBlock("blocked_target", "assisted_board_login_requires_fresh_case");
       evidence.phase = "preflight";
       if (input.recoverFile) {
         evidence.phase = "recovery";
@@ -175,7 +176,21 @@ export async function runAntigravityJourneyCampaign(input: {
       if (evidence.phase === "recovery") { result.cleanup = "failed"; result.failureClass = "cleanup_failure"; resources.retained = Boolean(resources.agentId); }
       result.error = error instanceof ConnectionBlock ? error.code : error instanceof ConnectionFailure ? error.message
         : error instanceof Error && /^antigravity_evidence_[a-z0-9_]+$/.test(error.message) ? error.message : `${evidence.phase}_failed`;
-      await save("attempt-error.json", { error: result.error, phase: evidence.phase, outcome: evidence.outcome });
+      let failureScreenshot = false;
+      const failedPage = browser?.context.pages()[0];
+      if (failedPage && !failedPage.isClosed()) {
+        try {
+          const url = new URL(failedPage.url());
+          if (url.origin === config.target.baseURL && url.pathname.startsWith("/")
+            && !await failedPage.locator('input[type="password"]:visible,input[autocomplete="one-time-code"]:visible').count()) {
+            const file = "failure.png", bytes = await failedPage.screenshot({ path: path.join(output, file) });
+            result.screenshots!.push({ id: "failure", label: `Failed at ${evidence.phase.replaceAll("_", " ")}`, file, sha256: createHash("sha256").update(bytes).digest("hex") });
+            failureScreenshot = true;
+          }
+        } catch { /* Preserve the primary failure even when the browser is unavailable. */ }
+      }
+      const sourceLocation = error instanceof Error ? error.stack?.match(/antigravity-journey-(?:flow|ui)\.ts:\d+:\d+/u)?.[0] : undefined;
+      await save("attempt-error.json", { error: result.error, phase: evidence.phase, outcome: evidence.outcome, sourceLocation, failureScreenshot });
       await persistResources();
     } finally {
       clearTimeout(timer); signal.removeEventListener("abort", abort);

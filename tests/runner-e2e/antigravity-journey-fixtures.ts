@@ -136,6 +136,7 @@ export async function cleanupAntigravityJourney(input: {
   const agent = agents.find(agent => agent.id === resources.agentId);
   if (agent && (agent.companyId !== resources.companyId || agent.name !== resources.agentName || named.length !== 1))
     throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+  if (agent && agents.some(row => row.reportsTo === agent.id)) throw new ConnectionFailure("cleanup_agent_has_unowned_reports");
   if (agent) {
     cleanup.agent = false; cleanup.runs = false;
     await api.patch(`/api/agents/${agent.id}`, { status: "paused" });
@@ -180,7 +181,19 @@ export async function cleanupAntigravityJourney(input: {
       if (!["done", "cancelled"].includes(issue.status)) await api.patch(`/api/issues/${issue.id}`, { status: "cancelled" });
     }
     if (["pending", "retirement_unconfirmed"].includes(resources.setupProbe)) throw new ConnectionFailure("setup_probe_retirement_unconfirmed");
-    if (!config.retainAgent) await api.delete(`/api/agents/${agent.id}`);
+    if (!config.retainAgent) {
+      // Purge is allowed only after the ordinary lifecycle owner completes termination.
+      await api.post(`/api/agents/${agent.id}/terminate`);
+      const terminateDeadline = Date.now() + 30_000;
+      while (true) {
+        const current = await api.get<Row>(`/api/agents/${agent.id}`);
+        if (current.companyId !== resources.companyId || current.name !== resources.agentName) throw new ConnectionFailure("cleanup_agent_owner_mismatch");
+        if (["terminated", "rejected"].includes(current.lifecycleState)) break;
+        if (Date.now() >= terminateDeadline) throw new ConnectionFailure("cleanup_agent_termination_unconfirmed");
+        await connectionDelay(250);
+      }
+      await api.delete(`/api/agents/${agent.id}`);
+    }
     resources.retained = config.retainAgent;
     cleanup.agent = true;
   } else {
