@@ -171,7 +171,11 @@ macOS or GNU/Linux x64 target. Linux ARM64 must retain Legacy because its pinned
 OpenCode runtime is not qualified. Advanced should show Paperclip Runner as the
 automatic default on qualified targets. Save an inactive draft without a model,
 resume it, select an explicit `provider/model`,
-test, finish setup, and reload. Verify the saved provider is `opencode`. Repeat
+test, finish setup, and reload. On a local target, the account test must use the
+native OpenCode runtime, verify the selected model with one read-only hello, and
+confirm teardown. Preserve the existing lease-bound native plugin Runner probe
+for supported remote targets. Other selected remote OpenCode targets must fail
+this native test explicitly; a host or Legacy CLI response must not qualify them. Verify the saved provider is `opencode`. Repeat
 with explicit Legacy and an existing Legacy agent; neither should migrate on an
 unrelated edit. Check that saved native permission/lifecycle choices survive
 resuming setup. Custom commands, arguments, variants, and inherited permissions

@@ -147,7 +147,10 @@ requires same-company `agents:create`, saved-agent update access when supplied,
 allowed environment selection, and normal secret/responsible-user checks. An
 unchanged saved runner avoids new-creation policy but still receives selected
 runtime validation. [Native readiness](../../server/src/services/native-runtime/setup-readiness.ts)
-tests native Codex startup/model/account and bounded teardown; an authentication
+tests native Codex and local OpenCode startup/model/account and bounded teardown.
+The existing lease-bound plugin Runner probe remains available for its selected
+remote target. Other remote OpenCode native account tests fail explicitly without
+a host or Legacy fallback. An authentication
 or Legacy CLI check cannot replace that runtime evidence. Missing dependencies,
 credentials, invalid models and incompatible settings fail without silently
 changing runners. Account login remains board/owner-bound.

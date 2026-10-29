@@ -539,9 +539,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
-    if (profile.provider === "codex") {
+    if (profile.provider === "codex" || profile.provider === "opencode") {
       const { testNativeRunnerAuthentication } = await import("../services/native-runtime/setup-readiness.js");
-      return testNativeRunnerAuthentication(context, "codex", profile.model);
+      return testNativeRunnerAuthentication(context, profile.provider, profile.model);
     }
     const result = await openCodeTestEnvironment(context);
     return { ...result, adapterType: "paperclip_runner" };
