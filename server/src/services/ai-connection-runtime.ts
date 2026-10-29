@@ -189,6 +189,22 @@ done`,
   }
 }
 
+function managedAiCredentialStagingRoot(): string {
+  const custom = process.env.PAPERCLIP_MANAGED_AI_STAGING_DIR?.trim();
+  if (custom) return custom;
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA?.trim();
+    if (localAppData) {
+      return path.join(localAppData, "Paperclip", "managed-ai-credentials");
+    }
+    const home = os.homedir();
+    if (home) {
+      return path.join(home, ".paperclip", "managed-ai-credentials");
+    }
+  }
+  return os.tmpdir();
+}
+
 function managedAiHomeEnvironment(home: string): Record<string, string> {
   const providerHome = path.join(home, "provider");
   return {
@@ -312,9 +328,11 @@ export async function prepareManagedAiRuntime(
       }
       throw unprocessable("The AI credential changed during preparation; retry this execution");
     })();
+    const stagingRoot = managedAiCredentialStagingRoot();
+    await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
     home = await mkdtemp(
       path.join(
-        os.tmpdir(),
+        stagingRoot,
         `paperclip-ai-${input.companyId}-${selection.grant.id}-`,
       ),
     );
