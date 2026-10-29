@@ -200,7 +200,7 @@ it.runIf(!process.env.PAPERCLIP_ACPX_REPRO_BINARY)("adopts the live ACPX executi
     };
     adopted=createCapabilityRunnerdCodexTransport(options);
     adopted.transport.setServerRequestHandler(async()=>({success:true,contentItems:[]}));
-    expect(await adopted.transport.request("thread/read",{})).toMatchObject({thread:{id:"record-1",sessionId:"agent-1"}});
+    expect(await adopted.transport.request("thread/read",{})).toMatchObject({thread:{id:"record-1",sessionId:"agent-1",turns:[{id:"provider-turn-1",status:"inProgress"}]}});
     expect(adopted.evidence().runnerPid).toBe(run.child.pid);
     expect(run.launches()).toHaveLength(1);
     expect(()=>process.kill(pid,0)).not.toThrow();
@@ -210,7 +210,7 @@ it.runIf(!process.env.PAPERCLIP_ACPX_REPRO_BINARY)("adopts the live ACPX executi
     expect(()=>process.kill(pid,0)).not.toThrow();
     adopted=createCapabilityRunnerdCodexTransport(options);
     adopted.transport.setServerRequestHandler(async()=>({success:true,contentItems:[]}));
-    expect(await adopted.transport.request("thread/read",{})).toMatchObject({thread:{id:"record-1",sessionId:"agent-1"}});
+    expect(await adopted.transport.request("thread/read",{})).toMatchObject({thread:{id:"record-1",sessionId:"agent-1",turns:[{id:"provider-turn-1",status:"inProgress"}]}});
     expect(adopted.evidence().runnerPid).toBe(run.child.pid);
     expect(run.launches()).toHaveLength(1);
     expect(launcher).not.toHaveBeenCalled();
