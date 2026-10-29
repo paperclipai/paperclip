@@ -9,6 +9,8 @@ import { documentService } from "../services/documents.js";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { initializeRunIdentity } from "../services/run-identity.js";
+import { issueService } from "../services/issues.js";
 import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 
@@ -264,6 +266,80 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       details: expect.objectContaining({ sourceIssueId: f.issueId, targetIssueId: created.task.id, kind: "update", allowed: true }),
     })]);
     expect(await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual(beforeWakes);
+  });
+
+  const childExecution = async (onboarding = true) => {
+    const f = await fixture();
+    if (onboarding) await accept(f, await proposal(f));
+    else await server.db.update(issues).set({ originKind: "manual" }).where(eq(issues.id, f.issueId));
+    const created = await f.authority.execute({ tool: "create_task", callId: randomUUID(), arguments: {
+      title: "Approved ready child", idempotencyKey: "own-execution-child", status: "todo",
+    } }) as { task: { id: string } };
+    // The parent is waiting, without a first-class dependency. This is not a
+    // graph cycle: the forbidden parent -> child edge would be the only edge.
+    await server.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    await server.db.update(issues).set({ status: "blocked", executionRunId: null }).where(eq(issues.id, f.issueId));
+    const childRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: childRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: created.task.id,
+      responsibleUserId: f.responsibleUserId, contextSnapshot: { issueId: created.task.id } });
+    await server.db.update(issues).set({ status: "in_progress", executionRunId: childRunId }).where(eq(issues.id, created.task.id));
+    await initializeRunIdentity(server.db, { companyId: f.companyId, runId: childRunId, issueId: created.task.id,
+      responsibleUserId: f.responsibleUserId, cause: "instruction" });
+    const childAuthority = new PaperclipRunnerToolAuthority(server.db, { ...f, issueId: created.task.id, runId: childRunId });
+    await issueService(server.db).checkout(created.task.id, f.agentId, ["in_progress"], childRunId);
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", childRunId, f.responsibleUserId)!;
+    return { f, childId: created.task.id, childRunId, childAuthority, token };
+  };
+
+  it.each(["native", "REST"])("rejects the onboarding parent blocker from the child's own %s execution", async transport => {
+    const { f, childId, childRunId, childAuthority, token } = await childExecution();
+    const input = { idempotencyKey: "child-own-parent-blocker", blockedByTaskIds: [f.issueId.toUpperCase()] };
+    const before = await f.snapshot();
+    const [beforeRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, childRunId));
+    const beforeWakes = await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    if (transport === "native") {
+      await expect(childAuthority.execute({ tool: "set_dependencies", callId: randomUUID(), arguments: input })).rejects.toMatchObject({
+        status: 400, details: { code: "onboarding_first_task_parent_blocker" },
+      });
+    } else {
+      const response = await fetch(`${server.apiUrl}/api/issues/${childId}`, {
+        method: "PATCH", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "blocked", blockedByIssueIds: input.blockedByTaskIds }),
+      });
+      expect(response.status, JSON.stringify(await response.json())).toBe(400);
+    }
+    const after = await f.snapshot();
+    expect(after.issues).toEqual(before.issues);
+    expect(after.issueRelations).toEqual([]);
+    expect(after.activity).toEqual(before.activity);
+    const [afterRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, childRunId));
+    expect(afterRun.resultJson).toEqual(beforeRun.resultJson);
+    expect(await server.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual(beforeWakes);
+    // A definite input error leaves the key available and other blockers valid.
+    for (const blockedByTaskIds of [[f.blockerId], []]) await expect(childAuthority.execute({ tool: "set_dependencies",
+      callId: randomUUID(), arguments: { ...input, idempotencyKey: blockedByTaskIds.length ? input.idempotencyKey : randomUUID(), blockedByTaskIds },
+    })).resolves.toMatchObject({ disposition: "applied" });
+  });
+
+  it.each(["native", "REST", "board"])("preserves ordinary parent blockers and explicit board edits (%s)", async actor => {
+    const { f, childId, childAuthority, token } = await childExecution(actor === "board");
+    if (actor === "native") {
+      await expect(childAuthority.execute({ tool: "set_dependencies", callId: randomUUID(), arguments: {
+        idempotencyKey: "ordinary-parent-blocker", blockedByTaskIds: [f.issueId],
+      } })).resolves.toMatchObject({ disposition: "applied" });
+    } else {
+      const headers = actor === "board"
+        ? { Cookie: await server.humanSession(f.responsibleUserId!), "Content-Type": "application/json", Origin: server.apiUrl }
+        : { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+      const response = await fetch(`${server.apiUrl}/api/issues/${childId}`, {
+        method: "PATCH", headers, body: JSON.stringify({ blockedByIssueIds: [f.issueId] }),
+      });
+      expect(response.status, JSON.stringify(await response.json())).toBe(200);
+    }
+    expect((await f.snapshot()).issueRelations).toContainEqual(expect.objectContaining({
+      issueId: f.issueId, relatedIssueId: childId, type: "blocks",
+    }));
   });
 
   it("guards native dependency edits without consuming the retry key", async () => {

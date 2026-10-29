@@ -197,7 +197,8 @@ Already admitted task replay and ordinary delegation retain their existing rules
 An accepted onboarding execution cannot create a new task blocked by its
 authenticated onboarding source. Native and REST creation return a recoverable
 input error before committing that task or its wake. The same source restriction
-applies to later blocker edits, using database UUID identity. Native dependency
+applies to later blocker edits, using database UUID identity. A child's own agent
+run also cannot add its server-owned onboarding parent as a blocker. Native dependency
 edits carry their authenticated run. Empty-list corrections and other blockers
 remain available without a new proposal decision. The API keeps its normal
 attempt audit. A corrected creation call retains

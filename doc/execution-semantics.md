@@ -43,9 +43,12 @@ continue to apply independently.
 An approved first-task execution handoff cannot name its onboarding source as a
 blocker of the new task. Creation and later dependency edits reject that input
 using database UUID identity, including supported alternate UUID text forms.
-The rejected mutation commits no task change, dependency, wake or command receipt,
-and returns guidance for a corrected retry. The API retains its normal attempt
-audit. Dependency edits do not require or consume a new proposal decision. Create
+Later agent dependency edits also protect the locked task's server-owned
+onboarding parent when the child is executing under its own run.
+Rejected creation commits no task, dependency, wake or command receipt. Dependency
+edits leave the requested fields and relations unchanged and return guidance for
+a corrected retry. The API retains its normal authorization and attempt audit.
+Dependency edits do not require or consume a new proposal decision. Create
 the dependency-ready child, then make the onboarding parent wait on that child
 through `set_dependencies`. Parentage alone is not a dependency. Other blockers,
 ordinary task delegation and replay of previously admitted creation retain their

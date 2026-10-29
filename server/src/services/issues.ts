@@ -11414,6 +11414,7 @@ export function issueService(db: Db) {
             actorAgentId,
             actorRunId,
             blockedByIssueIds,
+            parentIssueId: receiptExisting.parentId,
           });
         }
         if (actorAgentId && patch.status === "done") {
