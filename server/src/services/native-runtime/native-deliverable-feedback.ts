@@ -95,18 +95,17 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         }
         // Bind each object to its own verb. A denied write or "create no files"
         // cannot suppress a separate requested report in this same clause.
-        const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index)
-          .split(/\b(?:and(?:\s+then)?|then)\s+(?:also\s+)?(?:update|edit|bump|read|review|modify|inspect|change|include|wire)\b/iu, 1)[0];
+        const output = clause.slice(create.index + create[0].length, creates[createIndex + 1]?.index);
         // An explicit attachment/export request can refer to the file by
         // pronoun. It still requires publication when its name is omitted.
         const referencesOutput = /^(?:attach|export|send|provide|give|return|publish)$/iu.test(create[0])
           && /^\s+(?:me\s+)?(?:it|them|this|that)\b/iu.test(output);
         const referencedAttachment = referencesOutput && /^(?:attach|export)$/iu.test(create[0]);
-        const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu.test(output);
-        const inline = inlineDestination || /\b(?:its|the) contents\b/iu.test(output);
-        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:(?:a|an|any)\s+)?(?:downloadable|attached|download(?:\s+link)?)/iu.test(output)
-          && /\b(?:(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)|download link)\b/iu.test(output));
-        const inlineOnly = inlineDestination && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+        const inlineDestination = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block))\b/iu;
+        const inline = inlineDestination.test(output) || /\b(?:its|the) contents\b/iu.test(output);
+        const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
+          && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
+        const inlineOnly = inlineDestination.test(output.split(/\b(?:and|then)\b/iu, 1)[0]) && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
           && !/\bas (?:an? )?attachment\b/iu.test(output);
         const objects = [...output.matchAll(file)].filter(match => {
           const prefix = output.slice(0, match.index);
@@ -116,8 +115,16 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           if (/\b(?:no|zero|without(?:\s+(?:any|a|an))?)\s+(?:(?:new|temporary|downloadable|attached|additional)\s+)*$/iu.test(prefix)) return false;
           // "Write a summary of this PDF" names input, not a requested file.
           // Explicit export destinations still count after such input references.
-          const destination = /\b(?:as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*(?:[^\s]*\/)?$/iu.test(prefix);
-          if (!destination && /\b(?:of|about|on|from|using|for|with|to|that|which|read(?:s|ing)?|pars(?:e|es|ing))\b/iu.test(prefix)) return false;
+          const json = /\.json$/iu.test(match[0]);
+          const inputReference = /\b(?:of|about|on|from|using|for|with)\b/iu;
+          const destinationMatch = (json
+            ? /\b(as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*["'`*]*(?:[^\s]*\/)?$/iu
+            : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
+          const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
+            || !inputReference.test(prefix.slice(0, destinationMatch.index)));
+          if (json) {
+            if (!destination && !/^\s*(?:(?:a|an|the|new|separate|downloadable|attached)\s+)*["'`*]*(?:[^\s]*\/)?$/iu.test(prefix)) return false;
+          } else if (!destination && inputReference.test(prefix)) return false;
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
           return true;
         });
@@ -126,7 +133,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
           && /\b(?:must be denied|denial is (?:the )?expected|(?:this|the) negative test)\b/iu.test(objective);
         if (objects.length === 0 && !downloadable && /^\s+(?:no|zero|without)\b/iu.test(output)) return [];
-        return [{ namesFile: objects.length > 0, objects: inlineOnly ? 0 : objects.length, downloadable, publication, deniedAttempt,
+        return [{ namesFile: objects.length > 0, objects: objects.filter(match => !inlineOnly || !/\.json$/iu.test(match[0])).length, downloadable, publication, deniedAttempt,
           referencesOutput, publicationReference: referencesOutput && !inline }];
       });
     });
