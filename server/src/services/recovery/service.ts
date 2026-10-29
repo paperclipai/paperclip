@@ -1513,16 +1513,20 @@ export function recoveryService(
       if (activeConversation) return true;
     }
 
+    return hasOpenExplicitBlocker(issue.companyId, issue.id);
+  }
+
+  async function hasOpenExplicitBlocker(companyId: string, issueId: string) {
     return db
       .select({ id: issueRelations.issueId })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
       .where(
         and(
-          eq(issueRelations.companyId, issue.companyId),
-          eq(issueRelations.relatedIssueId, issue.id),
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.relatedIssueId, issueId),
           eq(issueRelations.type, "blocks"),
-          eq(issues.companyId, issue.companyId),
+          eq(issues.companyId, companyId),
           notInArray(issues.status, ["done", "cancelled"]),
           isNull(issues.hiddenAt),
         ),
@@ -5253,8 +5257,9 @@ export function recoveryService(
 
         if (
           issue.assigneeAgentId === participantAgentId &&
-          ((await issuesSvc.listDependencyReadiness(issue.companyId, [issue.id]))
-            .get(issue.id)?.pendingFinalizeBlockerIssueIds.length ?? 0) > 0
+          ((await hasOpenExplicitBlocker(issue.companyId, issue.id)) ||
+            ((await issuesSvc.listDependencyReadiness(issue.companyId, [issue.id]))
+              .get(issue.id)?.pendingFinalizeBlockerIssueIds.length ?? 0) > 0)
         ) {
           result.skipped += 1;
           continue;

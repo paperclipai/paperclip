@@ -10702,6 +10702,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue).toEqual({ status: "in_review", assigneeAgentId: agentId, executionState: seeded!.executionState });
   });
 
+  it.each([
+    { label: "first review run", retryReason: null },
+    { label: "review recovery retry", retryReason: "execution_review_participant_recovery" },
+  ])("keeps the sweep from retrying or escalating a pending review with an open blocker after a failed $label", async ({ retryReason }) => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture(
+      retryReason ? { wakeReason: retryReason, retryReason } : undefined,
+    );
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", runtimeMode: "native", startedAt: new Date("2026-03-19T00:00:00.000Z"), finishedAt, updatedAt: finishedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(agentWakeupRequests).set({ status: "failed", finishedAt, updatedAt: finishedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    const blockerIssueId = randomUUID();
+    const [issuePrefixRow] = await db.select({ identifier: issues.identifier }).from(issues).where(eq(issues.id, issueId));
+    await db.insert(issues).values({
+      id: blockerIssueId, companyId, title: "Open blocker", status: "todo", priority: "medium", issueNumber: 2,
+      identifier: issuePrefixRow!.identifier!.replace(/-1$/, "-2"),
+    });
+    await db.insert(issueRelations).values({ companyId, issueId: blockerIssueId, relatedIssueId: issueId, type: "blocks" });
+    const [seeded] = await db.select({ executionState: issues.executionState }).from(issues).where(eq(issues.id, issueId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ reviewParticipantRequeued: 0, escalated: 0 });
+    expect((await selectRecoveryRunsByAgent(agentId)).filter((row) => row.id !== runId)).toEqual([]);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
+    const [issue] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId, executionState: issues.executionState })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue).toEqual({ status: "in_review", assigneeAgentId: agentId, executionState: seeded!.executionState });
+  });
+
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {
     const { companyId, agentId, issueId, runId, stageId } =
       await seedInReviewParticipantRunFixture();
