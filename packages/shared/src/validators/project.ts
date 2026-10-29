@@ -133,6 +133,20 @@ export const createProjectSchema = z.object({
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
+/** Input of the `create_project` agent tool: the create body with a required idempotency key. */
+export const createProjectToolInputSchema = createProjectSchema.extend({
+  idempotencyKey: z.string().min(1).max(255),
+});
+
+/**
+ * JSON Schema of the `create_project` tool input, built with this package's zod.
+ * An npm install can give the server its own zod copy, and one copy's `toJSONSchema()`
+ * cannot convert a schema built by another copy (it throws on `record` fields).
+ */
+export function createProjectToolInputJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(createProjectToolInputSchema) as Record<string, unknown>;
+}
+
 export const updateProjectSchema = objectWithoutDefaults(
   z.object(projectFields),
 ).partial();
