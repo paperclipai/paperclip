@@ -43,7 +43,7 @@ const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find(
 describe("redaction", () => {
   it.each([1, 2, 3] as const)("preserves structured panel activation and redacts adjacent secrets in PRP v%s", version => {
     const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
-      eventType: "task.panel.activated", payload: { pluginKey: "example.live-view", slotId: "screen" } };
+      eventType: "runtime.activity.recorded", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
     expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
     expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, apiKey: "secret-sentinel" } } }))
       .toEqual({ prpEvent: { ...event, payload: { ...event.payload, apiKey: REDACTED_EVENT_VALUE } } });

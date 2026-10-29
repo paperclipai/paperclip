@@ -132,8 +132,12 @@ harness. They cover successful, failed, interrupted, interactive, duplicate
 terminal, process-cleanup, and oversized-frame behavior without starting a
 production adapter.
 
-`task.panel.activated` is a P1 Runner event in v1, v2 and v3 with exactly
-`{ pluginKey, slotId }`. Identifiers contain 1–160 Unicode code points and
-exclude C0 controls and DEL. Run identity stays in the authenticated event
-envelope and is not accepted in this payload. These UI hints use the ordinary
-durable outbox, acknowledgement and replay contract. They add no authorization.
+`runtime.activity.recorded` is a P1 Runner event in v1, v2 and v3 with exactly
+`{ namespace, activityKey }`. Both opaque identifiers contain 1–160 Unicode code
+points and exclude C0 controls and DEL. They identify reported runtime activity,
+not a plugin, UI slot or presentation command. The authenticated outer envelope
+provides run and session identity, source sequence and emission time. Core resolves
+the run's company, task and agent through its existing authorized run binding;
+callers cannot supply those identities in the payload. Recording activity does
+not independently verify the reported action or grant access to any resource.
+The event uses the ordinary durable outbox, acknowledgement and replay contract.

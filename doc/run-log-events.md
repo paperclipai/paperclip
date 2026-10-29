@@ -633,14 +633,17 @@ cannot apply company export settings. Its payload contains only a closed reason
 and the settings revision. It carries no endpoint, credential, secret reference
 or resolver error. Recording the diagnostic never contacts a destination.
 
-## Task plugin panel activation
+## Runtime activity
 
-`task.panel.activated` is a P1 Runner PRP event with a closed
-`{ pluginKey, slotId }` payload. Both identifiers contain 1–160 Unicode code
-points and exclude C0 controls and DEL. The outer event carries the active run
-and session identity. Callers cannot put run identity in the payload.
+`runtime.activity.recorded` is a P1 Runner PRP event with a closed
+`{ namespace, activityKey }` payload. Identifiers contain 1–160 Unicode code
+points and exclude C0 controls and DEL. A namespace and activity key describe a
+reported execution fact without naming a plugin, UI slot, or presentation action.
+The authenticated event envelope supplies run/session identity, sequence and
+emission time. Core resolves company, task and agent from the existing run binding.
+Callers cannot put those identities in the activity payload.
 
-The ordinary authenticated Runner event is the durable activation record.
-Normal source-event acknowledgement and replay deduplicate delivery. Existing
-run-read authorization and secret redaction apply to saved and live events.
-The event records use of a plugin view. It does not grant access to that view.
+The ordinary authenticated Runner event is the durable record. Normal source-event
+acknowledgement and replay deduplicate delivery. Existing run-read authorization
+and secret redaction apply to saved and live events. Recording reported activity
+is not independent proof that it happened and grants no resource permission.

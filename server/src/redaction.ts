@@ -219,7 +219,7 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "workspace.diff.recorded",
   "workspace.file.referenced",
   "auth.credentials.updated",
-  "task.panel.activated",
+  "runtime.activity.recorded",
   "harness.starting",
   "harness.ready",
   "harness.exited",

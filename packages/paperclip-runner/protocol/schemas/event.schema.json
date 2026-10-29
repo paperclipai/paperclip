@@ -31,7 +31,7 @@
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
         "auth.credentials.updated",
-        "task.panel.activated",
+        "runtime.activity.recorded",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
         "plan.updated",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
@@ -194,7 +194,7 @@
       "if": {
         "properties": {
           "eventType": {
-            "const": "task.panel.activated"
+            "const": "runtime.activity.recorded"
           }
         }
       },
@@ -209,17 +209,17 @@
           "payload": {
             "type": "object",
             "required": [
-              "pluginKey",
-              "slotId"
+              "namespace",
+              "activityKey"
             ],
             "properties": {
-              "pluginKey": {
+              "namespace": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
                 "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
-              "slotId": {
+              "activityKey": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,

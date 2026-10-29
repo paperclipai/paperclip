@@ -229,10 +229,10 @@ describe("live-event run read boundaries", () => {
     const registry = createRunSecretRedactionRegistry(db);
     await registry.register(companyId, run.id, registered);
     await instanceSettingsService(db).updateGeneral({ censorUsernameInLogs: true });
-    const body = kind === "panel" ? { prpEvent: { eventType: "task.panel.activated", sourceKind: "runner", payload: { pluginKey: `example.${registered}`, slotId: `${homedir()}/synthetic.txt` } } }
+    const body = kind === "panel" ? { prpEvent: { eventType: "runtime.activity.recorded", sourceKind: "runner", payload: { namespace: `example.${registered}`, activityKey: `${homedir()}/synthetic.txt` } } }
       : { prpEvent: { eventType: "item.delta", payload: { kind: "agentMessage",
         text: `${homedir()}/synthetic.txt ${registered}`, password: "sensitive-key-sentinel" } } };
-    const sourcePayload = { runId: run.id, agentId: agent.id, seq: 1, eventType: kind === "panel" ? "task.panel.activated" : "item.delta", payload: body };
+    const sourcePayload = { runId: run.id, agentId: agent.id, seq: 1, eventType: kind === "panel" ? "runtime.activity.recorded" : "item.delta", payload: body };
     const expected = await registry.redactForRun(companyId, run.id,
       redactCurrentUserValue({ ...sourcePayload, payload: redactEventPayload(body) }, { enabled: true }));
     const queries: string[] = [];

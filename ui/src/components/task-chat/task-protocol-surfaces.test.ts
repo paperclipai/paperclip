@@ -26,7 +26,7 @@ function enumStrings(value: unknown): string[] {
 
 describe("Paperclip task protocol surface registry", () => {
   it("folds activation into the task panel instead of adding a chat message", () => {
-    expect(TASK_PROTOCOL_EVENT_SURFACE_REGISTRY["task.panel.activated"]).toMatchObject({ disposition: "folded", surface: "task_panel" });
+    expect(TASK_PROTOCOL_EVENT_SURFACE_REGISTRY["runtime.activity.recorded"]).toMatchObject({ disposition: "folded", surface: "task_panel" });
   });
   it("classifies every canonical event exactly once", () => {
     const eventSchema = schema("event.schema.json");

@@ -49,17 +49,17 @@ test("canonical replay fixtures use supported required versions", async () => {
   }
 });
 
-test("task panel activation is a closed Runner notification in every supported event version", async () => {
+test("runtime activity is a closed Runner notification in every supported event version", async () => {
   const validators = compileProtocolValidators(await loadSchemaCatalog(resolve(protocolRoot, "schemas")));
   const happy = await fixture("replay/happy-path.json");
   const base = happy.events[0];
   for (const [version, validate] of [[1, event => validators.fixture({ ...happy, events: [event] })], [2, validators.eventV2], [3, validators.eventV3]]) {
     const event = { ...base, schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
-      eventType: "task.panel.activated", priority: 1, sourceKind: "runner", payload: { pluginKey: "example.live-view", slotId: "screen" } };
+      eventType: "runtime.activity.recorded", priority: 1, sourceKind: "runner", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
     assert.equal(validate(event), true);
     assert.equal(validate({ ...event, sourceKind: "control_plane" }), false);
-    for (const payload of [{ ...event.payload, runId: "caller-run" }, { ...event.payload, slotId: "" },
-      { ...event.payload, slotId: "x".repeat(161) }, { ...event.payload, pluginKey: "invalid\nkey" }]) {
+    for (const payload of [{ ...event.payload, runId: "caller-run" }, { ...event.payload, activityKey: "" },
+      { ...event.payload, activityKey: "x".repeat(161) }, { ...event.payload, namespace: "invalid\nkey" }]) {
       assert.equal(validate({ ...event, payload }), false);
     }
   }

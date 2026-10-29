@@ -412,9 +412,9 @@ describe("PaperclipControlPlanePort conformance", () => {
     const event: PrpEvent = {
       schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
       sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
-      normalizedSessionId: identity.sessionId, eventType: "task.panel.activated", schemaVersion: 1,
+      normalizedSessionId: identity.sessionId, eventType: "runtime.activity.recorded", schemaVersion: 1,
       priority: 1, emittedAt: new Date().toISOString(),
-      payload: { pluginKey: "example.live-view", slotId: "screen" },
+      payload: { namespace: "example.runtime", activityKey: "desktop.used" },
     };
     const port = new PaperclipControlPlanePort(db, binding);
     const replayBinding = structuredClone(binding);
@@ -425,11 +425,11 @@ describe("PaperclipControlPlanePort conformance", () => {
       if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) notifications.push(String(event.payload.eventType));
     });
     try { await port.appendEvent(event); } finally { unsubscribe(); }
-    expect(notifications).toEqual(["task.panel.activated"]);
+    expect(notifications).toEqual(["runtime.activity.recorded"]);
     const restarted = new PaperclipControlPlanePort(db, replayBinding);
     expect((await restarted.appendEvent(event)).disposition).toBe("duplicate");
     const activations = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
-    expect(activations.filter(row => row.eventType === "task.panel.activated")).toHaveLength(1);
+    expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
   });
 
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {

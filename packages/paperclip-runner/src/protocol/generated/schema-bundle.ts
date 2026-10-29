@@ -4705,7 +4705,7 @@ export const eventSchema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
-        "task.panel.activated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5348,7 +5348,7 @@ export const eventSchema = {
       "if": {
         "properties": {
           "eventType": {
-            "const": "task.panel.activated"
+            "const": "runtime.activity.recorded"
           }
         }
       },
@@ -5363,17 +5363,17 @@ export const eventSchema = {
           "payload": {
             "type": "object",
             "required": [
-              "pluginKey",
-              "slotId"
+              "namespace",
+              "activityKey"
             ],
             "properties": {
-              "pluginKey": {
+              "namespace": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
                 "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
-              "slotId": {
+              "activityKey": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
@@ -5470,7 +5470,7 @@ export const eventV2Schema = {
         "workspace.diff.recorded",
         "workspace.file.referenced",
         "auth.credentials.updated",
-        "task.panel.activated",
+        "runtime.activity.recorded",
         "harness.starting",
         "harness.ready",
         "harness.exited",
@@ -5682,7 +5682,7 @@ export const eventV2Schema = {
       "if": {
         "properties": {
           "eventType": {
-            "const": "task.panel.activated"
+            "const": "runtime.activity.recorded"
           }
         }
       },
@@ -5697,17 +5697,17 @@ export const eventV2Schema = {
           "payload": {
             "type": "object",
             "required": [
-              "pluginKey",
-              "slotId"
+              "namespace",
+              "activityKey"
             ],
             "properties": {
-              "pluginKey": {
+              "namespace": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
                 "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
-              "slotId": {
+              "activityKey": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
@@ -5899,7 +5899,7 @@ export const eventV3Schema = {
         "external_provider.operation_settled",
         "external_provider.input_available",
         "auth.credentials.updated",
-        "task.panel.activated"
+        "runtime.activity.recorded"
       ]
     },
     "schemaVersion": {
@@ -6420,7 +6420,7 @@ export const eventV3Schema = {
       "if": {
         "properties": {
           "eventType": {
-            "const": "task.panel.activated"
+            "const": "runtime.activity.recorded"
           }
         }
       },
@@ -6435,17 +6435,17 @@ export const eventV3Schema = {
           "payload": {
             "type": "object",
             "required": [
-              "pluginKey",
-              "slotId"
+              "namespace",
+              "activityKey"
             ],
             "properties": {
-              "pluginKey": {
+              "namespace": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,
                 "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
               },
-              "slotId": {
+              "activityKey": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 160,

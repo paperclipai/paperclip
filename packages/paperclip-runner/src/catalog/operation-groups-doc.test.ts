@@ -69,8 +69,8 @@ describe("canonical operation-groups specification", () => {
     expect(input.scenarios).toHaveLength(106);
     expect(new Set(input.scenarios.map((scenario) => scenario.id)).size).toBe(106);
     expect(input.eventTypes).toHaveLength(107);
-    expect(input.eventTypes).toContain("task.panel.activated");
-    expect(input.source.prpEventFamilyDescriptions.task).toBe("Run-bound plugin task-panel activation.");
+    expect(input.eventTypes).toContain("runtime.activity.recorded");
+    expect(input.source.prpEventFamilyDescriptions.runtime).toBe("Runner phase transitions and run-scoped reported activity.");
     expect(input.commandTypes).toHaveLength(18);
   });
 

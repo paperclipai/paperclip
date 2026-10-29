@@ -6,7 +6,7 @@ Status: canonical explanatory contract for the Paperclip runner V1 surface.
 
 This document keeps three independent meanings of **group** separate. PRP families describe wire evidence and controller commands; capability placement decides who owns an operation; behavioral eval groups organize the 106 scenario corpus. None of the three axes can be used as a substitute for another.
 
-The generated totals are **107 PRP events in 33 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **69 reconciled semantic operations** (18 always, 51 optional), and **106 scenarios in 16 behavior groups**.
+The generated totals are **107 PRP events in 32 event families**, **18 controller commands in 7 command families**, **10 control-plane operations**, **69 reconciled semantic operations** (18 always, 51 optional), and **106 scenarios in 16 behavior groups**.
 
 ## Axis 1: PRP v1 event and command families
 
@@ -17,11 +17,10 @@ PRP records ordered, replayable execution evidence. It is not the model's Paperc
 | Family | Purpose | Events | Count |
 | --- | --- | --- | ---: |
 | `runner` | Runner connection, drain, and diagnostic lifecycle. | `runner.connected`<br>`runner.reconnected`<br>`runner.reconciled`<br>`runner.disconnected`<br>`runner.draining`<br>`runner.backpressure`<br>`runner.suspending`<br>`runner.suspended`<br>`runner.stopped`<br>`runner.diagnostic` | 10 |
-| `runtime` | Runner phase transitions. | `runtime.phase.changed` | 1 |
+| `runtime` | Runner phase transitions and run-scoped reported activity. | `runtime.phase.changed`<br>`runtime.activity.recorded` | 2 |
 | `sandbox` | Sandbox resource measurements. | `sandbox.metric` | 1 |
 | `workspace` | Workspace readiness. | `workspace.ready`<br>`workspace.change.updated`<br>`workspace.diff.recorded`<br>`workspace.file.referenced` | 4 |
 | `auth` | Content-free harness credential changes observed by the runner. | `auth.credentials.updated` | 1 |
-| `task` | Run-bound plugin task-panel activation. | `task.panel.activated` | 1 |
 | `harness` | Provider harness startup, readiness, exit, and diagnostics. | `harness.starting`<br>`harness.ready`<br>`harness.exited`<br>`harness.diagnostic` | 4 |
 | `plan` | Complete provider-authored within-turn checklist snapshots, separate from durable Paperclip Plan documents. | `plan.updated` | 1 |
 | `tool` | Provider-neutral process, MCP, dynamic, and built-in execution activity. | `tool.execution.started`<br>`tool.execution.progressed`<br>`tool.execution.completed` | 3 |
