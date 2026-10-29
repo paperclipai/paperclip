@@ -14,6 +14,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Holds the lockfile bot key. Restrict this environment to master so no
+    # other branch or workflow can mint a token that bypasses master rules.
+    environment: lockfile-refresh
     permissions:
       contents: write
       pull-requests: write
@@ -65,6 +68,7 @@ jobs:
           if git diff --quiet -- pnpm-lock.yaml; then
             echo "Lockfile unchanged, nothing to do."
             echo "pr_url=" >> "$GITHUB_OUTPUT"
+            echo "head_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -117,11 +121,11 @@ jobs:
 
           - Pinned pnpm resolution completed with lifecycle scripts disabled.
           - The report proof refresh accepted the reviewed committed baseline.
-          - Required PR checks and reviews must pass before merge.
+          - The workflow rejected changes outside the lock and report proof files.
 
           ## Risks
 
-          Dependency changes require review. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
+          The lockfile bot merges this PR without CI or review. It merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
 
           ## Model Used
 
@@ -131,7 +135,7 @@ jobs:
 
           - [x] Thinking path and problem description included
           - [x] Generated lock and matching report proof included
-          - [ ] Required CI checks and reviews pass
+          - [x] Merged automatically by the lockfile bot
           PR_BODY
             pr_url="$(gh pr create \
               --head "$BRANCH" \
@@ -142,10 +146,29 @@ jobs:
             echo "PR already exists: $pr_url"
           fi
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Enable auto-merge for lockfile PR
+      # Mint the bypass token only after resolution has finished, so no earlier
+      # step can read it. The lockfile bot is a master ruleset bypass actor in
+      # pull_request mode: it can merge PRs past checks and review, but cannot
+      # push to master directly. See doc/RELEASE-AUTOMATION-SETUP.md.
+      - name: Create lockfile bot token
+        id: bot-token
+        if: steps.upsert-pr.outputs.pr_url != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.LOCKFILE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.LOCKFILE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Merge lockfile PR
         if: steps.upsert-pr.outputs.pr_url != ''
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.bot-token.outputs.token }}
+          PR_URL: ${{ steps.upsert-pr.outputs.pr_url }}
+          HEAD_SHA: ${{ steps.upsert-pr.outputs.head_sha }}
         run: |
-          gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
+          # Merge only the commit this job pushed. Anything else pushed to the
+          # branch since then makes GitHub refuse the merge.
+          gh pr merge "$PR_URL" --squash --admin --delete-branch --match-head-commit "$HEAD_SHA"

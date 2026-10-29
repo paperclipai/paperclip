@@ -219,6 +219,25 @@ Current file:
 
 If `@cryppadotta` is not the right reviewer identity in the public repo, change it before enabling enforcement.
 
+## 8.1. Let the Lockfile Bot Merge Lockfile Refreshes
+
+`.github/workflows/refresh-lockfile.yml` regenerates `pnpm-lock.yaml` from the manifests on `master` and merges the result without CI or review. Contributors never commit the lockfile, so the bot is the only path for lockfile changes.
+
+The merge uses a dedicated GitHub App. Do not reuse `commitperclip` or bypass the built-in `github-actions` app. Those identities are available to other workflows, including release jobs that run dependency install scripts, so a bypass for them would let any of those workflows land code on `master`.
+
+1. Create an organization-owned GitHub App, for example `paperclip-lockfile-bot`:
+   - Disable the webhook.
+   - Repository permissions: `Contents: Read and write`, `Pull requests: Read and write`. Leave everything else at `No access`.
+   - Allow installation only on this account.
+2. Install the app on `paperclipai/paperclip` only.
+3. Create a GitHub environment named `lockfile-refresh`. Under deployment branches and tags, allow only `master`. Add no required reviewers.
+4. In that environment, add:
+   - variable `LOCKFILE_BOT_CLIENT_ID`: the app's client ID
+   - secret `LOCKFILE_BOT_PRIVATE_KEY`: a private key generated for the app
+5. In the `master` ruleset, add the app as a bypass actor with bypass mode `For pull requests only`. The app can then merge PRs past required checks and code owner review, but it cannot push to `master` directly.
+
+The workflow mints the app token after dependency resolution finishes and merges only the commit it pushed (`--match-head-commit`). A commit anyone else pushes to `chore/refresh-lockfile` makes the merge fail.
+
 ## 9. Protect Release Infrastructure Specifically
 
 These files should always trigger code owner review:
