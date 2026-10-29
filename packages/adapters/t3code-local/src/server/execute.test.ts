@@ -231,12 +231,14 @@ describe("t3code_local execute", () => {
   it("keeps the stop unverified when an interrupted start never shows up in the thread list", async () => {
     const env = await setup({
       "thread start": [{ sleep: 10 }],
-      "thread list": [{ stdout: "[]\n" }],
+      "thread list": Array.from({ length: 20 }, () => ({ stdout: "[]\n" })),
     });
     const onProviderStopped = vi.fn(async () => {});
     const res = await execute(makeContext(env, { config: { timeoutSec: 1, graceSec: 1 }, onProviderStopped }));
 
     expect(res).toMatchObject({ timedOut: true, errorCode: "t3code_stop_unverified" });
+    expect(res.errorMessage).toContain("did not list a thread for this run");
+    expect((await env.calls()).filter((call) => call.args[0] === "thread" && call.args[1] === "list").length).toBeGreaterThan(1);
     expect(onProviderStopped).not.toHaveBeenCalled();
   }, 30_000);
 
