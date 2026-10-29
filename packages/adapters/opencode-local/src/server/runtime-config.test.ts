@@ -64,9 +64,21 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(command.status).toBe(7);
     if (process.platform === "linux") {
       const parentScore = await fs.readFile("/proc/self/oom_score_adj", "utf8");
-      expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
+      const probeEnv = { ...process.env };
+      delete probeEnv.BASH_ENV;
+      const readScore = 'IFS= read -r score < /proc/self/oom_score_adj; builtin printf "%s" "$score"';
+      const probe = spawnSync("bash", ["-c", `builtin printf '1000\\n' > /proc/self/oom_score_adj && ${readScore}`], {
+        env: probeEnv, encoding: "utf8",
+      });
+      const score = execFileSync("bash", ["-c", readScore], {
         env: { ...process.env, ...hookEnv.child }, encoding: "utf8",
-      }).trim()).toBe("1000");
+      }).trim();
+      // The production hook is best-effort on hosts that deny proc writes.
+      if (probe.status === 0) expect(score).toBe(probe.stdout.trim());
+      else {
+        console.info("OOM preference host probe rejected", { status: probe.status, diagnostic: probe.stderr.trim() });
+        expect(score).toBe(parentScore.trim());
+      }
       expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
     }
     const config = JSON.parse(await fs.readFile(path.join(relocated, "opencode", "opencode.json"), "utf8"));
