@@ -367,6 +367,7 @@ describe("no company-scope decision bypasses the role check", () => {
   const KNOWN_COMPANY_SCOPE_SITES = [
     "realtime/live-events-ws.ts",
     "routes/cases.ts",
+    "routes/companies.ts",
     "routes/environments.ts",
     "routes/issues.ts",
     "routes/plugins.ts",
@@ -382,9 +383,6 @@ describe("no company-scope decision bypasses the role check", () => {
   const ROLE_BLIND_BY_DESIGN: Record<string, string> = {
     // Builds the actor in the first place.
     "middleware/auth.ts": "derives companyIds from memberships",
-    // Lists the companies an actor belongs to. A client must still see the
-    // company it is a client of, or it could never reach a portal at all.
-    "routes/companies.ts": "company list/switcher scope, not a read of company data",
     // Request body, not an actor scope.
     "routes/access.ts": "reads companyIds from the request body",
     // Chooses which company a session is scoped to at login.
