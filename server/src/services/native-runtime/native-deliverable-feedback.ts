@@ -105,7 +105,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         const inline = inlineDestination.test(output) || /\b(?:its|the) contents\b/iu.test(output);
         const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
           && /\b(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)\b/iu.test(output));
-        const inlineOnly = inlineDestination.test(output.split(/\b(?:and|then)\b/iu, 1)[0]) && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+        const inlineOnly = inlineDestination.test(output.split(/\s+(?:and|then)\s+/iu, 1)[0]) && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
           && !/\bas (?:an? )?attachment\b/iu.test(output);
         const objects = [...output.matchAll(file)].filter(match => {
           const prefix = output.slice(0, match.index);
@@ -120,10 +120,14 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           const destinationMatch = (json
             ? /\b(as|into|to|named|called)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*["'`*]*(?:[^\s]*\/)?$/iu
             : /\b(?:as|into|to)\s+(?:(?:a|an|the|new|separate|markdown|word|excel)\s+)*$/iu).exec(prefix);
+          const beforeDestination = prefix.slice(0, destinationMatch?.index ?? 0);
+          const fileConversion = json && destinationMatch?.[1].toLowerCase() === "to"
+            && [...beforeDestination.matchAll(file)].some(source => /\.[a-z0-9]{1,16}$/iu.test(source[0]));
           const destination = destinationMatch !== null && (!json || !/^(?:to|named|called)$/iu.test(destinationMatch[1])
-            || !inputReference.test(prefix.slice(0, destinationMatch.index)));
+            || !inputReference.test(beforeDestination) || fileConversion);
           if (json) {
-            if (!destination && !/^\s*(?:(?:a|an|the|new|separate|downloadable|attached)\s+)*["'`*]*(?:[^\s]*\/)?$/iu.test(prefix)) return false;
+            const directObject = /^\s*(?:(?:a|an|the)\s+)?(?:(?:new|separate|downloadable|attached)\s+)*([\p{L}\p{N}_-]+\s+)?["'`*]*(?:[^\s]*\/)?$/iu.exec(prefix);
+            if (!destination && (!directObject || inputReference.test(directObject[1] ?? ""))) return false;
           } else if (!destination && inputReference.test(prefix)) return false;
           if (/^files?$/iu.test(match[0]) && /^\s+(?:tools?|permissions?|systems?|formats?|names?|paths?|types?|sizes?|descriptors?)\b/iu.test(suffix)) return false;
           return true;
