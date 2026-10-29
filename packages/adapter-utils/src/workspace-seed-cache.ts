@@ -167,12 +167,15 @@ async function cacheUsage(root: string, limits: SeedCacheLimits): Promise<{ gene
 export async function publishWorkspaceSeedGeneration(
   root: string, generation: string, seed: WorkspaceDurableSeedPaths,
   options: { companyDirectory?: string; limits?: Partial<SeedCacheLimits>; eviction?: Partial<SeedCacheEviction>;
-    now?: () => number; verify?: () => Promise<boolean> } = {},
+    scope?: "workspace" | "company"; now?: () => number; verify?: () => Promise<boolean> } = {},
 ): Promise<boolean> {
-  const limits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
+  const configuredLimits = { ...WORKSPACE_SEED_CACHE_LIMITS, ...options.limits };
+  const limits = options.scope === "company" ? { ...configuredLimits,
+    workspaceGenerations: configuredLimits.companyGenerations, workspaceBytes: configuredLimits.companyBytes,
+  } : configuredLimits;
   const eviction = { ...WORKSPACE_SEED_CACHE_EVICTION, ...options.eviction };
   if (!/^[a-f0-9]{64}$/.test(generation)
-    || Object.values(limits).some(value => !Number.isSafeInteger(value) || value < 0)) return false;
+    || Object.values(configuredLimits).some(value => !Number.isSafeInteger(value) || value < 0)) return false;
   root = path.resolve(root);
   const company = path.resolve(options.companyDirectory ?? root);
   if (root !== company && path.dirname(root) !== company) return false;
@@ -217,6 +220,7 @@ export async function publishWorkspaceSeedGeneration(
     if (initialCapacity === "existing") return true;
     let incomingBytes = 4096;
     for (const archive of [seed.workspaceArchivePath, seed.gitArchivePath]) if (archive) incomingBytes += (await fs.lstat(archive)).size;
+    if (incomingBytes > configuredLimits.workspaceBytes) return false;
     const plan = { generation, incomingBytes, limits, eviction, now: options.now?.() ?? Date.now() };
     if (initialCapacity === false && !await evictSeedGenerations(company, root, { ...plan, apply: false })) return false;
     if (options.verify && !await options.verify()) return false;
