@@ -108,11 +108,14 @@ function readProposalPaneWidth(fallback: number): number {
   return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
 }
 
-function clampPaneWidth(width: number): number {
-  if (typeof window === "undefined") return Math.max(Math.round(width), MIN_PANE_WIDTH);
-  const max = Math.round(window.innerWidth * MAX_PANE_WIDTH_RATIO);
-  const min = Math.min(MIN_PANE_WIDTH, max);
-  return Math.min(Math.max(Math.round(width), min), max);
+function readPaneWidthCap(): number {
+  if (typeof window === "undefined") return Number.POSITIVE_INFINITY;
+  return Math.round(window.innerWidth * MAX_PANE_WIDTH_RATIO);
+}
+
+function clampPaneWidth(width: number, cap: number): number {
+  const min = Math.min(MIN_PANE_WIDTH, cap);
+  return Math.min(Math.max(Math.round(width), min), cap);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
@@ -191,21 +194,25 @@ function ResizablePropertiesPanel({
     : taskDetailLayout
     ? TASK_DETAIL_WIDTH_STORAGE_KEY
     : WIDTH_STORAGE_KEY;
-  const [width, setWidth] = useState(() =>
-    clampPaneWidth(readStoredPaneWidth(widthStorageKey, defaultPaneWidth)),
+  // The preference stays unclamped so a window that narrows and widens again
+  // hands the pane back the width the user actually picked.
+  const [preferredWidth, setPreferredWidth] = useState(() =>
+    readStoredPaneWidth(widthStorageKey, defaultPaneWidth),
   );
+  const [paneWidthCap, setPaneWidthCap] = useState(readPaneWidthCap);
+  const width = clampPaneWidth(preferredWidth, paneWidthCap);
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
 
   // The host can outlive a viewport change while its content is loading.
-  // Clamp before revealing it, without overwriting the user's saved width.
+  // Re-read the cap before revealing it.
   useLayoutEffect(() => {
-    if (panelVisible) setWidth(clampPaneWidth);
+    if (panelVisible) setPaneWidthCap(readPaneWidthCap());
   }, [panelVisible]);
 
   useEffect(() => {
-    const handleViewportResize = () => setWidth(clampPaneWidth);
+    const handleViewportResize = () => setPaneWidthCap(readPaneWidthCap());
     window.addEventListener("resize", handleViewportResize);
     return () => window.removeEventListener("resize", handleViewportResize);
   }, []);
@@ -277,7 +284,8 @@ function ResizablePropertiesPanel({
     const drag = dragStateRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) return;
     // The grip sits on the panel's LEFT border: moving left widens the panel.
-    setWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX)));
+    // A drag states a preference for this viewport, so it is clamped on the way in.
+    setPreferredWidth(clampPaneWidth(drag.startWidth + (drag.startX - event.clientX), readPaneWidthCap()));
   }, []);
 
   const handleGripPointerUp = useCallback(
@@ -294,7 +302,7 @@ function ResizablePropertiesPanel({
   }, [endDrag]);
 
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(clampPaneWidth(designSandbox ? readProposalPaneWidth(productionPaneWidth) : defaultPaneWidth));
+    setPreferredWidth(designSandbox ? readProposalPaneWidth(productionPaneWidth) : defaultPaneWidth);
     clearStoredPaneWidth(widthStorageKey);
   }, [defaultPaneWidth, designSandbox, productionPaneWidth, widthStorageKey]);
 

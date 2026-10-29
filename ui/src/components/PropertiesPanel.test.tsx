@@ -192,7 +192,7 @@ describe("PropertiesPanel", () => {
       expect(window.localStorage.getItem(storageKey)).toBe("700");
     });
 
-    it("gives the width back to the thread when the window is half-screened", async () => {
+    it("gives the width back to the thread when the window is half-screened, then returns it", async () => {
       window.localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "434");
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside")!;
@@ -204,6 +204,12 @@ describe("PropertiesPanel", () => {
 
       expect(aside.style.width).toBe("317px");
       expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("434");
+
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1920 });
+      window.dispatchEvent(new Event("resize"));
+      await flushReact();
+
+      expect(aside.style.width).toBe("434px");
     });
 
     it("drops the 260px floor once a third of the viewport is narrower", async () => {
