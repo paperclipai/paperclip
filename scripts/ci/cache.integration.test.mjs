@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { executionPlan, sourceFiles } from "./execution-plan.mjs";
+import { executionPlan, sourceFiles, turboCacheArgs } from "./execution-plan.mjs";
 
 const repositoryRoot = new URL("../../", import.meta.url);
 const turbo = process.env.PAPERCLIP_CI_TEST_TURBO ?? new URL("node_modules/.bin/turbo", repositoryRoot).pathname;
@@ -47,10 +47,10 @@ test("real Turbo executes existing suite scripts and invalidates source, argumen
     const execution = () => executionPlan(definition, "ci:server", ["--shard-index", "0", "--shard-count", "12"], sourceFiles(directory));
     write("input[one].txt", "first");
     write("check.cjs", `const fs = require('node:fs'); fs.appendFileSync('calls.txt','call\\n'); const input=fs.readFileSync('input[one].txt','utf8'); if(input==='fail') process.exit(1); if(!process.argv.includes('general-server-without-chat')) process.exit(2); fs.writeFileSync('result.txt',input+process.env.FLAVOR);`);
-    const run = (extra = {}, args = execution().args) => {
+    const run = (extra = {}, args = execution().args, force = false) => {
       const plan = execution();
       json("turbo.json", plan.config);
-      return spawnSync(turbo, ["run", plan.target, "--cache=local:rw", "--cache-dir=.turbo/cache", "--", ...args], {
+      return spawnSync(turbo, ["run", plan.target, ...turboCacheArgs(force), "--cache-dir=.turbo/cache", "--", ...args], {
         cwd: directory, encoding: "utf8", env: { ...process.env, TURBO_TELEMETRY_DISABLED: "1", FLAVOR: "a", CI_TASK_CACHE_SCOPE: "node-24", ...extra },
       });
     };
@@ -71,5 +71,13 @@ test("real Turbo executes existing suite scripts and invalidates source, argumen
     write("input[one].txt", "fail");
     assert.notEqual(run().status, 0); assert.notEqual(run().status, 0);
     assert.equal(calls(), 7, "a failed task must execute on every attempt");
+    write("input[one].txt", "forced");
+    pass(); assert.equal(calls(), 8);
+    for (let i = 0; i < 2; i++) {
+      const result = run({}, execution().args, true);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+    }
+    assert.equal(calls(), 10, "forced tasks must ignore a matching cached result");
+    pass(); assert.equal(calls(), 10, "forced tasks must still publish successful results");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

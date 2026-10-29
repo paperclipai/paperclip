@@ -2,7 +2,7 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { matchesGlob } from "node:path";
-import { executionPlan, sourceFiles } from "./execution-plan.mjs";
+import { executionPlan, sourceFiles, turboCacheArgs } from "./execution-plan.mjs";
 
 const task = process.env.CI_TASK;
 if (!/^ci:[a-z-]+$/.test(task ?? "")) throw new Error("Invalid CI task");
@@ -41,9 +41,9 @@ const scope = {
 };
 const force = process.env.CI_FORCE_TASKS === "true" || uncacheable;
 const result = spawnSync("pnpm", ["exec", "turbo", "run", execution.target,
-  "--root-turbo-json", runtimeConfig, "--summarize", "--cache=local:rw", "--cache-dir=.turbo/cache",
+  "--root-turbo-json", runtimeConfig, "--summarize", ...turboCacheArgs(force), "--cache-dir=.turbo/cache",
   ...(process.env.CI_TASK_DRY_RUN === "true" ? ["--dry=json"] : []),
-  ...(force ? ["--force"] : []), "--", ...execution.args], {
+  "--", ...execution.args], {
   stdio: "inherit",
   env: { ...process.env, TURBO_TELEMETRY_DISABLED: "1",
     CI_TASK_CACHE_SCOPE: createHash("sha256").update(JSON.stringify(scope)).digest("hex") },
