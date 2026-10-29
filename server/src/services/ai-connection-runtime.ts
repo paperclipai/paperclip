@@ -321,7 +321,9 @@ export async function prepareManagedAiRuntime(
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const value = await service.runtimeCredential(selection);
+        const ownership = managedProbeCredentialLocks.getStore();
+        const value = await service.runtimeCredential(selection,
+          ownership?.active && ownership.companyId === input.companyId ? { credentialLockHeld: true } : undefined);
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };

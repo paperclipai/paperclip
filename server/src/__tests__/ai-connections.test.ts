@@ -20,7 +20,7 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
-import { reconcileRetainedAiCleanup } from "../services/retained-ai-credential-cleanup.js";
+import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -445,6 +445,26 @@ describe("managed AI connections", () => {
     expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
     expect(probe).toHaveBeenCalledTimes(1);
     expect(await service.credential(row)).toBe(auth);
+  });
+
+  it("fences retained OpenAI credentials before reads, including callers holding the mutation lock", async () => {
+    const owner = "retained-openai-read-fence";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
+    retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
+    try {
+      await expect(service.runtimeCredential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await codexAdapter.withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+        await expect(service.runtimeCredential(row, { credentialLockHeld: true })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      });
+      expect(cleanup).not.toHaveBeenCalled();
+      retired.resolve(); await reconcileRetainedAiCleanup(scope);
+      expect(cleanup).toHaveBeenCalledOnce();
+      await expect(service.runtimeCredential(row)).resolves.toBe(auth);
+    } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope).catch(() => {}); }
   });
 
   it("retries retired Codex probe cleanup before the same account can launch again", async () => {
