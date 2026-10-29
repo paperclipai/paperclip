@@ -2130,6 +2130,18 @@ CLI paths that use stdin avoid that separate limit for the wake prompt.
 
 ## Adding a native Runner harness
 
+Google Antigravity's pending integration uses the official ACP server 1.4.3 with
+a pinned native admission patch. `paperclipai runtime setup antigravity` installs
+its verified assets on macOS ARM64 as the OS user running Paperclip. Setup does
+not enable global execution: qualification remains pending and admission is
+closed by default. An isolated company can use a finite trusted server-startup
+candidate authorization bound to the exact model, local platform, profile and
+native closure. The candidate's recorded setup and two-turn task reused the same
+owner's managed personal-default Google subscription on macOS ARM64 with
+`gemini-3.8-flash-low`; fresh consent and API-key live acceptance remain separate
+gates. Workspace OAuth is not runtime authentication. See the
+[contract, evidence, and remaining gates](plans/2026-10-28-antigravity-integration.md).
+
 To add a harness/provider to the new native Paperclip Runner, use
 [create-runner-adapter](../.agents/skills/create-runner-adapter/SKILL.md), the
 [Runner integration playbook](RUNNER-INTEGRATION-PLAYBOOK.md) and its
