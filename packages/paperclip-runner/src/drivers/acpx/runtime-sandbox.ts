@@ -2,7 +2,7 @@ import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-o
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
-import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -399,7 +399,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
       persistedEnvironment: Object.freeze({ ...homes, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }),
     };
   }
-  const homeDirectory = await ensurePrivateDirectory(join(root, "home"), root);
+  const preparedHome = preparedHarnessHome(input.environment, input.agent);
+  const homeDirectory = preparedHome ? preconfiguredHomeEnvironment(input.environment).HOME
+    : await ensurePrivateDirectory(join(root, "home"), root);
   const configDirectory = await ensurePrivateDirectory(
     join(root, "config"),
     root,
@@ -409,11 +411,11 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, "cache"),
     root,
   );
-  const agentHomeDirectory = await ensurePrivateDirectory(
+  const agentHomeDirectory = preparedHome ?? await ensurePrivateDirectory(
     join(root, `${input.agent}-home`),
     root,
   );
-  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...policy.protectedPaths])]);
+  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,
@@ -762,7 +764,7 @@ function isPersistableEnvironmentName(name: string): boolean {
     /^(?:PI_CODING_AGENT_DIR|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)$/.test(name) ||
     /^(?:CURSOR_CONFIG_DIR|CURSOR_DATA_DIR|AGENT_CLI_CREDENTIAL_STORE|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE)$/.test(name) ||
     /^(?:COPILOT_HOME|COPILOT_CACHE_HOME|COPILOT_AUTO_UPDATE|COPILOT_ALLOW_ALL|COPILOT_DISABLE_TERMINAL_TITLE|NO_COLOR)$/.test(name) ||
-    /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST)$/.test(
+    /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST|PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME)$/.test(
       name,
     )
   );

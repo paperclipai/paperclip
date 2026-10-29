@@ -1,3 +1,4 @@
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
@@ -65,6 +66,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
       ));
 
+    await notifyChatInboundWakeNotices(tx, { companyId: id });
     await tx
       .update(agentWakeupRequests)
       .set({
@@ -332,6 +334,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
         }
         const updated = await tx
@@ -484,6 +487,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         if (!wasAlreadyArchived) {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
           await notifyCompanyRetentionWork(tx, id);
+          await notifyChatInboundWakeNotices(tx, { companyId: id });
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle, id);
           await tx
             .update(companies)

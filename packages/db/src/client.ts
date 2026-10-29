@@ -546,6 +546,16 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0391_third_roulette.sql",
   "0392_small_frightful_four.sql",
   "0393_open_grandmaster.sql",
+  "0395_tranquil_firestar.sql",
+  "0396_tan_paladin.sql",
+  "0397_known_madrox.sql",
+  "0398_yielding_random.sql",
+  "0399_ambitious_onslaught.sql",
+  "0400_absent_phantom_reporter.sql",
+  "0401_yummy_ultimates.sql",
+  "0402_ancient_malice.sql",
+  "0403_natural_cerise.sql",
+  "0406_zippy_war_machine.sql",
 
 
   "0384_funny_adam_warlock.sql",

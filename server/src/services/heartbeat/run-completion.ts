@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
@@ -343,6 +344,19 @@ function controllerLeaseLossResultJson(signal: AbortSignal) {
         ...controllerLeaseLossEvidence(signal.reason),
       }
     : {};
+}
+
+/** Persist the resolved presentation and wake dependents in its committing transaction. */
+export async function recordRunPresentationDecision(db: Db, input: {
+  companyId: string; runId: string; issueId?: string; decision: RunPresentationDecision;
+}) {
+  await db.transaction(async tx => {
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId });
+    await tx.update(heartbeatRuns).set({
+      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb`,
+      updatedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, input.runId));
+  });
 }
 
 export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunCompletionDependencies) {
@@ -891,13 +905,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           };
         }
 
-        await db
-          .update(heartbeatRuns)
-          .set({
-            resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision })}::jsonb`,
-            updatedAt: new Date(),
-          })
-          .where(eq(heartbeatRuns.id, livenessRun.id));
+        await recordRunPresentationDecision(db, { companyId: livenessRun.companyId,
+          runId: livenessRun.id, issueId: issueId ?? undefined, decision: presentationDecision });
         await appendRunEvent(livenessRun, {
           eventType: "run.presentation.resolved",
           stream: "system",

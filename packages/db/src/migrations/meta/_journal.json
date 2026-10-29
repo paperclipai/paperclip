@@ -2752,6 +2752,90 @@
       "when": 1793152860397,
       "tag": "0394_conscious_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1793159398533,
+      "tag": "0395_tranquil_firestar",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1793191988458,
+      "tag": "0396_tan_paladin",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1793195976732,
+      "tag": "0397_known_madrox",
+      "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1793216165150,
+      "tag": "0398_yielding_random",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1793218102114,
+      "tag": "0399_ambitious_onslaught",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1793218595176,
+      "tag": "0400_absent_phantom_reporter",
+      "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1793219893186,
+      "tag": "0401_yummy_ultimates",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1793223470886,
+      "tag": "0402_ancient_malice",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1793224779622,
+      "tag": "0403_natural_cerise",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1793231092905,
+      "tag": "0404_tense_silver_sable",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1793231130478,
+      "tag": "0405_harsh_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1793235984352,
+      "tag": "0406_zippy_war_machine",
+      "breakpoints": true
     }
   ]
 }

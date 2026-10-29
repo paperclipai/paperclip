@@ -24,6 +24,9 @@ import {
   type Mutation,
   type MutationOptions,
   type QueryClientConfig,
+  type QueryKey,
+  type RefetchOptions,
+  type RefetchQueryFilters,
 } from "@tanstack/react-query";
 import { classifyError, describeError, errorRetryAfterMs, isTransientError } from "@/api/errors";
 import { MAX_PROBE_DELAY_MS, PROBE_BACKOFF_MS, type ConnectivityStore } from "./connectivity";
@@ -143,6 +146,20 @@ class AppQueryClient extends QueryClient {
       retry: options?.retry ?? shouldRetryRequest,
       retryDelay: options?.retryDelay ?? retryDelayFor,
     };
+  }
+
+  override refetchQueries<TTaggedQueryKey extends QueryKey = QueryKey>(
+    filters?: RefetchQueryFilters<TTaggedQueryKey>,
+    options?: RefetchOptions,
+  ): Promise<void> {
+    const predicate = filters?.predicate;
+    return super.refetchQueries(
+      {
+        ...filters,
+        predicate: (query) => query.options.queryFn !== undefined && (predicate?.(query) ?? true),
+      },
+      options,
+    );
   }
 }
 

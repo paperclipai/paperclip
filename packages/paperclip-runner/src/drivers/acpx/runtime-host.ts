@@ -7,7 +7,7 @@ import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
-import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { dirname, join } from "node:path";
 import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
@@ -346,6 +346,7 @@ export class AcpxRuntimeHost {
       throw new Error("Pi admission requires an explicit task execution policy");
     }
     const preconfigured = usesPreconfiguredHome(options.environment);
+    const preparedHome = preparedHarnessHome(options.environment, options.agent);
     if (preconfigured && options.permissionMode !== "approve-all") {
       throw new Error("preconfigured home currently requires ACPX approve-all; local permission rules still apply");
     }
@@ -380,7 +381,7 @@ export class AcpxRuntimeHost {
           claudeEffort: resolveClaudeEffort(options.agent, options.claudeEffort),
           grokEffort: resolveGrokEffort(options.agent, options.grokEffort),
           grokDisableWebSearch: resolveGrokDisableWebSearch(options.agent, options.grokDisableWebSearch),
-          ...(preconfigured ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
+          ...(preconfigured || preparedHome ? { homeBinding: preconfiguredHomeEnvironment(options.environment) } : {}),
           ...(["cursor", "copilot", "pi"].includes(options.agent) && options.providerPolicy !== undefined
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
@@ -577,7 +578,7 @@ export class AcpxRuntimeHost {
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
-      if (!preconfigured && (options.agent === "claude" || options.agent === "grok")) {
+      if (!preconfigured && !preparedHome && (options.agent === "claude" || options.agent === "grok")) {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
         // Claude discovers user skills beneath its isolated CLAUDE_CONFIG_DIR.

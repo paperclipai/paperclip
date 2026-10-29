@@ -216,6 +216,8 @@ unless its actual provider journey was driven.
 
 ## Gotchas
 
+- Canonical question forms show field validation only after Next/Submit (including the keyboard submit shortcut) is attempted. Invalid answers remain unsent and the form stays on the relevant question; correction clears the field warning. Pagination arrows still browse without validation, drafts remain preserved, and uploads/requests in flight still disable submission.
+
 - Dismissing a question does not answer it. Dismissing an app review neither
   grants permission nor resumes the agent. Ordinary comments cannot approve it.
 - A resolved request and a successful tool execution are separate facts.

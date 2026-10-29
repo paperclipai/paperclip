@@ -17,7 +17,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Approval retention [#17497](https://github.com/paperclipai/paperclip/pull/17497) and archive delivery [#17475](https://github.com/paperclipai/paperclip/pull/17475) merged; other source retention pending |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations [#17478](https://github.com/paperclipai/paperclip/pull/17478) merged; expiry [#17479](https://github.com/paperclipai/paperclip/pull/17479) merged; effects [#17482](https://github.com/paperclipai/paperclip/pull/17482) merged; targets [#17486](https://github.com/paperclipai/paperclip/pull/17486) merged |
-| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | #17554 repaired at `8c1d293d1a`; fresh CI/review in progress |
+| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | [#17554](https://github.com/paperclipai/paperclip/pull/17554) merged after all checks and both 5/5 reviews |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Slices 02–07 merged: [secret proposals](https://github.com/paperclipai/paperclip/pull/17446), [credentials](https://github.com/paperclipai/paperclip/pull/17450), [review expiry](https://github.com/paperclipai/paperclip/pull/17453), [approved recovery](https://github.com/paperclipai/paperclip/pull/17454), [interrupted claims](https://github.com/paperclipai/paperclip/pull/17458), [projection](https://github.com/paperclipai/paperclip/pull/17468) |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
@@ -1483,6 +1483,172 @@ loops or changing domain backoff. All 152 selected command/coordinator/health,
 producer/Slack, delivery/standby/startup cases and server types/build pass. Publish
 for fresh CI/review. The full inventory, #17490 CI failure, and stack/master
 reconciliation remain open; no merge authority is implied.
+
+
+## Slice 20 receiver implementation
+
+Receiver discovery now uses scoped committed configuration changes, startup
+reconstruction, foreign-lease deadlines, and listener-stop completion. Voice and
+all other maintenance reasons remain separate. See
+[the receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md).
+A failed-scope deadline regression and a real concurrent listener-stop race were
+reproduced and repaired. All 218 selected receiver/startup, Discord, Photon,
+command/delivery and standby cases pass, with workspace typechecking passing.
+Workspace build also passes; publication and fresh remote gates remain open. This is not
+completion of the slice or the full stack. Master is refreshed at 0d73505098;
+final stack/master reconciliation remains required.
+
+Parent Discord #17557 at d3187f76a4 and company cleanup #17561 at e8febb30eb now
+have no failed or pending checks (Paperclip Review skipped). No merge was made.
+The older #17490 E2E cancellation failure remains unresolved. The entire original
+inventory stays in scope, with voice the next separate reason after receivers.
+
+
+Receiver discovery is published and attached as [#17572](https://github.com/paperclipai/paperclip/pull/17572)
+at 643f4766227e15006b684d2cc7bea7ddd5cc2147, based on #17557. Its live CI run is
+40173962833; security and reviews are pending. All 218 selected local cases,
+workspace types and build pass. The next audit splits voice into five separate
+reasons: live-session recovery, reply push, inbound admission expiry/provider
+cleanup, inbound history retention, and call reports. See
+[the voice owner audit](2026-10-25-voice-maintenance-sleep-audit.md).
+Branch codex/sleep-21-voice-session-recovery starts with the first reason; the
+other four remain explicit required slices. No voice migration is implemented yet.
+## Receiver review repair
+
+The real company-removal producer regression reproduced two inventory reads for
+one observed removal. Discovery-initiated stops now suppress their own completion
+wake; independent token loss still wakes discovery after listener retirement.
+A full reconstruction also covers its already-pending scoped hints. Hints that
+arrive during the load remain dirty, and narrower writes cannot bypass a failed
+full reconstruction's retry deadline.
+
+Both redundant-load regressions failed before repair. All 45 selected receiver,
+startup and real Discord producer tests pass after repair, including the added
+full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
+consumer/workspace verification remains recorded above; these 45 overlap that
+coverage and are not an additional unique total. Publication requires fresh
+remote CI and review. The full migration inventory remains outstanding.
+
+
+Voice recovery checkpoint: receiver repair `1604a9fcba` is published to #17572
+and incorporated into the unpublished voice child. The complete 93-case voice
+suite, eight new recovery lifecycle tests, and 16 startup wiring cases pass.
+See the voice audit for precise coverage and remaining work. Receiver CI
+40175242445 is live with no failures at inspection; no final acceptance or merge
+is claimed. All remaining reasons, older #17490 failure, and final master
+reconciliation stay in scope.
+
+
+Live voice recovery is [#17576](https://github.com/paperclipai/paperclip/pull/17576),
+head 8f5e861dbd, based on #17572. All 837 selected tests, workspace typecheck and
+build pass; remote checks and review remain required. The full local test command
+was stopped after repeated embedded PostgreSQL setup failures, not counted as a
+pass. Slice 22 owns voice reply delivery and begins with the multipart/outcome
+policy and publication-settlement producer audit. See
+[reply delivery audit](2026-10-25-voice-reply-delivery-sleep-audit.md).
+
+Slice 22 now implements voice reply delivery from committed changes and saved
+retry/dispatch deadlines. The periodic reply scan and pre-publication direct push
+are removed. Real normal/operator publication tests prove the final-commit wake;
+turning that notification off reproduces zero delivered replies. The branch has
+786 selected passing tests across isolated voice, recovery, startup, and shared
+consumers, plus workspace typecheck/build. See the reply audit for retained
+fixture failures and local full-suite infrastructure limitations. Publication and
+latest-head review/check acceptance remain outstanding. Inbound admission cleanup,
+inbound history retention, and call reports remain separate next slices.
+
+Voice reply delivery is [#17578](https://github.com/paperclipai/paperclip/pull/17578),
+head 439d0a86eb75c129c30742a8cc24bf18e2a6ebf3, stacked on #17576. Local selected
+checks pass; remote acceptance is pending. Slice 23 starts the inbound admission
+cleanup audit in `2026-10-25-voice-inbound-cleanup-sleep-audit.md`. It explicitly
+separates retention and reports and requires proof of approval/cleanup handoff,
+termination confirmation, and protection against deleting unfinished cleanup.
+
+
+Voice reply review repairs are published at #17578 head `90caaf3fa9`: shared scoped
+worker, actual authority-restoration wiring regression, 191 overlapping selected
+consumer tests and workspace types/build passing. Removing the real notification
+reproduces the lost reply. Both review threads are resolved; fresh CI/review remain.
+
+Inbound cleanup slice 23 now makes approval/session handoff atomic, after a real
+expiry regression reproduced termination of an already authorized call. All 110
+voice integration cases and server typechecking pass. This slice is not published:
+locked cleanup claims, legacy handoff recovery, bound-guest ownership, termination
+confirmation, retention protection and scheduler/producer migration remain required.
+The full original inventory, older #17490 E2E failure, and stack/master reconciliation
+remain outstanding. No stack PR has been merged by this work.
+
+
+Slice 23 inbound cleanup now uses committed admission/session changes and actual
+expiry/retry deadlines. The admission row separately records physical confirmation
+and saved provider account. Locked claims, legacy handoff repair, bound-call owner
+handoff, retention/deletion protection and safe same-account rotation are verified.
+All 205 selected tests, workspace types and build pass; publication and remote
+acceptance remain pending. History retention and call reports remain separate next
+slices. Parent #17578 at 90caaf3fa9 has no pending/failed checks and exact-head
+Greptile 5/5; the second Paperclip reviewer stopped before completion. The original
+remaining inventory, #17490 E2E failure and final reconciliation remain in scope.
+
+
+Inbound cleanup is [#17580](https://github.com/paperclipai/paperclip/pull/17580),
+head 4b4bf2d8af6e08d3859ada4b720e7fbd3ea27e24, stacked on #17578. It is
+mergeable; CI 40181994295 and review 40181994134 are live with no initial failure.
+The final migration applies/replays and its backfill is tested twice. Slice 24
+starts the separate inbound-history retention audit. Its deadline preserves both
+seven-day age conditions and requires confirmed cleanup plus no task/session
+binding. Call reports follow separately. No original remaining scope is removed.
+
+## Slice 24: inbound voice history retention
+
+Branch `codex/sleep-24-voice-inbound-retention` follows inbound cleanup #17580
+including its migration runner repair `4f0364d269`. It removes only periodic
+history pruning. The existing admission row owns the seven-day deadline and
+confirmation/binding conditions. The existing notification helper wakes retention
+on outer transaction settlement; no new table or caller wrapper is added.
+
+218 selected tests pass: 131 full voice/app wiring, 24 retention/cleanup lifecycle,
+52 deletion/startup, and 11 parent recovery. Workspace typecheck/build and final
+server typecheck pass. Tests prove real signed-callback and provider-cleanup
+reactivation, pre-deadline quiet, exact deadlines, concurrent binding protection,
+restart, drain, rollback, failure and shutdown. Initial fixture failures remain
+recorded in the slice audit. Remote checks and review are pending publication.
+
+Next separate owner: voice call-report reconciliation. Preserve the existing
+24-hour post-call refresh obligation, transcript ordering, task projection and
+provider diagnostics while removing scans with no eligible calls. Inspect
+completion semantics before treating a report marked available as fully settled.
+
+Slice 24 is published as [#17583](https://github.com/paperclipai/paperclip/pull/17583)
+at `9c38ddfe53`, based on #17580 `4f0364d269`. It is attached to this chat.
+CI/review are running; no merge. The next branch is
+`codex/sleep-25-voice-call-reports`, with its owner audit recorded separately.
+
+## Slice 25: voice call reports
+
+Report refresh now owns a scoped deadline worker. Terminal transitions, signed
+callbacks, and reply call-ended responses activate existing report/session rows.
+Attempts save the next retry before provider I/O, and callback/new-attempt fences
+prevent stale settlement. The existing 24-hour refresh obligation is preserved,
+including available reports. Empty/configured-idle/live/old history is quiet.
+This removes the last voice duty from recurring chat maintenance.
+
+Acceptance: 174 selected real-database/wiring cases, workspace typecheck and build
+pass. A new integration case exposed missing baseRevisionId on an existing guest
+transcript; the fix uses the document revision contract and preserves lock
+behavior. Full failure history and external-wake limits are in
+`2026-10-25-voice-call-report-sleep-audit.md`. Publication and remote checks follow.
+Parent #17583 has a Discord rollback/drain test failure to repair at its owner;
+parent #17580 has two new cleanup review findings. Neither is marked complete.
+The remaining chat duties, original ledger, #17490 E2E failure, and final
+master/stack reconciliation remain required. No stack merge is authorized.
+
+Slice 25 published as [#17586](https://github.com/paperclipai/paperclip/pull/17586).
+Parent Discord test settlement and denial-latency repairs are propagated. At the
+report tip, 41 Discord tests and 138 full voice/app tests pass; unchanged report,
+cleanup and retention workers had 37 passing cases. CI/reviews remain required.
+Next owner audit splits Teams unused-consent expiry from abandoned send/upload
+attempt recovery, preserving one reason per PR. Company deletion cleanup policy
+and the earlier E2E failure remain unresolved completion duties.
 ## Acceptance follow-up after the plugin parent merged (October 27)
 
 Eighteen preceding sleep PRs are merged through plugin scheduling #17518 at
@@ -1498,6 +1664,29 @@ status and test counts above are historical. The original remaining inventory
 is still in scope beyond the 65 published numbered slices; native backups and
 the remaining aggregate duties have not been migrated by this follow-up.
 
+## Receiver follow-up with current Discord parent, October 27
+
+Nineteen sleep PRs are merged through health #17554. Receiver discovery #17572
+now includes current Discord parent `cedf2030c4`, retaining the original 27-file
+scope. Its existing slow-failure and stop-wake repairs have guarded mutation
+proofs, 131 targeted cases pass, and both newly supported external fixtures
+self-migrate. See [the owning audit](2026-10-25-chat-receiver-discovery-sleep-audit.md#current-parent-and-review-acceptance-october-27)
+for exact evidence and the older CI runner-loss failure. Fresh CI/reviews and
+parent landing are still required. The original remaining-duty inventory is unchanged.
+
+
+## Voice inventory amplification acceptance, October 27
+
+The voice recovery slice keeps the original single-duty scope and adds the
+normalized health-observation notification contract. Five real metadata writes
+and one health check over 205 future calls previously selected 1,230 call rows;
+they now select zero and preserve the saved deadline. Startup and changed-parent
+reconstruction use bounded pages and retain concurrent wakes.
+
+The updated [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#voice-session-inventory-amplification-repair-october-27)
+records all 725 distinct targeted passing cases, typecheck, build, failed attempts
+and guarded regressions. This is worker acceptance, not deployed sleep proof.
+Fresh exact-head review and CI remain required before the voice PR can merge.
 
 ## Discord registration landing compatibility, October 27
 
@@ -1505,3 +1694,878 @@ Company deletion has landed. The Discord command slice retains only its original
 26-file delta against the landed parent and current master at `f8563d2507`. All
 141 targeted cases, server typecheck and build pass. The [owning audit](2026-10-25-discord-command-registration-sleep-audit.md#acceptance-after-the-company-deletion-parent-landed-october-27)
 records exact scope, fixture setup and remaining remote gates.
+
+
+## Receiver integration with landed foundations, October 27
+
+Receiver discovery keeps its 27-file scope on Discord parent `547fdf2139` and
+preserves current master queue declarations. All 131 targeted cases, server
+typecheck and build pass. See the [receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md#landed-foundation-integration-acceptance-october-27).
+Fresh exact-head review, CI and parent landing remain required.
+
+
+## Voice integration with landed foundations, October 27
+
+The bounded voice repair now includes receiver `6e88ca0201` and retains its
+22-file scope. All 725 targeted cases, production typecheck and server build pass
+again. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#landed-foundation-acceptance-october-27)
+records exact scope, database setup, the initial partial tool-access run and
+remaining remote gates.
+
+
+## Reply delivery preserves bounded parent reconstruction, October 27
+
+The reply child includes voice recovery `712f3862b5`. Its existing shared-worker
+extraction now supports the parent's paged result contract. The real inherited
+205-call regression fails before repair and passes afterward; all 445 distinct
+targeted cases, production typecheck and server build pass. The [reply audit](2026-10-25-voice-reply-delivery-sleep-audit.md#current-parent-paging-contract-acceptance-october-27)
+records the 31-file scope and effects on the four existing shared consumers.
+Current-head review, CI and parent landing remain required.
+
+## Voice trusted-policy checkout repair, October 27
+
+Receiver `ab39569250` supplies the landed policy checker now required by trusted
+CI. Voice server/package code and tests remain identical to the 725-case tested
+head. The policy checker and its Node tests pass. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#trusted-policy-checkout-compatibility-october-27)
+keeps the four old failed gates, including the independent runner shutdown,
+separate from current local evidence. Fresh review and CI remain required.
+
+
+## Voice review follow-up, October 28
+
+Voice recovery isolates a failed broad inventory retry from ready exact hints
+and cached due calls, while retaining on-use authority checks and exact-scope
+fences. The generation test uses controlled scheduler turns instead of elapsed
+SQL time. All 210 current targeted cases, production typecheck and server build
+pass; guarded mutations catch both regressions. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#wildcard-failure-and-deterministic-generation-acceptance-october-28)
+keeps the actual CI assertion failure and earlier failed attempts separate.
+
+
+## Reply publication inventory acceptance, October 28
+
+Reply delivery now scopes final publication wakes to the actual conversation and
+returns at most 100 identity rows per refresh. Five real publications previously
+selected 1,065/1,060 rows across unrelated calls; both paths pass the same 125-row
+budget after repair. The [reply audit](2026-10-25-voice-reply-delivery-sleep-audit.md#publication-inventory-and-paging-acceptance-october-28)
+records restart, denial-cursor and guarded-mutation coverage. All 449 current
+targeted cases, server typecheck/build and the policy check pass on parent
+`ad79c7e805`. Fresh exact-head review, CI and parent landing remain required.
+
+
+## Inbound cleanup current-parent acceptance, October 28
+
+Inbound cleanup #17580 now includes reply parent `d2c0a7de8c` and uses its existing
+paged worker contract. Startup yields after 100 rows per scope refresh, and a
+same-owner restart reconstructs all 105 saved fixture deadlines. Migration 0395
+was generated on the parent's 0394 lineage, preserves all historical SQL/journal
+entries, and commits historical backfill in batches of at most 1,000. The
+[inbound cleanup audit](2026-10-25-voice-inbound-cleanup-sleep-audit.md#current-parent-acceptance-and-bounded-discovery-october-28)
+records 266 passing cases, negative probes, migration lineage, preserved failures,
+and limits. Exact-head review, CI, and the preceding stack still must pass before
+landing. History retention and call reports remain separate duties.
+
+
+## Inbound history retention current-parent acceptance, October 28
+
+Retention #17583 includes cleanup parent `b8b12199b9` and preserves its generated
+0395 migration. The existing shared page contract now yields after 100 history
+rows per scope refresh and resets on same-owner restart. All 280 distinct cases,
+server types/build and module boundaries pass. The [retention audit](2026-10-25-voice-inbound-retention-sleep-audit.md#current-parent-paging-and-restart-acceptance-october-28)
+records the 13-path scope, real 105-row reconstruction, negative probe, setup and
+merge failures, and limits. Latest-head review, CI and parent landing remain
+required. Call-report reconciliation follows as a separate duty.
+
+
+## Retention notification review follow-up, October 28
+
+The current retention review found repeated configuration-driven history scans.
+Five real connection saves selected 1,025 rows across 205 retained admissions.
+Retention now wakes only for admission writes and startup; cleanup retains all
+of its broader scopes. The same writes select zero history rows and preserve the
+saved deadline. Confirmed deletes also avoid a redundant reload. The
+[retention review ledger](2026-10-25-voice-inbound-retention-sleep-audit.md#configuration-rescan-review-repair-october-28)
+records 282 passing cases, types/build, failures, writer coverage and limits.
+Current-head review/CI and the earlier stack remain required.
+
+
+## Report current-parent acceptance, October 28
+
+Report scheduling #17586 integrates retention `68b62b6d13` and uses the existing
+shared paged result contract. It yields after 100 headers per scope refresh,
+resets same-owner partial scans and retains the finite 24-hour report obligation.
+Officially generated migration 0396 preserves the preceding 394 SQL files and
+retains the five newest snapshots. The [report acceptance ledger](2026-10-25-voice-call-report-sleep-audit.md#current-parent-reconstruction-and-migration-acceptance-october-28)
+records 302 passing cases, types/build, migration/plan checks, guarded restart and
+fairness probes, failures and limits. Current-head review, all CI and parent
+landing still gate this slice. The full remaining stack stays in scope.
+
+
+## Report notification review follow-up, October 28
+
+Report reconstruction also received configuration hints that could not alter
+its eligibility or saved retry. Five real connection saves over 205 saved
+reports selected 1,025 session rows. The report owner now accepts exact session
+notifications and startup; those saves select zero rows and preserve the deadline.
+The [report notification ledger](2026-10-25-voice-call-report-sleep-audit.md#configuration-scope-review-repair-october-28)
+records 303 passing cases, types/build, the narrower contract and limits. Fresh
+exact-head review and CI are required after the repair.
+
+
+## Slice 26: Teams unused-consent expiry
+
+The Teams owner now selects existing unused-consent phases and their saved expiry
+through scoped deadline work. Production maintenance retains only abandoned
+attempts; these are the next distinct reason. No new table or Cloud alarm policy
+is included. The [audit](2026-10-25-teams-consent-expiry-sleep-audit.md) records
+222 unique selected passing cases, workspace types/build, and initial fixture
+failures. Publication and fresh remote checks/review remain required.
+Parent #17586 Actions/security/Greptile pass at 250fca6cff; Paperclip Review is
+still running. The original full inventory, older E2E failure, deletion-policy
+finding and master reconciliation remain outstanding. No stack PR is merged.
+
+
+Slice 26 is published as [#17590](https://github.com/paperclipai/paperclip/pull/17590)
+at 5ddb4543ed, based on #17586. It is attached; remote gates remain required.
+Slice 27 begins the separate Teams abandoned transport-attempt audit. The full
+original inventory, older findings and final master reconciliation remain open.
+
+
+## Slice 27: Teams abandoned transport attempts
+
+Attempt recovery now follows committed claims and saved 90-second deadlines.
+It preserves unknown outcomes and performs no provider I/O. This removes the last
+Teams periodic maintenance callback; unused consent remains the separate parent
+owner. The [audit](2026-10-25-teams-attempt-recovery-sleep-audit.md) records 235
+unique selected passing cases and preserved initial test failures. Workspace
+typecheck and build pass; publication and remote acceptance remain open.
+#17590 has Greptile 5/5; CI is running. #17586 has new review findings for writer
+support and report-query indexing. Fix at that parent and propagate before
+acceptance. All original remaining work and previous unresolved findings remain.
+
+
+Teams attempts are published as [#17592](https://github.com/paperclipai/paperclip/pull/17592).
+Voice report review repair 94c60683b8 adds the bounded report-window index and
+precise keyset pagination, with the single-active-writer contract explicit. The
+20,001-old-row cost regression failed before repair, then all 14 report tests,
+138 full voice/wiring cases and workspace types/build passed. Both review threads
+are resolved. Consent #17590 incorporates it at e501d6c99d; both combined Teams
+children pass 30 report/startup tests after propagation. Fresh remote gates still
+apply. The next new reason is chat run-milestone projection, separate from wake
+notices, terminal confirmations, interaction continuations and GitHub recovery.
+The entire original inventory and older unresolved findings remain open.
+
+
+Slice 28 native finalization checkpoint: existing native finalizer transactions
+now signal milestone projection; governed review metadata restoration avoids
+unchanged writes and signals only actual changes. Both missing wake and repeated
+rewrite were reproduced before repair. All 16 milestone worker cases, nine
+selected native chat recovery integrations, and server production types pass.
+See the slice audit for failure logs and coverage limits. The production scan
+remains until status-decision/effect, admission, lineage, publication, and remaining
+producer coverage is complete. This is local progress, not a published migration
+or completion of the full stack.
+
+
+Slice 28 now also covers new native status-decision commits and pending-effect
+receipts, after their no-op exits. Two regressions failed first; all 18 milestone
+worker cases, nine native chat recovery integrations, and server production types
+pass after repair. Real late continuation receipts now reactivate projection.
+Next is heartbeat queue/admission/recovery producer coverage. Periodic projection
+and all remaining inventory/remote acceptance duties remain outstanding.
+
+
+Slice 28 queue checkpoint: issue admission, ordinary/comment claims, drain
+release, coalesced lineage and native review claims now notify from their owning
+transactions. Real missing-wake regressions were reproduced for admission,
+coalescence and all ordinary/comment claim/release paths. The 24 milestone worker
+cases and 92 existing queue/policy cases pass, as does server production typecheck.
+The audit records the initial fixture FK failure, exact logs, remaining raw
+cancellation/promotion/receipt writers, and native reviewer acceptance gap.
+Periodic projection remains until producer coverage is complete; no new PR or
+full-goal completion is claimed.
+
+
+Slice 28 retry/recovery checkpoint: due retry promotion, suppressed retry and
+stale-run cancellation, deferred wake promotion and immediate recovery admission
+now signal from their existing transactions. Five real missing-notice regressions
+were reproduced before repair; all 166 selected worker/module/policy cases and
+server production types pass. The slice audit preserves the initial invalid
+staleness fixture and corrected causal evidence. Periodic projection remains
+until all supported producers are covered. Remaining original inventory, open
+PR gates/findings and final master reconciliation are unchanged.
+
+
+Slice 28 native wake receipt checkpoint: interrupted recovery, same-scope
+coalescence and fresh admission receipt writes now notify from narrow database
+transactions. Both missed-recovery and admission-before-receipt races were
+reproduced. All 56 milestone/queue cases, 13 existing dependency cases and server
+production types pass; four native cases were rerun after fixing external-test
+fixture cleanup. The audit preserves setup failures and provider-acceptance
+limits. No periodic projector has been removed yet. Fresh remote inspection
+still finds #17590 Paperclip Review queued, #17592 neutral, and #17490 E2E shard
+3 plus aggregate failing. Those gates and all remaining original scope stay open.
+
+
+Slice 28 raw queue cancellation checkpoint: general chat-control recovery,
+superseded case handoffs, stale scheduled retries and reassigned execution owners
+now signal before terminal writes. Missing notices were reproduced for the first
+two; replacement-admission tests cover the latter two and their early intent
+placement is audited. All 60 milestone/queue tests and server production types
+pass. Queued-comment/lineage and remaining dependency producers still prevent
+removing periodic projection. No new PR, merge, or full-goal completion is claimed.
+
+
+Slice 28 lineage checkpoint: queued-comment run-context rewrites, deletion and
+cancellation signal through their existing adapter transaction. Real queue
+reconstruction and caller-owned discard regressions failed before repair. The
+native reviewer claim now has real database integration and causal signal-removal
+coverage. All 74 selected worker/adapter/policy cases and server production types
+pass. Remaining publication, interaction, configuration, question and monitor
+producer coverage still gates periodic-projector removal. Original inventory,
+remote gates/findings and final master reconciliation remain open.
+
+## Slice 28 draft and publication/interaction coverage
+
+[Draft #17606](https://github.com/paperclipai/paperclip/pull/17606) is stacked on
+#17592. It adds the lifecycle projector worker and covered producer signals;
+production registration and polling removal remain intentionally unfinished until
+the remaining producer audit is complete. Native progress stays a separate slice.
+
+The latest local checkpoint covers real publication success/failure/operator
+resolution and question answer/cancel/withdraw/skip/terminal-expiry paths,
+including historical answers that enqueue no continuation. All 160 milestone and
+interaction-service cases pass on fresh isolated PostgreSQL databases. Four
+existing chat acceptance cases, publication policy cases, and server production
+typecheck passed at their recorded checkpoints. See the detailed milestone audit
+for retained regression/setup failures, controlled ports and remaining coverage.
+The initial draft CI was running; no final green-check or readiness claim is made.
+
+
+Slice 28 now also wakes lifecycle projection from confirmation accept/reject and
+live/historical comment invalidation of questions and confirmations. Six real
+producer regressions failed before the added intent signals. All 169 cases across
+the worker and interaction-service suites pass, as does production server
+typechecking. The draft remains incomplete: other producers and production
+registration/polling removal are still pending. See the milestone audit for logs.
+
+
+Slice 28 creation/sibling replacement now registers intent before the first
+interaction write. Both question and confirmation replacement failed before the
+fix; all 184 milestone/integration/unit interaction cases and production server
+typechecking pass. Remaining terminal-interaction writers are document-target
+expiry, deleted-addressee cancellation and startup supersession; other producer
+audits and production migration remain pending.
+
+
+Slice 28 covers the remaining direct terminal-interaction writers in the
+interaction service: document-target expiry, deleted addressees and startup
+supersession. Seven real-producer regressions failed before the fix; all 191
+worker/integration/unit cases and production server typechecking pass. Database
+fixture setup/cleanup moved to a cohesive helper, keeping the worker test file
+below 1,000 lines. The broader raw-writer audit still includes external services
+(secret proposals, tool reviews, conversation reset and native review retirement),
+plus the previously listed publication/configuration/recovery dependencies.
+
+
+Slice 28 now covers binding-proposal terminal reflection and tool-review human
+verdict/expiry reflection. Nine governed-producer cases (including outer rollback
+and dependent rejection) pass with the lifecycle/interaction suites, 200 total;
+all 109 existing tool-gateway cases and server production typechecking pass.
+The audit retains the initial invalid tool-publication fixture assertion and
+corrected before-fix failures. Native external-review supersession is already
+covered by its status-decision outer transaction. Other external interaction and
+lineage producers remain under audit; the draft is not production-wired yet.
+
+
+Slice 28 covers native automatic/obsolete review retirement and conversation
+reset with seven additional governed cases, including retained-history and
+explicit-request controls. Three missing wakes were reproduced before repair;
+207 lifecycle/governed/interaction cases pass. The draft CI chat-shard failure
+was reproduced as a test subscribing to unrelated unresolved transaction intent;
+isolating that test's DB owner preserves the production protocol and passes three
+native review acceptance cases. Server production types pass. The slice audit
+retains the invalid fixture and missed test-file selection. Polling removal,
+remaining producers, fresh CI/review, older findings and the full inventory remain
+unfinished; no stack merge or whole-goal completion is claimed.
+
+
+Slice 28 also covers interactive callback recovery of an unknown prompt receipt.
+Its existing Slack acceptance test failed before the answer-write barrier without
+the receipt signal, then five Slack/Discord/Telegram cases and server production
+types passed after the one-line integration. File transport and ordinary tool
+receipt ordering were audited without adding unnecessary notifications. Remaining
+configuration/recovery producers and production wiring still gate polling removal.
+
+
+## Drain review repair and fresh stack gates
+
+The first broad stack refresh found #17576 Greptile finding 4370544173: dirty
+in-memory hints kept the coordinator's settled-write activity hold alive during
+drain. SQL silence alone had missed it. It failed a new real-PostgreSQL counter
+assertion before repair. The owning parent is fixed at 1b43332c74; all checks now
+pass and that review thread is resolved. Slice 22 carries the repair into its
+shared dispatcher at b2af095de2. Open/uncertain writes remain fenced centrally;
+settled hints and their next deadlines survive resume without holding idle active.
+
+The fix is propagated through #17580 (0aab051900), #17583 (c46bcbf9ff), #17586
+(6d99318a8d), #17590 (0bb6de2343), #17592 (6e40ac2570) and #17606 (71a84ee0c0).
+Report and retention resume tests initially returned early because their flush
+helper checked only the active counter. Those parent-owned tests now advance the
+actual retained nextWakeAt and prove the durable result, plus unchanged idle
+snapshots while paused. See 2026-10-25-voice-drain-repair.md for all retained
+failure logs, including one invalid intermediate report-field assertion.
+
+Verified selection at the combined tip:
+- 99 chat lifecycle/governed/voice recovery cases pass.
+- 24 Teams consent/abandoned-attempt scheduler cases pass.
+- 38 inbound cleanup, retention and call-report cases pass after test repairs.
+- Production server typecheck passes. The 108-case full voice integration suite
+  passed at the shared-dispatch parent; strengthened reply drain passed separately.
+
+Fresh current-head rollup is saved at
+/tmp/sleep-stack-checks-after-drain-20261025.json. #17490 still fails E2E shard 3
+and aggregate at 31bcd19888. #17518 Paperclip Review remains pending. #17578 and
+newer propagated heads have pending checks, with no failures in that snapshot.
+The inbound cleanup/company-deletion review and security finding is NOT repaired
+by this drain change; current pending checks do not discharge that finding.
+No blind reruns or merges into master occurred.
+
+Next actionable parent audit: tool health (#17554), Discord command registration
+(#17557), and receiver discovery (#17572) still contain the same unconditional
+hasPending dirty-scope predicate. Reproduce their idle-hold behavior, repair at
+their owning branches, and propagate. Their currently passing CI is not evidence
+against that missing idle-counter assertion. Then continue milestone configuration
+and alternate-receipt coverage, production registration/poll removal, the entire
+original inventory, older E2E/cleanup findings and final master reconciliation.
+
+## Configuration drain propagation and resource milestone producers
+
+Discord #17557 at 954a0faa75 and receiver #17572 at 8815dfad38 now carry the
+confirmed drain-hold repairs, following tool health #17554 at e685a0e7ef.
+The prerequisite #17561 inherited health at 05ac7835fc. Propagation reached
+#17576 a4bc3ea50e, #17578 05797e2b9f, #17580 82d023a3a0, #17583 f4f7e14f7a,
+#17586 920a951505, #17590 d626ff4b13, #17592 33ffff8a12, and #17606 9775b2bc4a.
+All 109 configuration lifecycle/protocol cases pass together after applying the
+tip schema to their disposable databases. See the configuration-worker drain
+repair document for individual causal failures and parent evidence.
+
+Slice 28 adds real inventory/lifecycle resource reactivation wakes. The two
+regressions fail before repair; all 90 milestone lifecycle/governed/resource cases
+and six selected provider acceptance cases pass after it. The owning resource
+module only wakes reopened issue scopes, never unchanged inventory or completed
+history. See the milestone audit for full commands/results and remaining producers.
+
+Fresh gate snapshot /tmp/sleep-stack-gates-configuration-drain-20261025.json has
+no failures for slices 1–12 and 14–16, plus #17505; #17490 still fails E2E shard 3
+and its aggregate. #17518/#17554 have pending review and later updated heads have
+pending checks. New #17576 security finding 4371283330 concerns repeated
+connection writes loading every live voice session in that connection. Inspect
+and address it without dropping future deadlines or configuration revocation.
+The existing #17580 cleanup/company-deletion denial finding remains open. No
+review blocker is resolved merely by pushing inherited changes. No PRs merged.
+
+Origin/master refreshed to e335265568 (task-run UI polling removal #17608).
+Full base reconciliation, remaining recurring-work slices, milestone startup
+wiring, fresh reviews, and all latest-head CI gates remain required.
+
+
+Slice 28 Telegram migration now registers affected issue intents in its owning
+transaction before reactivating/rebinding conversations. The missing wake was
+reproduced first. All 92 milestone/resource/governed tests, eight existing
+Telegram migration cases, server typecheck and server build pass. Duplicate
+migration and unchanged inventory remain quiet. See the milestone audit for
+failure and verification logs. Inbound activation and remaining producer audits
+still gate production wiring; no recurring projector has been removed yet.
+
+Fresh pre-push gates: #17606 at b634353059 has passing checks; #17572 at
+8815dfad38 and #17490 at 31bcd19888 still fail E2E shard 3 and aggregate.
+Three local cancellation diagnostic runs passed, including full projects coverage
+and a database-only delay, without proving the CI deadlock's competing owner.
+Those failures, parent security/deletion findings, all other original slices,
+fresh remote review and reconciliation with master 7ebf98eafd remain open.
+
+
+Slice 28 ordinary ingress now wakes existing milestone debt before reactivating
+conversation bindings and writing inbound links. A real Slack ingress regression
+failed before repair and passes without depending on a new run being created.
+All 12 selected ingress/revocation/Telegram migration cases and server types/build
+pass. The milestone audit records evidence, isolated DB, and remaining authority/
+lineage producers. This is another producer checkpoint in draft #17606, not
+production polling removal or completion of the full requested stack.
+
+
+Slice 28 now signals successful inbound action settlement and repaired delivery
+acceptance for already-admitted runs. Both post-close missing notices reproduced
+before repair. All 41 selected post-close/ingress/revocation/migration cases and
+server types/build pass; recovery proves it does not admit a second wake. The
+audit retains the initial contention-sensitive assertion and its correction to
+honor the existing retry. Identity activation and remaining authority/lineage
+producers still gate production polling removal. All original slices and older
+parent CI/review findings remain required.
+
+
+Slice 28 identity activation now signals the bound issue before changing the
+responsible user. Two before-fix failures now pass with outer commit/rollback,
+pending steering, replay and settled quiet checks. All 43 existing identity and
+GitHub credential tests pass after repairing their external-DB fixture URL;
+server types/build pass. Recovery terminalization/classification writers are the
+next audit. Master 34409a92c4 was fetched without disturbing this draft. The
+worker is still not production-registered and all original stack duties remain.
+
+
+Slice 28 now covers orphan-run terminalization in stale-lock recovery. Both
+real-producer missing-notice cases failed before repair and pass afterward;
+all 40 existing stale-lock ownership/race cases and server types/build pass.
+The conditional update and provider/process authority retain their existing
+owners. Adapter-failure classification and remaining producer audits still gate
+production registration; this does not migrate the stale-lock polling duty itself.
+
+
+Slice 28 now covers the late adapter-failure classification write, which can
+return an old failed run to the existing publication window after the issue's
+earlier wake. The missing notice reproduced before repair; all three recovery
+milestone cases, 89 recovery-action cases and server types/build pass. Four
+classification callers reuse their issue identity, with no new queue table or
+provider policy in shared code. Authority/configuration audit and production
+wiring remain next; the original full stack and remote gates remain incomplete.
+
+
+Slice 28 now covers nine real authority-restoration owners: connection/resource
+reach, unlinked policy, identity confirmation, four membership paths and task
+visibility. Seven initial causal failures plus connection/resource reproductions
+now pass; the invalid Discord group-reach fixture is explicitly retained in the
+failure record. Final local selection: 50 chat integrations, 18 access tests,
+six action-worker tests, server typecheck/build. No provider authorization was
+relaxed. Cloud trusted-header membership sync and board claim remain alternate
+writers to cover before production registration/poll removal. Older parent
+findings and the complete original stack remain open.
+
+
+Slice 28 now covers Cloud trusted-header sync and board claim. The missing
+Cloud notice and absent board-claim intents were reproduced before repair.
+All 39 post-close cases plus 30 provisioning/auth/claim cases pass; server types
+and build pass. Unchanged Cloud profile synchronization and active board membership
+stay silent. See the milestone audit for transaction boundaries and retained logs.
+The previous pushed head 0f38d1079d has the recurring E2E shard-3 cancellation
+failure; process-identity event append deadlock evidence is retained for diagnosis.
+Production registration/poll removal and the entire remaining stack are still open.
+
+
+Slice 28 production milestone migration: the app now registers the scoped
+lifecycle worker and the periodic coordinator invokes only native progress.
+The final GitHub guest/sponsor settings owner signals actual authority changes
+inside its existing transaction; its missing intent reproduced before repair.
+159 worker/startup/coordinator cases, four GitHub acceptance cases and all 16
+assembled-app project-chat E2Es pass; server typecheck passes. The milestone
+audit has a consolidated alternate-writer disposition table. Native progress
+remains the next separate reason. Remote gates, parent findings and the rest of
+the original stack are not complete; local cancellation success does not repair
+the recorded CI deadlock.
+
+
+Slice 28 review repair: cover GitHub observed-identity linking, suppress
+unchanged native-finalization recovery wakes, and repair the voice callback and
+Cloud-auth test contracts. Restore shared user profile after the Cloud authority
+test so downstream Slack publication tests see their original identity. Local
+40 stale-lock, 122 voice, 38 auth/session and 28 combined chat cases pass; server
+typecheck/build pass. See the milestone audit for failed-run dispositions.
+Latest-head remote gates and parent failures remain open.
+
+## Slice 29: native chat progress implementation
+
+PR [#17639](https://github.com/paperclipai/paperclip/pull/17639), branch
+`codex/sleep-29-native-chat-progress`, parent #17606 at `ed76256b97`.
+Native event producers and existing eligibility notifications now wake a scoped
+worker. Progress leaves the chat timer; retained history becomes quiet. The
+worker retains only unfinished batches, concrete lock contention and failures.
+See [the owner audit](2026-10-25-native-chat-progress-sleep-audit.md) for producer
+coverage, cursor precision repair, authorization boundaries and retained failures.
+
+Forty-four focused native-progress cases pass, as do 13 app coordinator cases and
+the server build/typecheck. All 16 browser chat cases pass before the final
+base-publication hook. The hook fixes a reproduced commit-order wake gap; its
+19 worker and 13 coordinator cases pass. A second fresh browser run passes all
+16 cases at `bcf2f38ff5`; final typecheck passes too. Remote checks/review are pending.
+Parent #17606 now has passing checks and Greptile 5/5 on `ed76256b97`; all three
+review threads are resolved. This is not completion of the broader stack.
+
+## Current gate update: native progress and inbound notices (2026-10-25)
+
+#17639 at `6c40618ec1bb098e1c7fe4098133d1de71d287ee` now has all checks
+passing (CI run 40218349023), a fresh Greptile 5/5 review of that commit, and
+zero review threads. The circular signal-payload and over-wide atomic-event
+selection failures were repaired, not bypassed by rerunning unchanged failures.
+The PR remains unmerged.
+
+Slice 30 now registers its scoped notice worker and removes normal inbound
+notices from periodic publication maintenance. Focused acceptance passes 42
+cases. Its full verification and new PR are still pending. See the dated inbound
+wake notice audit for the producer inventory, regressions and fixture corrections.
+This update does not clear the older Grok/runtime-discovery CI failures, voice
+session recovery review, or inbound voice cleanup ownership findings, and it does
+not shrink the remaining original checklist.
+
+
+## Slice 30 gate and slice 31 projection checkpoint (2026-10-25)
+
+[#17647](https://github.com/paperclipai/paperclip/pull/17647) at
+`fee07f3fa8cbc489cb9bbf657a6065c6e00748c3` has all 53 checks passing,
+a fresh Greptile 5/5 review, and its fairness finding resolved. The pre-repair
+full chat/startup acceptance passed 1,486 cases; the bounded-candidate repair
+passes 44 selected integration cases and server typecheck/build. No merge occurred.
+
+The next separate branch, `codex/sleep-31-failed-retry-notices`, fixes a reproduced
+manual-cursor starvation defect and adds scoped, bounded retry-notice projection.
+Its normal periodic pass remains until producer/lifecycle migration is complete.
+See [the retry notice audit](2026-10-25-failed-retry-notices-sleep-audit.md).
+
+Fresh older-parent audit still shows #17490 at `31bcd19888` and #17572 at
+`8815dfad38` failing E2E shard 3 and its aggregate. #17576 still has unresolved
+voice inventory amplification findings 4371283330/4371307607, and #17580 still
+has unresolved company-offboarding/cleanup findings 4370459800/4370543984. These
+are required repairs, not exemptions. The full original migration scope,
+master reconciliation, and all latest-head gates remain required.
+
+
+## Slice 31 worker and producer checkpoint (2026-10-25)
+
+Failed-retry notices now register a scoped worker and leave periodic publication
+maintenance. Real missed wakes were reproduced for admission, agent/tree
+cancellation, resumed-admission denial, early admission refusal, and requester
+restoration. Their owning transactions now notify through the existing shared
+boundary. Fourteen selected lifecycle cases and all 1,503 chat/startup acceptance
+cases pass. Workspace typecheck and build pass. See the retry audit for retained
+failures, exact commands/logs, and native source-cleanup qualification still open.
+This is a draft checkpoint, not a merge-ready claim. Older parent gates and every
+remaining original recurring-server duty stay in scope. No merge occurred.
+
+
+## Slice 31 native producer repairs
+
+Draft [#17649](https://github.com/paperclipai/paperclip/pull/17649) now covers
+source lease cleanup and reusable-lease retirement, each with a reproduced
+missing notice and real writer transaction tests. All 36 selected native/notice
+cases pass. The owning audit distinguishes notice authority from the stronger
+filesystem execution proof, and retains the fake-clock connection failure and
+Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
+remote gates, older parent findings, and every remaining original duty are still
+required. No stack PR has been merged.
+
+
+## Slice 31 accepted checkpoint and slice 32 owner audit
+
+[#17649](https://github.com/paperclipai/paperclip/pull/17649) at
+`2384384eeec4f32d073242ebf597b81df2df1ccb` has all 53 checks passing,
+fresh Greptile 5/5, and no inline review findings. Full chat/startup acceptance
+passes all 1,505 cases on fresh `paperclip_sleep31_native_full_20261025_test`
+(`/tmp/sleep31-native-full-chat.log`, 446.10 seconds, exit 0). The lease service
+passes 51 tests; focused native/notice acceptance passes 36; final server
+typecheck and build pass. This supersedes the earlier slice-31 pending statuses.
+The initial Runner receipt timeout did not reproduce after building debug Rust
+binaries (10 local tests pass), nor in a controlled 500ms event-loop-delay
+experiment. The updated-head remote Runner gate passes without an unchanged-job
+retry. Its exact initial cause remains unproven.
+
+The next branch is `codex/sleep-32-terminal-confirmations`, based on the accepted
+slice-31 commit. See the terminal confirmation owner audit. There is no slice-32
+implementation or PR yet. Older #17490/#17572 CI failures, #17576 inventory
+amplification findings, #17580 offboarding/cleanup ownership findings, the entire
+remaining original list, final master reconciliation and all final-head checks
+remain required. All stack PRs remain unmerged.
+
+
+## Slice 32 implementation checkpoint
+
+`codex/sleep-32-terminal-confirmations` implements terminal-confirmation recovery
+on committed signals and the shared scoped coordinator. Its Telegram owner keeps
+payload validation, settlement, continuation staging and activity attribution.
+The audit is `2026-10-25-terminal-confirmation-sleep-audit.md`. Nine distinct focused
+cases pass across the recorded commands, including real callback failure, outer
+commit/rollback, historical waiting/invalid prefixes, and a write during an active
+settlement. The new source guard excludes this duty from periodic maintenance.
+Full local acceptance, remote review/checks and publication are pending here.
+This supersedes the audit-only slice-32 status above. All older stack gates and
+every remaining original obligation remain required; no PR is merged.
+
+Slice 32 is now draft [#17651](https://github.com/paperclipai/paperclip/pull/17651).
+Initial workspace types/build pass; full chat/startup acceptance passes 1,511 of
+1,512, with a prior retry-notice test fake-clock CONNECT_TIMEOUT retained and
+corrected. Initial CI passes 51 gates but fails a plugin test at a cron boundary
+and its aggregate. A controlled timestamp diagnostic establishes an additional
+owed cron occurrence; fixing that fixture clock passes all 28 plugin tests.
+Thirteen selected chat lifecycle cases pass after the retry-notice wait fix.
+Initial Greptile is 5/5 without findings. Fresh full acceptance and corrected-head
+remote gates remain required; see the slice-32 audit for all retained failures.
+
+## Slice 32 accepted-head verification and slice 33 start
+
+At `8b43e6222706491f2d8044af3bf86358085069af`, #17651 passes all
+53 remote checks and fresh Greptile 5/5, with no review threads. The corrected
+full chat/startup run passed all 1,512 tests on a fresh database in 463.63 seconds;
+final server typecheck also passed. Prior failed runs remain documented above.
+The PR remains unmerged. Latest fetched master is `67aa87a93b`; final stack
+reconciliation and older unresolved gates/reviews remain outstanding.
+
+Slice 33 starts from that accepted head and owns interaction continuation
+recovery only. The owner audit is in
+`2026-10-25-interaction-continuation-sleep-audit.md`. GitHub history maintenance
+and host-sleep eligibility remain separate work.
+
+Slice 33 now implements interaction continuation recovery with committed action
+signals, saved retry/claim deadlines, and a scoped call into the existing
+publication dispatcher before claiming continuation work. It preserves paused
+and future-retry publication behavior. Eleven new real-database cases pass,
+including outer rollback/commit, historical prefixes, and concurrent response
+commit. Existing Telegram acceptance also passes. Broad acceptance and fresh
+PR gates remain pending; no merge or full-stack completion is claimed.
+
+Slice 33 is [#17653](https://github.com/paperclipai/paperclip/pull/17653), draft
+and unmerged. Initial broad acceptance passed 1,523 tests with 14 skipped;
+workspace types/build passed. Review found that publication preparation could
+start another send after drain/standby/shutdown. Three regressions reproduced
+it. Per-send admission/abort checks now pass all 14 new lifecycle cases, and the
+previously skipped publication suite plus startup guards pass 27 cases with the
+external test database. Fresh corrected-head verification remains required.
+
+## Slice 33 accepted verification and GitHub owner split
+
+#17653 at `276ef23d2a0b01b15e6bfb8ff31ab13495741b19` passes all 53
+remote checks, fresh Greptile 5/5, and has no unresolved review threads. Workspace
+typecheck/build pass. All 1,540 tests across chat integration, standalone
+interaction publication, and startup guards passed on a fresh database with no
+skips in 473.47 seconds. The initial skipped suite and the stop-boundary failure
+remain documented. The PR is unmerged.
+
+Slice 34 starts from that verified head and owns initial GitHub response-comment
+acknowledgement delivery. The same maintenance helper also contains terminal
+response reconciliation, review-check publication, and late stale-head review
+projection repair. Those are separate reasons and remain separate planned PRs.
+See `2026-10-25-github-chat-maintenance-sleep-audit.md` for the inspected owners,
+producer boundaries, and response-slot dependencies. No GitHub migration is yet
+claimed implemented or verified.
+
+## Slice 34: initial GitHub acknowledgement delivery
+
+Based on accepted slice 33 (`276ef23d2a0b01b15e6bfb8ff31ab13495741b19`).
+The implementation moves only initial response-comment acknowledgement out of
+recurring GitHub maintenance. The existing response actions, fast-response
+records, and publication leases own durability. Committed response-slot changes
+and actual saved deadlines drive recovery. Terminal responses, review checks,
+and stale-head projection remain separate upcoming reasons.
+
+Fourteen new real-PostgreSQL lifecycle cases and the existing startup guard pass.
+The producer-removal regression fails as expected when fast-response settlement
+has no notification. Migration application/replay pass after adding the generated
+concurrent-index migration to the existing top-level execution registry. Broader
+local and remote acceptance is pending. See the detailed
+[GitHub owner audit](2026-10-25-github-chat-maintenance-sleep-audit.md).
+
+All earlier failing CI, review findings, stack/master reconciliation, and remaining
+inventory duties retain their existing requirements. This slice does not claim
+that the stack is ready or authorize a merge.
+
+Slice-34 final focused acceptance passes 17 new cases plus the startup guard.
+Workspace typecheck/build pass again after the receipt-lifecycle correction.
+The fast-response suites pass 69 tests. The initial complete chat run passed
+1,554 tests; a fresh complete run with the three added lifecycle regressions
+is in progress. No remote gate or full-stack readiness claim is made yet.
+
+## Slice 34 accepted head and slice 35 checkpoint
+
+[#17656](https://github.com/paperclipai/paperclip/pull/17656) at
+`43900c1f94500af4c4de1987f9608ac4e12feae6` passes all 53 remote checks,
+fresh Greptile 5/5, and has zero review threads. Final chat/publication/startup
+acceptance passes all 1,557 tests with no skips in 514.70 seconds. Workspace
+types/build and 69 fast-response cases pass. The PR remains draft and unmerged.
+
+Branch `codex/sleep-35-github-terminal-responses` starts from that head.
+It extracts provider-owned terminal-state decisions, records successful paused
+presentation versions in existing receipts, and adds a scoped worker plus
+committed issue/run/response-slot notifications. Eight new real-database
+lifecycle cases and nine existing owner cases pass; server types/build pass.
+The broader GitHub workflow suite is running. Startup registration and polling
+removal wait for the three identified direct issue writers and remaining audit
+and acceptance requirements in the terminal-response audit. No slice-35 PR or
+full-stack readiness is claimed yet. Earlier parent CI/review findings, all other
+inventory duties, and reconciliation with current master remain required.
+
+Slice 35 now covers the reproduced direct tree-restoration, workspace-admission
+and exhausted-recovery producers. Real publication-owner tests preserve both
+known-unsent cancellation and ambiguous outcome parking. Startup registers the
+new terminal worker and recurring GitHub maintenance no longer invokes that duty.
+Fourteen new worker cases plus one existing case pass; workspace types/build and
+migration application/replay/safety pass. The partial candidate index excludes
+10,000 completed rows in a rollback-only query-plan experiment. Fresh full
+chat/publication/startup acceptance is running; remote gates remain required.
+See the terminal-response audit for all retained failures and scoped evidence.
+
+## Slice 35 accepted; slice 36 wired
+
+Slice 35 is [#17661](https://github.com/paperclipai/paperclip/pull/17661), head
+`3d7c79c262f92563555b278d101de8240e6f011b`. Complete local chat/publication/startup
+acceptance passed all 1,571 tests in 517.41 seconds. All 53 remote checks passed,
+and fresh Greptile is 5/5 with no findings. The PR remains draft and unmerged.
+
+Slice 36, `codex/sleep-36-github-review-checks`, owns GitHub review-check publication.
+It uses existing actions and scoped scheduling. Received nonterminal checks retain
+the existing five-second remote-head reconciliation deadline because webhook
+receipt is not a reliable proof of all future pushes. Completed history and
+configuration alone do not schedule work. Current authority, assessment ownership,
+provider identity, check replacement, lease fencing, and failure backoff remain
+with the GitHub owner. Late stale-head projection repair is the separate next duty.
+
+Eleven new worker tests cover real enqueue and nested transaction settlement,
+run-identity wake before a saved deadline, missed-head recovery, lifecycle states,
+retry reconstruction, lease contention, a full revoked prefix, retained history,
+and HTTP shutdown recovery. The fresh targeted selection passed 36 tests including
+existing maintenance/startup cases. Workspace typecheck/build, migration/replay,
+and candidate-index evidence passed. Full local acceptance and remote PR gates
+remain required. See `2026-10-25-github-review-check-sleep-audit.md` for the failed
+attempts, repairs, exact boundary, and external reconciliation limitation.
+
+Slice 36 is draft [#17662](https://github.com/paperclipai/paperclip/pull/17662).
+Its initial full local run had 13 failures and 1,569 passes, and CI failed an
+inherited login-cleanup fixture. The quiet observation and fake-clock settlement
+repairs are documented in its owner audit. The corrected selections passed 23
+chat cases and all 16 login-cleanup tests; full/new-head verification is required.
+The earlier cancellation browser failures were not reproduced in six local
+replays. #17490 and #17572 remain unresolved gates, not inferred green from that
+negative result. The next untouched duty remains late stale-head projection repair.
+
+Slice 36 follow-up: all 53 remote checks and fresh 5/5 review passed on
+`59f8c8b3e5`. The second local full run had one startup-quiescence assertion
+failure and 1,581 passes. Waiting for the actual quiet condition fixes that
+fixture; all 211 GitHub workflow tests pass after the change. Fresh remote gates
+for the fixture-only commit remain required. The next slice may build on this
+commit while those independent gates run; no stack merge is authorized.
+
+Slice 37, codex/sleep-37-github-review-projection, separates late stale-head
+review projection repair from periodic chat maintenance. Existing cancellation
+receipts and exact admitted deliveries authorize the repair. Committed receipt,
+cancellation, and relevant review-state writes wake the provider-owned worker;
+assessment ownership is rechecked atomically. The obsolete provider maintenance
+wrapper is removed. Explicit manual recovery and the independent missed-webhook
+lane remain. No table or Cloud wake contract is added. Ten new real-database
+cases plus legacy/startup coverage pass; final scalar-query acceptance and remote
+gates remain pending. See the owner audit for fixture failures, repairs, index
+plan evidence, and lifecycle limits. Other original inventory items and earlier
+stack gates remain open.
+
+Slice 36 final remote gates: all 53 checks passed on 01efd3f4f7, with fresh
+Greptile 5/5 and no review threads. Slice 37 final scalar-query selection passed
+20 tests; workspace typecheck and build passed. Full local acceptance and remote
+PR gates are still pending. No PR in this stack was merged.
+
+## Slice 37 accepted; slice 38 direct webhook recovery
+
+[#17664](https://github.com/paperclipai/paperclip/pull/17664), head
+`0a25cae9ef10a8714801d72ac798823de335e050`, has all 53 remote checks
+passing and fresh Greptile 5/5 without actionable findings. Complete local
+chat/publication/startup acceptance passed 1,592 tests in 556.33 seconds.
+The PR remains draft and unmerged.
+
+Slice 38 now routes direct GitHub missed-webhook recovery through saved checkpoint
+deadlines and removes the last production chat reconciliation interval. The
+required external-source cadence remains only for eligible direct integrations;
+Cloud relay registrations and disabled/unconfigured states are quiet. A real
+signed installation-deletion regression exposed and fixed a missing producer
+notification. Forty-one selected cases pass, including 106-endpoint pagination,
+five-item company-fair batches, and an existing default-batch consumer. Complete
+acceptance and remote gates remain required. See
+[the provider audit](2026-10-25-github-webhook-recovery-sleep-audit.md).
+
+Earlier #17490/#17572 CI failures, #17576/#17580 review findings, the entire
+remaining original list, and final reconciliation with master stay open. The
+current inspected master is `5a28f7acf8`; no stack PR has been merged.
+
+
+## Slice 38 review repair and corrected acceptance
+
+Initial #17666 at `936e132c01` has 52 passing checks and a valid Greptile P1:
+a receipt committed immediately before drain/stop could suppress a POST that
+never started. Four regressions reproduced the loss. The owner now restores a
+known-unsent claim with an exact attempt predicate while retaining uncertainty
+after transport starts. Fifty-nine selected tests pass; six stop-boundary cases
+also cover preservation of a newer receipt. Final verification is running.
+
+The initial broad command passed 1,586 tests in two files but misspelled the
+standalone publication filename. The corrected three-file command is running
+on a fresh database; the earlier result is not full publication acceptance.
+Earlier stack CI/review issues, all remaining migrations, and master reconciliation
+remain outstanding. No stack PR is merged or claimed ready as a whole.
+
+
+Slice 38 production repair is pushed at `491a7e1eef`; fresh review is 5/5 and
+the P1 thread is resolved. Workspace types/build passed. The corrected complete
+three-suite run passed 1,605 tests and failed one assertion that read the timer
+before worker settlement. The assertion now waits for settled idle tracking and
+the actual future deadline; all 37 affected lifecycle/publication/startup cases
+pass. The full failure remains in the audit; latest-head remote gates are required.
+No full-run success or stack completion is inferred from that focused repair.
+
+
+## Slice 38 accepted; slice 39 retry cancellation
+
+[#17666](https://github.com/paperclipai/paperclip/pull/17666) at
+`d8e1bd97f530fc7a5119549a35b871b7b3d9f737` has all 53 remote checks
+passing, fresh Greptile 5/5, and its review finding resolved. The PR remains
+draft and unmerged. Its earlier local failure and focused repair remain recorded.
+
+Slice 39 separates interrupted scheduled-retry cancellation from the periodic
+orphan reaper. Existing run rows and transaction notifications drive bounded
+recovery through the existing cancellation owner. No table or external alarm is
+added. The producer audit includes dispatch deferral, budget fences, correlated
+Stop, lifecycle transitions, settings, and deletion. See
+[the owner audit](2026-10-25-scheduled-retry-cancellation-sleep-audit.md).
+Thirty route tests and all 34 recovery tests pass. Shared-helper consumers pass
+20 tests. Final combined owner acceptance and remote gates remain required.
+Earlier #17490/#17572 CI failures, #17576/#17580 review findings, master
+reconciliation, and every other original inventory duty remain outstanding.
+
+Final combined owner acceptance passed all 164 tests in five suites, with no
+skips, in 41.14 seconds using separate dispatch and recovery databases. Together
+with the 30 retry-route tests this covers 194 tests. Remote PR gates remain pending.
+
+
+## Startup CI fixture repair
+
+Initial head bd490ee50b failed server shard 4/12: eleven tests in the startup
+suite used a heartbeat test double without the new registration method. The
+real worker and owner acceptance passed, but startup wiring coverage was missing
+from the local selection. The double now exposes the method, and new assertions
+verify scheduler enablement and periodic-reaper exclusion. All 48 startup tests
+pass in 5.34 seconds. This is a test-only repair; fresh head CI/review is required.
+
+Slice 39 is draft [#17667](https://github.com/paperclipai/paperclip/pull/17667),
+initial head `bd490ee50b303187f0ae6f8fe2aa95477d66a40f`, targeting slice 38.
+Its initial review was 5/5. The startup repair is now pushed at `ecef7776a4`;
+fresh CI and review are required. No merge or full-stack acceptance is claimed.
+
+The instruction-copy audit splits the apparent two reaper calls into three
+reasons: stopped collection, captured-byte commit, and post-save directory release.
+Slice 40 will own captured-byte commit only. See
+[instruction recovery audit](2026-10-25-instruction-recovery-sleep-audit.md).
+Existing instruction-copy and directory suites pass 20 and 87 tests respectively
+on separate external PostgreSQL databases before any production behavior changes.
+
+
+## Slice 39 accepted; slice 40 captured instruction commits
+
+[#17667](https://github.com/paperclipai/paperclip/pull/17667), head
+`ecef7776a4b38e0c7e0b86d7009fcd01ed7658e5`, has all 53 checks passing,
+fresh Greptile 5/5, and no unresolved threads. The startup fixture failure and
+repair remain recorded. This PR is still draft and unmerged.
+
+Slice 40 migrates only captured instruction commits. Existing saved bytes,
+attempt counts, and retry deadlines drive a bounded worker. Local writes signal
+the existing transaction boundary; the revision service still owns authorization,
+conflicts, file replacement, and exact-byte replay. A race test exposed a newer
+retry deadline being ignored; the attempt claim now checks that it is still due.
+Manual/startup recovery shares the guarded owner. Stopped collection and post-save
+directory release remain separate duties. No schema migration is needed.
+
+Final instruction acceptance passes 33 tests, directory/startup passes 137, and
+startup/instruction-release wiring passes 64 (184 distinct tests across these
+selections). Workspace types/build pass. Fresh remote gates remain required.
+See the instruction recovery audit for producer coverage and all failed attempts.
+Earlier stack CI/review findings and final master reconciliation remain outstanding.

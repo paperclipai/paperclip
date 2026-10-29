@@ -168,7 +168,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       await db.update(issues).set({ monitorNextCheckAt: replacement, monitorWakeRequestedAt: null }).where(eq(issues.id, f.issue.id));
       return admitted;
     });
-    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement, monitorAttemptCount: 0 });
   });
 
@@ -195,6 +195,28 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     }));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null });
+  });
+
+  it("lets a human check a blocked task without resuming automatic checks", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now, actorType: "user", actorId: "board-user" }))
+      .resolves.toMatchObject({ outcome: "triggered" });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agent.id, expect.objectContaining({
+      source: "on_demand", requestedByActorType: "user", requestedByActorId: "board-user",
+      issueStateGuard: expect.objectContaining({ statuses: ["blocked"], assigneeAgentId: f.agent.id }),
+    }));
+    expect(await readIssue(f.issue.id)).toMatchObject({ status: "blocked", monitorNextCheckAt: null, monitorAttemptCount: 1 });
+  });
+
+  it.each(["agent", "system"] as const)("does not let a %s check a blocked task", async (actorType) => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issue.id));
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now, actorType, actorId: "caller" })).rejects.toThrow();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(await readIssue(f.issue.id)).toMatchObject({ status: "blocked", monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
   });
 
   it("retains monitors after transient admission failures", async () => {

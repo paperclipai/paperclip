@@ -40,6 +40,8 @@ import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { registerWorkspaceRecoveryWork } from "./workspace-recovery-work.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
+import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
+import { executionWorkspaces } from "@paperclipai/db";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -136,6 +138,42 @@ describe("automatic retained workspace recovery", () => {
   }
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+
+  it("unblocks a pending workspace selection only after a superseded retry's real files are preserved", async () => {
+    const f = await seed();
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+    const source = await run(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: null, nativePhase: "retryable_failure",
+      startedAt: new Date(1), finishedAt: new Date(2) }).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      recoveryState: "resuming_session", nextAttemptAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(environmentLeases).set({ status: "active", leasePolicy: "ephemeral",
+      releasedAt: null, cleanupStatus: null, metadata: f.lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, runtimeMode: "native", status: "succeeded", nativePhase: "committed",
+      startedAt: new Date(3), finishedAt: new Date(4), contextSnapshot: { previousRunId: f.runId, taskRetryRequestId: randomUUID() } });
+    await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Shared files", mode: "shared_workspace", strategyType: "project_primary", cwd: f.host });
+    const actor = { type: "board" as const, source: "local_implicit" as const, isInstanceAdmin: true };
+    const workspaces = executionWorkspaceService(db);
+    await workspaces.selectTaskWorkspace({ companyId: f.companyId, issueId: f.issueId, actor,
+      selection: { kind: "existing", workspaceId: f.issueId }, expectedBindingRevision: 0, requestKey: randomUUID() });
+    const admission = { companyId: f.companyId, issueId: f.issueId, actor, runId: randomUUID() };
+    await expect(workspaces.applyPendingTaskWorkspaceSelection(admission)).rejects.toThrow("Previous task run still owns workspace recovery");
+    expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "recovery", runIds: [f.runId] })).toEqual([]);
+    await expect(workspaces.applyPendingTaskWorkspaceSelection(admission)).rejects.toThrow("Previous task run still owns workspace recovery");
+    const [preservation] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await recoverRetainedWorkspace({ ...f.input, actionId: preservation.id });
+    expect(readSystemRecovery((await action(preservation.id)).evidence)?.state).toBe("complete");
+    expect(await readFile(path.join(f.host, "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    expect(await workspaces.applyPendingTaskWorkspaceSelection(admission)).toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task).toMatchObject({ status: "blocked", assigneeAgentId: source.agentId, executionWorkspaceId: f.issueId,
+      workspacePendingSelection: null, executionWorkspaceSettings: { mode: "shared_workspace" } });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(0);
+  }, 30_000);
 
   it.each(["HTTP Retry", "new comment", "automatic cleanup"] as const)("repairs an unregistered historical deadline failure through %s without admitting work before verified stop", async entry => {
     const f = await seed("native", true, "keep_running");

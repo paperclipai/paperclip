@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { onboardingFirstTaskCompletionAllowed } from "../onboarding-first-task-admission.js";
 import { hasPublishedGitHubReview, readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
@@ -52,6 +53,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
+import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildIssueBlockersResolvedWakeIdempotencyKey } from "../issue-dependency-wakeups.js";
@@ -127,6 +129,7 @@ export async function dispatchPendingNativeStatusEffects(input: {
         targetId: effect.targetId,
       });
     }
+    await notifyChatRunMilestones(tx, input);
     await tx
       .update(statusDecisionEffects)
       .set({
@@ -1973,6 +1976,7 @@ export async function commitNativeStatusDecision(input: {
       await recordCoordinatorDecision(decisionRow.id);
       return { decision: decisionRow, issue, replayed: true };
     }
+    await notifyChatRunMilestones(tx, input);
     if (!decisionRow) {
       const latestDecisionVersion = await tx
         .select({
@@ -2112,6 +2116,9 @@ export async function commitNativeStatusDecision(input: {
       );
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
+      if (updated.originKind === "routine_execution") {
+        await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
+      }
       materialized.unshift({
         effectKind: "issue_status_projection",
         targetType: "issue",

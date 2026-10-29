@@ -64,7 +64,9 @@ for eligible agents.
 Scoped source-only evidence: [adapter discovery](../../server/src/routes/adapters.ts)
 reports supported runners/effective default for the selected company/environment;
 [selection policy](../../server/src/services/agent-runner-selection.ts) reads
-server-owned immutable sandbox facts without provisioning. New Codex defaults
+server-owned immutable sandbox facts without provisioning. Managed Cloud images
+skip saved qualification after company access checks; custom environments and
+active captured custom images retain the existing policy. New Codex defaults
 and explicit overrides follow the [shared runner contract](../../packages/shared/src/agent-runner.ts);
 Claude follows its qualified rollout described above. The board inventory does not grant a
 native agent an equivalent discovery binding. See
@@ -171,7 +173,8 @@ remain separate from live latency and permitted/denied agent acceptance.
 Scoped OpenCode assigned-tool source evidence: local and remote native sessions
 use the server-owned authenticated relay. The provider sees bounded
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` schemas,
-then uses pinned aliases. Search intersects fresh grants and work modes; calls
+then uses pinned aliases. Search describes its 1–20 page limit and default of 5
+in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
 audit path. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode
@@ -271,6 +274,27 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Plugin suspension receipts remain required through recovery and admission, then
+are removed when the admitted session becomes live. A later warm run therefore
+does not inherit an obsolete stopped-run identity. Repository-free fresh plugin
+directories retain their saved company, task, workspace, provider owner and
+attempt bindings on follow-up. This does not grant session-reset authority or
+discard an explicit repository strategy. See the
+[session recipe](../feature-map/runs-adapters.md#session) for the continuation
+checks; source regressions do not establish live provider acceptance.
+
+Scoped source evidence: completed warm-runner retirement can persist maintenance
+under the same process's live, task-bound preparation lease before native
+coordinator admission. Original controller generation, committed-result and
+no-new-work checks remain required. This changes no actor permission or session
+reset authority. Follow the [session recipe](../feature-map/runs-adapters.md#session)
+for configuration invalidation and expired or foreign owner rejection.
+
+Fresh-session admission with external checkpoints reads current canonical state
+from the registered controller. A local marker does not grant bootstrap or
+session-reset authority. Exact run/session/runner/lease binding, no prior activity,
+backup checks and atomic remote directory admission retain their existing gates.
+
 Capability ID: `runs-adapters/session`.
 
 Review: `baseline`.
@@ -286,6 +310,16 @@ continuation.
 Policy: Task-session listing and execution-context reset require board agent
 management at their HTTP routes. These controls are separate from delegated
 managed AI-account authentication attempts under `model-accounts`.
+
+Ordinary remote `per_turn` continuation restores an external controller marker
+through the existing company/task-bound checkpoint store, with the expected
+normalized session. Prior-owner, lifecycle and backup admission checks remain
+authoritative. Prior-run projections refresh when that checkpoint exists; legacy
+file-backed admission remains available when it does not. This changes no agent
+grant or session-control endpoint. The
+[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
+provide source-level restoration and denial evidence; live provider continuity
+is a separate verification step.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.

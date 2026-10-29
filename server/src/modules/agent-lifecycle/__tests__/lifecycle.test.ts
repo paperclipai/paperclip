@@ -1,3 +1,6 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { createAgentLifecycle as createLifecycleCommands } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
@@ -16,7 +19,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -25,17 +28,26 @@ import { createLifecycleStore as createStore } from "../adapters/postgres.js";
 import { transition } from "../domain/policy.js";
 import type { LifecycleAgent } from "../application/ports.js";
 import { budgetService } from "../../../services/budgets.js";
+import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_LIFECYCLE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("agent lifecycle commands", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   let companyId: string;
   const workers: ReturnType<typeof configureAgentLifecycle>[] = [];
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }, 90_000);
-  afterAll(async () => { for (const worker of workers) await worker.stop(); await database?.cleanup(); });
+  beforeAll(async () => {
+    if (external) { await applyPendingMigrations(external); db = createDb(external); }
+    else { database = await startEmbeddedPostgresTestDatabase("paperclip-agent-lifecycle-"); db = createDb(database.connectionString); }
+  }, 90_000);
+  afterAll(async () => {
+    for (const worker of workers) await worker.stop();
+    if (external) await closeRegisteredClients(external);
+    else await database?.cleanup();
+  });
   beforeEach(async () => {
     for (const work of workers) await work.stop();
     companyId = randomUUID();
@@ -73,6 +85,53 @@ const support = await getEmbeddedPostgresTestSupport();
     await createAgentLifecycle(db).updateConfiguration(agent.id, { runtimeConfig: { heartbeat: { intervalSec: 42 } } });
     await expect(createAgentLifecycle(db).updateConfiguration(agent.id, { runtimeConfig: { aiConnection: {} } }, { expectedConfiguration })).rejects.toThrow("configuration changed while saving");
     expect((await current(agent.id)).runtimeConfig).toEqual({ heartbeat: { intervalSec: 42 } });
+  });
+
+  it("fences YAML saves under the write lock without treating runtime bookkeeping as an edit", async () => {
+    const agent = await hire();
+    const revision = agentConfigurationRevision(await current(agent.id));
+    await db.update(agents).set({ lastHeartbeatAt: new Date(), updatedAt: new Date() }).where(eq(agents.id, agent.id));
+    await createAgentLifecycle(db).updateConfiguration(agent.id, { title: "New title" }, { expectedConfigurationRevision: revision });
+    await expect(createAgentLifecycle(db).updateConfiguration(agent.id, { name: "Stale overwrite" }, { expectedConfigurationRevision: revision }))
+      .rejects.toThrow("configuration changed while you were editing");
+    expect(await current(agent.id)).toMatchObject({ name: agent.name, title: "New title" });
+  });
+
+  it("saves YAML configuration through the normal route with redaction, revisions, and access checks", async () => {
+    const [agent] = await db.insert(agents).values({ companyId, name: "YAML test", adapterType: "process",
+      adapterConfig: { command: "echo", removeMe: true, env: { DEMO_VALUE: "private-fixture" }, apiKey: "private-api-fixture" },
+      runtimeConfig: { heartbeat: { enabled: false } }, metadata: { token: "private-metadata-fixture" },
+    }).returning();
+    function app(actor: Express.Request["actor"]) {
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.actor = actor; next(); });
+      app.use("/api", agentRoutes(db)); app.use(errorHandler); return app;
+    }
+    const board = app({ type: "board", source: "local_implicit", userId: "board", companyIds: [companyId] });
+    const response = await request(board).get(`/api/agents/${agent.id}/configuration`).expect(200);
+    expect(response.body).toMatchObject({ capabilities: null, budgetMonthlyCents: 0, defaultEnvironmentId: null });
+    expect(JSON.stringify(response.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(response.body)).not.toContain("private-api-fixture");
+    expect(JSON.stringify(response.body)).not.toContain("private-metadata-fixture");
+    const adapterConfig = { ...response.body.adapterConfig, command: "printf" };
+    delete adapterConfig.removeMe;
+    const saved = await request(board).patch(`/api/agents/${agent.id}`).send({
+      adapterConfig, replaceAdapterConfig: true, title: "Updated using YAML",
+      expectedConfigurationRevision: response.body.configurationRevision,
+    });
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.configurationRevision).not.toBe(response.body.configurationRevision);
+    const persisted = await current(agent.id);
+    expect(persisted.adapterConfig).toMatchObject({ command: "printf", env: { DEMO_VALUE: { type: "plain", value: "private-fixture" } }, apiKey: "private-api-fixture" });
+    expect(persisted.adapterConfig).not.toHaveProperty("removeMe");
+    expect(persisted.runtimeConfig).toEqual(agent.runtimeConfig);
+    expect(persisted.metadata).toEqual(agent.metadata);
+    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(1);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.updated")))).toHaveLength(1);
+    await request(board).patch(`/api/agents/${agent.id}`).send({ name: "Stale", expectedConfigurationRevision: response.body.configurationRevision }).expect(409);
+    const foreign = app({ type: "board", source: "session", userId: "outsider", companyIds: [], memberships: [] });
+    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(403);
+    await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 
   it("maps existing states without starting setup or clearing pause reasons", async () => {
@@ -578,6 +637,48 @@ const support = await getEmbeddedPostgresTestSupport();
       await approvalService(db).approve(approval.id, "approving-member");
       expect((await current(agent.id)).lifecycleOperation?.responsibleUserId).toBe(savedOwner ?? "requesting-member");
     }
+  });
+
+  it("settles notice reactivation only with the outer lifecycle transaction", async () => {
+    const work = worker();
+    const agent = await hire();
+    await work.process(agent.id);
+    await createAgentLifecycle(db).pauseAgent(agent.id);
+    await work.process(agent.id);
+    await work.stop();
+    await createAgentLifecycle(db).resumeAgent(agent.id);
+    const store = createLifecycleStore(db);
+    const owner = "resume-notice-test";
+    const claimed = await store.claim(agent.id, owner, new Date());
+    expect(claimed).not.toBeNull();
+    await store.setRequiredPlugins(claimed!, owner, []);
+    await store.completeHost(claimed!, owner);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatFailedRetryNotices, (event, scopes) => {
+      if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === companyId)) events.push(event);
+    });
+    try {
+      await expect(db.transaction(async tx => {
+        expect(await createLifecycleStore(tx as unknown as Db).change(agent.id, "complete", { owner }))
+          .toMatchObject({ status: "idle", lifecycleState: "ready" });
+        expect(events).toEqual(["intent"]);
+        expect(await current(agent.id)).toMatchObject({ status: "paused", lifecycleState: "resuming" });
+        throw new Error("rollback resumed agent");
+      })).rejects.toThrow("rollback resumed agent");
+      expect(events).toEqual(["intent", "settled"]);
+      expect(await current(agent.id)).toMatchObject({ status: "paused", lifecycleState: "resuming" });
+      events.length = 0;
+      await db.transaction(async tx => {
+        await createLifecycleStore(tx as unknown as Db).change(agent.id, "complete", { owner });
+        expect(events).toEqual(["intent"]);
+        expect((await current(agent.id)).status).toBe("paused");
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect(await current(agent.id)).toMatchObject({ status: "idle", lifecycleState: "ready" });
+      events.length = 0;
+      await store.change(agent.id, "reconcile");
+      expect(events).toEqual([]);
+    } finally { unsubscribe(); }
   });
 
   it("rejects transaction injection and generic state writes", async () => {

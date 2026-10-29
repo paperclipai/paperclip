@@ -92,6 +92,14 @@ They also become native Observability spans only with an operator OTLP endpoint.
 
 ## Native PRP Run-Log Events
 
+Completed OpenCode builtin `bash` parts preserve the numeric process exit from
+`state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
+status stays `completed` even when the command exits with a nonzero code. This
+status describes completion of the tool call, not success of the command or the
+native run. Metadata adds an exit only when it is an integer. Conflicting supplied
+legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
+metadata on other tools cannot add process-exit proof.
+
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
 refreshes on the new account. The bundled transport awaits a host commit callback

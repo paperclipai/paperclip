@@ -10,6 +10,8 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace, prese
 import type { NativeRestartRecoveryClaim } from "./native-restart-recovery.js";
 import { NativeWorkspaceFinalizationBusyError } from "./native-workspace-finalization-ownership.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
+import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 
 const externalUrl = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -50,6 +52,82 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
   const readLease = async (id: string) => (await db.select().from(environmentLeases).where(eq(environmentLeases.id, id)))[0]!;
   const actions = async (issueId: string) => db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+
+  async function supersededRetry() {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ nativePhase: "retryable_failure", startedAt: new Date(1), finishedAt: new Date(2) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      recoveryState: "resuming_session", nextAttemptAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, nativeIssueId: f.issueId, runtimeMode: "native", status: "succeeded", nativePhase: "committed",
+      startedAt: new Date(3), finishedAt: new Date(4), contextSnapshot: { issueId: f.issueId,
+        previousRunId: f.runId, taskRetryRequestId: randomUUID() } }).returning();
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId));
+    return { ...f, successor };
+  }
+
+  it.each(["restart", "resume"])("retires a superseded failed retry and preserves its files during %s recovery", async path => {
+    const f = await supersededRetry();
+    const beforeTask = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    const recover = () => path === "restart" ? claimNativeRestartRecoveries({ db, runIds: [f.runId], restartKind: "hard" })
+      : claimNativeSessionResumptions({ db, runIds: [f.runId], runnerInstanceId: "recovery" });
+    await recover();
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", attempt: 1, leaseOwner: null, nextAttemptAt: null,
+        failureCode: "native_retry_superseded", failureDetail: { successorRunId: f.successor.id } });
+    expect(await readRun(f.runId)).toMatchObject({ status: "failed", nativePhase: "terminal_failure",
+      resultJson: { originalDiagnostic: true, workspaceRestoreRecovery: { leaseIds: [f.lease.id] } } });
+    expect(await readLease(f.lease.id)).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(beforeTask);
+    const retainedActions = await actions(f.issueId);
+    expect(retainedActions).toHaveLength(1);
+    await recover();
+    expect(await actions(f.issueId)).toEqual(retainedActions);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);
+  });
+
+  it.each(["live_owner", "process", "current_execution", "unfinished_successor", "unlinked_successor", "foreign_successor", "mismatched_source"])(
+    "keeps an unverified superseded retry held: %s", async scenario => {
+      const f = await supersededRetry();
+      if (scenario === "live_owner") await db.update(nativeRunFinalizations).set({ leaseOwner: "live-controller",
+        leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      if (scenario === "process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "current_execution") await db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+      if (scenario === "unfinished_successor") await db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", finishedAt: null })
+        .where(eq(heartbeatRuns.id, f.successor.id));
+      if (scenario === "unlinked_successor") await db.update(heartbeatRuns).set({ contextSnapshot: { previousRunId: randomUUID(), taskRetryRequestId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, f.successor.id));
+      if (scenario === "foreign_successor") {
+        const foreign = await seed();
+        await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, f.successor.id));
+        await db.insert(heartbeatRuns).values({ companyId: foreign.companyId, agentId: foreign.agentId,
+          issueId: foreign.issueId, nativeIssueId: foreign.issueId, runtimeMode: "native", status: "succeeded", nativePhase: "committed",
+          startedAt: new Date(3), finishedAt: new Date(4), contextSnapshot: { previousRunId: f.runId, taskRetryRequestId: randomUUID() } });
+      }
+      if (scenario === "mismatched_source") await db.update(environmentLeases).set({ providerLeaseId: randomUUID() })
+        .where(eq(environmentLeases.id, f.lease.id));
+      const beforeRun = await readRun(f.runId), beforeLease = await readLease(f.lease.id);
+      await claimNativeSessionResumptions({ db, runIds: [f.runId], runnerInstanceId: "recovery" });
+      expect(await readRun(f.runId)).toEqual(beforeRun);
+      expect(await readLease(f.lease.id)).toEqual(beforeLease);
+      expect(await actions(f.issueId)).toEqual([]);
+    });
+
+  it("rolls back retry retirement together with file preservation", async () => {
+    const f = await supersededRetry();
+    const beforeRun = await readRun(f.runId), beforeLease = await readLease(f.lease.id);
+    const beforeCoordinator = (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0];
+    await expect(db.transaction(async tx => {
+      await claimNativeSessionResumptions({ db: tx as unknown as typeof db, runIds: [f.runId], runnerInstanceId: "recovery" });
+      expect((await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0].phase).toBe("terminal_failure");
+      throw new Error("rollback retry retirement");
+    })).rejects.toThrow("rollback retry retirement");
+    expect(await readRun(f.runId)).toEqual(beforeRun);
+    expect(await readLease(f.lease.id)).toEqual(beforeLease);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(beforeCoordinator);
+    expect(await actions(f.issueId)).toEqual([]);
+  });
 
   it("keeps another orphan recoverable while a task lock delays preservation", async () => {
     const busy = await seed(), free = await seed();

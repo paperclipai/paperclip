@@ -275,3 +275,40 @@ export interface AttentionFeed {
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
 }
+/** Read-only projection of canonical task decisions; never a second write store. */
+export interface DecisionHistoryItem {
+  id: string;
+  sourceKind: "issue_thread_interaction" | "decision";
+  sourceId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+  issueTitle: string;
+  agentId: string | null;
+  agentName: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  title: string;
+  outcome: string;
+  label: string;
+  resolvedAt: string;
+  resolvedByUserId: string | null;
+  resolvedByAgentId: string | null;
+  href: string;
+  target: { kind: "issue_document"; issueId?: string; key: string; revisionId: string } | { kind: "issue_attachment"; attachmentId: string } | null;
+}
+
+export interface DecisionHistoryQuery {
+  cursor?: string;
+  limit?: number;
+  search?: string;
+  outcome?: string;
+  agentId?: string;
+  projectId?: string;
+  sort?: "newest" | "oldest";
+  since?: string;
+}
+
+export interface DecisionHistoryPage {
+  items: DecisionHistoryItem[];
+  nextCursor: string | null;
+}

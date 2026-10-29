@@ -24,6 +24,7 @@ import {
 import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { toolAccessService } from "./tool-access.js";
 import { logActivity } from "./activity-log.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { githubBotRequest } from "./chat-github-client.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -145,11 +146,12 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         "Repository overrides must refer to this App installation",
       );
     await db.transaction(async (tx) => {
-      await tx
-        .select({ id: chatEndpoints.id })
+      const [currentEndpoint] = await tx
+        .select({ allowUnlinkedPeople: chatEndpoints.allowUnlinkedPeople, sponsorUserId: chatEndpoints.sponsorUserId })
         .from(chatEndpoints)
         .where(eq(chatEndpoints.id, endpointId))
         .for("update");
+      if (!currentEndpoint) throw notFound("GitHub bot not found");
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`github-config:${endpointId}`}, 0))`,
       );
@@ -160,6 +162,11 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         .for("update");
       if ((current?.revision ?? 0) !== parsed.expectedRevision)
         throw conflict("This configuration changed. Refresh before saving.");
+      const allowUnlinkedPeople = config.people.some((p) => p.kind === "guest");
+      if ((!currentEndpoint.allowUnlinkedPeople && allowUnlinkedPeople) ||
+          (allowUnlinkedPeople && currentEndpoint.sponsorUserId !== config.responsibleUserId)) {
+        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+      }
       const values = {
         companyId: bot.companyId,
         endpointId,
@@ -180,7 +187,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       await tx
         .update(chatEndpoints)
         .set({
-          allowUnlinkedPeople: config.people.some((p) => p.kind === "guest"),
+          allowUnlinkedPeople,
           sponsorUserId: config.responsibleUserId,
           updatedAt: new Date(),
         })
@@ -327,6 +334,9 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         expiresAt: null,
         updatedAt: new Date(),
       };
+      if (prior?.status !== "linked") {
+        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+      }
       await tx
         .insert(chatIdentityLinks)
         .values(values)

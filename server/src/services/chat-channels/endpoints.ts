@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { chatConnectionTransport } from "./provider-catalog.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { slackSetupState } from "./slack/setup.js";
@@ -454,6 +455,11 @@ function providerSetupState(
         await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
+          if ((input.allowDirectMessages === true && !existing.endpoint.allowDirectMessages)
+            || (input.allowGroupChats === true && !existing.endpoint.allowGroupChats)
+            || (input.allowUnlinkedPeople === true && !existing.endpoint.allowUnlinkedPeople)) {
+            await notifyChatRunMilestones(tx, { companyId: existing.endpoint.companyId });
+          }
           if (input.executionDefaults !== undefined) {
             await assertChatExecutionDefaultsAccess(db, {
               companyId: existing.endpoint.companyId,

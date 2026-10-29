@@ -154,7 +154,7 @@ export const agentsApi = {
     }
   },
   getConfiguration: (id: string, companyId?: string) =>
-    api.get<Record<string, unknown>>(agentPath(id, companyId, "/configuration")),
+    api.get<import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId, "/configuration")),
   listConfigRevisions: (id: string, companyId?: string) =>
     api.get<AgentConfigRevision[]>(agentPath(id, companyId, "/config-revisions")),
   getConfigRevision: (id: string, revisionId: string, companyId?: string) =>
@@ -168,7 +168,7 @@ export const agentsApi = {
   updateRuntimeSettings: (id: string, runtimeSettings: import("@paperclipai/shared").AgentRuntimeSettingsPatch, companyId: string) =>
     api.patch<Agent>(agentPath(id, companyId), { runtimeSettings }),
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
-    api.patch<Agent>(agentPath(id, companyId), data),
+    api.patch<Agent & import("@paperclipai/shared").AgentConfigurationResponse>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>
     api.patch<AgentDetail>(agentPath(id, companyId, "/permissions"), data),
   instructionsBundle: (id: string, companyId?: string) =>

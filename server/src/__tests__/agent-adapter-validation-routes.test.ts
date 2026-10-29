@@ -334,6 +334,53 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("round-trips the protected YAML projection and forwards its revision to the write lock", async () => {
+    const existing = {
+      ...(await mockAgentService.getById()),
+      adapterConfig: { model: "old", removeMe: true, env: { DEMO_VALUE: "private-fixture" } },
+      metadata: { token: "private-metadata-fixture" },
+    };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    expect(loaded.status).toBe(200);
+    expect(loaded.body.configurationRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(loaded.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(loaded.body)).not.toContain("private-metadata-fixture");
+    const adapterConfig = { ...loaded.body.adapterConfig, model: "new" };
+    delete adapterConfig.removeMe;
+    const saved = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterConfig, replaceAdapterConfig: true, metadata: { ...loaded.body.metadata, label: "new" },
+      expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "new", env: existing.adapterConfig.env }),
+      metadata: { ...existing.metadata, label: "new" },
+    }), expect.objectContaining({ expectedConfigurationRevision: loaded.body.configurationRevision }));
+    expect(mockAgentService.update.mock.calls[0][1].adapterConfig).not.toHaveProperty("removeMe");
+    expect(saved.body.configurationRevision).not.toBe(loaded.body.configurationRevision);
+    expect(JSON.stringify(saved.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(saved.body)).not.toContain("private-metadata-fixture");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated" }));
+  });
+
+  it("rejects stale and unauthorized YAML saves before calling the update service", async () => {
+    const existing = await mockAgentService.getById();
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    const stale = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Stale", expectedConfigurationRevision: "0".repeat(64),
+    }));
+    expect(stale.status).toBe(409);
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_missing_grant", explanation: "No configuration permission" });
+    const denied = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Denied", expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(denied.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it("routes narrow roster edits through authorization, config merging and audit history", async () => {
     const existing = { ...(await mockAgentService.getById()), adapterConfig: { model: "old", cwd: "/workspace" }, runtimeConfig: { heartbeat: { intervalSec: 900 } } };
     mockAgentService.getById.mockResolvedValue(existing);

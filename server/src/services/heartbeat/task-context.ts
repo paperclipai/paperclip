@@ -17,6 +17,7 @@ import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
 import { buildPaperclipWakePayload, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { workspacePreferenceService } from "../workspace-preferences.js";
 
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecutionContext"]>>>;
@@ -201,7 +202,17 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
+  // Use the standing chat owner's saved presentation choice, never worker text.
+  // Recovery retains the admitted choice instead of silently changing its prompt.
+  const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
+    && issueContext?.conversationUserId
+    ? input.policy.recovering
+      ? context.paperclipCoordinatorWorkspaceEnabled === true
+      : (await workspacePreferenceService(db).get(issueContext.conversationUserId)).coordinatorWorkspaceEnabled
+    : false;
+  context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
   const taskMarkdownInput = {
+    coordinatorWorkspace: Boolean(coordinatorWorkspace),
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
@@ -213,6 +224,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           titleNeedsGeneration: issueContext?.titleNeedsGeneration,
           workMode: issueRef.workMode,
           conversationAgentId: issueContext?.conversationAgentId,
+          executionPolicy: issueContext?.executionPolicy,
           description: issueRef.description,
         }
       : null,

@@ -45,7 +45,7 @@ describe("Dot assigned-task attachment reading", () => {
   });
   it("reads verified file contents without paths or storage keys and audits metadata only", async () => {
     const f = await fixture();
-    expect(await f.call("list_task_attachments")).toMatchObject({ attachments: [{ attachmentId: f.attachment.id, filename: "proof.txt", readable: true }] });
+    expect(await f.call("list_task_attachments")).toMatchObject({ attachments: [{ attachmentId: f.attachment.id, assetId: f.asset.id, sha256: sha(f.body), filename: "proof.txt", readable: true }] });
     const result = await f.call("read_task_attachment", { attachmentId: f.attachment.id });
     expect(result).toMatchObject({ content: f.body.toString(), sha256: sha(f.body), byteSize: f.body.length, nextOffset: null, contentTrust: "untrusted_attachment" });
     expect(JSON.stringify(result)).not.toContain("private-file");

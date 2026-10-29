@@ -80,6 +80,7 @@ import {
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
+  issueDocumentKeySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueFeedbackVoteSchema,
@@ -1412,6 +1413,10 @@ const browserUseOperations = [
 const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
+  "GET /api/issues/{id}/pending-questions",
+  "GET /api/issues/{id}/decision-receipts",
+  "GET /api/issues/{id}/chat-handoffs",
+  "GET /api/companies/{companyId}/attention/history",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -1473,6 +1478,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/board-api-keys/{keyId}",
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
+  "GET /api/workspace-preferences/me",
+  "PUT /api/companies/{companyId}/workspace-preferences/me",
   "GET /api/companies/{companyId}/primary-agent/me",
   "PUT /api/companies/{companyId}/primary-agent/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
@@ -4546,6 +4553,29 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/documents/{key}/revisions/{revisionId}",
+  tags: ["issues"],
+  summary: "Get an exact issue document revision",
+  description:
+    "Available to board users and agents with current issue read access. Returns the specified revision only when its document is linked to this issue under the given key. Document keys are trimmed and lowercased before validation. This read does not restore or modify the document.",
+  request: {
+    params: z.object({
+      id: z.string(),
+      key: issueDocumentKeySchema,
+      revisionId: z.string().uuid(),
+    }),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/issues/{id}/documents/{key}/revisions/{revisionId}/restore",
   tags: ["issues"],
@@ -6132,6 +6162,34 @@ registry.registerPath({
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/attention/history",
+  tags: ["inbox"],
+  summary: "List recorded decisions visible to the current board user",
+  description:
+    "Requires a board user with company access. Returns a DecisionHistoryPage with current task and decision audience access enforced. Only the declared filters are accepted. The default page size is 40, sorted newest first.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      cursor: z.string().max(1000).optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+      search: z.string().trim().max(200).optional(),
+      outcome: z.string().max(40).optional(),
+      agentId: z.string().uuid().optional(),
+      projectId: z.string().uuid().optional(),
+      sort: z.enum(["newest", "oldest"]).optional(),
+      since: z.string().datetime().optional(),
+    }).strict(),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 // Decision queues and triage
 
 const decisionQueueSeedRuleSchema = z
@@ -6665,6 +6723,23 @@ registerCurrentRoute({
   },
 });
 
+registerCurrentRoute({
+  method: "get",
+  path: "/api/workspace-preferences/me",
+  tags: ["workspace-preferences"],
+  summary: "Get the current human's personal workspace preference (off by default)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/workspace-preferences/me",
+  tags: ["workspace-preferences"],
+  summary: "Update your personal workspace; active company membership provides audit context",
+  body: z.object({ coordinatorWorkspaceEnabled: z.boolean() }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/sidebar-preferences/me",
@@ -6917,8 +6992,8 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
-  request: { query: z.object({ ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2"]).optional().describe("Cloud control callers may request routine deadlines (1), or routines and issue monitors (2). Cloud must acknowledge a durable alarm and revalidate this report before stopping the instance.") }) },
+    "Get process task-drain status, with optional bounded upgrade-readiness or idle-safety reports for instance operators",
+  request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2"]).optional().describe("Cloud control callers may request routine deadlines (1), or routines and issue monitors (2). Cloud must acknowledge a durable alarm and revalidate this report before stopping the instance.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
@@ -7792,7 +7867,7 @@ registry.registerPath({
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
   request: { params: z.object({ runId: heartbeatRunIdParamSchema }), query: z.object({
-      view: z.literal("conversation").optional().describe("Assistant text and request lifecycle events, excluding historical tool activity."),
+      view: z.literal("conversation").optional().describe("Assistant text, request lifecycle events and body-free successful Plan-write boundaries. Excludes ordinary historical tool activity."),
       afterSeq: z.coerce.number().int().min(0).optional(),
       limit: z.coerce.number().int().min(1).max(1000).optional(),
     }) },
@@ -8019,6 +8094,79 @@ registry.registerPath({
 });
 
 // ─── Issue interactions & tree ───────────────────────────────────────────────
+
+const conversationQuestionSubjectSchema = z.object({
+  kind: z.string(), id: z.string(), companyId: z.string(), title: z.string().nullable(),
+  identifier: z.string().nullable(), status: z.string().nullable(), href: z.string().nullable(),
+}).passthrough();
+const conversationPendingQuestionSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  sourceKind: z.literal("issue_thread_interaction"),
+  subject: conversationQuestionSubjectSchema,
+  relatedIssue: conversationQuestionSubjectSchema,
+  detail: z.object({
+    kind: z.literal("questions"), questionCount: z.number().int(), firstQuestionText: z.string().nullable(),
+    images: z.array(z.object({ assetId: z.string(), alt: z.string().nullable().optional() })),
+  }),
+}).passthrough().describe("Canonical AttentionItem question projection; additional attention fields, including resolverAudience, are returned unchanged.");
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/pending-questions",
+  tags: ["issues"],
+  summary: "List pending task questions for your conversation",
+  description:
+    "Requires a board user who owns and can read the conversation. Returns AttentionItem[] containing canonical pending ask_user_questions from readable tasks handed off in the current session, plus ordinary tasks created by this user and currently assigned to this conversation's agent. Ordinary-task questions remain current obligations across chat resets. Tasks linked to any chat handoff never enter through the ordinary-task scope. Excludes the conversation's own questions. Uses the same audience, dismissal, snooze and archive rules as Needs You. Accepts no query parameters. Reads one complete authorized company attention snapshot and filters it to these tasks, so cost scales with company attention; it retains existing attention queue/retention bookkeeping and creates no copied questions or agent turns. This endpoint is intended for event-driven refresh, not polling.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(z.array(conversationPendingQuestionSchema)), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/decision-receipts",
+  tags: ["issues"],
+  summary: "List decision receipts for your conversation",
+  description:
+    "Requires a board user who owns the conversation and has current issue read access. Returns a DecisionHistoryPage for tasks handed off in the current conversation session, plus ordinary tasks created by this user and currently assigned to this conversation's agent. Ordinary-task receipts are limited to resolutions since the current session's boundary comment (or conversation creation for its initial session); missing reset provenance omits ordinary-task history. Tasks linked to any chat handoff retain their original session scope. Both sources are merged newest first under the same cursor, with current task and decision audience access enforced. Accepts only cursor and limit; the default page size is 40. Reading receipts does not copy messages, create handoffs, or wake agents.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      cursor: z.string().max(1000).optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+    }).strict(),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/chat-handoffs",
+  tags: ["issues"],
+  summary: "List tasks created from your conversation",
+  description:
+    "Requires a board user who owns the conversation and has current issue read access. Returns a ConversationTaskHandoffPage for the current conversation session, newest first, omitting tasks the user can no longer read. Accepts only cursor and limit; the default page size is 40. This read does not create tasks or wake agents.",
+  request: {
+    params: z.object({ id: z.string() }),
+    query: z.object({
+      cursor: z.string().max(1000).optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+    }).strict(),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -10791,7 +10939,8 @@ registerCurrentRoute({
   method: "post",
   path: "/api/issues/{id}/monitor/check-now",
   tags: ["issues"],
-  summary: "Run an issue monitor check now",
+  summary: "Run an issue monitor check now; humans may check blocked tasks",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({

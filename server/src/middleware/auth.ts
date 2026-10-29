@@ -30,6 +30,7 @@ import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
+import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
 
 export {
   isTransientDbConnectionError,
@@ -652,19 +653,34 @@ async function resolveCloudTenantActorOnce(
     // exact legacy-marker guards and the operator's own edits.
     await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
 
-    effectiveMembership = await db
-      .insert(companyMemberships)
-      .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
-      .onConflictDoUpdate({
-        target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
-        set: { status: "active", membershipRole, updatedAt: now },
-        setWhere: sql`${companyMemberships.status} is distinct from 'active'
-          or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
-      })
-      .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
-      // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
-      // That condition itself proves the existing role/status match the input.
-      .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
+    effectiveMembership = await db.transaction(async tx => {
+      const [existing] = await tx.select({
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+      }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      )).for("update");
+      // Serialize authority restoration and its notice while retaining the
+      // guarded upsert that leaves unchanged memberships untouched.
+      if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
+        await notifyChatRunMilestones(tx, { companyId });
+      }
+      return tx
+        .insert(companyMemberships)
+        .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
+        .onConflictDoUpdate({
+          target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
+          set: { status: "active", membershipRole, updatedAt: now },
+          setWhere: sql`${companyMemberships.status} is distinct from 'active'
+            or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
+        })
+        .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
+        // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
+        // That condition itself proves the existing role/status match the input.
+        .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
+    });
 
     // An unchanged membership can still lack default grants after a partial
     // sync or an older deployment; keep this repair inside every actual sync.

@@ -37,6 +37,7 @@ import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig } f
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { selectHeartbeatEnvironment } from "./environment-selection.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -230,6 +231,44 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(task.projectWorkspaceId).toBe(project ? issue.projectWorkspaceId : null);
   });
+  it.each(["implicit", "task", "agent"] as const)("keeps provider directory selection after a fresh task succeeds (strategy: %s)", async strategySource => {
+    const { input, issue, envOrchestrator } = await fixture();
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
+    input.task.context = { issueId: issue.id };
+    const pluginKey = "test.fresh-followup";
+    await db.insert(plugins).values({ pluginKey, packageName: "test-tasks", version: "1.0.0", apiVersion: 1,
+      status: "ready", categories: ["workspace"], manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
+        displayName: "Tasks", description: "Tasks", author: "Test", categories: ["workspace"],
+        capabilities: ["environment.drivers.register"], entrypoints: { worker: "./worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Task VM", configSchema: { type: "object" }, supportsTasks: true, freshWorkspaceVersion: 1 }] } });
+    const environment = await environmentService(db).create({ name: `Task computer ${issue.id}`, driver: "plugin", status: "active", envVars: {}, config: { pluginKey, driverKey: "tasks" } });
+    input.agent = { ...input.agent, adapterType: "paperclip_runner", defaultEnvironmentId: environment.id };
+    input.environment.selectedEnvironmentForConfig = environment;
+    input.policy.requestedExecutionWorkspaceMode = input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+    input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id, sourceRunId: input.run.id, retainedSourceIds: [] };
+    const stopped = new Error("Provider directory prepared");
+    vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(stopped);
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+    const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(task.executionWorkspaceSettings).toEqual({ mode: "isolated_workspace" });
+    const settings = { mode: "isolated_workspace" as const, ...(strategySource === "task" ? { workspaceStrategy: { type: "git_worktree" as const } } : {}) };
+    const agentConfig = strategySource === "agent" ? { workspaceStrategy: { type: "git_worktree" as const } } : {};
+    const selection = await selectHeartbeatEnvironment(db, {
+      run: input.run, agent: input.agent,
+      task: { issueRef: task, issueContext: task, issueId: issue.id, context: input.task.context,
+        executionProjectId: null, workspaceProjectContext: null, boundSourceWorkspace: null,
+        hasSelectedWorkspaceSource: false, taskWorkspaceIntent: null, responsibleUserId: null },
+      policy: { ...input.policy, issueExecutionWorkspaceSettings: settings },
+      config: { config: agentConfig, sourceWorkspaceConfig: buildExecutionWorkspaceAdapterConfig({ agentConfig, projectPolicy: null,
+        issueSettings: settings, mode: "isolated_workspace", legacyUseProjectWorkspace: null }), issueAssigneeOverrides: null },
+      services: { environmentsSvc: environmentService(db), executionWorkspacesSvc: executionWorkspaceService(db),
+        instanceSettings: instanceSettingsService(db), findSharedWorkspaceHolder: async () => null, findExecutionWorkspaceHolder: async () => null },
+    });
+    expect(selection.useIsolatedTaskDirectory).toBe(strategySource === "implicit");
+    expect(selection.reusableExistingExecutionWorkspace?.id).toBe(task.executionWorkspaceId);
+  });
+
   const readIssue = (id: string) => db.select().from(issues).where(eq(issues.id, id)).then(rows => rows[0]!);
   const readRun = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const leases = (id: string) => db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, id));

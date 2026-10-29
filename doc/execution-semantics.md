@@ -1369,6 +1369,16 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+A failed, unowned native sandbox retry can outlive an explicit Retry that already
+completed successfully. Startup recovery and ordinary retry admission retire that
+old retry only with the same company, task and agent, a linked completed successor,
+and the exact prepared source lease. They atomically register file preservation
+without replaying provider work or changing the current task. A live owner,
+recorded process or mismatched source remains held. Retirement does not prove
+termination or saved files; the existing stop-and-save worker must establish both
+before workspace selection can proceed. Both callers hold the task, coordinator
+and source-run locks throughout retirement and preservation registration.
+
 When a same-run retry acquires a replacement plugin task lease, the executor
 reloads the prior task's durable Runner checkpoint before checking local
 lifecycle evidence. This includes retries after a provider turn omitted its
@@ -1376,6 +1386,16 @@ completion result. The existing lease-transfer policy must verify the company,
 agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
+
+After a plugin session passes provider recovery and durable run admission, its
+local suspension receipt is removed. The running session then owns authority;
+the old receipt must not conflict with a later warm run's journal identity.
+Failed admission retains the receipt. Normal suspension writes a new receipt.
+
+A repository-free fresh plugin task directory remains the task's directory on
+ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
+owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
+that directory into a Git worktree. Explicit strategy settings still apply.
 
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt
@@ -1603,6 +1623,15 @@ Codex retains the model conversation. Paperclip resumes with `excludeTurns: true
 reads lightweight thread state, and fetches paginated turn metadata or specific
 turn items only when execution reconciliation needs them. Unsupported
 or incomplete history is an explicit error, not evidence of idle execution.
+
+Built-in remote Codex launches install the current sealed skill inventory into
+the isolated provider home's `skills` directory before starting Codex. Explicit
+skill inputs use that same discovery path; a separate immutable context copy does
+not make a skill discoverable to Codex. Launch preparation replaces prior skills,
+including an empty or revoked inventory, while preserving provider conversation
+history. It rejects source or destination symlinks and does not copy ambient host
+skills. Preconfigured homes and plugin-provided launch preparation keep their
+existing contracts.
 
 The root-thread usage snapshot sent during resume belongs to its reported
 completed turn. Retain a bounded local diagnostic and use cumulative totals as
@@ -2073,6 +2102,14 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+Changing configuration can retire a completed warm runner during instruction
+preparation, before the next native coordinator is claimed. Its maintenance
+checkpoints may use the next run's live preparation lease from the same
+controller process, bound to the same company and task. The original controller
+generation and committed result must still match. This permits drain and
+suspension; it grants no new provider work. Expired or foreign preparation
+owners retain the existing recovery hold.
+
 Plugin sandbox reuse during acquisition uses the configured startup timeout or
 the provider's declared acquisition default, with the host RPC margin. Resume
 attempts and transient retries share that deadline. Providers without either
@@ -2088,6 +2125,13 @@ must atomically claim an absent remote session directory under real, readable
 parents. Existing session files, prior activity, missing proof or any saved
 backup retain the verified-restore requirement. Workspace replacement alone
 never authorizes a provider-session reset.
+
+With external controller checkpoints, the local state file is only a marker.
+Fresh-session bootstrap checks use the registered controller's current canonical
+state. Marker identity alone cannot prove an untouched session. The same exact
+identity, zero-activity and pending-bootstrap-command checks apply before the
+remote directory claim; saved history and existing directories still prevent
+an unverified fresh start.
 
 For the native runner, warm mode requests a reusable sandbox lease **before**
 lease acquisition. The environment's explicit runner lifecycle overrides the
@@ -2516,3 +2560,15 @@ restored checkpoint must match the normalized session before writing its local
 projection. This adds a scoped checkpoint read and local reconstruction only
 when warm admission encounters an external marker or an older projection; it
 adds no streaming checkpoint writes or recurring idle work.
+
+Ordinary remote `per_turn` continuations restore a valid external controller
+marker from the referenced run's company/task-bound checkpoint before reading
+its durable identity. The restored checkpoint must match the normalized session.
+An existing prior-run projection also refreshes from that checkpoint, so a
+rejected attempt cannot retain state that its active owner later advances.
+Current-run full state stays owned by its controller. Legacy file-backed state
+retains its existing admission path when no database checkpoint exists.
+The existing prior-owner, suspended-state and backup checks still decide whether
+the next turn may start. Missing checkpoints and ambiguous identity remain
+blocked; restoration does not authorize a new provider session or change the
+configured lifecycle policy.

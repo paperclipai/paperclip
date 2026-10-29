@@ -1,4 +1,6 @@
 import { latestFailedRunsByAgent } from "@paperclipai/shared";
+import { agentConfigurationSpec } from "@paperclipai/shared";
+import { agentConfigurationRevision, restoreAgentConfigurationRedactions } from "../lib/agent-configuration-revision.js";
 import { prepareRuntimeSettingsPatch } from "../services/agent-runtime-settings.js";
 import { completeSetupTokenAiConnection } from "../services/setup-token-ai-connection.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
@@ -50,6 +52,7 @@ import { executionProjectionForRun, executionProjectionsForRuns } from "../servi
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
@@ -2942,6 +2945,9 @@ export function agentRoutes(
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
+      ...agentConfigurationSpec(agent),
+      configurationRevision: agentConfigurationRevision(agent),
+      metadata: redactEventPayload(agent.metadata),
       id: agent.id,
       companyId: agent.companyId,
       name: agent.name,
@@ -5398,6 +5404,20 @@ export function agentRoutes(
       : { ...(req.body as Record<string, unknown>) };
     const runner = patchData.runner as AgentRunnerChoice | undefined;
     delete patchData.runner;
+    const expectedConfigurationRevision = patchData.expectedConfigurationRevision as string | undefined;
+    delete patchData.expectedConfigurationRevision;
+    if (expectedConfigurationRevision && expectedConfigurationRevision !== agentConfigurationRevision(existing)) {
+      throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
+    }
+    if (expectedConfigurationRevision) {
+      await assertCanConfigureAgentSetup(req, existing);
+      const displayed = redactAgentConfiguration(existing)!;
+      for (const key of ["adapterConfig", "runtimeConfig", "metadata"] as const) {
+        if (hasOwn(patchData, key)) {
+          patchData[key] = restoreAgentConfigurationRedactions(patchData[key], existing[key], displayed[key]);
+        }
+      }
+    }
     const requestedStatus = patchData.status;
     delete patchData.status;
     if (requestedStatus !== undefined && !["paused", "idle", "terminated"].includes(String(requestedStatus))) throw badRequest("Use an agent lifecycle command to change status");
@@ -5599,7 +5619,7 @@ export function agentRoutes(
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanConfigureAgentSetup(req, existing);
-      const changed = JSON.stringify(nextAiBinding) !== JSON.stringify(existing.runtimeConfig.aiConnection);
+      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
       if (changed && req.actor.type === "agent") {
         await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
           type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,
@@ -5608,10 +5628,17 @@ export function agentRoutes(
         });
       }
       const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+      const nextEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId;
+      const runtimeSelectionChanged = requestedAdapterType !== existing.adapterType
+        || nextEnvironmentId !== existing.defaultEnvironmentId
+        || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
+          key => aiConfig[key] !== existing.adapterConfig[key],
+        ));
       if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
       const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
         && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
-      if (runtimeSettings || changed || copilotConfigurationChanged || (nextAiBinding.mode === "router" && requestedAdapterType !== existing.adapterType)) {
+      if (runtimeSettings || changed || runtimeSelectionChanged || copilotConfigurationChanged) {
         const configuringSetup = isAgentSetupDraft(existing);
         await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
           (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
@@ -5643,6 +5670,7 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const updateOptions = {
+      expectedConfigurationRevision,
       ...(runtimeSettings ? { expectedConfiguration: {
         adapterType: existing.adapterType, adapterConfig: existing.adapterConfig,
         runtimeConfig: existing.runtimeConfig, defaultEnvironmentId: existing.defaultEnvironmentId,
@@ -5682,7 +5710,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json({ ...redactAgentRowForResponse(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
+    res.json({ ...redactAgentRowForResponse(agent), ...redactAgentConfiguration(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.post("/agents/:id/lifecycle/retry", async (req, res) => {

@@ -1,4 +1,4 @@
-import { notifyChatConnectionCommandRegistration } from "../../chat-channels/command-work-notifications.js";
+import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
@@ -50,7 +50,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
   ) {
     const now = new Date();
     const [updated] = await writeToolConnectionHealthChange(db, connection, async tx => {
-      await notifyChatConnectionCommandRegistration(tx, connection.id, connection.transport);
+      await notifyChatConnectionObservation(tx, connection.id, connection.transport);
       return tx.update(toolConnections)
       .set({
         healthStatus: status,

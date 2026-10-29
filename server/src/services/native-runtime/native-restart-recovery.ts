@@ -26,6 +26,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
+import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -588,6 +589,9 @@ export async function claimNativeRestartRecoveries(input: {
           reason: "result_already_persisted",
         } as const;
       }
+      if (!input.liveRunExecutions?.has(row.run.id) && await retireSupersededNativeRetry(tx as unknown as Db, {
+        run: row.run, coordinator: row.coordinator, issueExecutionRunId: row.issueExecutionRunId, now,
+      })) return { kind: "blocked", runId: row.run.id, reason: "native_retry_superseded" } as const;
       if (row.issueExecutionRunId !== row.run.id) {
         return {
           kind: "blocked",
