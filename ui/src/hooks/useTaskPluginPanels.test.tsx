@@ -377,3 +377,19 @@ it("preserves activity when returning to an earlier cached declaration set", asy
   await act(async () => client.removeQueries({ predicate: query => String(query.queryKey[5]).includes("2.0.0") }));
   await render(); expect(current.map(panel => panel.slot.id)).toEqual([slot.id]);
 });
+
+
+it.each(["route", "installation"])("rechecks readiness after a same-version %s change", async change => {
+  vi.useFakeTimers(); await render(); expect(current).toHaveLength(1);
+  get.mockResolvedValue({ available: false });
+  const changed = change === "route"
+    ? { ...slot, taskSidePanel: { ...slot.taskSidePanel!, availabilityPath: "/views/:entityId/ready" } }
+    : { ...slot, pluginId: "replacement-plugin" };
+  plugin.slots = [changed]; await render();
+  expect(current).toEqual([]);
+  expect(get).toHaveBeenLastCalledWith(`/plugins/${changed.pluginId}/api${changed.taskSidePanel!.availabilityPath.replace(":entityId", "agent")}?runId=run&issueId=task`, expect.anything());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(4); expect(current).toEqual([]);
+  get.mockResolvedValue({ available: true }); await emit(event());
+  expect(get).toHaveBeenCalledTimes(5); expect(current).toHaveLength(1);
+});

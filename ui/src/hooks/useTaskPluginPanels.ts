@@ -109,7 +109,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     return () => { current = false; };
   }, [active, stream.healthy, stream.epoch, queryClient, issue?.companyId, issue?.id, run?.id, run?.agentId, activationScope]);
   const availability = useQueries({ queries: slots.map(slot => ({
-    queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId, slot.pluginKey, slot.id, slot.pluginVersion],
+    queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId, slot.pluginKey, slot.id, slot.pluginVersion, slot.pluginId, slot.taskSidePanel!.availabilityPath],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
       const result = await api.get<{ available: boolean }>(
         `/plugins/${encodeURIComponent(slot.pluginId)}/api${slot.taskSidePanel!.availabilityPath.replace(":entityId", encodeURIComponent(run!.agentId))}?runId=${encodeURIComponent(run!.id)}&issueId=${encodeURIComponent(issue!.id)}`,
