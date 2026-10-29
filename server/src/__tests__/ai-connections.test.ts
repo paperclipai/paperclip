@@ -20,6 +20,7 @@ import { createDb, companies, agents, agentTaskSessions, heartbeatRuns, companyM
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
+import { reconcileRetainedAiCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
@@ -544,6 +545,62 @@ describe("managed AI connections", () => {
       const [after] = await db.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, agentId));
       expect(after).toEqual(before);
     } finally { probe.mockRestore(); resolveBinary.mockRestore(); }
+  });
+
+  it("keeps the real Codex setup cleanup error and retries its original owner before another probe", async () => {
+    const owner = "native-codex-setup-retirement-retry";
+    const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "paperclip_runner",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: { provider: "codex" } };
+    let rejectRetirement!: (error: Error) => void, physical = false;
+    const retired = new Promise<void>((_resolve, reject) => { rejectRetirement = reject; });
+    void retired.catch(() => undefined);
+    let original: Parameters<typeof runnerProbe.probeNativeRunnerEnvironment>[0], retainedHome: string | undefined;
+    const directories: string[] = [];
+    const retry = vi.fn(async () => {
+      if (!physical) throw new Error("fixture original owner remains live");
+      await original.onCodexCredentialRefresh!(path.join(original.runtimeDirectory, "codex-home", "auth.json"));
+      await original.onCleanupConfirmed!();
+    });
+    const binary = vi.spyOn(nativeCodexRunner, "resolvePaperclipRunnerBinary").mockReturnValue(path.join(home, "fixture-runnerd"));
+    const probe = vi.spyOn(runnerProbe, "probeNativeRunnerEnvironment").mockImplementationOnce(async options => {
+      original = options; directories.push(options.runtimeDirectory);
+      await fs.mkdir(path.join(options.runtimeDirectory, "codex-home"), { mode: 0o700 });
+      await writeFile(path.join(options.runtimeDirectory, "codex-home", "auth.json"), auth("11"), { mode: 0o600 });
+      throw new runnerProbe.NativeEnvironmentProbeCleanupError(retired, new Error("fixture interrupted probe"), [], retry);
+    }).mockImplementation(async options => {
+      directories.push(options.runtimeDirectory);
+      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth("11"));
+      await options.onCleanupConfirmed!();
+      return { provider: "codex", providerDriver: "codex_app_server", effectiveModel: "gpt-5.6-sol", helloProbePassed: true };
+    });
+    const invoke = () => withManagedAiProbe(db, input, runtime => {
+      retainedHome ??= runtime.home;
+      return testNativeRunnerAuthentication({ companyId, adapterType: "paperclip_runner", config: runtime.config,
+        managedAiCredentialHome: path.join(runtime.home!, "provider") }, "codex", "gpt-5.6-sol");
+    });
+    try {
+      await expect(invoke()).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
+      await expect(access(retainedHome!)).resolves.toBeUndefined();
+      rejectRetirement(new Error("fixture initial retirement proof failed"));
+      await Promise.resolve();
+      await expect(invoke()).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(probe).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce();
+      await expect(access(retainedHome!)).resolves.toBeUndefined();
+      physical = true;
+      expect((await invoke()).status).toBe("pass");
+      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(2);
+      expect(await service.credential(row)).toBe(auth("11"));
+      await expect(access(retainedHome!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      physical = true; rejectRetirement(new Error("fixture teardown"));
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id }).catch(() => {});
+      probe.mockRestore(); binary.mockRestore();
+      await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true })));
+    }
   });
 
   it("rejects preparation when reconnect replaces the selected credential reference", async () => {
