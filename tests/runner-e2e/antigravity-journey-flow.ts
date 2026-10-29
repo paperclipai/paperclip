@@ -16,6 +16,7 @@ export interface AntigravityJourneyFlowInput {
   phase(id: string): Promise<void>;
   persistResources(): Promise<void>;
   observeRun(run: Row): Promise<void>;
+  beforeAdmission(): Promise<void>;
   assertActive(): void;
 }
 
@@ -99,9 +100,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
     throw new ConnectionFailure("saved_ready_agent_binding_mismatch");
   const effectiveEnvironment = ready.defaultEnvironmentId ?? (await api.get<Row>("/api/instance/settings")).defaultEnvironmentId;
   if (effectiveEnvironment && effectiveEnvironment !== environment.id) throw new ConnectionFailure("saved_agent_environment_mismatch");
-  // Only scheduling/cost boundaries are fixture writes; measured adapter/auth/model/instructions stay UI-owned.
-  await api.post(`/api/companies/${company.id}/budgets/policies`, { scopeType: "agent", scopeId: draft.id, amount: config.limits.budgetCents,
-    hardStopEnabled: true, notifyEnabled: false, isActive: true });
+  // Preserve the operator's inherited accounting policy, as in the source journey.
   await checkpoint("agent_ready");
   await input.phase("first_composer");
   await page.getByRole("button", { name: `Assign ${resources.agentName} a Task`, exact: true }).click();
@@ -133,6 +132,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   if (prompt.includes(marker)) throw new ConnectionFailure("instruction_nonce_leaked_to_task_prompt");
   const dialog = page.getByRole("dialog", { name: "New task", exact: true });
   await dialog.getByRole("textbox", { name: "editable markdown", exact: true }).fill(prompt);
+  await input.beforeAdmission();
   const issueResponse = page.waitForResponse(response => response.request().method() === "POST" && new URL(response.url()).pathname === `/api/companies/${company.id}/issues`);
   await dialog.getByRole("button", { name: "Create task", exact: true }).click();
   const response = await issueResponse;
@@ -162,6 +162,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   await assertAntigravityTaskDone(page);
   await inspectAntigravityArtifact(page, first.artifact.attachmentId, firstBytes);
   await input.phase("followup");
+  await input.beforeAdmission();
   await submitTaskReply(page, `Read your existing antigravity-proof.txt. Preserve its first line exactly and append this second line followed by one newline:\n${followupMarker}\nRead back the actual updated file, attach it as the task result, report its byte count, and complete this task. Do not recreate the original first line from memory or from a task message.`);
   const second = await verifyTurn(followupBytes, [first.runId]);
   evidence.turnEvidence.push(second);

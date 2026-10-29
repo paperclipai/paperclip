@@ -44,9 +44,10 @@ Required existing state:
   `gemini-3.8-flash-low`, local darwin-arm64, native version, profile and closure.
   The config's pins assert provenance; they cannot grant admission. The global
   release remains pending and closed by default.
-- Current budget policy permitting the two bounded task turns, with held and
-  unpriced usage reconciled through the ordinary accounting owner. A monetary
-  limit does not cap unknown subscription charges.
+- Existing operator accounting policy permitting the two task turns, with held
+  and unpriced usage reconciled through its ordinary owner. The harness preserves
+  that policy and the new agent's inherited policy; it creates no agent budget
+  policy or QA override. Missing subscription prices remain unknown.
 
 No MCP connection is required by the browser driver, product agent or independent
 observer. Native product tools are used by the agent. No API key, mailbox,
@@ -122,11 +123,14 @@ resolved against this file's directory. The browser must declare `signed-in`.
 ```
 
 Use `authenticated` when it is the target's actual deployment mode; do not change
-the server to match the example. The maximum whole attempt is 30 minutes, each
-turn at most 10 minutes, and configured budget at most 1,000 cents. Exactly two
-work runs are permitted. Native Test performs account/model admission and cleanup
-without a model prompt. An unexpected work run or inference edge must be recorded,
-not omitted from accounting.
+the server to match the example. The maximum whole attempt is 30 minutes and each
+turn at most 10 minutes. `budgetCents` is an observed known-cost stop threshold
+(at most 1,000 cents), not a hard currency cap or a product-policy write. It cannot
+cap missing prices, unknown subscription charges or already in-flight usage. The
+finite execution boundary is one selected case, one attempt, exactly two task
+runs, finite deadlines and the startup authority's TTL. Native Test performs
+account/model admission and cleanup without a model prompt. An unexpected work
+run or inference edge must be recorded, not omitted from accounting.
 
 ## Commands
 

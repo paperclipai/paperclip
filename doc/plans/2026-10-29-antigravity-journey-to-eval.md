@@ -208,13 +208,17 @@ After each turn, accepted native result, committed finalization and applied Done
 decision lineage must agree. Same conversation does not require same physical
 daemon: the source retired the first owners and resumed with fresh owners.
 
-Exactly two work turns/runs are admitted. Whole-attempt and per-turn deadlines,
-the accounting budget (at most 1,000 cents), no automatic retries and a single
-selected cell are explicit config/launcher constraints. Native Test is a zero-turn
-account/model/retirement probe. An unexpected paid setup or extra run fails the
-bound; a dollar cap cannot cap unpriced usage. Current budget incidents, held
-charges and unpriced-usage policy remain authoritative; the fixture does not
-clear flags, resume repeatedly or weaken policy. Measured token usage and missing
+Exactly two task work turns/runs are admitted in one selected case and one
+attempt, with finite whole-attempt/per-turn deadlines, no automatic retries and
+the startup authority's TTL. `budgetCents` (at most 1,000) is an observed known-cost
+stop threshold, not a hard currency cap. It cannot cap missing prices, unknown
+subscription charges or already in-flight usage. The fixture creates no agent
+budget policy or QA override: the operator's existing policy and the new agent's
+inherited policy remain unchanged. Current budget incidents, held charges and
+unpriced-usage rules retain their authority; the fixture does not clear flags,
+resume repeatedly or weaken policy. Native Test is a zero-turn
+account/model/retirement probe; an unexpected inference edge or extra task run
+fails the bound and remains in accounting. Measured token usage and missing
 prices survive packaging as unknown cost rather than free work. No recurrence
 is requested.
 

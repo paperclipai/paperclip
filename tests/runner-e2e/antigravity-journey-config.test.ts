@@ -5,6 +5,7 @@ import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { cleanupAntigravityJourney, parseAntigravityOwnedResources, selectAntigravityJourneyEnvironment, type AntigravityJourneyResources } from "./antigravity-journey-fixtures.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { ConnectionApi } from "./connection-target.js";
+import { antigravityKnownCostObservation } from "./antigravity-journey-launch.js";
 
 const companyId = "11111111-1111-4111-8111-111111111111", environmentId = "22222222-2222-4222-8222-222222222222";
 const connectionId = "33333333-3333-4333-8333-333333333333", agentId = "44444444-4444-4444-8444-444444444444", runId = "55555555-5555-4555-8555-555555555555";
@@ -65,4 +66,19 @@ it("does not erase a failed native setup Test's unconfirmed cleanup with an empt
     config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: true, connectionPreserved: true }, persistResources: async () => {} }))
     .rejects.toThrow("setup_probe_retirement_unconfirmed");
   expect(remove).not.toHaveBeenCalled();
+});
+
+it("stops on combined reported and estimated known cost while retaining unknown subscription prices", () => {
+  const usage = (id: string, usageJson: Record<string, unknown>) => ({ id, usageJson });
+  expect(antigravityKnownCostObservation([
+    usage("first", { inputTokens: 100, outputTokens: 20, costUsd: 0.6 }),
+    usage("second", { inputTokens: 100, outputTokens: 20, costUsd: 0.41, costStatus: "estimated" }),
+  ], 100)).toMatchObject({ knownCostUsd: 1.01, exceeded: true, hardCurrencyCap: false });
+  expect(antigravityKnownCostObservation([
+    usage("first", { inputTokens: 100, outputTokens: 20, costUsd: 0.1 }),
+    usage("second", { inputTokens: 100, outputTokens: 20, costUsd: 0.2, costStatus: "estimated" }),
+  ], 30).exceeded).toBe(false);
+  expect(antigravityKnownCostObservation([
+    usage("first", { inputTokens: 100, outputTokens: 20, costUsd: 0, costStatus: "unpriced", billingType: "subscription" }),
+  ], 1)).toMatchObject({ exceeded: false, costStatus: "unpriced", priceCoverageComplete: false, hardCurrencyCap: false });
 });

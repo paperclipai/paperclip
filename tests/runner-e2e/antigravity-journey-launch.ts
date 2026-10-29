@@ -17,6 +17,16 @@ import { assertSecretFree, sanitizeJson } from "./redaction.js";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
 type Row = Record<string, any>;
+/** Known charges are an observed stop threshold. Missing subscription prices
+ * stay unknown, and this does not install or weaken any product budget policy. */
+export function antigravityKnownCostObservation(runs: readonly Row[], budgetCents: number) {
+  const billing = summarizeExecutionBilling({ environmentId: "local", durationMs: 0, runIds: runs.map(run => run.id),
+    usage: { runs: runs.map(run => ({ usage: run.usageJson })) } });
+  const knownCostUsd = billing.llm.reportedCostUsd + (billing.llm.estimatedCostUsd ?? 0);
+  const thresholdUsd = budgetCents / 100;
+  return { budgetCents, knownCostUsd, costStatus: billing.llm.costStatus, priceCoverageComplete: billing.complete,
+    hardCurrencyCap: false, exceeded: knownCostUsd - thresholdUsd > Number.EPSILON * Math.max(1, knownCostUsd) };
+}
 async function sourceProvenance(repositoryRoot: string, suiteDefinitionHash: string) {
   const git = (args: string[]) => execFileSync("git", args, { cwd: repositoryRoot, maxBuffer: 64 * 1024 * 1024 });
   const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"]).toString("utf8").split("\0").filter(Boolean)
@@ -79,6 +89,8 @@ export async function runAntigravityJourneyCampaign(input: {
       assertActive();
       await save("setup.json", { version: 1, setupId: config.setupId, hosting: config.hosting, executionEnvironment: config.executionEnvironment,
         target: config.target, candidate: config.candidate, limits: config.limits, authentication: "saved-subscription", realProductAgent: true, sourceProvenance: provenance,
+        costBoundary: { budgetCents: config.limits.budgetCents, mode: "observed-known-cost-stop", hardCurrencyCap: false,
+          productBudgetPolicy: "inherited-unchanged", missingSubscriptionPrices: "unknown", maximumTaskRuns: 2, attempts: 1 },
         configSha256: createHash("sha256").update(JSON.stringify(config)).digest("hex"), browser: { freshness: config.browser.freshness, accountAlias: config.browser.accountAlias } });
       await persistResources();
       browser = await openConnectionBrowser(antigravityConnectionConfig(config), input.repositoryRoot, config.target.baseURL);
@@ -129,13 +141,21 @@ export async function runAntigravityJourneyCampaign(input: {
           ownerUserId: prepared.connection.ownerUserId, isDefault: prepared.connection.isDefault, method: prepared.connection.method },
         accounting: prepared.accounting, candidate: config.candidate });
       if (input.preflight) { operationPassed = true; console.log(`[antigravity-agent-journey] Read-only preflight ready: ${output}`); return output; }
-      await runAntigravityJourneyFlow({ page, api, config, prepared, resources, evidence, assertActive, persistResources,
-        phase: async id => { assertActive(); evidence.phase = id; await save("progress.json", evidence); },
-        observeRun: async run => {
+      const observeRun = async (run: Row) => {
+        assertActive();
+        observed.set(run.id, run); observeAntigravityRun(resources, run, observers); await persistResources();
+        if (observed.size > config.limits.maxRuns) throw new ConnectionFailure("provider_run_limit_exceeded");
+        const cost = antigravityKnownCostObservation([...observed.values()], config.limits.budgetCents);
+        await save("known-cost.json", cost);
+        if (cost.exceeded) throw new ConnectionBlock("blocked_target", "observed_known_cost_limit_exceeded");
+      };
+      await runAntigravityJourneyFlow({ page, api, config, prepared, resources, evidence, assertActive, persistResources, observeRun,
+        beforeAdmission: async () => {
           assertActive();
-          observed.set(run.id, run); observeAntigravityRun(resources, run, observers); await persistResources();
-          if (observed.size > config.limits.maxRuns) throw new ConnectionFailure("provider_run_limit_exceeded");
-        }, checkpoint: async (id, tab) => {
+          // Read any settled accounting update before admitting the next UI turn.
+          for (const runId of observed.keys()) await observeRun(await api!.get<Row>(`/api/heartbeat-runs/${runId}`));
+        }, phase: async id => { assertActive(); evidence.phase = id; await save("progress.json", evidence); },
+        checkpoint: async (id, tab) => {
           evidence.phase = id; evidence.checkpoints[id] = true;
           const url = new URL(tab.url());
           if (url.origin === config.target.baseURL && url.pathname.startsWith(`/${prepared.company.issuePrefix}/`)
