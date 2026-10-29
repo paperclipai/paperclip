@@ -36,7 +36,7 @@ it("copies writable host artifacts into an owned closure without changing the so
 it("copies the real host Node bytes without executing the runtime", async () => {
   const root = await mkdtemp(join(tmpdir(), "owned-node-test-")); roots.push(root);
   const owned = await copyOwnedNodeRuntime(root);
-  expect(await readFile(owned.executable)).toEqual(await readFile(process.execPath));
+  expect((await readFile(owned.executable)).equals(await readFile(process.execPath))).toBe(true);
   expect((await lstat(owned.executable)).isFile()).toBe(true);
   if (process.platform !== "win32") expect((await stat(owned.executable)).mode & 0o022).toBe(0);
 });
