@@ -118,6 +118,17 @@ it("retains the individual seed byte ceiling when the shared bucket has room", a
   expect(await fs.readFile(f.archive, "utf8")).toBe("x".repeat(8192));
 });
 
+it("rechecks the individual shared seed byte ceiling after verification", async () => {
+  const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(8192));
+  const verify = vi.fn(async () => { await fs.writeFile(f.archive, "y".repeat(30_000)); return true; });
+  expect(await publishWorkspaceSeedGeneration(f.workspace, generation(1), f.seed, {
+    companyDirectory: f.company, scope: "company", limits: { workspaceBytes: 20_000, companyBytes: 100_000 }, verify,
+  })).toBe(false);
+  expect(verify).toHaveBeenCalledTimes(1);
+  expect(await fs.readdir(f.company)).toEqual([]);
+  expect(await fs.readFile(f.archive, "utf8")).toBe("y".repeat(30_000));
+});
+
 it("serializes concurrent archive publication against the aggregate byte cap", async () => {
   const f = await fixture(); await fs.writeFile(f.archive, "x".repeat(1024));
   const options = { companyDirectory: f.company, limits: { companyBytes: 5500 } };

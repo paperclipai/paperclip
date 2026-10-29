@@ -210,6 +210,7 @@ export async function publishWorkspaceSeedGeneration(
         if (!stat.isFile() || stat.isSymbolicLink()) return false;
         incomingBytes += stat.size;
       }
+      if (incomingBytes > configuredLimits.workspaceBytes) return false;
       if (workspace.generations + 1 > limits.workspaceGenerations || workspace.bytes + incomingBytes > limits.workspaceBytes
         || totalGenerations + 1 > limits.companyGenerations || totalBytes + incomingBytes > limits.companyBytes
         || workspaces + (workspaceExists ? 0 : 1) > limits.companyWorkspaces) return false;
