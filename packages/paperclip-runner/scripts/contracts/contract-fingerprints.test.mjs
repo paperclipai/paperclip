@@ -38,6 +38,11 @@ test("incidental edits leave the digest unchanged", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    #[serde(skip)]\n    pub cache: Option<String>,")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => `${s}\n#[cfg(test)]\nmod extra {\n    #[derive(Serialize)]\n    struct T { a: u8 }\n}\n`],
+    // Parser function names are private; only their accepted values count.
+    [`${R}/src/cli/acpx-runtime-sidecar.ts`, s => s.replaceAll("parseOpenParams", "parseSessionOpenParams")],
+    // A file compiled only through `#[cfg(test)] #[path = ..] mod ..;`.
+    [`${RUST}/tests/provider_api_validation.rs`, s => s.replaceAll("PRIVATE_FIELD", "PRIVATE_FIXTURE_FIELD")],
+    [`${R}/protocol/schemas/auth-credentials.schema.json`, s => s.replace(/"description": "/, "\"description\": \"Edited. ")],
   ];
   for (const [path, edit] of unchanged) assert.equal(digestWith(path, edit), baseline, `${path} edit is incidental`);
 });
@@ -51,6 +56,11 @@ test("contract edits change the digest", () => {
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
       "pub struct AcpxSuspensionCheckpoint {\n    pub extra: Option<String>,")],
     [`${RUST}/acpx_sidecar_transport.rs`, s => s.replace(/keys\.push\("/, "keys.push(\"PAPERCLIP_NEW_SIDECAR_KEY\");\n        keys.push(\"")],
+    // A property named `description` is a declaration, not an annotation.
+    [`${R}/protocol/schemas/result.schema.json`, s => s.replace("\"description\": { \"type\": \"string\", \"minLength\": 1 }",
+      "\"description\": { \"type\": \"string\", \"minLength\": 2 }")],
+    [`${R}/src/contracts/completion-result.ts`, s => s.replace(/(\n\s+)(\w+): \{ type: "string", minLength: 1, description: "/,
+      "$1$2: { type: \"string\", minLength: 2, description: \"")],
   ];
   for (const [path, edit] of changed) assert.notEqual(digestWith(path, edit), baseline, `${path} edit changes a contract`);
 });

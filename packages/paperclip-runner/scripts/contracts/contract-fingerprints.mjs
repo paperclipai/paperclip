@@ -94,7 +94,9 @@ export function fingerprintContracts(readFile, listDir) {
     }
     if (contract.expand) {
       const { dirs, suffix, exclude, idPrefix, probes } = contract.expand;
-      for (const path of dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && !exclude?.test(p)).sort()) {
+      const candidates = dirs.flatMap(listDir).filter(p => p.endsWith(suffix) && !exclude?.test(p));
+      const testOnly = suffix === ".rs" ? rustTestOnlyFiles(candidates, readFile) : new Set();
+      for (const path of candidates.filter(p => !testOnly.has(p)).sort()) {
         const value = probes.map(p => probe({ ...p, path }, readFile));
         if (isEmpty(value)) continue;
         const id = idPrefix + path.slice(dirs.find(d => path.startsWith(`${d}/`)).length + 1).replace(/\.[a-z]+$/, "");
@@ -178,14 +180,21 @@ function stableStringify(value) {
   }
   return JSON.stringify(value ?? null);
 }
+/** With `stripDocs`, drops schema annotations (description, title, $comment,
+ * examples) by their value shape: annotations are text or example lists, while
+ * a property declared as `properties.description` holds a schema object and is
+ * kept with its constraints. */
 function canonicalJson(value, { stripDocs = false } = {}) {
   if (Array.isArray(value)) return value.map(v => canonicalJson(v, { stripDocs }));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value)
-      .filter(([k]) => !(stripDocs && DOC_KEYS.has(k)))
+      .filter(([k, v]) => !(stripDocs && isAnnotation(k, v)))
       .map(([k, v]) => [k, canonicalJson(v, { stripDocs })]));
   }
   return value;
+}
+function isAnnotation(key, value) {
+  return DOC_KEYS.has(key) && (typeof value === "string" || (key === "examples" && Array.isArray(value)));
 }
 
 // ---------- TypeScript (via @babel/parser, comments are not AST nodes) ----------
@@ -328,9 +337,11 @@ function typeShape(node, source) {
 }
 
 /** String allowlists a parser enforces: `new Set([...])` and `exact(value, [...])`. */
+/** The accepted values of a file's parser functions. Function names are private
+ * and are not part of the identity, so renaming a parser is not a contract change. */
 function tsAllowlists(source, spec) {
   const ast = parseTs(source);
-  const out = {};
+  const out = [];
   for (const { node } of topLevelDeclarations(ast)) {
     if (node.type !== "FunctionDeclaration" || !node.id || !spec.functions.test(node.id.name)) continue;
     const lists = [];
@@ -344,9 +355,9 @@ function tsAllowlists(source, spec) {
         lists.push({ includes: stringElements(n.callee.object) });
       }
     });
-    if (lists.length) out[node.id.name] = lists.map(l => stableStringify(l)).sort();
+    out.push(...lists.map(l => stableStringify(l)));
   }
-  return out;
+  return out.sort();
 }
 function stringElements(arr) {
   return arr.elements.filter(e => e?.type === "StringLiteral").map(e => e.value).sort();
@@ -392,6 +403,52 @@ function stripRustComments(source) {
     out += c; i++;
   }
   return out;
+}
+/** Files compiled only under `#[cfg(test)]`: modules declared as
+ * `#[cfg(test)] [#[path = "..."]] mod name;`, their submodules, and files under
+ * a test module's directory. Inline `#[cfg(test)] mod name { .. }` blocks are
+ * removed separately by withoutTestModules. */
+function rustTestOnlyFiles(paths, readFile) {
+  const known = new Set(paths);
+  const testOnly = new Set();
+  const pending = [...paths];
+  const declaration = /#\[cfg\(test\)\]\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g;
+  const visit = (path) => {
+    const source = readFile(path);
+    if (source === null) return [];
+    const directory = path.slice(0, path.lastIndexOf("/"));
+    const file = path.slice(path.lastIndexOf("/") + 1);
+    const ownDirectory = /^(lib|main|mod)\.rs$/.test(file) ? directory : `${directory}/${file.replace(/\.rs$/, "")}`;
+    const found = [];
+    for (const m of stripRustComments(source).matchAll(declaration)) {
+      const explicit = /#\[path\s*=\s*"([^"]+)"\s*\]/.exec(m[1])?.[1];
+      // A #[path] on a module declared in a non-mod.rs file resolves from the file's directory.
+      const targets = explicit ? [normalizePath(`${directory}/${explicit}`)]
+        : [`${ownDirectory}/${m[2]}.rs`, `${ownDirectory}/${m[2]}/mod.rs`];
+      for (const target of targets) {
+        found.push(target);
+        const moduleDirectory = target.endsWith("/mod.rs") ? target.slice(0, -"/mod.rs".length) : target.replace(/\.rs$/, "");
+        for (const other of known) if (other.startsWith(`${moduleDirectory}/`)) found.push(other);
+      }
+    }
+    return found.filter(target => known.has(target));
+  };
+  while (pending.length) {
+    for (const target of visit(pending.pop())) {
+      if (testOnly.has(target)) continue;
+      testOnly.add(target);
+      pending.push(target);
+    }
+  }
+  return testOnly;
+}
+function normalizePath(path) {
+  const parts = [];
+  for (const part of path.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part !== "." && part !== "") parts.push(part);
+  }
+  return parts.join("/");
 }
 function withoutTestModules(text) {
   let out = text;
