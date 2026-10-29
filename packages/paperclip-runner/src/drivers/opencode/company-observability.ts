@@ -43,11 +43,15 @@ export function createOpenCodeCompanyObservability(input: {
         .filter(key => supplied[key]).map(key => [key, supplied[key]])) };
   } catch { diagnostic("configuration_invalid"); return undefined; }
   const capture = (key: string) => env[key] === "1";
-  const clean = (value: unknown): string => {
+  const clean = (value: unknown, limit = maxTextBytes): string => {
     if (typeof value !== "string") return "";
     let text = redactObservabilityDiagnostic(value, env);
     for (const secret of input.sensitiveValues.filter(Boolean).sort((a, b) => b.length - a.length)) text = text.replaceAll(secret, "[REDACTED]");
-    return Buffer.from(text).subarray(0, maxTextBytes).toString("utf8");
+    const bytes = Buffer.from(text);
+    if (bytes.length > limit && current) current.truncated = true;
+    let end = Math.min(bytes.length, limit);
+    while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+    return bytes.subarray(0, end).toString("utf8");
   };
   const pending = new Set<Promise<void>>();
   let current: Turn | undefined;
@@ -109,9 +113,9 @@ export function createOpenCodeCompanyObservability(input: {
       if (event.eventType === "turn.submitted" && event.turnId) {
         if (current) finish(true, time);
         current = { runId: event.runId, turnId: event.turnId, traceId: randomBytes(16).toString("hex"),
-          root: makeSpan("paperclip.opencode.turn", time, { "gen_ai.operation.name": "invoke_agent", "gen_ai.request.model": input.model,
-            ...(capture("OTEL_LOG_USER_PROMPTS") ? { "braintrust.input": clean(record(event.payload).text) } : {}) }),
+          root: makeSpan("paperclip.opencode.turn", time, { "gen_ai.operation.name": "invoke_agent", "gen_ai.request.model": input.model }),
           tools: new Map(), usage: new Map(), truncated: false };
+        if (capture("OTEL_LOG_USER_PROMPTS")) current.root.attributes["braintrust.input"] = clean(record(event.payload).text);
       }
       const turn = current;
       if (!turn || event.runId !== turn.runId || event.turnId !== turn.turnId) return;
@@ -122,13 +126,17 @@ export function createOpenCodeCompanyObservability(input: {
       if (event.eventType.startsWith("tool.execution.") && event.itemId && capture("OTEL_LOG_TOOL_DETAILS")) {
         let span = turn.tools.get(event.itemId);
         if (!span && turn.tools.size < maxRows) {
-          span = makeSpan(`tool ${clean(payload.name).slice(0, 128) || "execution"}`, time, {
-            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": clean(payload.name).slice(0, 128) });
+          const name = clean(payload.name, 128);
+          span = makeSpan(`tool ${name || "execution"}`, time, {
+            "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": name });
           turn.tools.set(event.itemId, span);
         }
         if (span) {
           span.end = time; span.failed = payload.status === "failed";
-          if (capture("OTEL_LOG_TOOL_CONTENT")) span.attributes["braintrust.output"] = clean(payload.output);
+          if (capture("OTEL_LOG_TOOL_CONTENT")) {
+            span.attributes["braintrust.output"] = clean(payload.output);
+            if (payload.outputTruncated === true) turn.truncated = true;
+          }
         } else turn.truncated = true;
       }
       if (event.eventType === "item.completed" && payload.kind === "usage" && typeof payload.usageMessageId === "string") {

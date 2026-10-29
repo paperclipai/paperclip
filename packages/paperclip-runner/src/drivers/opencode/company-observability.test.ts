@@ -84,6 +84,25 @@ it("bounds rows and content and marks an interrupted active turn on close", asyn
   expect(spanAttributes(spans[0])["paperclip.observability.truncated"]).toBe(true);
   expect(Buffer.byteLength(JSON.stringify(bodies[0]))).toBeLessThan(1048576);
 });
+it.each(["prompt", "answer", "tool", "upstream-tool"])("marks a shortened %s even below the span limit", async kind => {
+  const { observer, bodies } = setup();
+  const longText = "😀".repeat(3000);
+  observer.observe(event("turn.submitted", { text: kind === "prompt" ? longText : "short" }));
+  if (kind === "answer") observer.observe(event("item.completed", { kind: "agentMessage", text: longText }));
+  if (kind === "tool" || kind === "upstream-tool") observer.observe(event("tool.execution.completed", {
+    name: "read", output: kind === "tool" ? longText : "excerpt", outputTruncated: kind === "upstream-tool",
+  }, "run-one", "tool"));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
+  expect(spanAttributes(spans[0])["paperclip.observability.truncated"]).toBe(true);
+  for (const span of spans) for (const [key, value] of Object.entries(spanAttributes(span))) {
+    if (key.startsWith("braintrust.") && typeof value === "string") {
+      expect(Buffer.byteLength(value)).toBeLessThanOrEqual(8192);
+      expect(value).not.toContain("\uFFFD");
+    }
+  }
+});
 it("does not block event delivery when a receiver stalls and cancels the request at its deadline", async () => {
   const diagnostics: string[] = [];
   let aborted = false;
