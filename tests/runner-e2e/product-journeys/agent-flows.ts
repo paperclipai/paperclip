@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
-import { activeNativeTurnStarted, nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
+import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents, stopAndRedirectThroughUi } from "../stop-redirect-flow.js";
 import { runnerTasks } from "../catalog.js";
 import { everydayTasks, SLUGIFY_REQUIREMENTS, SLUGIFY_REVISION } from "../everyday-cases.js";
 import { latestStoryDelivery, type StoryDelivery } from "../everyday-delivery.js";
@@ -211,6 +211,13 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
           return run?.status === "cancelled" && nativeStopAcknowledged(run, context.company.id, issue.id, context.user.id);
         }, "stop_not_acknowledged");
         await retain("stop-after.json", stopped);
+        beforeEvents = await waitFor(options.deadlineAt, async () => {
+          const events = await runActivity();
+          await retain("stop-cancellation-events.json", events);
+          return events;
+        }, events => events.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"), "stop_native_terminal_not_retained");
+        check("stop-native-terminal-retained", beforeEvents.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"));
+        if (!nativeCancellationHasNoLaterWork(beforeEvents)) check("stopped-run-no-later-events", false);
       },
       beforeRedirect: async () => {
         const leases = await waitFor(options.deadlineAt, () => context.api.get<Row[]>(`/api/environments/${context.environmentId}/leases`), rows => {
@@ -218,8 +225,6 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
           return owned.length > 0 && owned.every(row => ["released", "retained", "expired"].includes(row.status) && row.cleanupStatus === "success");
         }, "stopped_run_resources_not_released");
         await retain("stop-leases.json", leases.filter(row => row.issueId === issue.id && row.heartbeatRunId === original.id));
-        beforeEvents = await runActivity();
-        check("stop-native-terminal-retained", beforeEvents.some(row => row.payload?.prpEvent?.eventType === "turn.cancelled"));
         check("active-work-stopped");
       },
       reply: message => reply(issue, message),
@@ -231,7 +236,8 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
       && row.createdByRunId !== original.id));
     check("stopped-run-remained-terminal", final.taskRuns.find(run => run.id === original.id)?.status === "cancelled");
     const afterEvents = await runActivity();
-    check("stopped-run-no-later-events", JSON.stringify(beforeEvents!) === JSON.stringify(afterEvents));
+    check("stopped-run-no-later-events", nativeCancellationHasNoLaterWork(afterEvents)
+      && JSON.stringify(beforeEvents!) === JSON.stringify(afterEvents));
     check("stop-preserved-download", createHash("sha256").update(await context.api.bytes(`/api/attachments/${initial.attachmentId}/content`)).digest("hex") === initial.sha256);
     const queue = await context.api.get<Row>(`/api/issues/${issue.id}/queued-comments`);
     check("redirect-consumed-once", queue.entries.length === 0 && final.comments.filter(row => row.id === userReply.id).length === 1);

@@ -9,6 +9,13 @@ export function nativeWorkEvents<T extends Row>(events: T[]): T[] {
   });
 }
 
+/** Detect post-cancellation output even if it arrived before the first snapshot. */
+export function nativeCancellationHasNoLaterWork(events: Row[]): boolean {
+  const work = nativeWorkEvents(events);
+  const cancellation = work.findIndex(row => row.payload.prpEvent.eventType === "turn.cancelled");
+  return cancellation >= 0 && cancellation === work.length - 1;
+}
+
 /** A claimed run is not proof that a cancellable native turn has started. */
 export function activeNativeTurnStarted(run: Row | undefined, events: Row[]): boolean {
   const latestTurn = events.map(row => row.payload?.prpEvent?.eventType)

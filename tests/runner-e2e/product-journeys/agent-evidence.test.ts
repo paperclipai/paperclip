@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateAgentTaskState } from "./agent-flows.js";
-import { activeNativeTurnStarted, nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
+import { activeNativeTurnStarted, nativeCancellationHasNoLaterWork, nativeStopAcknowledged, nativeWorkEvents } from "../stop-redirect-flow.js";
 import { parseTargetConfig } from "./catalog.js";
 import type { JourneyContext } from "./types.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -15,6 +15,14 @@ function state() {
     comments: [], interactions: [], attachments: [] };
 }
 describe("deployed agent journey evidence", () => {
+  it.each(["tool.execution.started", "turn.started", "message.delta", "item.delta", "item.completed"])("rejects %s after cancellation even when cleanup's first snapshot already contains it", eventType => {
+    const event = (type: string) => ({ id: type, payload: { prpEvent: { eventType: type } } });
+    const stopped = [event("turn.started"), event("item.delta"), event("turn.cancelled")];
+    expect(nativeCancellationHasNoLaterWork(stopped)).toBe(true);
+    expect(nativeCancellationHasNoLaterWork([...stopped, event("usage.reported")])).toBe(true);
+    expect(nativeCancellationHasNoLaterWork([...stopped, event(eventType)])).toBe(false);
+    expect(nativeCancellationHasNoLaterWork(stopped.slice(0, -1))).toBe(false);
+  });
   it("requires an active native turn before the Stop boundary, including the native completion race", () => {
     const run = { runtimeMode: "native", status: "running" };
     const event = (eventType: string) => ({ payload: { prpEvent: { eventType } } });
