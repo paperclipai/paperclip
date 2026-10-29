@@ -35,9 +35,13 @@ export async function createScopedNetworkEgressPolicy(input: {
   workloadName: string;
   ownerReference: Record<string, unknown>;
   grant: ScopedNetworkEgressGrant;
+  /** Policy name suffix; distinct per policy kind on the same workload. */
+  suffix?: string;
+  /** Also allow DNS and the Paperclip callback; the policy is created even with an empty grant. */
+  baseRules?: { paperclipServerNamespace: string; paperclipServerPodSelector?: Record<string, string> };
 }): Promise<string | null> {
-  if (input.grant.allowFqdns.length === 0 && input.grant.allowCidrs.length === 0) return null;
-  const suffix = "-egress";
+  if (!input.baseRules && input.grant.allowFqdns.length === 0 && input.grant.allowCidrs.length === 0) return null;
+  const suffix = input.suffix ?? "-egress";
   const maxWorkloadLength = 253 - suffix.length;
   const workloadName = input.workloadName.length <= maxWorkloadLength
     ? input.workloadName
@@ -46,12 +50,13 @@ export async function createScopedNetworkEgressPolicy(input: {
   if (input.mode === "cilium") {
     const manifest = buildCiliumNetworkPolicyManifest({
       namespace: input.namespace,
-      paperclipServerNamespace: "",
+      paperclipServerNamespace: input.baseRules?.paperclipServerNamespace ?? "",
+      paperclipServerPodSelector: input.baseRules?.paperclipServerPodSelector,
       egressAllowFqdns: input.grant.allowFqdns,
       egressAllowCidrs: input.grant.allowCidrs,
       name,
       endpointSelector: { "paperclip.io/run-id": input.runId },
-      includeBaseRules: false,
+      includeBaseRules: Boolean(input.baseRules),
       ownerReferences: [input.ownerReference],
     });
     await input.clients.custom.createNamespacedCustomObject({
@@ -64,12 +69,13 @@ export async function createScopedNetworkEgressPolicy(input: {
   } else {
     const [, manifest] = buildNetworkPolicyManifests({
       namespace: input.namespace,
-      paperclipServerNamespace: "",
+      paperclipServerNamespace: input.baseRules?.paperclipServerNamespace ?? "",
+      paperclipServerPodSelector: input.baseRules?.paperclipServerPodSelector,
       egressAllowFqdns: input.grant.allowFqdns,
       egressAllowCidrs: input.grant.allowCidrs,
       name,
       podSelector: { "paperclip.io/run-id": input.runId },
-      includeBaseRules: false,
+      includeBaseRules: Boolean(input.baseRules),
       ownerReferences: [input.ownerReference],
     });
     await input.clients.networking.createNamespacedNetworkPolicy({ namespace: input.namespace, body: manifest as never });
