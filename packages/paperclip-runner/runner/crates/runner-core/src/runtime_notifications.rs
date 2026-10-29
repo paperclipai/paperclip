@@ -1,5 +1,6 @@
-//! Local UI hints share Runner's durable, authenticated event transport.
+//! Runtime activity shares Runner's durable, authenticated event transport.
 use std::collections::HashSet;
+use std::ffi::CString;
 use std::fs::{self, DirBuilder};
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
@@ -35,11 +36,11 @@ struct MailboxDirectory {
     handle: fs::File,
 }
 
-fn open_directory_at(
+fn open_directory_handle_at(
     parent: impl AsFd,
     path: impl rustix::path::Arg,
 ) -> Result<fs::File, DurableRunnerError> {
-    let file = fs::File::from(
+    Ok(fs::File::from(
         rustix::fs::openat(
             parent,
             path,
@@ -50,7 +51,14 @@ fn open_directory_at(
             rustix::fs::Mode::empty(),
         )
         .map_err(failure)?,
-    );
+    ))
+}
+
+fn open_directory_at(
+    parent: impl AsFd,
+    path: impl rustix::path::Arg,
+) -> Result<fs::File, DurableRunnerError> {
+    let file = open_directory_handle_at(parent, path)?;
     if file.metadata().map_err(failure)?.permissions().mode() & 0o077 != 0 {
         return Err(failure("notification directory must be private"));
     }
@@ -183,11 +191,18 @@ struct ActivityRecord {
     activity_key: String,
 }
 
+struct CleanupDirectory {
+    name: CString,
+    directory: fs::File,
+    entries: rustix::fs::Dir,
+}
+
 pub struct RuntimeNotifications {
     _watcher: RecommendedWatcher,
     local: MailboxDirectory,
     dirty: Arc<AtomicBool>,
     scan: Option<rustix::fs::Dir>,
+    cleanup: Vec<CleanupDirectory>,
     deadline: Option<Instant>,
     #[cfg(test)]
     scans: usize,
@@ -219,6 +234,7 @@ impl RuntimeNotifications {
             local,
             dirty,
             scan: None,
+            cleanup: Vec::new(),
             deadline: None,
             #[cfg(test)]
             scans: 0,
@@ -230,6 +246,7 @@ impl RuntimeNotifications {
 
     pub(crate) fn has_pending_work(&self) -> bool {
         self.scan.is_some()
+            || !self.cleanup.is_empty()
             || self.dirty.load(Ordering::Acquire)
             || self
                 .deadline
@@ -248,6 +265,9 @@ impl RuntimeNotifications {
             self.context = Uuid::new_v4().to_string();
             self.activated.clear();
         }
+        // Split the fixed budget so cleanup cannot starve new requests.
+        let cleanup_budget = if self.cleanup.is_empty() { 0 } else { 8 };
+        self.cleanup_step(cleanup_budget);
         if self.scan.is_none() {
             let due = self
                 .deadline
@@ -271,7 +291,7 @@ impl RuntimeNotifications {
             }
         }
         // Retain the iterator and concurrent wakes until the bounded sweep is complete.
-        for _ in 0..16 {
+        for _ in cleanup_budget..16 {
             let Some(entry) = self.scan.as_mut().and_then(Iterator::next) else {
                 self.scan = None;
                 break;
@@ -295,26 +315,88 @@ impl RuntimeNotifications {
                 .and_then(|time| time.elapsed().ok())
                 .unwrap_or_default();
             if age > Duration::from_secs(2) {
-                if let Ok(files) = rustix::fs::Dir::read_from(&directory) {
-                    for entry in files.take(16).flatten() {
-                        let _ = rustix::fs::unlinkat(
-                            &directory,
-                            entry.file_name(),
-                            rustix::fs::AtFlags::empty(),
-                        );
+                if self.cleanup.is_empty() {
+                    if let Ok(entries) = rustix::fs::Dir::read_from(&directory) {
+                        self.cleanup.push(CleanupDirectory {
+                            name: name.to_owned(),
+                            directory,
+                            entries,
+                        });
+                        continue;
                     }
                 }
-                if rustix::fs::unlinkat(&self.local.handle, name, rustix::fs::AtFlags::REMOVEDIR)
-                    .is_err()
-                {
-                    let deadline = Instant::now() + Duration::from_secs(2);
-                    self.deadline = Some(self.deadline.map_or(deadline, |next| next.min(deadline)));
-                }
+                self.retry_cleanup();
                 continue;
             }
             let deadline = Instant::now() + Duration::from_secs(2).saturating_sub(age);
             self.deadline = Some(self.deadline.map_or(deadline, |next| next.min(deadline)));
             self.process_request(&directory, config, state, store);
+        }
+    }
+
+    fn retry_cleanup(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        self.deadline = Some(self.deadline.map_or(deadline, |next| next.min(deadline)));
+    }
+
+    fn cleanup_step(&mut self, budget: usize) {
+        for _ in 0..budget {
+            let Some(current) = self.cleanup.last_mut() else {
+                break;
+            };
+            match current.entries.next() {
+                Some(Ok(entry)) => {
+                    let name = entry.file_name();
+                    if matches!(name.to_bytes(), b"." | b"..") {
+                        continue;
+                    }
+                    if rustix::fs::unlinkat(&current.directory, name, rustix::fs::AtFlags::empty())
+                        .is_ok()
+                    {
+                        continue;
+                    }
+                    if let Ok(directory) = open_directory_handle_at(&current.directory, name) {
+                        if let Ok(entries) = rustix::fs::Dir::read_from(&directory) {
+                            self.cleanup.push(CleanupDirectory {
+                                name: name.to_owned(),
+                                directory,
+                                entries,
+                            });
+                        } else {
+                            self.cleanup.clear();
+                            self.retry_cleanup();
+                            break;
+                        }
+                    }
+                }
+                Some(Err(_)) => {
+                    self.cleanup.clear();
+                    self.retry_cleanup();
+                    break;
+                }
+                None => {
+                    let finished = self.cleanup.pop().unwrap();
+                    let parent = self
+                        .cleanup
+                        .last()
+                        .map(|frame| &frame.directory)
+                        .unwrap_or(&self.local.handle);
+                    if rustix::fs::unlinkat(
+                        parent,
+                        finished.name.as_c_str(),
+                        rustix::fs::AtFlags::REMOVEDIR,
+                    )
+                    .is_err()
+                    {
+                        self.cleanup.clear();
+                        self.retry_cleanup();
+                        break;
+                    }
+                    if self.cleanup.is_empty() {
+                        self.dirty.store(true, Ordering::Release);
+                    }
+                }
+            }
         }
     }
 
@@ -549,6 +631,7 @@ mod tests {
             server.poll(config, state, store);
             if server.scans != scans
                 || server.scan.is_some()
+                || !server.cleanup.is_empty()
                 || server.deadline.is_some()
                 || server.dirty.load(Ordering::Acquire)
             {
@@ -906,6 +989,7 @@ context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit
             .unwrap();
         server.dirty.store(true, Ordering::Release);
         server.poll(&config, &mut state, &store);
+        wait_for_quiet_mailbox(&mut server, &config, &mut state, &store);
         assert_eq!(fs::read_dir(&target).unwrap().count(), 2);
         assert!(state.outbox.is_empty());
         assert!(!moved.exists());
@@ -989,7 +1073,66 @@ context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit
             .unwrap();
         server.dirty.store(true, Ordering::Release);
         server.poll(&config, &mut state, &store);
+        wait_for_quiet_mailbox(&mut server, &config, &mut state, &store);
         assert!(!orphan.directory.exists());
+    }
+
+    #[test]
+    fn nested_orphan_cleanup_is_bounded_preserves_symlink_targets_and_becomes_quiet() {
+        let root = MailboxDirectory::create(&std::env::temp_dir()).unwrap();
+        let config = config(root.directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        state.lifecycle = "ready".into();
+        let mut server = RuntimeNotifications::bind(&config.state_dir).unwrap();
+        let orphan = MailboxDirectory::create(&server.local.directory).unwrap();
+        let mut nested = orphan.directory.clone();
+        for _ in 0..24 {
+            nested = nested.join("nested");
+            fs::create_dir(&nested).unwrap();
+        }
+        for index in 0..64 {
+            fs::write(nested.join(index.to_string()), b"abandoned").unwrap();
+        }
+        let protected = config.state_dir.join("protected");
+        fs::create_dir(&protected).unwrap();
+        fs::write(protected.join("sentinel"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&protected, nested.join("outside")).unwrap();
+        orphan
+            .handle
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - Duration::from_secs(3)),
+            )
+            .unwrap();
+        server.dirty.store(true, Ordering::Release);
+        server.poll(&config, &mut state, &store);
+        assert!(
+            orphan.directory.exists(),
+            "cleanup must yield between bounded batches"
+        );
+        let reply = rpc(
+            &mut server,
+            &config,
+            &mut state,
+            &store,
+            "runtime/activityContext",
+            json!({}),
+        )
+        .unwrap();
+        assert!(
+            reply["context"].as_str().is_some(),
+            "cleanup must not starve requests"
+        );
+        wait_for_quiet_mailbox(&mut server, &config, &mut state, &store);
+        assert!(!orphan.directory.exists());
+        assert_eq!(fs::read(protected.join("sentinel")).unwrap(), b"unchanged");
+        assert!(server.deadline.is_none());
+        let scans = server.scans;
+        for _ in 0..100 {
+            server.poll(&config, &mut state, &store);
+        }
+        assert_eq!(server.scans, scans);
     }
 
     #[test]
