@@ -48,6 +48,19 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
 
+The [published canary smoke](../../tests/canary-onboarding/canary-onboarding.spec.ts)
+checks the exact installed version through Connect a model. Submitting the agent
+name must save one paused setup record with disabled heartbeats and no task or
+run. The [authenticated release smoke](../../tests/release-smoke/docker-auth-onboarding.spec.ts)
+checks the same held state, then completes that record through Connect without
+creating a second agent. Its Docker harness mocks credential verification; live
+provider authentication remains separate evidence.
+
+Name-only setup defers the runner field while the provisional adapter remains
+held in setup. Choosing a provider updates that same setup record with its
+selected runner. The wizard regression covers a saved native choice followed by
+OpenAI Subscription selection; it does not prove provider authentication.
+
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
   `node .agents/skills/verify-paperclip/scripts/onboarding-smoke.mjs --evidence-dir "$VERIFY_EVIDENCE_DIR"`.

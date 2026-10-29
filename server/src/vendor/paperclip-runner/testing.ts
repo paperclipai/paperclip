@@ -26,6 +26,13 @@ const sourceUrl = new URL(
 );
 const runnerTesting = await import(sourceUrl.href) as RunnerTestingModule;
 
+export const prepareIsolatedCodexHome: RunnerTestingModule["prepareIsolatedCodexHome"] =
+  runnerTesting.prepareIsolatedCodexHome;
+export const releaseMaterializedNativeRuntimeSkills: RunnerTestingModule["releaseMaterializedNativeRuntimeSkills"] =
+  runnerTesting.releaseMaterializedNativeRuntimeSkills;
+export const resolveRunnerdCodexSkillInputs: RunnerTestingModule["resolveRunnerdCodexSkillInputs"] =
+  runnerTesting.resolveRunnerdCodexSkillInputs;
+
 export const startOpenCodeMcpBridge:
   RunnerTestingModule["startOpenCodeMcpBridge"] =
   runnerTesting.startOpenCodeMcpBridge;

@@ -1,3 +1,4 @@
+import { notifyIssueReviewState } from "../issue-review-state-notifications.js";
 import { insertIssueComment } from "../issue-comment-writes.js";
 import {
   issues,
@@ -6,6 +7,7 @@ import {
   nativeRunFinalizations,
   companies,
   agentTaskSessions,
+  agentWakeupRequests,
   agentSessionGoalActions,
   agents,
   activityLog,
@@ -383,37 +385,37 @@ export function createHeartbeatScheduling(
       return;
     }
 
-    if (input.recoveryPolicy === "escalate_to_board") {
-      await insertIssueComment(db, {
-        companyId: input.claimed.companyId,
-        issueId: input.claimed.id,
-        body: monitorRecoveryComment({
-          issue: input.claimed,
-          clearReason: input.clearReason,
-          recoveryPolicy: input.recoveryPolicy,
-          nextAttemptCount: input.nextAttemptCount,
-        }),
-      });
+    const recoveryKey = `issue-monitor-recovery:${input.claimed.id}:${input.scheduledAtIso}`;
 
-      await logActivity(db, {
-        companyId: input.claimed.companyId,
-        actorType: input.actorType,
-        actorId: input.actorId,
-        agentId: input.agentId,
-        runId: input.runId,
-        action: "issue.monitor_escalated_to_board",
-        entityType: "issue",
-        entityId: input.claimed.id,
-        details,
-      });
-      return;
-    }
 
-    await enqueueWakeup(input.claimed.assigneeAgentId!, {
+    const acceptedRecoveryKeys = [
+      recoveryKey,
+      `issue-monitor-recovery:${input.claimed.id}:max_attempts_exhausted:${input.scheduledAtIso}`,
+      `issue-monitor-recovery:${input.claimed.id}:timeout_exceeded:${input.scheduledAtIso}`,
+    ];
+
+
+
+    const [accepted] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, agentWakeupRequests.runId),
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        eq(heartbeatRuns.agentId, agentWakeupRequests.agentId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId',
+          ${heartbeatRuns.nativeIssueId}::text) = ${input.claimed.id}`))
+      .where(and(eq(agentWakeupRequests.companyId, input.claimed.companyId),
+        eq(agentWakeupRequests.agentId, input.claimed.assigneeAgentId!),
+        inArray(agentWakeupRequests.idempotencyKey, acceptedRecoveryKeys),
+        inArray(agentWakeupRequests.reason, ["issue_monitor_recovery", "issue_execution_same_name"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.claimed.id}`,
+        sql`${agentWakeupRequests.status} <> 'skipped'`)).limit(1);
+    const wake = accepted ?? await enqueueWakeup(input.claimed.assigneeAgentId!, {
+      issueStateGuard: { statuses: [input.claimed.status], assigneeAgentId: input.claimed.assigneeAgentId!,
+        monitorNextCheckAt: input.scheduledAtIso,
+        monitorWakeRequestedAt: input.claimed.monitorWakeRequestedAt!.toISOString() },
       source: "automation",
       triggerDetail: "system",
       reason: "issue_monitor_recovery",
-      idempotencyKey: `issue-monitor-recovery:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
+      idempotencyKey: recoveryKey,
       payload: withRecoveryContext(
         {
           issueId: input.claimed.id,
@@ -446,6 +448,8 @@ export function createHeartbeatScheduling(
       ),
     });
 
+    if (!wake) return false;
+
     await logActivity(db, {
       companyId: input.claimed.companyId,
       actorType: input.actorType,
@@ -457,6 +461,7 @@ export function createHeartbeatScheduling(
       entityId: input.claimed.id,
       details,
     });
+    return true;
   }
 
   async function clearIssueMonitorAndRecover(input: {
@@ -474,18 +479,63 @@ export function createHeartbeatScheduling(
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    const cleared = await db
-      .update(issues)
-      .set({
+    const recover = () => performIssueMonitorRecovery(input);
+    if (input.recoveryPolicy === "wake_owner") {
+      try {
+        if (!await recover()) {
+          await releaseIssueMonitorWithDiagnostic(input.claimed, input, {
+            action: "issue.monitor_deferred", reason: "monitor_recovery_deferred",
+          });
+          return { outcome: "skipped" as const, reason: "monitor_recovery_deferred" };
+        }
+      } catch (error) {
+        await releaseIssueMonitorWithDiagnostic(input.claimed, input, {
+          action: "issue.monitor_dispatch_failed", reason: "monitor_recovery_failed",
+        });
+        throw error;
+      }
+    }
+
+
+
+
+    const publications: ActivityPublication[] = [];
+    const cleared = await db.transaction(async tx => {
+      await notifyIssueReviewState(tx, { companyId: input.claimed.companyId, issueId: input.claimed.id });
+      const rows = await tx.update(issues).set({
         ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
-          issue: input.claimed,
-          policy: input.policy,
-          clearReason: input.clearReason,
-          clearedAt: input.now,
+          issue: input.claimed, policy: input.policy, clearReason: input.clearReason, clearedAt: input.now,
         })),
         updatedAt: input.now,
-      })
-      .where(issueMonitorClaimCondition(input.claimed)).returning({ id: issues.id });
+      }).where(issueMonitorClaimCondition(input.claimed)).returning({ id: issues.id });
+      if (rows.length && input.recoveryPolicy === "escalate_to_board") {
+        await insertIssueComment(tx, {
+          companyId: input.claimed.companyId,
+          issueId: input.claimed.id,
+          body: monitorRecoveryComment({
+            issue: input.claimed,
+            clearReason: input.clearReason,
+            recoveryPolicy: input.recoveryPolicy,
+            nextAttemptCount: input.nextAttemptCount,
+          }),
+        });
+
+        await logActivity(tx as unknown as Db, {
+          companyId: input.claimed.companyId,
+          actorType: input.actorType,
+          actorId: input.actorId,
+          agentId: input.agentId,
+          runId: input.runId,
+          action: "issue.monitor_escalated_to_board",
+          entityType: "issue",
+          entityId: input.claimed.id,
+          details: monitorRecoveryDetails({ ...input, source: input.activitySource }),
+        }, publications);
+      }
+
+      return rows;
+    });
+    for (const publication of publications) publishActivity(publication);
     if (cleared.length === 0) return { outcome: "skipped" as const, reason: "monitor_replaced" };
 
     await logActivity(db, {
@@ -508,19 +558,7 @@ export function createHeartbeatScheduling(
       }),
     });
 
-    await performIssueMonitorRecovery({
-      claimed: input.claimed,
-      scheduledAtIso: input.scheduledAtIso,
-      nextAttemptCount: input.nextAttemptCount,
-      clearReason: input.clearReason,
-      recoveryPolicy: input.recoveryPolicy,
-      monitor: input.monitor,
-      actorType: input.actorType,
-      actorId: input.actorId,
-      agentId: input.agentId,
-      runId: input.runId,
-      activitySource: input.activitySource,
-    });
+    if (input.recoveryPolicy === "create_recovery_issue") await recover();
 
     return { outcome: "skipped" as const, reason: input.clearReason };
   }
@@ -545,7 +583,8 @@ export function createHeartbeatScheduling(
 
   async function releaseIssueMonitorWithDiagnostic(
     claimed: IssueMonitorDispatchRow,
-    input: Parameters<typeof dispatchClaimedIssueMonitor>[1],
+    input: Pick<Parameters<typeof dispatchClaimedIssueMonitor>[1],
+      "now" | "actorType" | "actorId" | "agentId" | "runId" | "activitySource">,
     diagnostic: { action: "issue.monitor_deferred" | "issue.monitor_dispatch_failed";
       reason: string; blockerCause?: string; httpStatus?: number },
   ) {
@@ -820,7 +859,9 @@ export function createHeartbeatScheduling(
     } catch (err) {
       if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
         if (input.clearOnClientError) {
-          await db
+          await db.transaction(async tx => {
+            await notifyIssueReviewState(tx, { companyId: claimed.companyId, issueId: claimed.id });
+            await tx
             .update(issues)
             .set({
               ...monitorOnlyDispatchPatch(buildIssueMonitorClearedPatch({
@@ -832,6 +873,7 @@ export function createHeartbeatScheduling(
               updatedAt: new Date(),
             })
             .where(issueMonitorClaimCondition(claimed));
+          });
 
           await logActivity(db, {
             companyId: claimed.companyId,

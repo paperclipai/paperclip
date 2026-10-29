@@ -2689,7 +2689,7 @@ export function createToolGatewayService(
           approvalId: approval.id,
           linkedByAgentId: input.session.agentId,
         })
-        .onConflictDoNothing());
+        .onConflictDoNothing(), { issueIds: [approvalIssueId] });
     }
 
     const interaction = await interactions.create(

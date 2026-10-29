@@ -1,3 +1,9 @@
+import { externalConversationSettlementWork } from "../../services/external-conversation-settlement-work.js";
+import { nativeStatusReassessmentWork } from "../../services/native-runtime/native-status-reassessment-work.js";
+import { nativeReviewResponseWork } from "../../services/native-runtime/native-review-response-work.js";
+import { nativeResponsePresentationWork } from "../../services/native-runtime/native-response-presentation-work.js";
+import { DELIVERY_QUEUES } from "../../services/delivery-work-notifications.js";
+import { idleWorkSnapshot } from "../../services/task-admission.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
@@ -24,6 +30,7 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
+  subscribeDatabaseWork,
   createDb,
   companies,
   agents,
@@ -372,6 +379,56 @@ describe("iMessage Photon channel control plane", () => {
       },
     };
   }
+  it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment, DELIVERY_QUEUES.externalConversationSettlement])(
+    "keeps repeated active Photon ownership assertions out of %s reconstruction and wakes once on recovery", async queue => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    coordinators.push(coordinator);
+    const work = queue === DELIVERY_QUEUES.externalConversationSettlement ? externalConversationSettlementWork(db)
+      : queue === DELIVERY_QUEUES.nativeResponsePresentation ? nativeResponsePresentationWork(db)
+      : queue === DELIVERY_QUEUES.nativeReviewResponse ? nativeReviewResponseWork(db) : nativeStatusReassessmentWork(db);
+    const worker = work.register(coordinator, () => true);
+    const debug = db.$client.options.debug;
+    const hints: unknown[] = [];
+    const queries: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, queue, (event, values) => {
+      if (event === "settled") for (const value of values ?? []) {
+        const scope = JSON.parse(value);
+        if (scope.companyId === t.companyId) hints.push(scope);
+      }
+    });
+    try {
+      await worker.ready;
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ active: 0, next: null });
+      db.$client.options.debug = (_connection, query) => {
+        if (query.startsWith("select") && (queue === DELIVERY_QUEUES.externalConversationSettlement
+          ? query.includes("exists (select 1 from chat_conversations c") : query.includes("native_run_finalizations"))) queries.push(query);
+      };
+      const assertOwned = t.callbacks().onPhotonAssertOwned!;
+      for (let i = 0; i < 5; i++) await assertOwned();
+      expect(hints).toEqual([]);
+      expect(queries).toEqual([]);
+      await db.update(chatEndpoints).set({ status: "attention", healthMessage: "Recovering transport" })
+        .where(eq(chatEndpoints.id, t.endpoint.id));
+      await Promise.all([assertOwned(), assertOwned(), assertOwned()]);
+      await expect.poll(() => ({ active: idleWorkSnapshot().active, next: coordinator.nextWakeAt() }), { timeout: 5000 })
+        .toEqual({ active: 0, next: null });
+      expect(hints).toEqual([{ companyId: t.companyId }]);
+      expect(queries).toHaveLength(1);
+      expect((await t.service.get(t.endpoint.id)).status).toBe("active");
+      hints.length = 0;
+      queries.length = 0;
+      for (let i = 0; i < 5; i++) await assertOwned();
+      expect(hints).toEqual([]);
+      expect(queries).toEqual([]);
+      expect(errors).toEqual([]);
+    } finally { unsubscribe(); db.$client.options.debug = debug; if ("stop" in worker) worker.stop(); }
+  });
+
   it("recovers a Photon transport loss through the receiver worker and cancels fatal recovery", async () => {
     const t = await setup();
     const onError = vi.fn();

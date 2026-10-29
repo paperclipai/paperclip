@@ -43,23 +43,31 @@ export function verifyWorkspaceWorkerStopReceipt(
     return proof;
   } catch { return null; }
 }
-/** Unsupported platforms, legacy receipts and unavailable evidence never authorize takeover. */
+export type WorkspaceWorkerStopCheck =
+  | { status: "verified"; proof: WorkspaceWorkerStopProof }
+  | { status: "pending" }
+  | { status: "unsupported" };
+
+
 export async function requestWorkspaceWorkerStopProof(binding: WorkspaceStopBinding, options: {
   env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; now?: Date;
-} = {}): Promise<WorkspaceWorkerStopProof | null> {
+} = {}): Promise<WorkspaceWorkerStopCheck> {
   const env = options.env ?? process.env;
   const context = getCloudStackContext(env);
   const token = env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim();
-  if (!context?.stackId || !context.cloudOrigin || !token || !validWorker(binding.worker)) return null;
+  if (!context?.stackId || !context.cloudOrigin || !token || !validWorker(binding.worker)) return { status: "unsupported" };
+  let origin: URL;
+  try { origin = new URL(context.cloudOrigin); } catch { return { status: "unsupported" }; }
+  if (origin.protocol !== "https:" || origin.username || origin.password) return { status: "unsupported" };
   try {
-    const origin = new URL(context.cloudOrigin);
-    if (origin.protocol !== "https:" || origin.username || origin.password) return null;
     const response = await (options.fetchImpl ?? fetch)(`${origin.origin}/v1/tenant/workspace-worker-stop`, {
       method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "x-paperclip-cloud-stack-id": context.stackId, "content-type": "application/json" },
       body: JSON.stringify(binding), signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { status: "pending" };
     const payload = await response.json() as { receipt?: unknown };
-    return typeof payload.receipt === "string" ? verifyWorkspaceWorkerStopReceipt(payload.receipt, binding, env, options.now) : null;
-  } catch { return null; }
+    const proof = typeof payload?.receipt === "string"
+      ? verifyWorkspaceWorkerStopReceipt(payload.receipt, binding, env, options.now) : null;
+    return proof ? { status: "verified", proof } : { status: "pending" };
+  } catch { return { status: "pending" }; }
 }

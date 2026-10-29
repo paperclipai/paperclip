@@ -64,7 +64,7 @@ const {
     retryMs?: number;
     run: (signal?: AbortSignal) => Promise<unknown>;
     hasPending?: () => Promise<boolean>;
-  }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn() }));
+  }) => ({ ready: task.run(new AbortController().signal).catch(error => { deliveryWorkErrors.push({ queue, error }); }), wake: vi.fn(), stop: vi.fn(async () => {}) }));
   const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, {
     locals: {
       fastResponses: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => undefined) },
@@ -103,6 +103,7 @@ const {
     reason: null,
   }));
   const heartbeatServiceMock = {
+    drainActiveRunExecutions: vi.fn(async () => undefined),
     reconcileCostAccounting: vi.fn(async () => ({ scanned: 0, accounted: 0 })),
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     recoverNativeRunsAfterRestart: vi.fn(async () => ({
@@ -114,6 +115,25 @@ const {
     })),
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    registerScheduledRetryCancellationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerStoppedInstructionCollectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerRetainedNativeSessionCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
+    registerNativeWorkspaceFinalizationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
+    registerNativeResultCommitWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerExternalConversationSettlementWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeRecoveryNoticeWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeRunProjectionWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeEnvironmentSettlementWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeStatusReassessmentWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeReviewResponseWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerNativeResponsePresentationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve(), stop: vi.fn() })),
+    registerNativePendingEffectWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerUnsafeWorkspaceExportWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerAutomaticCompletionReviewWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerObsoletePolicyReviewWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerCancelledWorkspacePreservationWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerInstructionDirectoryCleanupWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
+    registerCapturedInstructionCommitWork: vi.fn((_coordinator: unknown, _canRun: () => boolean) => ({ ready: Promise.resolve() })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     recoverPendingSessionGoalActions: vi.fn(async () => ({ scanned: 0, enqueued: 0, alreadyQueued: 0, invalid: 0 })),
@@ -549,6 +569,151 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
+  it.each([false, true])("registers response recovery and its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeResponsePresentationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) {
+      expect(heartbeatServiceMock.registerNativeResponsePresentationWork.mock.calls[0][1]()).toBe(true);
+      const worker = heartbeatServiceMock.registerNativeResponsePresentationWork.mock.results[0].value;
+      expect(fakeServer.on).toHaveBeenCalledWith("close", worker.stop);
+    }
+  });
+
+  it.each([false, true])("registers workspace finalization with its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeWorkspaceFinalizationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) {
+      expect(heartbeatServiceMock.registerNativeWorkspaceFinalizationWork.mock.calls[0][1]()).toBe(true);
+      const worker = heartbeatServiceMock.registerNativeWorkspaceFinalizationWork.mock.results[0].value;
+      expect(fakeServer.on).toHaveBeenCalledWith("close", worker.stop);
+    }
+  });
+
+  it.each([false, true])("registers retained cleanup with its shutdown subscription only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerRetainedNativeSessionCleanupWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) {
+      expect(heartbeatServiceMock.registerRetainedNativeSessionCleanupWork.mock.calls[0][1]()).toBe(true);
+      const worker = heartbeatServiceMock.registerRetainedNativeSessionCleanupWork.mock.results[0].value;
+      expect(fakeServer.on).toHaveBeenCalledWith("close", worker.stop);
+    }
+  });
+
+  it.each([false, true])("registers external conversation settlement only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerExternalConversationSettlementWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerExternalConversationSettlementWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers native recovery notices only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeRecoveryNoticeWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativeRecoveryNoticeWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers native run projection only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeRunProjectionWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(heartbeatServiceMock.registerNativeEnvironmentSettlementWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativeRunProjectionWork.mock.calls[0][1]()).toBe(true);
+    if (enabled) expect(heartbeatServiceMock.registerNativeEnvironmentSettlementWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers native result commit only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeResultCommitWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativeResultCommitWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers native reassessment only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeStatusReassessmentWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativeStatusReassessmentWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers governed-response recovery only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativeReviewResponseWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativeReviewResponseWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers native pending effects only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerNativePendingEffectWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerNativePendingEffectWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers unsafe export recovery only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerUnsafeWorkspaceExportWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerUnsafeWorkspaceExportWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers automatic completion review cleanup only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerAutomaticCompletionReviewWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerAutomaticCompletionReviewWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers obsolete policy review cleanup only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerObsoletePolicyReviewWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerObsoletePolicyReviewWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers cancelled workspace preservation only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerCancelledWorkspacePreservationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerCancelledWorkspacePreservationWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers stopped instruction collection only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerStoppedInstructionCollectionWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerStoppedInstructionCollectionWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers directory cleanup recovery only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerInstructionDirectoryCleanupWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerInstructionDirectoryCleanupWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers captured instruction recovery only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerCapturedInstructionCommitWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) expect(heartbeatServiceMock.registerCapturedInstructionCommitWork.mock.calls[0][1]()).toBe(true);
+  });
+
+  it.each([false, true])("registers retry cancellation recovery only when maintenance is enabled (%s)", async enabled => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
+    await startServer(); await settleStartupHousekeeping();
+    expect(heartbeatServiceMock.registerScheduledRetryCancellationWork).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    if (enabled) {
+      const [coordinator, admitted] = heartbeatServiceMock.registerScheduledRetryCancellationWork.mock.calls[0];
+      const app = await createAppMock.mock.results.at(-1)!.value;
+      expect(coordinator).toBe(app.locals.deliveryWork);
+      expect(admitted()).toBe(true);
+    }
+  });
+
   it.each([false, true])("registers approval queue seeding only when maintenance is enabled (%s)", async enabled => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: enabled }));
     await startServer(); await settleStartupHousekeeping();
@@ -928,6 +1093,7 @@ describe("startServer feedback export wiring", () => {
       intervalCallback?.();
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenLastCalledWith({ staleThresholdMs: 300_000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true, skipNativeResultCommit: true, skipNativeRunProjection: true, skipNativeRecoveryNotices: true, skipExternalConversationSettlement: true, skipExternalAgentSettlement: true, skipNativeEnvironmentSettlement: true });
       expect(heartbeatServiceMock.reconcileCostAccounting).toHaveBeenCalledTimes(1);
       expect(retiredDetector).not.toHaveBeenCalled();
     } finally {
@@ -1081,6 +1247,50 @@ describe("startServer feedback export wiring", () => {
     } finally {
       timer.mockRestore();
     }
+  });
+
+  it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection", "native result commit", "native recovery notices", "external conversation settlement"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let releaseCleanup!: () => void;
+    const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
+    const stop = vi.fn();
+    const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
+      : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
+      : owner === "environment settlement" ? heartbeatServiceMock.registerNativeEnvironmentSettlementWork
+      : owner === "native run projection" ? heartbeatServiceMock.registerNativeRunProjectionWork
+      : owner === "native result commit" ? heartbeatServiceMock.registerNativeResultCommitWork
+      : owner === "native recovery notices" ? heartbeatServiceMock.registerNativeRecoveryNoticeWork
+      : heartbeatServiceMock.registerExternalConversationSettlementWork;
+    if (owner === "native run projection") heartbeatServiceMock.registerNativeRunProjectionWork.mockReturnValueOnce({ ready });
+    else if (owner === "native result commit") heartbeatServiceMock.registerNativeResultCommitWork.mockReturnValueOnce({ ready });
+    else if (owner === "native recovery notices") heartbeatServiceMock.registerNativeRecoveryNoticeWork.mockReturnValueOnce({ ready });
+    else if (owner === "external conversation settlement") heartbeatServiceMock.registerExternalConversationSettlementWork.mockReturnValueOnce({ ready });
+    else (owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
+      : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
+      : heartbeatServiceMock.registerNativeEnvironmentSettlementWork).mockReturnValueOnce({ ready, stop });
+    const timer = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    let started = false;
+    const starting = startServer().then(server => { started = true; return server; });
+    let stopping: Promise<void> | undefined;
+    let stopped = false;
+    try {
+      await vi.waitFor(() => expect(register).toHaveBeenCalledOnce());
+      await settleStartupHousekeeping();
+      expect(started).toBe(true);
+      expect(getStartupRecoveryState().phase).toBe("ready");
+      expect(heartbeatServiceMock.registerNativeStatusReassessmentWork).toHaveBeenCalledOnce();
+      const server = await starting;
+      stopping = server.shutdown().then(() => { stopped = true; });
+      await settleStartupHousekeeping();
+      if (owner === "retained cleanup" || owner === "workspace finalization") expect(stop).toHaveBeenCalledOnce();
+      expect(stopped).toBe(false);
+    } finally {
+      releaseCleanup();
+      await starting;
+      await stopping;
+      timer.mockRestore();
+    }
+    expect(stopped).toBe(true);
   });
 
   it("reports ready before startup housekeeping finishes and starts the scheduler after it", async () => {

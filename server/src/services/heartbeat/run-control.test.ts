@@ -17,6 +17,7 @@ import { terminateLocalService } from "../local-service-supervisor.js";
 import { publishLiveEvent } from "../live-events.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatRunControl } from "./run-control.js";
+import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { preserveCancelledNativeWorkspaces } from "../native-runtime/native-failed-workspace-recovery.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { caseHandoffService } from "../case-handoffs.js";
@@ -271,6 +272,50 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, handoff.id)))[0])
       .toMatchObject({ state: "awaiting_release", cancelledAt: null });
     expect(deps.appendRunEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { boundary: "task", actorType: "user" },
+    { boundary: "run", actorType: "user" },
+    { boundary: "run", actorType: "board" },
+  ] as const)("preserves $actorType Stop attribution when recovery wins after the $boundary fence", async ({ boundary, actorType }) => {
+    const { company, agent } = await fixture();
+    const issue = boundary === "task" ? (await db.insert(issues).values({
+      companyId: company.id, title: "Keep operator Stop", status: "in_progress", assigneeAgentId: agent.id,
+    }).returning())[0] : undefined;
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id, agentId: agent.id, issueId: issue?.id, status: "scheduled_retry",
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+      scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+    }).returning();
+    const deps = callbacks(db);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+
+
+    if (boundary === "task") {
+      const getAgent = deps.getAgent.getMockImplementation()!;
+      deps.getAgent.mockImplementationOnce(async id => { enter(); await held; return getAgent(id); });
+    } else {
+      const settle = deps.setRunStatusFromLive.getMockImplementation()!;
+      deps.setRunStatusFromLive.mockImplementationOnce(async (...args) => { enter(); await held; return settle(...args); });
+    }
+    const stopping = createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Operator Stop", {
+      expectedStatus: "scheduled_retry", resultJson: { cancelledByActorType: actorType, cancelledByUserId: "operator" },
+    });
+    try {
+      await Promise.race([entered, stopping.then(() => { throw new Error("Foreground Stop did not reach its fence"); })]);
+      const recovery = createHeartbeatRunControl(db, callbacks(db));
+      await createScheduledRetryCancellationRecovery(db, recovery.cancelRunInternal).sweep();
+      expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", resultJson: {
+        cancelledByActorType: actorType, cancelledByUserId: "operator",
+        cancellation: { source: "operator", initiator: { type: "user", id: "operator" } },
+      } });
+    } finally { release(); await stopping; }
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", resultJson: {
+      cancelledByActorType: actorType, cancelledByUserId: "operator",
+    } });
   });
 
   it("blocks promotion after guarded cancellation wins but before it settles", async () => {

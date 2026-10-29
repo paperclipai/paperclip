@@ -36,7 +36,7 @@ export function includeTaskListAncestors(items: readonly TaskListItem[], matches
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -45,6 +45,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   onCollapsedIdsChange?: (ids: ReadonlySet<string>) => void;
   groupBy?: TaskListGrouping;
   emptyState?: ReactNode;
+  issueLinkState?: unknown;
 }) {
   const [columns, setColumns] = useState(initialColumns);
   const [columnOrder, setColumnOrder] = useState(allTaskListColumns);
@@ -83,7 +84,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     return (
       <Fragment key={issue.id}>
         <IssueRow
-          issue={issue} presentation="task" appearance="refreshed" density={density}
+          issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
           unreadState={item.unread ? "visible" : "hidden"}
           treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
           leadingControl={children.length ? (

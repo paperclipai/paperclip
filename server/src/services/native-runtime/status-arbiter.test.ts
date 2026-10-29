@@ -44,6 +44,16 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("cannot complete an explicitly required quality review from claims or file evidence", () => {
+    expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ completionClaimPolicyAccepted: false, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: true })).toMatchObject({ toStatus: "done" });
+    expect(arbitrate()).toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: false, governanceGate: { kind: "interaction", id: "quality" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
   it("waits on a published external review without creating human attention", () => {
     const wait = assessment({ reportedDisposition: "yielded",
       continuation: { kind: "response_wake", summary: "Wait for the PR update", idempotencyKey: "pr-wait" } });

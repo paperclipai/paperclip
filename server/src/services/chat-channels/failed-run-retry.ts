@@ -1,3 +1,4 @@
+import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
 import { createFailedRetryNotices } from "./failed-retry-notices.js";
 import { safeChatWakeAuthorityReason, type ChatWakeAuthorityReason } from "./inbound/wakeup-authorization-error.js";
@@ -1784,6 +1785,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const settle = async (status: string, result: Record<string, unknown>) => {
       const [current] = await db.transaction(async (tx) => {
         await notifyChatActionWork(tx, "failed_run_retry");
+        if (status === "processed") await notifyNativeResponsePresentation(tx, {
+          companyId: claimed.companyId, issueId: String(claimed.payload.issueId),
+        });
         return tx
           .update(chatActions)
           .set({ status, result, updatedAt: new Date() })
