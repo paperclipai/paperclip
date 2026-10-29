@@ -4473,7 +4473,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           : undefined;
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
-        const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
+        const persistedRuntimeStore = createRuntimeStore({
+          stateDir: prepared.stateDir,
+          retention: { enabled: process.env.PAPERCLIP_ACPX_SESSION_RETENTION_ENABLED === "true" },
+        });
         // Resume with this run's launch environment; keep it out of the saved
         // conversation record without mutating the live runtime's options.
         const runtimeStore = createEphemeralSessionEnvironmentStore(persistedRuntimeStore, prepared.env);

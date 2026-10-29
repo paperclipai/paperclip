@@ -1,7 +1,58 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
+index 243c9d13bcba520923b63adfddad75cf2d94362d..4134b8532df122a166dd5d424211dc2c9e4eec40 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
-@@ -1532,7 +1532,7 @@
+@@ -961,12 +961,25 @@ function extractRuntimeSessionId(meta) {
+ }
+ //#endregion
+ //#region src/session/persistence/serialize.ts
++function redactRunJwtValues(value) {
++	if (typeof value === "string") return value.replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, (candidate) => {
++		try {
++			const claims = JSON.parse(Buffer.from(candidate.split(".")[1], "base64url").toString("utf8"));
++			return claims && typeof claims === "object" && Object.prototype.hasOwnProperty.call(claims, "run_id") ? "[REDACTED_RUN_JWT]" : candidate;
++		} catch {
++			return candidate;
++		}
++	});
++	if (Array.isArray(value)) return value.map(redactRunJwtValues);
++	if (!value || typeof value !== "object") return value;
++	return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, redactRunJwtValues(child)]));
++}
+ function serializeSessionRecordForDisk(record) {
+ 	const canonical = {
+ 		...record,
+ 		schema: SESSION_RECORD_SCHEMA
+ 	};
+-	return {
++	return redactRunJwtValues({
+ 		schema: canonical.schema,
+ 		acpx_record_id: canonical.acpxRecordId,
+ 		acp_session_id: canonical.acpSessionId,
+@@ -996,14 +1009,20 @@ function serializeSessionRecordForDisk(record) {
+ 		cumulative_token_usage: canonical.cumulative_token_usage,
+ 		cumulative_cost: canonical.cumulative_cost,
+ 		request_token_usage: canonical.request_token_usage,
+-		acpx: canonical.acpx,
++		acpx: canonical.acpx ? {
++			...canonical.acpx,
++			session_options: canonical.acpx.session_options ? {
++				...canonical.acpx.session_options,
++				...(canonical.acpx.session_options.env === undefined ? {} : { env: Object.fromEntries(Object.entries(canonical.acpx.session_options.env).filter(([key, value]) => key !== "PAPERCLIP_API_KEY" && redactRunJwtValues(value) === value)) })
++			} : void 0
++		} : void 0,
+ 		imported_from: canonical.importedFrom ? {
+ 			record_id: canonical.importedFrom.recordId,
+ 			cwd_original: canonical.importedFrom.cwdOriginal,
+ 			exported_by: canonical.importedFrom.exportedBy,
+ 			exported_at: canonical.importedFrom.exportedAt
+ 		} : void 0
+-	};
++	});
+ }
+ //#endregion
+ //#region src/session/persistence/parse.ts
+@@ -1532,7 +1551,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -10,7 +61,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -2557,7 +2557,7 @@
+@@ -2557,7 +2576,7 @@ function readCommandLineChar(state) {
  		escaping: false,
  		hasPart: true
  	};
@@ -19,7 +70,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		current: state.current,
  		quote: state.quote,
  		escaping: true,
-@@ -2912,8 +2912,8 @@
+@@ -2912,8 +2931,8 @@ function promotePrefixedAuthEnvironment(env) {
  	}
  	return protectedKeys;
  }
@@ -30,7 +81,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -2955,10 +2955,10 @@
+@@ -2955,10 +2974,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -43,7 +94,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3724,10 +3724,13 @@
+@@ -3724,10 +3743,13 @@ function resolveClientCapabilities(params) {
  		},
  		terminal: params.terminal
  	};
@@ -59,7 +110,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  	};
  }
  function isDevinRequestDiagnosticsMethod(method) {
-@@ -3957,9 +3960,26 @@
+@@ -3957,9 +3979,26 @@ var AcpClient = class {
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -86,7 +137,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -3994,7 +4014,7 @@
+@@ -3994,7 +4033,7 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -95,7 +146,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -4729,6 +4749,9 @@
+@@ -4729,6 +4768,9 @@ var AcpClient = class {
  			return await this.filesystem.readTextFile(params);
  		} catch (error) {
  			this.recordPermissionError(params.sessionId, error);
@@ -105,7 +156,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  			throw error;
  		}
  	}
-@@ -6070,6 +6093,27 @@
+@@ -6070,6 +6112,27 @@ async function withConnectedSession(options) {
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -133,7 +184,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6123,20 @@
+@@ -6079,6 +6142,20 @@ async function runPromptTurn(params) {
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
@@ -155,7 +206,7 @@ diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
  		return {
  			stopReason: response.stopReason,
 diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
-index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770f9f7b0a9 100644
+index ccdbe5b032521518022223733049b8b38793473b..57e93d4abcb7aaddc3a020c8805d47c71e0ec410 100644
 --- a/dist/runtime.d.ts
 +++ b/dist/runtime.d.ts
 @@ -45,6 +45,7 @@ type AcpRuntimeTurnAttachment = {
@@ -166,7 +217,15 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
    handle: AcpRuntimeHandle;
    text: string;
    attachments?: AcpRuntimeTurnAttachment[];
-@@ -266,6 +267,10 @@ type AcpRuntimeOptions = {
+@@ -251,6 +252,7 @@ type AcpSessionRecord = SessionRecord;
+ interface AcpSessionStore {
+   load(sessionId: string): Promise<AcpSessionRecord | undefined>;
+   save(record: AcpSessionRecord): Promise<void>;
++  prune?(now?: number): Promise<{ scanned: number; deleted: number }>;
+ }
+ interface AcpAgentRegistry {
+   resolve(agentName: string): string;
+@@ -266,12 +268,25 @@ type AcpRuntimeOptions = {
    timeoutMs?: number;
    probeAgent?: string;
    verbose?: boolean;
@@ -177,7 +236,22 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
    onPermissionRequest?: (req: AcpPermissionRequest, ctx: {
      signal: AbortSignal;
    }) => Promise<AcpPermissionDecision | undefined>;
-@@ -302,6 +307,7 @@ declare class AcpRuntimeManager {
+ };
+ type AcpFileSessionStoreOptions = {
+   stateDir: string;
++  runtimeEnv?: Record<string, string>;
++  retention?: {
++    enabled: boolean;
++    maxAgeDays?: number;
++    maxSessions?: number;
++    scanLimit?: number;
++    deleteLimit?: number;
++    sweepIntervalMs?: number;
++  };
+ };
+ //#endregion
+ //#region src/runtime/engine/manager.d.ts
+@@ -302,6 +317,7 @@ declare class AcpRuntimeManager {
    private createAndSaveRuntimeRecord;
    private keepPersistentClient;
    startTurn(input: {
@@ -185,7 +259,7 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
-@@ -334,6 +340,7 @@ declare class AcpRuntimeManager {
+@@ -334,6 +350,7 @@ declare class AcpRuntimeManager {
    private finalizeRuntimeTurn;
    private finalizeRuntimeTurnRecord;
    runTurn(input: {
@@ -193,11 +267,32 @@ index ccdbe5b032521518022223733049b8b38793473b..416bdaae1450c6e85b34afd154349770
      handle: AcpRuntimeHandle;
      text: string;
      attachments?: AcpRuntimeTurnAttachment[];
+@@ -457,9 +474,7 @@ declare class AcpxRuntime implements AcpxRuntimeLike {
+   private resolveHandleState;
+ }
+ declare function createAcpRuntime(options: AcpRuntimeOptions): AcpxRuntime;
+-declare function createRuntimeStore(options: {
+-  stateDir: string;
+-}): AcpSessionStore;
++declare function createRuntimeStore(options: AcpFileSessionStoreOptions): AcpSessionStore;
+ //#endregion
+ export { ACPX_BACKEND_ID, type AcpAgentRegistry, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, AcpRuntimeError, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, AcpxRuntime, DEFAULT_AGENT_NAME, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, createAcpRuntime, createAgentRegistry, createFileSessionStore, createRuntimeStore, decodeAcpxRuntimeHandleState, encodeAcpxRuntimeHandleState, isAcpRuntimeError, isRequestedModelUnsupportedError };
+ //# sourceMappingURL=runtime.d.ts.map
+\ No newline at end of file
 diff --git a/dist/runtime.js b/dist/runtime.js
-index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f8626e697ad 100644
+index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..58f092daf51161403c539bbf47de0f140624a3e5 100644
 --- a/dist/runtime.js
 +++ b/dist/runtime.js
-@@ -744,7 +744,8 @@ var AcpRuntimeManager = class {
+@@ -2,6 +2,8 @@ import { A as REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, At as listBuiltInAgents, D
+ import path from "node:path";
+ import fs from "node:fs/promises";
+ import { randomUUID } from "node:crypto";
++import { execFile } from "node:child_process";
++import { promisify } from "node:util";
+ //#region src/runtime/public/errors.ts
+ var AcpRuntimeError = class extends Error {
+ 	code;
+@@ -744,7 +746,8 @@ var AcpRuntimeManager = class {
  		this.deps = deps;
  	}
  	createClient(options) {
@@ -207,7 +302,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  	}
  	async readPendingPersistentClient(record, options) {
  		const pendingClient = this.pendingPersistentClients.get(record.acpxRecordId);
-@@ -982,6 +983,7 @@ var AcpRuntimeManager = class {
+@@ -982,6 +985,7 @@ var AcpRuntimeManager = class {
  				client: turn.client,
  				sessionId,
  				prompt: task.promptInput,
@@ -215,7 +310,293 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  				timeoutMs: task.input.timeoutMs ?? this.options.timeoutMs,
  				conversation: turn.conversation,
  				promptMessageId: turn.promptMessageId
-@@ -1586,6 +1588,7 @@ var AcpxRuntime = class {
+@@ -1346,10 +1350,88 @@ var AcpRuntimeManager = class {
+ function safeSessionId(sessionId) {
+ 	return encodeURIComponent(sessionId);
+ }
++function finiteRetentionOption(value, fallback, min, max) {
++	return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value))) : fallback;
++}
++const execFileForIdentity = promisify(execFile);
++let selfStartIdentity;
++async function processStartIdentity(pid) {
++	if (!Number.isInteger(pid) || pid <= 0) return null;
++	if (pid === process.pid && selfStartIdentity) return selfStartIdentity;
++	let identity;
++	if (process.platform === "linux") {
++		try {
++			const [stat, bootId] = await Promise.all([
++				fs.readFile(`/proc/${pid}/stat`, "utf8"),
++				fs.readFile("/proc/sys/kernel/random/boot_id", "utf8")
++			]);
++			identity = `${bootId.trim()}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`;
++		} catch (error) {
++			if (error.code === "ENOENT" || error.code === "ESRCH") return null;
++			throw error;
++		}
++	} else {
++		const command = process.platform === "win32" ? "powershell.exe" : "ps";
++		const args = process.platform === "win32"
++			? ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CreationDate.ToString('o')`]
++			: ["-p", String(pid), "-o", "lstart="];
++		try {
++			const { stdout } = await execFileForIdentity(command, args, { encoding: "utf8" });
++			identity = stdout.trim() || null;
++		} catch (error) {
++			if (error.code === 1) return null;
++			// Restricted hosts may disallow process inspection. The current
++			// process still has a unique start epoch; other owners fail closed.
++			if (pid !== process.pid) return void 0;
++			identity = `self:${performance.timeOrigin}`;
++		}
++	}
++	if (pid === process.pid) selfStartIdentity = identity;
++	return identity;
++}
++async function staleOwner(pathname) {
++	let text;
++	try { text = await fs.readFile(pathname, "utf8"); }
++	catch (error) { if (error.code === "ENOENT") return false; throw error; }
++	let owner;
++	try { owner = JSON.parse(text); } catch {}
++	if (Number.isInteger(owner?.pid) && typeof owner.processStart === "string") {
++		const currentStart = await processStartIdentity(owner.pid);
++		if (currentStart === null) return true;
++		if (currentStart !== void 0) return currentStart !== owner.processStart;
++		// Process inspection is unavailable. Reclaim only when the PID is gone.
++		try { process.kill(owner.pid, 0); return false; }
++		catch (error) { if (error.code === "ESRCH") return true; if (error.code === "EPERM") return false; throw error; }
++	}
++	if (Number.isInteger(owner?.pid) && owner.pid > 0) {
++		try { process.kill(owner.pid, 0); }
++		catch (error) { if (error.code === "ESRCH") return true; if (error.code !== "EPERM") throw error; }
++	}
++	// An interrupted exclusive create has no owner yet. Never steal it while
++	// its creator may still be writing the owner record.
++	return Date.now() - (await fs.stat(pathname)).mtimeMs >= 60000;
++}
++async function unlinkIfOwned(pathname, ownerText) {
++	try {
++		if (await fs.readFile(pathname, "utf8") === ownerText) await fs.unlink(pathname);
++	} catch (error) { if (error.code !== "ENOENT") throw error; }
++}
++const activePrunes = /* @__PURE__ */ new Set();
+ var FileSessionStore = class {
+ 	stateDir;
+-	constructor(stateDir) {
++	runtimeEnv;
++	retention;
++	constructor(stateDir, runtimeEnv, retention) {
+ 		this.stateDir = stateDir;
++		this.runtimeEnv = runtimeEnv ?? {};
++		this.retention = {
++			enabled: retention?.enabled === true,
++			maxAgeMs: finiteRetentionOption(retention?.maxAgeDays, 7, 1, 3650) * 86400000,
++			maxSessions: finiteRetentionOption(retention?.maxSessions, 1000, 1, 100000),
++			scanLimit: finiteRetentionOption(retention?.scanLimit, 512, 1, 4096),
++			deleteLimit: finiteRetentionOption(retention?.deleteLimit, 32, 1, 256),
++			sweepIntervalMs: finiteRetentionOption(retention?.sweepIntervalMs, 60000, 0, 86400000)
++		};
+ 	}
+ 	get sessionDir() {
+ 		return path.join(this.stateDir, "sessions");
+@@ -1366,8 +1448,11 @@ var FileSessionStore = class {
+ 		try {
+ 			payload = await fs.readFile(this.filePath(sessionId), "utf8");
+ 		} catch (error) {
+-			if (error.code === "ENOENT") return;
+-			throw error;
++			if (error.code === "ENOENT") {
++				await this.recoverClaimedSession(sessionId);
++				try { payload = await fs.readFile(this.filePath(sessionId), "utf8"); }
++				catch (retryError) { if (retryError.code === "ENOENT") return; throw retryError; }
++			} else throw error;
+ 		}
+ 		let parsed;
+ 		try {
+@@ -1375,21 +1460,178 @@ var FileSessionStore = class {
+ 		} catch {
+ 			return;
+ 		}
+-		return parseSessionRecord(parsed) ?? void 0;
++		const record = parseSessionRecord(parsed);
++		if (!record) return;
++		const sanitized = parseSessionRecord(serializeSessionRecordForDisk(record));
++		if (!sanitized) return;
++		if (Object.keys(this.runtimeEnv).length > 0) {
++			sanitized.acpx ??= {};
++			sanitized.acpx.session_options ??= {};
++			sanitized.acpx.session_options.env = { ...sanitized.acpx.session_options.env, ...this.runtimeEnv };
++		}
++		return sanitized;
++	}
++	async recoverClaim(name, removeClaim = true) {
++		const match = name.match(/^(.+\.json)\.(\d+)\.(?:([0-9a-f]+)\.)?([0-9a-f-]+)\.pruning$/);
++		if (!match) return;
++		if (removeClaim) {
++			const currentStart = await processStartIdentity(Number(match[2]));
++			// Older claims carry only a PID: preserve them while that PID is live.
++			// A current-format claim also survives PID reuse via its start identity.
++			if (currentStart === void 0 || currentStart !== null && (!match[3] || currentStart === Buffer.from(match[3], "hex").toString())) return;
++		}
++		const claim = path.join(this.sessionDir, name);
++		const target = path.join(this.sessionDir, match[1]);
++		// Never replace a newer normal record. Keep the claim if it conflicts.
++		try { await fs.link(claim, target); }
++		catch (error) { if (error.code === "ENOENT" || error.code === "EEXIST") return; throw error; }
++		if (removeClaim) {
++			try { await fs.unlink(claim); }
++			catch (error) { if (error.code !== "ENOENT") throw error; }
++		}
++	}
++	async recoverClaimedSession(sessionId) {
++		const prefix = `${safeSessionId(sessionId)}.json.`;
++		let names;
++		try { names = await fs.readdir(this.sessionDir); }
++		catch (error) { if (error.code === "ENOENT") return; throw error; }
++		for (const name of names) {
++			// Loads link claims back into view but leave them for the sweep. A
++			// live sweep may still be reading its claim.
++			if (name.startsWith(prefix) && name.endsWith(".pruning")) await this.recoverClaim(name, false);
++		}
+ 	}
+ 	async save(record) {
+ 		await this.ensureDir();
+ 		const persisted = serializeSessionRecordForDisk(record);
+ 		assertPersistedKeyPolicy(persisted);
+ 		const file = this.filePath(record.acpxRecordId);
+-		const tempFile = `${file}.${process.pid}.${Date.now()}.tmp`;
++		const tempFile = `${file}.${process.pid}.${randomUUID()}.tmp`;
+ 		const payload = JSON.stringify(persisted, null, 2);
+ 		await fs.writeFile(tempFile, `${payload}\n`, "utf8");
+ 		await fs.rename(tempFile, file);
++		if (this.retention.enabled) await this.prune();
++	}
++	async prune(now = Date.now()) {
++		if (!this.retention.enabled || activePrunes.has(this.stateDir)) return { scanned: 0, deleted: 0 };
++		activePrunes.add(this.stateDir);
++		try { return await this.pruneOnce(now); }
++		finally { activePrunes.delete(this.stateDir); }
++	}
++	async pruneOnce(now) {
++		await this.ensureDir();
++		const lockPath = path.join(this.stateDir, "sessions.prune.lock");
++		const processStart = await processStartIdentity(process.pid);
++		if (!processStart) throw new Error("Cannot identify ACPX prune process start");
++		const ownerText = JSON.stringify({ pid: process.pid, processStart, nonce: randomUUID() });
++		let lock;
++		try { lock = await fs.open(lockPath, "wx"); }
++		catch (error) {
++			if (error.code !== "EEXIST") throw error;
++			if (!await staleOwner(lockPath)) return { scanned: 0, deleted: 0 };
++			// An abandoned lock and reclaim guard are never unlinked. A stale
++			// reclaimer can race another reclaimer, but neither can remove a live
++			// lock. Per-record rename and recheck keep concurrent sweeps safe.
++			return this.pruneBatch(now, processStart);
++		}
++		try {
++			await lock.writeFile(ownerText);
++			return await this.pruneBatch(now, processStart);
++		} finally {
++			await lock.close();
++			await unlinkIfOwned(lockPath, ownerText);
++		}
++	}
++	async writePruneState(statePath, state) {
++		const tempState = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
++		try {
++			await fs.writeFile(tempState, JSON.stringify(state));
++			await fs.rename(tempState, statePath);
++		} finally {
++			await fs.rm(tempState, { force: true });
++		}
++	}
++	async pruneBatch(now, processStart) {
++		const statePath = path.join(this.stateDir, "sessions.prune-state.json");
++		const claimStatePath = path.join(this.stateDir, "sessions.prune-claim-state.json");
++		let state = { lastPruneAt: 0, pruneOffset: 0 };
++		let claimCursor = "";
++		try {
++			const saved = JSON.parse(await fs.readFile(statePath, "utf8"));
++			if (Number.isFinite(saved.lastPruneAt) && Number.isSafeInteger(saved.pruneOffset) && saved.pruneOffset >= 0) {
++				state = { lastPruneAt: saved.lastPruneAt, pruneOffset: saved.pruneOffset };
++				if (typeof saved.claimCursor === "string") claimCursor = saved.claimCursor;
++			}
++		} catch (error) { if (error.code !== "ENOENT") throw error; }
++		try {
++			const saved = JSON.parse(await fs.readFile(claimStatePath, "utf8"));
++			if (typeof saved.claimCursor === "string") claimCursor = saved.claimCursor;
++		} catch (error) { if (error.code !== "ENOENT") throw error; }
++		const claims = (await fs.readdir(this.sessionDir)).filter((entry) => entry.endsWith(".pruning")).sort();
++		if (claims.length > 0) {
++			const next = claims.findIndex((entry) => entry > claimCursor);
++			const start = next < 0 ? 0 : next;
++			const count = Math.min(claims.length, this.retention.scanLimit);
++			for (let i = 0; i < count; i++) await this.recoverClaim(claims[(start + i) % claims.length]);
++			claimCursor = claims[(start + count - 1) % claims.length];
++			// Recovery can overlap a sweep after a crash. Keep its cursor write
++			// separate so a delayed recovery cannot replace a newer sweep deadline.
++			await this.writePruneState(claimStatePath, { claimCursor });
++		}
++		if (now - state.lastPruneAt < this.retention.sweepIntervalMs) {
++			return { scanned: 0, deleted: 0 };
++		}
++		const files = (await fs.readdir(this.sessionDir)).filter((file) => file.endsWith(".json") && file !== "index.json").sort();
++		const count = Math.min(files.length, this.retention.scanLimit);
++		const selected = Array.from({ length: count }, (_, index) => files[(state.pruneOffset + index) % files.length]);
++		const nextState = { ...state, lastPruneAt: now, pruneOffset: files.length ? (state.pruneOffset + count) % files.length : 0 };
++		await this.writePruneState(statePath, nextState);
++		if (files.length === 0) return { scanned: 0, deleted: 0 };
++		const eligible = [];
++		for (const name of selected) {
++			const file = path.join(this.sessionDir, name);
++			let payload;
++			try { payload = await fs.readFile(file, "utf8"); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
++			let record;
++			try { record = JSON.parse(payload); } catch { continue; }
++			const lastUsedAt = Date.parse(record.last_used_at);
++			if (record.closed !== true || !Number.isFinite(lastUsedAt)) continue;
++			eligible.push({ file, payload, lastUsedAt });
++		}
++		eligible.sort((a, b) => a.lastUsedAt - b.lastUsedAt);
++		let excess = Math.max(0, files.length - this.retention.maxSessions);
++		let deleted = 0;
++		for (const candidate of eligible) {
++			if (deleted >= this.retention.deleteLimit) break;
++			if (candidate.lastUsedAt > now - this.retention.maxAgeMs && excess <= 0) continue;
++			const claim = `${candidate.file}.${process.pid}.${Buffer.from(processStart).toString("hex")}.${randomUUID()}.pruning`;
++			try { await fs.rename(candidate.file, claim); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
++			let keepClaim = false;
++			try {
++				const claimedPayload = await fs.readFile(claim, "utf8");
++				let claimedRecord;
++				try { claimedRecord = JSON.parse(claimedPayload); } catch {}
++				if (claimedPayload !== candidate.payload || claimedRecord?.closed !== true || Date.parse(claimedRecord.last_used_at) > now - this.retention.maxAgeMs && excess <= 0) {
++					try { await fs.link(claim, candidate.file); }
++					catch (error) {
++						if (error.code !== "EEXIST") throw error;
++						// Another save owns the normal path. Never discard a possibly
++						// active claim just because that path is occupied.
++						keepClaim = true;
++					}
++					continue;
++				}
++				deleted++;
++				excess--;
++			} finally {
++				if (!keepClaim) await fs.unlink(claim);
++			}
++		}
++		return { scanned: selected.length, deleted };
+ 	}
+ };
+ function createFileSessionStore(options) {
+-	return new FileSessionStore(path.resolve(options.stateDir));
++	return new FileSessionStore(path.resolve(options.stateDir), options.runtimeEnv, options.retention);
+ }
+ //#endregion
+ //#region src/runtime/public/handle-state.ts
+@@ -1586,6 +1828,7 @@ var AcpxRuntime = class {
  		const turnPromise = this.getManager().then((manager) => manager.startTurn({
  			handle,
  			text: input.text,
@@ -223,7 +604,7 @@ index 6c9cc999e50a11c399c68b3a0f1b7af4bc2317c0..e06bf4fdee534f3ef56be0387a2f5f86
  			attachments: input.attachments,
  			mode: input.mode,
  			sessionMode: state.mode,
-@@ -1614,6 +1617,7 @@ var AcpxRuntime = class {
+@@ -1614,6 +1857,7 @@ var AcpxRuntime = class {
  		yield* (await this.getManager()).runTurn({
  			handle,
  			text: input.text,

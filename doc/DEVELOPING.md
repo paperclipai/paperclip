@@ -129,6 +129,12 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+## ACPX session files
+
+The bundled `acpx@0.12.0` patch removes run JWTs from every value at the session serialization boundary and never writes `PAPERCLIP_API_KEY` under `acpx.session_options.env`. The local ACPX engine keeps the current run environment in an ephemeral store wrapper; a resumed session uses that environment rather than a key found in an older session file. This does not rewrite historical files.
+
+The file store supports opt-in retention through `createRuntimeStore({ stateDir, retention })`. Retention is **disabled by default** pending a separate rollout decision. The local ACP engine passes `retention.enabled` only when the service process environment has exactly `PAPERCLIP_ACPX_SESSION_RETENTION_ENABLED=true`; this flag is not set by the code or this task. When enabled, the default policy removes only closed sessions older than 7 days and caps the directory at 1,000 session files; active sessions are excluded from deletion. A sweep runs at most once per minute per state directory across newly constructed stores, examines at most 512 JSON files, and deletes at most 32 eligible files. The directory stores its sweep deadline and file cursor in one sidecar file and the claim recovery cursor in another, so delayed recovery cannot overwrite newer sweep progress. An exclusive lock coordinates normal sweeps; if its owner has died, later sweeps can proceed without removing a possibly replaced lock. Claim names include the creating process's start identity, so recovery leaves a live sweep's claims alone even while stale-lock sweeps overlap. `maxAgeDays`, `maxSessions`, `scanLimit`, `deleteLimit`, and `sweepIntervalMs` are configurable. The count cap is best effort when active files exceed it, and larger directories converge over multiple sweeps. Each sweep still enumerates and sorts the full session directory. Pruning claims a closed file by rename and rechecks its contents before deletion so a concurrent save can replace the original path. Enabling retention in production requires independent review and an explicit operator decision.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns `pnpm-lock.yaml`.
