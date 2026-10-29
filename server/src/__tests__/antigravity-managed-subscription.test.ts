@@ -1,4 +1,5 @@
 import { access, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
@@ -9,6 +10,11 @@ const account = vi.hoisted(() => ({
   rotation: vi.fn(), locks: [] as string[],
   journal: undefined as undefined | Record<string, unknown>, journalWrite: vi.fn(),
 }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const { promises } = await import("node:fs");
+  return { ...actual, rm: (...args: Parameters<typeof actual.rm>) => promises.rm(...args) };
+});
 const selection = () => ({
   grant: { id: "11111111-1111-4111-8111-111111111111", subjectUserId: "alice", credentialSecretRefs: account.refs, providerTenant: { name: "alice@example.test" } },
   connection: { id: "33333333-3333-4333-8333-333333333333", name: "Google account fixture", config: { ai: { provider: "google", method: "subscription" } } },
@@ -41,6 +47,7 @@ const credential = (project?: string, token = "fixture-selected-refresh") => JSO
   ...(project ? { project_id: project } : {}),
 });
 const homes: string[] = [];
+const runtimes: Awaited<ReturnType<typeof prepareManagedAiRuntime>>[] = [];
 function database(): Db {
   const db = {
     select: (fields?: Record<string, unknown>) => ({ from: () => ({ where: () => {
@@ -63,6 +70,7 @@ async function prepare() {
     config: { provider: "acpx", acpxAgent: "antigravity", model: "caller-model", env: { GEMINI_API_KEY: "ambient", GEMINI_HOME: "/ambient" } },
   });
   homes.push(runtime.home!);
+  runtimes.push(runtime);
   return runtime;
 }
 beforeEach(() => {
@@ -72,7 +80,14 @@ beforeEach(() => {
   account.journal = undefined;
   account.journalWrite.mockReset().mockImplementation(async value => { account.journal = value; });
 });
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(homes.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => {
+  account.journalWrite.mockImplementation(async value => { account.journal = value; });
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => Response.json(url.includes("userinfo")
+    ? { email_verified: true, email: "alice@example.test" } : { access_token: "fixture-access", token_type: "Bearer" })));
+  for (const runtime of runtimes.splice(0)) await runtime.cleanup().catch(() => undefined);
+  vi.unstubAllGlobals();
+  await Promise.all(homes.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 
 describe("managed Antigravity subscription projection and writeback", () => {
   it("returns a bounded cleanup diagnostic and retains the selected home until native retirement and refresh handoff", async () => {
@@ -143,6 +158,49 @@ describe("managed Antigravity subscription projection and writeback", () => {
     expect(await readFile(token, "utf8")).toBe(credential("resolved-project"));
     expect(account.rotation).not.toHaveBeenCalled();
   });
+  it("finishes partial removal after durable handoff without rereading a removed token", async () => {
+    const runtime = await prepare(), token = join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json");
+    await writeFile(token, credential("resolved-project"));
+    account.rotation.mockRejectedValueOnce(new Error("fixture database unavailable"));
+    const realRm = fs.rm.bind(fs);
+    let unavailable = true;
+    const remove = vi.spyOn(fs, "rm").mockImplementation(async (...args: Parameters<typeof fs.rm>) => {
+      if (unavailable && args[0] === runtime.home) {
+        await realRm(token, { force: true });
+        throw new Error("fixture partial removal");
+      }
+      return realRm(...args);
+    });
+    try {
+      await expect(runtime.cleanup()).rejects.toThrow("fixture partial removal");
+      expect(account.journal).toMatchObject({ value: credential("resolved-project"), google: { verified: true } });
+      unavailable = false;
+      await runtime.cleanup();
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(account.rotation).toHaveBeenCalledOnce();
+    } finally { unavailable = false; remove.mockRestore(); }
+  });
+  it("retains the latest verified rotation when replacing its earlier journal fails", async () => {
+    const runtime = await prepare(), token = join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json");
+    await writeFile(token, credential("resolved-project", "fixture-first-rotation"));
+    const request = vi.fn().mockResolvedValueOnce(Response.json({ access_token: "fixture-access", token_type: "Bearer", refresh_token: "fixture-latest-rotation" }))
+      .mockResolvedValueOnce(Response.json({ email_verified: true, email: "alice@example.test" }));
+    vi.stubGlobal("fetch", request);
+    account.journalWrite.mockImplementationOnce(async value => { account.journal = value; })
+      .mockRejectedValueOnce(new Error("fixture latest journal unavailable"));
+    await expect(runtime.cleanup()).rejects.toThrow();
+    expect(await readFile(token, "utf8")).toBe(credential("resolved-project", "fixture-latest-rotation"));
+    expect(account.journal).toMatchObject({ value: credential("resolved-project", "fixture-first-rotation"), google: { verified: false } });
+    expect(account.rotation).not.toHaveBeenCalled();
+    account.rotation.mockImplementationOnce(async (_secretId, input) => { account.credential = input.value; account.version += 1; });
+    request.mockResolvedValueOnce(Response.json({ access_token: "fixture-access", refresh_token: "fixture-retry-rotation" }))
+      .mockResolvedValueOnce(Response.json({ email_verified: true, email: "alice@example.test" }));
+    const next = await prepare();
+    expect(new URLSearchParams(request.mock.calls[2][1].body).get("refresh_token")).toBe("fixture-latest-rotation");
+    expect(await readFile(join(String(next.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8"))
+      .toBe(credential("resolved-project", "fixture-retry-rotation"));
+    await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it.each(["alice@example.test", "other@example.test"])("verifies %s before a changed refresh token can reach the database", async email => {
     const runtime = await prepare(), token = join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json");
     await writeFile(token, credential("resolved-project", "fixture-rotated-refresh"));
@@ -155,11 +213,11 @@ describe("managed Antigravity subscription projection and writeback", () => {
         { value: credential("resolved-project", "fixture-rotated-refresh"), preserveAiSessionEpoch: true }, { userId: "alice" });
       await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
     } else {
-      await expect(runtime.cleanup()).rejects.toMatchObject({ cause: { message: "The refreshed Google account does not match the selected connection." } });
+      await expect(runtime.cleanup()).rejects.toThrow("The refreshed Google account does not match the selected connection.");
       expect(account.rotation).not.toHaveBeenCalled();
       expect(account.locks).toEqual([]);
       expect(account.journal).toMatchObject({ provider: "google", google: { verified: false }, value: credential("resolved-project", "fixture-rotated-refresh") });
-      await expect(access(token)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(token, "utf8")).toBe(credential("resolved-project", "fixture-rotated-refresh"));
     }
   });
 });

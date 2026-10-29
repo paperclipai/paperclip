@@ -52,6 +52,10 @@ export function AgentBulkSettingsSheet({ companyId, agents, totalSelected, onClo
         let models: AdapterModel[];
         if (routing?.models.length) {
           models = routing.models.map(m => ({ id: aiRoutingModel(routing, harness, m.id), label: m.label ?? m.id }));
+        } else if (nativeCatalog?.acpxAgent === "antigravity" && (connection?.method ?? effective?.method) === "api_key") {
+          // Native discovery uses a saved subscription. API-key users retain
+          // the existing unrestricted manual-model configuration path.
+          models = [];
         } else {
           const type = nativeCatalog ? "paperclip_runner" : openRouter ? "opencode_local" : harness;
           const options = nativeCatalog

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { access, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +12,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { aiConnectionService } from "../services/ai-connections.js";
-import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime } from "../services/ai-connection-runtime.js";
+import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, withManagedAiProbe } from "../services/ai-connection-runtime.js";
 import { secretService } from "../services/secrets.js";
 import { quotaCredentialHash, quotaCredentialRecovery, quotaCredentialRecoveryPath } from "../services/quota-credential-recovery.js";
 
@@ -235,6 +236,42 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
         versionSelector: "latest", accountEmail: "verified-owner@example.test", verified } });
     return journal;
   }
+
+  it("settles a failed probe journal before another provider starts for the same Google account", async () => {
+    const f = await fixture("subscription");
+    const replacement = googleCredential("recovered-probe-project");
+    const journalPath = quotaCredentialRecoveryPath(f.companyId, f.saved.grantId);
+    const realOpen = fs.open.bind(fs);
+    let unavailable = false;
+    const open = vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (unavailable && String(args[0]).startsWith(`${journalPath}.`) && String(args[0]).endsWith(".tmp")) {
+        throw new Error("fixture Google journal unavailable");
+      }
+      return realOpen(...args);
+    });
+    let originalHome: string | undefined;
+    const provider = vi.fn(async (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => {
+      expect(await readFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8")).toBe(replacement);
+    });
+    try {
+      await expect(withManagedAiProbe(db, f.runtime, async runtime => {
+        originalHome = runtime.home;
+        await writeFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), replacement);
+        unavailable = true;
+      })).rejects.toThrow("fixture Google journal unavailable");
+      await expect(access(originalHome!)).resolves.toBeUndefined();
+      await expect(withManagedAiProbe(db, f.runtime, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(provider).not.toHaveBeenCalled();
+      expect(await f.service.credential(await f.service.select(f.select))).toBe(f.credential);
+      unavailable = false;
+      await withManagedAiProbe(db, f.runtime, provider);
+      expect(provider).toHaveBeenCalledOnce();
+      await expect(access(originalHome!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await f.service.credential(await f.service.select(f.select))).toBe(replacement);
+      expect(await quotaCredentialRecovery(f.companyId, f.saved.grantId).read()).toBeNull();
+      expect(request).not.toHaveBeenCalled();
+    } finally { unavailable = false; open.mockRestore(); }
+  });
 
   it.each(["epoch", "version", "account"] as const)("discards a retired journal after the selected Google %s changes", async change => {
     const f = await fixture("subscription");

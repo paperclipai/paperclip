@@ -5,40 +5,7 @@ import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { prepareManagedAiRuntime } from "./ai-connection-runtime.js";
 import { RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
-import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
-
-type CatalogCleanup = { cleanup: () => Promise<void> };
-const retainedCatalogCleanups = new Set<CatalogCleanup>();
-registerIdleLocalWorkProbe(() => retainedCatalogCleanups.size ? "present" : "none");
-
-/** A failed writeback still owns its private credential home. Retry only that
- * concrete cleanup, after physical native retirement, and stop on settlement.
- */
-function retainCatalogCleanup(companyId: string, cleanup: () => Promise<void>, ready: Promise<void>) {
-  const obligation = { cleanup };
-  retainedCatalogCleanups.add(obligation);
-  let warned = false;
-  const warn = () => {
-    if (warned) return;
-    warned = true;
-    logger.warn({ companyId, code: "ANTIGRAVITY_CATALOG_CREDENTIAL_CLEANUP_PENDING" },
-      "Antigravity model-discovery credential cleanup is retained for retry");
-  };
-  void (async () => {
-    try { await ready; }
-    catch {
-      // Retirement is not proven, so keep the callable/home without attempting
-      // writeback or scheduling a scan of an unretired native process.
-      warn();
-      return;
-    }
-    try { await obligation.cleanup(); retainedCatalogCleanups.delete(obligation); }
-    catch (error) {
-      if (error instanceof RetiredCredentialRecoveryError) retainedCatalogCleanups.delete(obligation);
-      warn();
-    }
-  })();
-}
+import { retainGoogleCredentialCleanup } from "./retained-google-credential-cleanup.js";
 
 /** Metadata uses the selected connection's ordinary authority and encrypted
  * refresh writeback. The native client cannot create a session or send a prompt.
@@ -72,7 +39,9 @@ export async function antigravityConnectionModels(db: Db, input: {
         // The native owner retains the live child and immutable command lease.
         // Keep this selected credential home until that owner proves retirement.
         retained = true;
-        retainCatalogCleanup(input.companyId, () => runtime.cleanup(), error.retired);
+        if (runtime.retainedCleanupScope) retainGoogleCredentialCleanup({
+          scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup, retired: error.retired,
+        });
       }
       throw unprocessable("Could not load models for this Google account. Check the account's Antigravity access, then refresh models.");
     }
@@ -83,7 +52,9 @@ export async function antigravityConnectionModels(db: Db, input: {
         if (!(error instanceof RetiredCredentialRecoveryError)) {
           // Storage failures still retain the private home and block sleep.
           // No provider or repeated database work is started by this hold.
-          retainedCatalogCleanups.add({ cleanup: () => runtime.cleanup() });
+          if (runtime.retainedCleanupScope) retainGoogleCredentialCleanup({
+            scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup,
+          });
         }
         logger.warn({ companyId: input.companyId, code: "ANTIGRAVITY_CATALOG_CREDENTIAL_CLEANUP_PENDING" },
           "Antigravity model-discovery credential cleanup is retained for recovery");

@@ -306,8 +306,13 @@ export function adapterRoutes(options: {
     // One shared implementation, with independent provider rollouts. Explicit
     // adapter-admin disabling still applies to both choices.
 
-    const candidate = typeof companyId === "string" && target?.driver === "local"
-      ? resolveAntigravityCandidateAdmission({ companyId }) : undefined;
+    let candidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
+    if (typeof companyId === "string" && target?.driver === "local") {
+      // An expired optional preview must not hide the ordinary adapter catalog.
+      // Execution and model discovery still perform strict admission checks.
+      try { candidate = resolveAntigravityCandidateAdmission({ companyId }); }
+      catch { candidate = undefined; }
+    }
     const result: AdapterInfo[] = registeredAdapters.map((adapter) => ({
       ...buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),
       ...(candidate && adapter.type === "paperclip_runner" && !disabledSet.has(adapter.type) && !externalRecords.has(adapter.type)

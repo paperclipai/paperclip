@@ -1,0 +1,102 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
+import { RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
+
+export type RetainedGoogleCleanupScope = { companyId: string; accountKey: string };
+type Cleanup = {
+  scope: RetainedGoogleCleanupScope;
+  cleanup: () => Promise<void>;
+  retired: "pending" | "confirmed" | "failed";
+  running?: Promise<void>;
+  executing?: boolean;
+  warned?: boolean;
+};
+const retained = new Map<string, Set<Cleanup>>();
+const reconciling = new Map<string, Promise<void>>();
+const homes = new Map<string, RetainedGoogleCleanupScope>();
+const active = new AsyncLocalStorage<ReadonlySet<Cleanup>>();
+const key = (scope: RetainedGoogleCleanupScope) => JSON.stringify([scope.companyId, scope.accountKey]);
+registerIdleLocalWorkProbe(() => retained.size ? "present" : "none");
+
+function pending() {
+  return unprocessable("The selected Google account is still completing credential cleanup. Retry shortly.", { code: "ai_connection_busy" });
+}
+function remove(entry: Cleanup) {
+  const entries = retained.get(key(entry.scope));
+  entries?.delete(entry);
+  if (!entries?.size) retained.delete(key(entry.scope));
+}
+function warn(entry: Cleanup) {
+  if (entry.warned) return;
+  entry.warned = true;
+  logger.warn({ companyId: entry.scope.companyId, code: "GOOGLE_CREDENTIAL_CLEANUP_PENDING" }, "Selected Google credential cleanup remains pending");
+}
+function attempt(entry: Cleanup): Promise<void> {
+  if (!retained.get(key(entry.scope))?.has(entry)) return Promise.resolve();
+  if (entry.retired !== "confirmed") return Promise.reject(pending());
+  return entry.running ??= active.run(new Set([...(active.getStore() ?? []), entry]), async () => {
+    entry.executing = true;
+    try { await entry.cleanup(); remove(entry); }
+    catch (error) {
+      // The encrypted journal now owns recovery; the next account preparation
+      // reads it before it can launch another provider.
+      if (error instanceof RetiredCredentialRecoveryError) { remove(entry); return; }
+      warn(entry);
+      throw pending();
+    } finally { entry.executing = false; }
+  }).finally(() => { entry.running = undefined; });
+}
+
+/** A retirement event gets one cleanup attempt. Already-retired failures retry
+ * only on the next same-account action, never on an idle timer or SQL scan. */
+export function retainGoogleCredentialCleanup(input: {
+  scope: RetainedGoogleCleanupScope; cleanup: () => Promise<void>; retired?: Promise<void>; home?: string;
+}): void {
+  const scopeKey = key(input.scope);
+  const entries = retained.get(scopeKey) ?? new Set<Cleanup>();
+  if ([...entries].some(entry => entry.cleanup === input.cleanup)) return;
+  const entry: Cleanup = { scope: { ...input.scope }, cleanup: input.cleanup, retired: input.retired ? "pending" : "confirmed" };
+  entries.add(entry); retained.set(scopeKey, entries);
+  if (input.retired) void input.retired.then(() => {
+    entry.retired = "confirmed";
+    return reconcileRetainedGoogleCleanup(entry.scope).catch(() => undefined);
+  }, () => { entry.retired = "failed"; warn(entry); });
+}
+
+/** Fail closed before another provider starts. Concurrent attempts join the
+ * original cleanup; a cleanup may reconcile its peers without recursing into
+ * itself through the managed account's cleanup wrapper. */
+export async function reconcileRetainedGoogleCleanup(scope: RetainedGoogleCleanupScope): Promise<void> {
+  await Promise.resolve();
+  const scopeKey = key(scope);
+  if ([...(active.getStore() ?? [])].some(entry => entry.executing && key(entry.scope) === scopeKey)) return;
+  const existing = reconciling.get(scopeKey);
+  if (existing) return existing;
+  const operation = (async () => {
+    for (const entry of [...(retained.get(scopeKey) ?? [])]) await attempt(entry);
+    // A new obligation can arrive while a callback awaits storage. This
+    // request attempts its original bounded set and keeps admission closed.
+    if (retained.get(scopeKey)?.size) throw pending();
+  })();
+  reconciling.set(scopeKey, operation);
+  try { await operation; }
+  finally { if (reconciling.get(scopeKey) === operation) reconciling.delete(scopeKey); }
+}
+
+export function bindRetainedGoogleCredentialHome(home: string, scope: RetainedGoogleCleanupScope): () => void {
+  const bound = { ...scope };
+  homes.set(home, bound);
+  return () => { if (homes.get(home) === bound) homes.delete(home); };
+}
+export async function reconcileRetainedGoogleCleanupForHome(home: string): Promise<void> {
+  const scope = homes.get(home);
+  if (scope) await reconcileRetainedGoogleCleanup(scope);
+}
+export function retainGoogleCredentialCleanupForHome(home: string, input: {
+  cleanup: () => Promise<void>; retired?: Promise<void>;
+}): void {
+  const scope = homes.get(home);
+  if (scope) retainGoogleCredentialCleanup({ ...input, scope, home });
+}

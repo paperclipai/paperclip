@@ -88,6 +88,7 @@ describe("bulk model editing", () => {
 
   it.each([
     { method: "api_key", responsible: false },
+    { method: "api_key", responsible: true },
     { method: "subscription", responsible: false },
     { method: "subscription", responsible: true },
   ] as const)("uses the bound Antigravity catalog and preserves $method manual-model policy (responsible: $responsible)", async ({ method, responsible }) => {
@@ -100,10 +101,12 @@ describe("bulk model editing", () => {
       id: connectionId, grantId, companyId: "company-1", provider: "google", method, name: "Selected Google account", status: "connected",
       ownership: responsible ? "personal" : "shared", ownerUserId: "board", isDefault: true,
     }] });
-    api.models.mockResolvedValue([{ id: "gemini-exact", label: "gemini-exact" }]);
+    if (method === "api_key") api.models.mockRejectedValue(new Error("Subscription sign-in is required to discover Google models"));
+    else api.models.mockResolvedValue([{ id: "gemini-exact", label: "gemini-exact" }]);
     api.update.mockImplementation(async (_id, patch) => ({ ...google, adapterConfig: { ...google.adapterConfig, model: patch.model } }));
     await render([google]);
-    expect(api.models).toHaveBeenCalledWith("company-1", "paperclip_runner", {
+    if (method === "api_key") expect(api.models).not.toHaveBeenCalled();
+    else expect(api.models).toHaveBeenCalledWith("company-1", "paperclip_runner", {
       provider: "acpx", acpxAgent: "antigravity", agentId: google.id, aiConnection: binding, environmentId: "local-1",
     });
     await chooseModel("gemini-custom", true);

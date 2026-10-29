@@ -174,6 +174,15 @@ describe("adapter routes", () => {
     expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
   });
 
+  it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
+    mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+    const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    const response = await request(app).get("/api/adapters?companyId=company-1");
+    expect(response.status).toBe(200);
+    expect(response.body.some((adapter: any) => adapter.type === "claude_local")).toBe(true);
+    expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+  });
+
   it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);

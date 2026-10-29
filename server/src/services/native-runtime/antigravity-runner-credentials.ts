@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sanitizeAntigravityCredential, verifyAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+import { reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanupForHome, retainGoogleCredentialCleanup, type RetainedGoogleCleanupScope } from "../retained-google-credential-cleanup.js";
+import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { bindManagedNativeCredentialTurn } from "./managed-native-credentials.js";
@@ -27,6 +29,7 @@ export async function prepareAntigravityRunnerCredentials(input: {
   if (input.lifecycleMode === "warm") throw new Error("Google Antigravity subscription authentication requires turn-by-turn sessions; warm sessions are not qualified.");
   const home = input.managedHome?.trim();
   if (!home) throw new Error("Google Antigravity requires a selected managed Google account or Google API key.");
+  await reconcileRetainedGoogleCleanupForHome(home);
   let credential: string;
   try {
     credential = sanitizeAntigravityCredential(await readLocalAiCredentialFile(join(home, "antigravity-acp", TOKEN_FILE)));
@@ -61,14 +64,38 @@ export async function prepareAntigravityCredentialWriteback(input: {
  * disposable verification home cannot inherit any provider process lifetime. */
 export async function prepareAntigravityCredentialRecovery(input: {
   originalCredential: string; refreshedCredential: string; accountEmail: string;
+  scope: RetainedGoogleCleanupScope;
+  persistVerified: (credential: string) => Promise<void>;
 }): Promise<string> {
   const home = await realpath(await mkdtemp(join(tmpdir(), "paperclip-google-recovery-")));
+  const directory = join(home, "antigravity-acp");
   try {
-    const directory = join(home, "antigravity-acp");
     await mkdir(directory, { mode: 0o700 });
     await writeFile(join(directory, TOKEN_FILE), sanitizeAntigravityCredential(input.refreshedCredential), { flag: "wx", mode: 0o600 });
-    return await prepareAntigravityCredentialWriteback({ ...input, managedHome: home });
-  } finally { await rm(home, { recursive: true, force: true }); }
+  } catch (error) {
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
+  let verified: string | undefined;
+  let persisted = false;
+  const cleanup = () => withAccountHomeSecretMutationLock(undefined, input.scope.companyId, async () => {
+    // A failed verification may itself have rotated the token. Retry the
+    // private home's current generation, never the earlier journal value.
+    if (!persisted) {
+      const refreshedCredential = await readLocalAiCredentialFile(join(directory, TOKEN_FILE));
+      verified = await prepareAntigravityCredentialWriteback({ ...input, refreshedCredential, managedHome: home });
+      await input.persistVerified(verified);
+      persisted = true;
+    }
+    await rm(home, { recursive: true, force: true });
+  });
+  try {
+    await cleanup();
+    return verified!;
+  } catch (error) {
+    retainGoogleCredentialCleanup({ scope: input.scope, cleanup, home });
+    throw error;
+  }
 }
 
 /** Lifecycle callbacks copy into this invocation's home, never a shared login. */
@@ -108,9 +135,14 @@ export function antigravityCredentialTurn(input: {
           if (!result.bytesRead) break;
           size += result.bytesRead;
         }
-        if (size > 65_536 || sanitizeAntigravityCredential(bytes.subarray(0, size).toString("utf8")) !== input.credential) {
+        if (size > 65_536) throw new Error("Google Antigravity credential destination changed during execution.");
+        const current = sanitizeAntigravityCredential(bytes.subarray(0, size).toString("utf8"));
+        if (current !== input.credential && current !== refreshed) {
           throw new Error("Google Antigravity credential destination changed during execution.");
         }
+        // A prior write can succeed before fsync/close reports failure. Only
+        // the exact same refresh may confirm that handoff on retry.
+        if (current === refreshed) { await file.sync(); return; }
         const replacement = Buffer.from(refreshed);
         let written = 0;
         while (written < replacement.length) {
@@ -141,15 +173,45 @@ export function antigravityCredentialTurn(input: {
 export function bindAntigravityCredentialTurn(session: NativeSession, input: Parameters<typeof antigravityCredentialTurn>[0]): NativeSession {
   const callbacks = antigravityCredentialTurn(input);
   const close = session.close.bind(session);
+  const detach = session.detachControllerForRestart?.bind(session);
   let retirement: Promise<void> | undefined;
+  let retired = false;
+  let detached = false;
+  let copied = false;
+  let removed = false;
+  let handoffRunning: Promise<void> | undefined;
   const retire: NativeSession["close"] = options => retirement ??= close(options);
   session.close = retire;
-  return bindManagedNativeCredentialTurn(session, {
-    copyBack: async () => {
+  if (detach) session.detachControllerForRestart = async () => { detached = true; await detach(); };
+  const handoff = (): Promise<void> => handoffRunning ??= (async () => {
+    if (detached) return;
+    try {
       await retire({ reason: "Google Antigravity subscription credential handoff" });
-      try { await callbacks.copyBack(); }
-      finally { await callbacks.remove(); }
+      retired = true;
+      if (!copied) { await callbacks.copyBack(); copied = true; }
+      if (!removed) { await callbacks.remove(); removed = true; }
+    } catch (error) {
+      // Until copy-back succeeds, this private runtime can hold the only valid
+      // rotated token. The same account must settle this owner before launch.
+      retainGoogleCredentialCleanupForHome(input.managedHome, {
+        cleanup: handoff, ...(retired ? {} : { retired: retirement }),
+      });
+      throw error;
+    }
+  })().finally(() => { handoffRunning = undefined; });
+  bindManagedNativeCredentialTurn(session, {
+    copyBack: handoff,
+    remove: async () => {
+      if (copied && !removed) { await callbacks.remove(); removed = true; }
     },
-    remove: callbacks.remove,
   });
+  const managedClose = session.close.bind(session);
+  session.close = async options => {
+    if (detached) return;
+    await managedClose(options);
+    // The shared turn manager settles a failed turn once. Google retains its
+    // failed handoff, so a later close also retries the original private files.
+    if (!removed) await handoff();
+  };
+  return session;
 }

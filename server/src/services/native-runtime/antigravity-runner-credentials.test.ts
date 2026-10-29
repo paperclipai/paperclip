@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { antigravityCredentialTurn, bindAntigravityCredentialTurn, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
+import { bindRetainedGoogleCredentialHome } from "../retained-google-credential-cleanup.js";
 
 const roots: string[] = [];
 const credential = (token: string) => JSON.stringify({
@@ -73,6 +74,54 @@ describe("Antigravity managed Runner credentials", () => {
     await chmod(source, 0o644);
     await expect(turn.copyBack()).rejects.toThrow("handoff is invalid");
     expect(await readFile(destination, "utf8")).toBe(credential("fixture-concurrent"));
+  });
+  it("can confirm a completed identical copy after losing its prior completion", async () => {
+    const managedHome = await home(), runtimeHome = await home();
+    const destination = join(managedHome, "antigravity-acp", "acp_token.json");
+    const source = join(runtimeHome, "antigravity-acp", "auth-refresh.json");
+    await writeFile(destination, credential("fixture-refreshed"), { mode: 0o600 });
+    await writeFile(source, credential("fixture-refreshed"), { mode: 0o600 });
+    await antigravityCredentialTurn({ managedHome, runtimeHome, credential: credential("fixture-original") }).copyBack();
+    expect(await readFile(destination, "utf8")).toBe(credential("fixture-refreshed"));
+  });
+  it("retains a rotated refresh after failed copy-back and retries the retired owner before scrubbing", async () => {
+    const managedHome = await home(), runtimeHome = await home();
+    const destination = join(managedHome, "antigravity-acp", "acp_token.json");
+    const source = join(runtimeHome, "antigravity-acp", "auth-refresh.json");
+    await writeFile(destination, credential("fixture-original"), { mode: 0o644 });
+    await writeFile(source, credential("fixture-refreshed"), { mode: 0o600 });
+    const close = vi.fn(async () => {});
+    const session = bindAntigravityCredentialTurn({ close } as unknown as NativeSession,
+      { managedHome, runtimeHome, credential: credential("fixture-original") });
+    await expect(completeManagedNativeCredentialTurn(session)).rejects.toThrow("destination is invalid");
+    expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
+    await chmod(destination, 0o600);
+    await session.close({ reason: "retry credential handoff" });
+    expect(close).toHaveBeenCalledOnce();
+    expect(await readFile(destination, "utf8")).toBe(credential("fixture-refreshed"));
+    await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("settles the retained runtime refresh before preparing another launch for the same account", async () => {
+    const managedHome = await home(), runtimeHome = await home();
+    const release = bindRetainedGoogleCredentialHome(managedHome, { companyId: "company", accountKey: managedHome });
+    const destination = join(managedHome, "antigravity-acp", "acp_token.json");
+    const source = join(runtimeHome, "antigravity-acp", "auth-refresh.json");
+    await writeFile(destination, credential("fixture-original"), { mode: 0o644 });
+    await writeFile(source, credential("fixture-refreshed"), { mode: 0o600 });
+    const close = vi.fn(async () => {});
+    const session = bindAntigravityCredentialTurn({ close } as unknown as NativeSession,
+      { managedHome, runtimeHome, credential: credential("fixture-original") });
+    try {
+      await expect(completeManagedNativeCredentialTurn(session)).rejects.toThrow("destination is invalid");
+      await expect(prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} }))
+        .rejects.toThrow("still completing credential cleanup");
+      expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
+      await chmod(destination, 0o600);
+      expect((await prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} })).credential)
+        .toBe(credential("fixture-refreshed"));
+      expect(close).toHaveBeenCalledOnce();
+      await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { release(); }
   });
   it("does not copy or scrub a successor's credentials after the controller detached", async () => {
     const managedHome = await home(), runtimeHome = await home();

@@ -44,6 +44,7 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
+import { reconcileRetainedGoogleCleanup } from "./retained-google-credential-cleanup.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -973,6 +974,7 @@ export function aiConnectionService(db: Db) {
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       if (metadata.data.provider === "google") {
+        await reconcileRetainedGoogleCleanup({ companyId: row.connection.companyId, accountKey: row.grant.id });
         const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
         const pending = await recovery.read();
         if (pending?.provider === "google" && pending.google && !pending.google.verified
@@ -988,9 +990,11 @@ export function aiConnectionService(db: Db) {
             savingReplacement = true;
             // Network verification runs before acquiring database row locks.
             // The transaction below rechecks the exact saved generation.
-            const value = await prepareAntigravityCredentialRecovery({ originalCredential: current,
-              refreshedCredential: pending.value, accountEmail: pending.google.accountEmail });
-            await recovery.write({ ...pending, value, google: { ...pending.google, verified: true } });
+            await prepareAntigravityCredentialRecovery({ originalCredential: current,
+              refreshedCredential: pending.value, accountEmail: pending.google.accountEmail,
+              scope: { companyId: row.connection.companyId, accountKey: row.grant.id },
+              persistVerified: value => recovery.write({ ...pending, value, google: { ...pending.google!, verified: true } }),
+            });
           }
         }
       }
