@@ -17,14 +17,27 @@ export const WORKSPACE_HEAVY_DIR_EXCLUDES = WORKSPACE_HEAVY_DIR_NAMES.flatMap((e
   `*/${entry}/*`,
 ]);
 
+// tar's --exclude is unanchored: a caller pattern also matches at any depth.
+// Each one gets a `*/` twin so snapshots (shouldExcludePath) skip the same
+// paths the SSH transfer skips; a snapshot that keeps a path tar left behind
+// reads as a remote deletion on restore. Nested project repositories are
+// synced as their own roots, so they get the caller excludes that reach into
+// them, relative to the repository.
 export function resolveSshWorkspaceSyncExcludes(input: {
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-}): { workspace: string[]; repository: string[] } {
-  const repository = input.workspaceFileMode === "all" ? [] : [...WORKSPACE_HEAVY_DIR_EXCLUDES];
+}): { workspace: string[]; repository: (repositoryPath: string) => string[] } {
+  const heavy = input.workspaceFileMode === "all" ? [] : [...WORKSPACE_HEAVY_DIR_EXCLUDES];
+  const caller = (input.workspaceExclude ?? []).flatMap((entry) =>
+    entry.startsWith("*/") ? [entry] : [entry, `*/${entry}`]);
   return {
-    workspace: [...new Set([...repository, ...(input.workspaceExclude ?? [])])],
-    repository,
+    workspace: [...new Set([...heavy, ...caller])],
+    repository: (repositoryPath) => [...new Set([
+      ...heavy,
+      ...caller.flatMap((entry) =>
+        entry.startsWith(`${repositoryPath}/`) ? [entry.slice(repositoryPath.length + 1)]
+          : entry.startsWith("*/") ? [entry] : []),
+    ])],
   };
 }
 
@@ -40,17 +53,35 @@ function pathContainsSegmentOrDescendant(relative: string, segment: string): boo
 }
 
 export function excludePatternMatches(relative: string, pattern: string): boolean {
+  let core = pattern;
+  let matched: boolean;
   if (pattern.startsWith("*/") && pattern.endsWith("/*")) {
-    return pathContainsSegmentOrDescendant(relative, pattern.slice(2, -2));
+    core = pattern.slice(2, -2);
+    matched = pathContainsSegmentOrDescendant(relative, core);
+  } else if (pattern.startsWith("*/")) {
+    core = pattern.slice(2);
+    matched = pathContainsSegmentOrDescendant(relative, core);
+  } else if (pattern.endsWith("/*")) {
+    core = pattern.slice(0, -2);
+    matched = relative.startsWith(`${core}/`);
+  } else {
+    matched = isRelativePathOrDescendant(relative, pattern);
   }
-  if (pattern.startsWith("*/")) {
-    return pathContainsSegmentOrDescendant(relative, pattern.slice(2));
+  if (matched || !/[*?[]/.test(core)) return matched;
+  // A wildcard pattern (`*.log`) follows tar's --exclude rules, since tar is
+  // what skips it on the SSH transfer: unanchored, wildcards match `/`, and a
+  // matching directory takes its descendants with it. Member names are `./…`
+  // because the transfer archives `.`.
+  const glob = pattern
+    .replace(/[.+^${}()|\\]/g, "\\$&")
+    .replace(/\[!/g, "[^")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  try {
+    return new RegExp(`^(?:.*/)?${glob}(?:/.*)?$`).test(`./${relative}`);
+  } catch {
+    return false;
   }
-  if (pattern.endsWith("/*")) {
-    const base = pattern.slice(0, -2);
-    return relative.startsWith(`${base}/`);
-  }
-  return isRelativePathOrDescendant(relative, pattern);
 }
 
 export function shouldExcludePath(relative: string, exclude: readonly string[]): boolean {

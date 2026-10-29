@@ -1673,7 +1673,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         localDir,
         remoteDir: path.posix.join(remoteDir, relative),
         snapshot,
-        exclude: syncExcludes.repository,
+        exclude: syncExcludes.repository(relative),
         onProgress: input.onProgress,
         progressLabel: relative,
       });

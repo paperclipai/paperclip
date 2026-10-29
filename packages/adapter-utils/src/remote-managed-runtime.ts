@@ -165,7 +165,7 @@ export async function prepareRemoteManagedRuntime(input: {
     repositoryBaselines.push({
       path: repository,
       baselineSnapshot: await captureDirectorySnapshot(path.join(input.workspaceLocalDir, repository), {
-        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime", ...syncExcludes.repository],
+        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime", ...syncExcludes.repository(repository)],
       }),
     });
   }
