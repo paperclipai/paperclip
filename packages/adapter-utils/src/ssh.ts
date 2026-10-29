@@ -12,7 +12,7 @@ import {
   PROJECT_REPOSITORIES_DIR,
   readSanitizedOriginRemoteUrl,
 } from "./git-workspace-sync.js";
-import { resolveSshWorkspaceSyncExcludes } from "./exclude-patterns.js";
+import { resolveSshWorkspaceSyncExcludes, tarExcludePattern } from "./exclude-patterns.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -409,7 +409,7 @@ async function createSshAuthArgs(
 }
 
 function tarExcludeArgs(exclude: string[] | undefined): string[] {
-  const combined = ["._*", ...(exclude ?? [])];
+  const combined = ["._*", ...(exclude ?? []).map(tarExcludePattern)];
   return combined.flatMap((entry) => ["--exclude", entry]);
 }
 
@@ -440,7 +440,7 @@ async function estimateLocalDirSize(input: {
   exclude?: string[];
   followSymlinks?: boolean;
 }): Promise<number> {
-  const regexes = ["._*", ...(input.exclude ?? [])].map(tarPatternToRegExp);
+  const regexes = ["._*", ...(input.exclude ?? []).map(tarExcludePattern)].map(tarPatternToRegExp);
   const isExcluded = (relPath: string, base: string) =>
     regexes.some((regex) => regex.test(relPath) || regex.test(base));
 

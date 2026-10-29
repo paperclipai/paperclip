@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { WORKSPACE_HEAVY_DIR_EXCLUDES, resolveSshWorkspaceSyncExcludes, shouldExcludePath } from "./exclude-patterns.js";
+import {
+  SSH_GLOB_EXCLUDE_PREFIX,
+  WORKSPACE_HEAVY_DIR_EXCLUDES,
+  resolveSshWorkspaceSyncExcludes,
+  shouldExcludePath,
+  tarExcludePattern,
+} from "./exclude-patterns.js";
 
 describe("resolveSshWorkspaceSyncExcludes", () => {
   it("applies heavy-dir excludes and the caller's excludes by default", () => {
@@ -40,18 +46,44 @@ describe("resolveSshWorkspaceSyncExcludes", () => {
 });
 
 describe("shouldExcludePath", () => {
+  const glob = (pattern: string) => `${SSH_GLOB_EXCLUDE_PREFIX}${pattern}`;
+
   it("keeps literal structured patterns anchored as before", () => {
     expect(shouldExcludePath("sub/.git/HEAD", [".git", ".git/*"])).toBe(false);
     expect(shouldExcludePath(".git/HEAD", [".git", ".git/*"])).toBe(true);
     expect(shouldExcludePath("a/node_modules/x", ["*/node_modules/*"])).toBe(true);
   });
 
-  it("treats wildcard patterns the way tar --exclude does", () => {
-    expect(shouldExcludePath("app.log", ["*.log"])).toBe(true);
-    expect(shouldExcludePath("a/b/app.log", ["*.log"])).toBe(true);
-    expect(shouldExcludePath("build.log.d/out.txt", ["*.log.d"])).toBe(true);
-    expect(shouldExcludePath("app.logs", ["*.log"])).toBe(false);
-    expect(shouldExcludePath("a1.txt", ["a[!0-9].txt"])).toBe(false);
-    expect(shouldExcludePath("ab.txt", ["a[!0-9].txt"])).toBe(true);
+  it("keeps unmarked names literal even when they contain glob characters", () => {
+    expect(shouldExcludePath("app.log", ["*.log"])).toBe(false);
+    expect(shouldExcludePath("*.log", ["*.log"])).toBe(true);
+    expect(shouldExcludePath("a*b/c", ["a*b"])).toBe(true);
+    expect(shouldExcludePath("axb/c", ["a*b"])).toBe(false);
+  });
+
+  it("treats marked wildcard patterns the way tar --exclude does", () => {
+    expect(shouldExcludePath("app.log", [glob("*.log")])).toBe(true);
+    expect(shouldExcludePath("a/b/app.log", [glob("*.log")])).toBe(true);
+    expect(shouldExcludePath("build.log.d/out.txt", [glob("*.log.d")])).toBe(true);
+    expect(shouldExcludePath("app.logs", [glob("*.log")])).toBe(false);
+    expect(shouldExcludePath("src/tmp/x", [glob("tmp/*")])).toBe(true);
+    expect(shouldExcludePath("a1.txt", [glob("a[!0-9].txt")])).toBe(false);
+    expect(shouldExcludePath("ab.txt", [glob("a[!0-9].txt")])).toBe(true);
+    expect(shouldExcludePath("x/a.ts", [glob("a.t?")])).toBe(true);
+  });
+
+  it("strips the marker before a pattern reaches tar", () => {
+    expect(tarExcludePattern(glob("*.log"))).toBe("*.log");
+    expect(tarExcludePattern("node_modules")).toBe("node_modules");
+  });
+
+  it("matches hostile wildcard patterns in bounded time", () => {
+    const deep = `${"a/".repeat(400)}b`;
+    const patterns = [glob(`${"a*".repeat(24)}c`), glob("**/*.log"), `${"a*".repeat(24)}c`];
+    const startedAt = Date.now();
+    for (let i = 0; i < 10; i += 1) {
+      expect(shouldExcludePath(deep, patterns)).toBe(false);
+    }
+    expect(Date.now() - startedAt).toBeLessThan(1000);
   });
 });
