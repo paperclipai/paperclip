@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -121,6 +121,27 @@ describe("runner update_skill through the real skill API", () => {
     const versions = await service.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
     expect(versions[0].label).toBe("Concurrent write");
+  });
+
+  it("does not record content that a failed write rolled back before the lock", async () => {
+    const { companyId, skill } = await fixture();
+    const service = companySkillService(server.db);
+    const skillFile = join(String(skill.sourceLocator), "SKILL.md");
+    const original = await readFile(skillFile, "utf8");
+    // A write through the service has put its content on disk and still holds the
+    // lock; it fails and restores the file before this call gets the lock.
+    await writeFile(skillFile, original.replace("# ", "# In-flight "), "utf8");
+    const transaction = server.db.transaction.bind(server.db);
+    const spy = vi.spyOn(server.db, "transaction").mockImplementationOnce((async (...args: Parameters<typeof transaction>) => {
+      await writeFile(skillFile, original, "utf8");
+      return transaction(...args);
+    }) as typeof server.db.transaction);
+    try {
+      expect(await service.recordFileStateOutsideVersionHistory(companyId, skill.id)).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await service.listVersions(companyId, skill.id)).toHaveLength(1);
   });
 
   it("records files added and removed on disk, then accepts a write based on that record", async () => {

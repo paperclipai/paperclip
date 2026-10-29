@@ -4842,21 +4842,24 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   ): Promise<CompanySkillVersion | null> {
     const skill = await getById(companyId, skillId);
     if (!skill || skill.sourceType !== "local_path" || !skill.currentVersionId) return null;
-    // Compare before taking the skill lock. The recorded version is read through the
-    // package store, which may use another connection, and the directory read can be
-    // slow; neither should run while this skill row is locked.
+    // Compare once before taking the skill lock, so the common case (no drift) never
+    // locks. The recorded version is read through the package store, which may use
+    // another connection, so it is only read here.
     const recorded = await getVersion(companyId, skillId, skill.currentVersionId);
     if (!recorded) return null;
     // Read the directory itself. Reading a file through the service instead refreshes
     // the company's skill inventory, which walks every local_path skill directory and
     // can write this skill row.
     const skillDir = normalizeSkillDirectory(skill);
+    if (!skillDir) return null;
     // An unreadable directory is a transient mount problem, not an edit. Leave
     // version history alone instead of recording an empty skill over it.
-    const onDisk = skillDir
-      ? await collectVersionFileInventoryFromDirectory(skillDir, inferLocalSkillInventoryMode(skill)).catch(() => null)
-      : null;
-    if (!onDisk?.length || sameVersionFileInventory(recorded.fileInventory, onDisk)) return null;
+    const readDrift = async () => {
+      const onDisk = await collectVersionFileInventoryFromDirectory(skillDir, inferLocalSkillInventoryMode(skill))
+        .catch(() => null);
+      return !onDisk?.length || sameVersionFileInventory(recorded.fileInventory, onDisk) ? null : onDisk;
+    };
+    if (!await readDrift()) return null;
     return db.transaction(async (tx) => {
       await tx.execute(sql`
         select ${companySkills.id}
@@ -4869,6 +4872,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       // A write through the service moved the version after the comparison above. It
       // recorded the file state it saw, so there is no drift of ours left to record.
       if (!locked || locked.currentVersionId !== skill.currentVersionId) return null;
+      // Read the directory again under the lock. A write through the service changes
+      // the files while it holds this lock and restores them if it fails, so the
+      // first read may have seen content that was rolled back since.
+      const onDisk = await readDrift();
+      if (!onDisk) return null;
       const version = await createVersion(companyId, skillId, { label: "Edited outside version history" }, null, {
         database: tx, skill: locked, fileInventory: onDisk, skipInventoryRefresh: true,
       });
