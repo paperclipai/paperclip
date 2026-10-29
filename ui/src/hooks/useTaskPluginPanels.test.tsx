@@ -317,3 +317,63 @@ it("does not carry an old in-flight activation read into a changed declaration",
   await act(async () => { resolve([{ pluginKey: slot.pluginKey, slotId: slot.id }]); await vi.advanceTimersByTimeAsync(30); });
   expect(current).toEqual([]); expect(get).toHaveBeenCalledTimes(1);
 });
+
+
+it("keeps an unchanged panel active while another declaration changes and history is pending", async () => {
+  vi.useFakeTimers(); client.setDefaultOptions({ queries: { retry: false, staleTime: 60_000 } });
+  const second = { ...slot, id: "other-screen", pluginKey: "example.other", pluginId: "other-plugin" };
+  plugin.slots = [slot, second];
+  await render(); expect(current).toHaveLength(2);
+  let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  const changed = { ...second, pluginVersion: "2.0.0", taskSidePanel: { ...second.taskSidePanel!,
+    activation: { namespace: "example.runtime", activityKey: "new-view.used" } } };
+  plugin.slots = [slot, changed];
+  await render();
+  expect(history).toHaveBeenCalledTimes(2);
+  expect(current).toEqual([{ entityId: "agent", runId: "run", slot }]);
+  await emit(event({ payload: { prpEvent: { eventType: "runtime.activity.recorded", sourceKind: "runner",
+    payload: changed.taskSidePanel.activation } } }));
+  expect(current.map(panel => panel.slot)).toEqual([slot, changed]);
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(current.map(panel => panel.slot)).toEqual([slot, changed]);
+});
+
+it("does not seed another task's activation from cached declarations", async () => {
+  await render(); expect(current).toHaveLength(1);
+  history.mockResolvedValue([]);
+  await render({ ...issue, id: "other-task" });
+  expect(current).toEqual([]); expect(get).toHaveBeenCalledTimes(1);
+});
+
+
+it("does not seed activations from a history read that lost access", async () => {
+  vi.useFakeTimers();
+  await render(); expect(current).toHaveLength(1);
+  history.mockRejectedValue(new ApiError("Denied", 403, {}));
+  await refresh(); expect(current).toEqual([]);
+  let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  plugin.slots = [slot, { ...slot, id: "other-screen", pluginKey: "example.other" }];
+  await render(); expect(current).toEqual([]);
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(current).toEqual([]);
+});
+
+
+it("preserves activity when returning to an earlier cached declaration set", async () => {
+  vi.useFakeTimers();
+  const second = { ...slot, id: "other-screen", pluginKey: "example.other" };
+  plugin.slots = [slot, second]; history.mockResolvedValue([]);
+  await render(); expect(current).toEqual([]);
+  plugin.slots = [slot, { ...second, pluginVersion: "2.0.0" }];
+  await render(); await emit(event()); expect(current.map(panel => panel.slot.id)).toEqual([slot.id, second.id]);
+  let resolve!: (value: []) => void;
+  history.mockReturnValueOnce(new Promise<[]>(done => { resolve = done; }));
+  plugin.slots = [slot, second]; await render();
+  expect(current.map(panel => panel.slot.id)).toEqual([slot.id]);
+  await act(async () => { resolve([]); await vi.advanceTimersByTimeAsync(30); });
+  expect(current.map(panel => panel.slot.id)).toEqual([slot.id]);
+  await act(async () => client.removeQueries({ predicate: query => String(query.queryKey[5]).includes("2.0.0") }));
+  await render(); expect(current.map(panel => panel.slot.id)).toEqual([slot.id]);
+});

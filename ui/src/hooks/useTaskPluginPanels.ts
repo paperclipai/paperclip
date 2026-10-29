@@ -45,23 +45,39 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
   const run = runs?.find(run => run.status === "running"
     && (!issue?.executionRunId || run.id === issue.executionRunId));
   const active = savedTask && slots.length > 0 && !!run && !runsError && !errorMessage;
-  const activationScope = JSON.stringify(slots.map(slot => [slot.pluginKey, slot.id, slot.pluginVersion,
-    slot.taskSidePanel!.activation!.namespace, slot.taskSidePanel!.activation!.activityKey]));
+  const declarations = slots.map(slot => [slot.pluginKey, slot.id, slot.pluginVersion,
+    slot.taskSidePanel!.activation!.namespace, slot.taskSidePanel!.activation!.activityKey]);
+  const activationScope = JSON.stringify(declarations);
   const activationKey = ["task-plugin-panel-activations", issue?.companyId, issue?.id, run?.id, run?.agentId, activationScope];
-  const { data: activations = [], isError: activationsError } = useQuery({
+  // Keep unchanged declarations active while a new declaration scope loads.
+  const retained = new Map<string, { pluginKey: string; slotId: string }>();
+  for (const [key, panels] of queryClient.getQueriesData<Array<{ pluginKey: string; slotId: string }>>({ queryKey: activationKey.slice(0, 5) })) {
+    if (typeof key[5] !== "string" || queryClient.getQueryState(key)?.status !== "success") continue;
+    const unchanged = (JSON.parse(key[5]) as string[][]).filter(previous =>
+      declarations.some(current => current.every((part, index) => part === previous[index])));
+    for (const panel of panels ?? []) if (unchanged.some(declaration => declaration[0] === panel.pluginKey && declaration[1] === panel.slotId)) {
+      retained.set(JSON.stringify([panel.pluginKey, panel.slotId]), panel);
+    }
+  }
+  const { data: recordedActivations = [], isError: activationsError } = useQuery({
     queryKey: activationKey,
     queryFn: ({ signal }) => heartbeatsApi.taskPanelActivations(run!.id, { signal, cache: "no-store" }),
+    initialData: () => retained.size ? [...retained.values()] : undefined,
+    initialDataUpdatedAt: 0,
     // Run activations only grow; merge history and live hints when committing cache data.
     structuralSharing: (previous, incoming) => {
-      const next = incoming as Array<{ pluginKey: string; slotId: string }>;
-      const missing = ((previous ?? []) as typeof next).filter(panel =>
-        !next.some(item => item.pluginKey === panel.pluginKey && item.slotId === panel.slotId));
-      return missing.length ? [...next, ...missing] : next;
+      const merged = new Map(retained);
+      for (const panel of [...((previous ?? []) as Array<{ pluginKey: string; slotId: string }>), ...(incoming as Array<{ pluginKey: string; slotId: string }>)]) {
+        merged.set(JSON.stringify([panel.pluginKey, panel.slotId]), panel);
+      }
+      return [...merged.values()];
     },
+    staleTime: 0,
     enabled: active,
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   });
+  const activations = [...recordedActivations, ...retained.values()];
   const stream = useTranscriptLiveStream(active ? [run!.id] : [], { companyId: issue?.companyId, enabled: active }, event => {
     if (!active || !run || event.companyId !== issue?.companyId || event.payload.runId !== run.id
       || event.payload.agentId !== run.agentId || event.payload.issueId !== issue?.id
