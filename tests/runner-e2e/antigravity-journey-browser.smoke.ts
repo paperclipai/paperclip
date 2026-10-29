@@ -44,7 +44,7 @@ export async function runAntigravityBrowserCalibration(page: Page) {
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { TaskChatRunnerActivityGroup } from './src/components/task-chat/TaskChatRunnerActivityGroup';
-    import { transcriptToTaskChatItems } from './src/components/task-chat/transcript-adapter';
+    import { buildTurnTimelineRows, transcriptToTaskChatItems } from './src/components/task-chat/transcript-adapter';
     const route = new URL(location.href).pathname.slice(1);
     const legacy = route.startsWith('legacy-'), scenario = route.replace(/^legacy-/, '');
     const target = scenario === 'wrong-target-activity' ? 'backup/antigravity-proof.txt' : 'antigravity-proof.txt';
@@ -64,7 +64,7 @@ export async function runAntigravityBrowserCalibration(page: Page) {
     if (scenario === 'interrupted-renderer-activity') entries.unshift({ ...event('edit', 'completed', 'interrupted-renderer'), status: 'interrupted' });
     if (scenario === 'write-activity') entries[0] = event('write', 'completed', 'write');
     const running = legacy && ['running-read-activity', 'pending-read-activity'].includes(scenario);
-    const transcript = legacy ? entries.flatMap(entry => {
+    const transcriptOf = values => legacy ? values.flatMap(entry => {
       const { operation, target, executionId } = entry.payload;
       const call = { kind: 'tool_call', ts: entry.ts, toolUseId: executionId,
         name: operation === 'read' ? 'Running client_view_file' : operation === 'edit' ? 'exec_command' : operation === 'write' ? 'write' : 'paperclip_paperclip_finish',
@@ -72,10 +72,16 @@ export async function runAntigravityBrowserCalibration(page: Page) {
       if (['interrupted', 'pending'].includes(entry.status)) return [call];
       return [call, { kind: 'tool_result', ts: entry.ts, toolUseId: executionId, isError: entry.status === 'failed',
         delta: entry.status === 'running', content: entry.status === 'failed' ? 'Operation rejected' : 'Synthetic actual tool result' }];
-    }) : entries;
-    const items = transcriptToTaskChatItems(transcript, { runId: 'synthetic-run', agentName: 'Synthetic agent', running });
-    createRoot(document.getElementById('activity-root')).render(<TaskChatRunnerActivityGroup item={{ id: 'synthetic-phase', kind: 'activity_phase',
-      active: running, summary: '', items }} />);
+    }) : values;
+    const phases = (values, runId, active = false) => buildTurnTimelineRows(
+      transcriptToTaskChatItems(transcriptOf(values), { runId, agentName: 'Synthetic agent', running: active }), active,
+    ).filter(item => item.kind === 'activity_phase');
+    const runId = scenario === 'stale-first-only-activity' ? 'synthetic-run-old' : 'synthetic-run';
+    const current = phases(entries, runId, running);
+    const older = scenario === 'current-run-mixed-activity'
+      ? phases([event('read', 'failed', 'old-read'), event('edit', 'failed', 'old-edit')], 'synthetic-run-old') : [];
+    createRoot(document.getElementById('activity-root')).render(<>{[...older, ...current].map(item =>
+      <TaskChatRunnerActivityGroup key={item.id} item={item} />)}</>);
   ` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
     define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent" });
   // The artifact controls and text viewer are the shipped components. Their
@@ -171,25 +177,31 @@ export async function runAntigravityBrowserCalibration(page: Page) {
     await visit("composer"); await assertAntigravityCleanComposer(page, agent, model, 300);
     await visit("paused-composer"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
     await visit("wrong-model"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
-    await visit("activity"); await assertAntigravityFileActivity(page, 300);
-    await visit("write-activity"); await assertAntigravityFileActivity(page, 300);
+    for (const fixture of ["stale-first-only-activity", "legacy-stale-first-only-activity"]) {
+      await visit(fixture); await assert.rejects(assertAntigravityFileActivity(page, "synthetic-run", 1000), fixture);
+    }
+    await visit("activity"); await assertAntigravityFileActivity(page, "synthetic-run", 1000);
+    await visit("write-activity"); await assertAntigravityFileActivity(page, "synthetic-run", 1000);
+    for (const fixture of ["current-run-mixed-activity", "legacy-current-run-mixed-activity"]) {
+      await visit(fixture); await assertAntigravityFileActivity(page, "synthetic-run", 1000);
+    }
     for (const fixture of ["failed-read-activity", "interrupted-edit-activity", "running-read-activity", "failed-renderer-activity", "interrupted-renderer-activity", "wrong-target-activity"]) {
       await visit(fixture);
       let rejected = false;
-      try { await assertAntigravityFileActivity(page, 300); } catch { rejected = true; }
+      try { await assertAntigravityFileActivity(page, "synthetic-run", 300); } catch { rejected = true; }
       assert.ok(rejected, `${fixture}: ${await page.locator("body").innerText()}`);
     }
     for (const fixture of ["legacy-activity", "legacy-write-activity"]) {
-      await visit(fixture); await assertAntigravityFileActivity(page, 300);
+      await visit(fixture); await assertAntigravityFileActivity(page, "synthetic-run", 1000);
       assert.equal(await page.locator('[data-activity-family="tool_execution"]').count(), 0);
     }
     for (const fixture of ["legacy-failed-read-activity", "legacy-interrupted-edit-activity", "legacy-running-read-activity", "legacy-pending-read-activity", "legacy-wrong-target-activity"]) {
       await visit(fixture);
       let rejected = false;
-      try { await assertAntigravityFileActivity(page, 300); } catch { rejected = true; }
+      try { await assertAntigravityFileActivity(page, "synthetic-run", 300); } catch { rejected = true; }
       assert.ok(rejected, `${fixture}: ${await page.locator("body").innerText()}`);
     }
-    console.log("PASS Antigravity browser calibration: production rich/compact artifact cards and rows, exact attachment viewer/download identity+61/119B, hidden/duplicate/wrong-ID/size/bytes rejection, both task sidebar layouts; More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; completed read/edit/write, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
+    console.log("PASS Antigravity browser calibration: production rich/compact artifact cards and rows, exact attachment viewer/download identity+61/119B, hidden/duplicate/wrong-ID/size/bytes rejection, both task sidebar layouts; More messages plus production transcript adapter/activity renderer for canonical provider activity and native legacy tool calls/results; exact run-bound completed read/edit/write, stale-first-only rejection/current-run mixed-history acceptance, exact target, failed/interrupted/running/pending rejection and unrelated failed finish");
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   }

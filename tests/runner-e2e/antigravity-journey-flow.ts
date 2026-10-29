@@ -163,7 +163,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   evidence.turnEvidence.push(first);
   await checkpoint("first_run");
   await assertAntigravityTaskDone(page);
-  await assertAntigravityFileActivity(page);
+  await assertAntigravityFileActivity(page, first.runId);
   await inspectAntigravityArtifact(page, first.artifact.attachmentId, firstBytes);
   await checkpoint("first_artifact");
   await page.reload();
@@ -176,7 +176,7 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   evidence.turnEvidence.push(second);
   await checkpoint("followup_run");
   await assertAntigravityTaskDone(page);
-  await assertAntigravityFileActivity(page);
+  await assertAntigravityFileActivity(page, second.runId);
   await inspectAntigravityArtifact(page, second.artifact.attachmentId, followupBytes);
   await checkpoint("followup_artifact");
   await page.reload();

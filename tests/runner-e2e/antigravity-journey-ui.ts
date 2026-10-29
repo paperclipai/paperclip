@@ -74,14 +74,18 @@ export async function assertAntigravityTaskDone(page: Page, timeout = 30_000) {
   }
 }
 
-export async function assertAntigravityFileActivity(page: Page, timeout = 30_000) {
-  const histories = page.getByTestId("task-chat-activity-phase-toggle");
+export async function assertAntigravityFileActivity(page: Page, runId: string, timeout = 30_000) {
+  if (typeof runId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(runId)) throw new ConnectionFailure("browser_activity_run_identity_invalid");
+  // The shipped adapter prefixes both phase and item IDs with their run ID.
+  // Older successful rows must not satisfy this turn, or poison its checks.
+  const groups = page.locator(`section[data-testid="task-chat-activity-phase"][data-activity-group^="${runId}:"]`);
+  const histories = groups.getByTestId("task-chat-activity-phase-toggle");
   const older = page.getByRole("button", { name: "More messages", exact: true });
   await expect.poll(async () => await older.isVisible() || await histories.count() > 0, { timeout }).toBe(true);
   if (await older.isVisible()) await older.click();
   await expect.poll(() => histories.count(), { timeout }).toBeGreaterThan(0);
   for (const toggle of await histories.all()) if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-  const items = page.locator("li[data-activity-item-id]:visible").filter({ has: page.locator("[data-activity-row]") });
+  const items = groups.locator(`li[data-activity-item-id^="${runId}:"]:visible`).filter({ has: page.locator("[data-activity-row]") });
   await expect.poll(() => items.count(), { timeout }).toBeGreaterThanOrEqual(2);
   await expect.poll(async () => {
     let reads = 0, edits = 0;
