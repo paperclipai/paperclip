@@ -1014,7 +1014,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : undefined;
 
     if (proc.timedOut) {
+      // A resumed run can print its result and then hang. Its cost is charged
+      // here, so move the stored totals forward or the next resume charges it again.
+      const timedOutUsageTotals =
+        sessionId && parsedStream.sessionUsageTotals?.sessionId === sessionId
+          ? parsedStream.sessionUsageTotals
+          : null;
       return {
+        ...(timedOutUsageTotals && !opts.clearSessionOnMissingSession
+          ? { sessionParams: { ...runtimeSessionParams, usageTotals: timedOutUsageTotals } }
+          : {}),
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: true,
