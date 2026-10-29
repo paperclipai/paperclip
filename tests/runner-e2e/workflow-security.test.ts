@@ -846,7 +846,7 @@ describe("public repository paid workflow security", () => {
     const manual = paid.split("\n  test_recurring:")[0]!;
     const recurring = paid.split("\n  test_recurring:")[1]!;
     expect(manual).not.toContain("id-token: write");
-    expect(manual).toContain("if: needs.catalog.outputs.operations_cadence == ''");
+    expect(manual).toContain("needs.catalog.outputs.operations_cadence == ''");
     expect(recurring).toContain("id-token: write");
     expect(recurring).toContain("needs.authorize.outputs.target_sha == github.sha");
     expect(recurring).toContain("github.ref == format('refs/heads/{0}', github.event.repository.default_branch)");

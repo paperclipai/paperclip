@@ -214,7 +214,7 @@ jobs:
   target_lock:
     name: Resolve target pnpm lockfile
     needs: authorize
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -270,7 +270,7 @@ jobs:
     name: Validate catalog and select cells
     needs: [authorize, target_lock]
     if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -728,7 +728,7 @@ jobs:
     name: Build reusable remote provider pack
     needs:
       [authorize, target_lock, catalog, daytona_image, build_runner_artifacts]
-    if: github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')
+    if: (github.event_name != 'schedule' || (vars.RUNNER_FULL_STACK_E2E_NIGHTLY_ENABLED == 'true' && vars.RUNNER_FULL_STACK_E2E_OPERATIONS_ENABLED == 'true')) && needs.catalog.outputs.needs_remote_provider_pack == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -736,10 +736,6 @@ jobs:
     outputs:
       provider_pack_artifact_name: ${{ steps.provider_pack_artifact_name.outputs.name }}
     steps:
-      - name: No remote provider pack needed
-        if: needs.catalog.outputs.needs_remote_provider_pack != 'true'
-        run: echo "Selected cells do not require a remote provider pack."
-
       - if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -864,7 +860,20 @@ jobs:
 
   test:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence == ''
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.authorize.result == 'success' &&
+        needs.target_lock.result == 'success' &&
+        needs.catalog.result == 'success' &&
+        needs.daytona_image.result == 'success' &&
+        needs.build_runner_artifacts.result == 'success' &&
+        (
+          (needs.catalog.outputs.needs_remote_provider_pack == 'true' && needs.build_remote_provider_pack.result == 'success') ||
+          (needs.catalog.outputs.needs_remote_provider_pack == 'false' && needs.build_remote_provider_pack.result == 'skipped')
+        ) &&
+        needs.catalog.outputs.operations_cadence == ''
+      }}
     needs:
       [
         authorize,
@@ -1249,7 +1258,22 @@ jobs:
 
   test_recurring:
     name: ${{ matrix.executionId }}
-    if: needs.catalog.outputs.operations_cadence != '' && needs.authorize.outputs.target_sha == github.sha && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.authorize.result == 'success' &&
+        needs.target_lock.result == 'success' &&
+        needs.catalog.result == 'success' &&
+        needs.daytona_image.result == 'success' &&
+        needs.build_runner_artifacts.result == 'success' &&
+        (
+          (needs.catalog.outputs.needs_remote_provider_pack == 'true' && needs.build_remote_provider_pack.result == 'success') ||
+          (needs.catalog.outputs.needs_remote_provider_pack == 'false' && needs.build_remote_provider_pack.result == 'skipped')
+        ) &&
+        needs.catalog.outputs.operations_cadence != '' &&
+        needs.authorize.outputs.target_sha == github.sha &&
+        github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+      }}
     needs: [authorize, target_lock, catalog, daytona_image, build_runner_artifacts, build_remote_provider_pack]
     runs-on: ${{ needs.authorize.outputs.test_runner }}
     timeout-minutes: ${{ matrix.timeoutMinutes }}

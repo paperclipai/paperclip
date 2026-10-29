@@ -969,6 +969,21 @@ never expose it to test prompts or unrelated clients. The project check is not
 an attempt-isolation guarantee. Indexing verification is a separate retained
 or scheduled check; the manual launcher alone does not perform it.
 
+### Campaign preparation runners
+
+The authorization job stays on GitHub-hosted compute. It validates the actor,
+rerun actor, default workflow branch and immutable target before it selects a
+runner. Target lockfile resolution and catalog validation then use that selected
+runner, as the shared build and paid cells do. Explicit manual AWS campaigns use
+the existing fleet; daily and weekly campaigns retain standard hosted compute.
+
+Local-only selections skip the remote provider-pack job before allocating a
+runner. Paid jobs accept this skip only when the catalog explicitly says no
+remote pack is needed. Remote selections require a successful pack. Unknown
+requirements, failed packs, failed required preparation and cancellation prevent
+paid admission. The source, rerun, cadence and protected paid environments remain
+in force.
+
 ### Hosted report dependencies
 
 The trusted report job applies a reviewed `report-lock.patch` before its frozen
