@@ -1,0 +1,14 @@
+{
+  "name": "paperclip-kow-smoketest",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end smoke test: kow brokers a credential for a Paperclip agent inside a throwaway KVM guest; agent never sees the raw key.",
+  "scripts": {
+    "test": "bun test",
+    "setup": "bun harness/setup-base.ts",
+    "smoke": "bun tests/smoke-core.ts"
+  },
+  "engines": {
+    "node": ">=24.11.0"
+  }
+}
