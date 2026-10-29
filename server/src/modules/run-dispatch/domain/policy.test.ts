@@ -396,6 +396,28 @@ describe("decideQueuedRunStaleness", () => {
       .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
   });
 
+  it("keeps the addressee's run while another agent is the review participant", () => {
+    const facts = {
+      ...baseStalenessFacts(),
+      issueStatus: "in_review",
+      issueAssigneeAgentId: "agent-2",
+      wakeReason: "interaction_pending",
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-2",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-2" },
+      },
+    } satisfies QueuedRunFacts;
+    expect(decideQueuedRunStaleness({ ...facts, isPendingInteractionAddressee: true }, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...facts, isPendingInteractionAddressee: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    expect(decideQueuedRunStaleness({ ...facts, issueAssigneeAgentId: "agent-1", isPendingInteractionAddressee: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_review_participant_changed" });
+  });
+
   it("allows a resolved non-connection interaction to claim its review task", () => {
     expect(decideQueuedRunStaleness({
       ...baseStalenessFacts(),

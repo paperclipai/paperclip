@@ -1264,6 +1264,77 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       }
     });
 
+    it.each([
+      { label: "keeps the addressee's interaction wake", expected: "not_stale" },
+      { label: "cancels once the interaction is answered", status: "accepted", errorCode: "issue_assignee_changed" },
+      { label: "cancels when the interaction addresses the participant", addressee: "participant", errorCode: "issue_assignee_changed" },
+      { label: "cancels a non-participant wake without an interaction", wakeReason: "issue_commented", errorCode: "issue_assignee_changed" },
+      { label: "cancels the assignee's wake when it is not the addressee", runAgent: "assignee", addressee: "participant", errorCode: "issue_review_participant_changed" },
+    ])("$label while the task is in review", async (testCase) => {
+      const { companyId, agentId: addresseeAgentId } = await seedCompanyAndAgent();
+      const participantAgentId = randomUUID();
+      await seedAgent({ id: participantAgentId, companyId, name: "ReviewerAgent", role: "qa" });
+      const assigneeAgentId = randomUUID();
+      await seedAgent({ id: assigneeAgentId, companyId, name: "AssigneeCoder" });
+      const issueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_review",
+        assigneeAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: participantAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: assigneeAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      });
+      const runAgentId = testCase.runAgent === "assignee" ? assigneeAgentId : addresseeAgentId;
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: testCase.status ?? "pending",
+        addresseeAgentId: testCase.addressee === "participant" ? participantAgentId : runAgentId,
+        payload: { version: 1, questions: [] },
+      });
+      const runId = await seedRun({
+        companyId,
+        agentId: runAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "ask_user_questions",
+          sourceCommentId: null,
+          sourceRunId: null,
+          wakeReason: testCase.wakeReason ?? "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      if (testCase.errorCode) {
+        expect(outcome).toMatchObject({ outcome: "cancelled", errorCode: testCase.errorCode });
+      } else {
+        expect(outcome.outcome).toBe("not_stale");
+      }
+    });
+
     it(
       "reads the locked issue state and cancels in the same semantic transaction",
       async () => {

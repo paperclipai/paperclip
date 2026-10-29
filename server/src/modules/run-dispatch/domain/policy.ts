@@ -673,7 +673,7 @@ export function decideQueuedRunStaleness(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
-    bypass: facts.wakeCommentIdPresent,
+    bypass: facts.wakeCommentIdPresent || facts.isPendingInteractionAddressee === true,
   });
   if (participantOutcome === "participant_changed") {
     return {
