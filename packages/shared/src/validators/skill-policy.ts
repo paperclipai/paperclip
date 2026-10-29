@@ -77,14 +77,14 @@ export const skillPolicySubjectSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("all_agents") }).strict(),
   z.object({
     type: z.literal("agents"),
-    agentIds: z.array(z.string().uuid()).min(1).max(500)
+    agentIds: z.array(z.string().guid()).min(1).max(500)
       .refine((values) => new Set(values).size === values.length, "Agent IDs must be unique"),
   }).strict(),
   z.object({ type: z.literal("roles"), roles: nonEmptyUniqueStrings }).strict(),
 ]);
 
 export const skillPolicyResourceSelectorSchema = z.object({
-  skillIds: z.array(z.string().uuid()).min(1).max(500).optional(),
+  skillIds: z.array(z.string().guid()).min(1).max(500).optional(),
   skillKeys: nonEmptyUniqueStrings.optional(),
   sourceTypes: z.array(skillPolicySourceTypeSchema).min(1)
     .refine((values) => new Set(values).size === values.length, "Source types must be unique")
@@ -116,7 +116,7 @@ export const replaceSkillPolicySchema = skillPolicyDocumentSchema.extend({
 }).strict();
 
 export const skillPolicyEvaluationResourceSchema = z.object({
-  skillId: z.string().uuid().optional(),
+  skillId: z.string().guid().optional(),
   skillKey: z.string().trim().min(1).max(512).optional(),
   sourceType: skillPolicySourceTypeSchema.optional(),
   sourceLocator: skillPolicySourceLocatorSchema.optional(),
@@ -125,7 +125,7 @@ export const skillPolicyEvaluationResourceSchema = z.object({
 export const evaluateSkillPolicySchema = z.object({
   action: skillPolicyActionSchema,
   resource: skillPolicyEvaluationResourceSchema.default({}),
-  principal: z.object({ agentId: z.string().uuid() }).strict().optional(),
+  principal: z.object({ agentId: z.string().guid() }).strict().optional(),
 }).strict();
 
 export type SkillPolicyAction = z.infer<typeof skillPolicyActionSchema>;

@@ -1,6 +1,15 @@
+import { sql } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// Isolate runtime-management guards; real database privacy is covered by
+// privacy-production-review.test.ts.
+vi.mock("../services/authorization.js", async () => ({
+  ...(await vi.importActual<typeof import("../services/authorization.js")>("../services/authorization.js")),
+  executionWorkspaceReadSqlCondition: async () => sql<boolean>`true`,
+  canActorReadExecutionWorkspace: async () => true,
+}));
 
 const mockProjectService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -26,6 +35,11 @@ const mockEnvironmentService = vi.hoisted(() => ({
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockWorkspaceRuntimeLeaseService = vi.hoisted(() => ({
+  claim: vi.fn(async () => ({ outcome: "created", ownerKey: "issue:issue-1", lease: null, reclaimedFrom: null })),
+  release: vi.fn(async () => ({ released: false, ownerKey: null })),
+  get: vi.fn(async () => null),
+}));
 const mockHeartbeatService = vi.hoisted(() => ({}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
@@ -48,6 +62,8 @@ vi.mock("../services/index.js", () => ({
   projectService: () => mockProjectService,
   secretService: () => mockSecretService,
   workspaceOperationService: () => mockWorkspaceOperationService,
+  workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
 }));
 
 vi.mock("../services/workspace-runtime.js", () => ({
@@ -76,6 +92,8 @@ function registerWorkspaceRouteMocks() {
     projectService: () => mockProjectService,
     secretService: () => mockSecretService,
     workspaceOperationService: () => mockWorkspaceOperationService,
+    workspaceRuntimeLeaseService: () => mockWorkspaceRuntimeLeaseService,
+    LEASED_WORKSPACE_RUNTIME_ACTIONS: ["start", "stop", "restart", "repair"],
   }));
 
   vi.doMock("../services/workspace-runtime.js", () => ({
@@ -193,7 +211,7 @@ function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe.sequential("workspace runtime service route authorization", () => {
+describe("workspace runtime service route authorization", () => {
   const projectId = "11111111-1111-4111-8111-111111111111";
   const workspaceId = "22222222-2222-4222-8222-222222222222";
   const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -334,6 +352,66 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(mockAssertCanManageProjectWorkspaceRuntimeServices).toHaveBeenCalled();
   }, 15000);
 
+  it.each(["skill_test", "task_bridge"])(
+    "rejects %s keys at the central runtime-manage gate for project and execution workspaces",
+    async (kind) => {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+        allowed: input.action !== "runtime:manage",
+        action: input.action,
+        reason: input.action === "runtime:manage" ? "deny_key_scope" : "allow_test",
+        explanation: input.action === "runtime:manage"
+          ? "Restricted keys cannot manage workspace runtimes."
+          : "Allowed by test mock.",
+      }));
+      mockProjectService.getById.mockResolvedValue(buildProject({
+        id: projectId,
+        workspaces: [{
+          id: workspaceId,
+          companyId: "company-1",
+          projectId,
+          runtimeConfig: {
+            workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+          },
+        }],
+      }));
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({
+        id: executionWorkspaceId,
+        config: {
+          workspaceRuntime: { services: [{ name: "web", command: "pnpm dev" }] },
+        },
+      }));
+      const actor = {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "run-1",
+        keyScope: kind === "skill_test"
+          ? { kind, issueId: "issue-1" }
+          : { kind, parentIssueId: "issue-1" },
+      };
+
+      const projectRes = await request(await createProjectApp(actor))
+        .post(`/api/projects/${projectId}/workspaces/${workspaceId}/runtime-services/start`)
+        .send({});
+      expect(projectRes.status, JSON.stringify(projectRes.body)).toBe(403);
+      expect(projectRes.body.error).toContain("authorization boundary");
+
+      const executionRes = await request(await createExecutionWorkspaceApp(actor))
+        .post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`)
+        .send({});
+      expect(executionRes.status, JSON.stringify(executionRes.body)).toBe(403);
+      expect(executionRes.body.error).toContain("authorization boundary");
+
+      expect(mockAssertCanManageProjectWorkspaceRuntimeServices).not.toHaveBeenCalled();
+      expect(mockAssertCanManageExecutionWorkspaceRuntimeServices).not.toHaveBeenCalled();
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "runtime:manage",
+        resource: { type: "company", companyId: "company-1" },
+      }));
+    },
+  );
+
   it("blocks shared-project stop/restart requests from agents", async () => {
     mockProjectService.getById.mockResolvedValue(buildProject({
       id: projectId,
@@ -409,6 +487,45 @@ describe.sequential("workspace runtime service route authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("host-executed workspace commands");
     expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers that persist workspace-runtime service commands", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    const app = await createProjectApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const projectRes = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({
+        name: "Exploit",
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceRuntime: {
+            services: [{ name: "web", command: "touch /tmp/paperclip-rce" }],
+          },
+        },
+      });
+    expect(projectRes.status).toBe(403);
+    expect(projectRes.body.error).toContain("executionWorkspacePolicy.workspaceRuntime.services[0].command");
+
+    const workspaceRes = await request(app)
+      .patch(`/api/projects/${projectId}/workspaces/${workspaceId}`)
+      .send({
+        runtimeConfig: {
+          workspaceRuntime: {
+            jobs: [{ name: "build", command: "touch /tmp/paperclip-rce" }],
+          },
+        },
+      });
+    expect(workspaceRes.status).toBe(403);
+    expect(workspaceRes.body.error).toContain("runtimeConfig.workspaceRuntime.jobs[0].command");
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+    expect(mockProjectService.updateWorkspace).not.toHaveBeenCalled();
   });
 
   it("rejects agent callers that update project workspace cleanup commands", async () => {

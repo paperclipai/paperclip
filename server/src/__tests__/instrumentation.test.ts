@@ -88,6 +88,157 @@ describe("instrumentationReady", () => {
   });
 });
 
+describe("checkExactPeerVersions", () => {
+  it("passes when the installed version matches the declared version exactly", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+    const require = createRequire(import.meta.url);
+    const vitestVersion = (require("vitest/package.json") as { version: string }).version;
+
+    const result = checkExactPeerVersions(["vitest"], { vitest: vitestVersion });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("reports a package as missing when it cannot be resolved", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+
+    const result = checkExactPeerVersions(["@paperclipai/does-not-exist-anywhere"], {
+      "@paperclipai/does-not-exist-anywhere": "1.0.0",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.diagnostic).toContain("@opentelemetry/* packages are not installed");
+      expect(result.diagnostic).toContain("@paperclipai/does-not-exist-anywhere");
+    }
+  });
+
+  it("reports a package as mismatched when the installed version differs from the declared version", async () => {
+    const { checkExactPeerVersions } = await importFreshInstrumentation();
+    const require = createRequire(import.meta.url);
+    const vitestVersion = (require("vitest/package.json") as { version: string }).version;
+
+    const result = checkExactPeerVersions(["vitest"], {
+      vitest: "0.0.0-not-the-installed-version",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.diagnostic).toContain("a package is installed at an unsupported version");
+      expect(result.diagnostic).toContain(`vitest@${vitestVersion}`);
+      expect(result.diagnostic).toContain("expected 0.0.0-not-the-installed-version");
+    }
+  });
+});
+
+describe("bootstrapOtel exact-version gate", () => {
+  it("does not mention the two exporters OTEL_EXPORTER_OTLP_PROTOCOL did not select", async () => {
+    process.env[ENDPOINT_ENV] = "http://collector:4318";
+    process.env[PROTOCOL_ENV] = "http/json";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { instrumentationReady } = await importFreshInstrumentation();
+    await instrumentationReady;
+
+    // The OTel packages are absent in this test environment, so the gate
+    // reports every checked package as missing. It must have checked the
+    // selected exporter (http/json → exporter-trace-otlp-http) and skipped
+    // the two the protocol did not select.
+    const diagnosticCall = warn.mock.calls.find((call) =>
+      String(call[0]).includes("@opentelemetry/* packages are not installed"),
+    );
+    expect(diagnosticCall).toBeDefined();
+    const message = String(diagnosticCall![0]);
+    expect(message).toContain("@opentelemetry/exporter-trace-otlp-http");
+    expect(message).not.toContain("@opentelemetry/exporter-trace-otlp-grpc");
+    expect(message).not.toContain("@opentelemetry/exporter-trace-otlp-proto");
+  });
+
+  it("emits exactly one diagnostic when the endpoint is set and packages are absent", async () => {
+    process.env[ENDPOINT_ENV] = "http://collector:4318";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { instrumentationReady } = await importFreshInstrumentation();
+    await instrumentationReady;
+
+    const diagnosticCalls = warn.mock.calls.filter((call) =>
+      String(call[0]).includes("@opentelemetry/* packages are not installed"),
+    );
+    expect(diagnosticCalls).toHaveLength(1);
+  });
+});
+
+describe("bootstrapOtel post-gate load failure", () => {
+  it("logs a load-failure diagnostic, not the missing-package message, when a package passes the gate but its dynamic import fails", async () => {
+    process.env[ENDPOINT_ENV] = "http://collector:4318";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Fake the resolution steps the exact-version gate uses, so every checked
+    // package reports as installed at its declared version. The dynamic
+    // `import(...)` calls in bootstrapOtel are untouched, so they still fail
+    // for real — the packages are not actually installed in this test run.
+    // That forces the one path the catch block now must describe: a package
+    // that passed the gate but failed to load.
+    const FAKE_ROOT = "/fake-otel-pkg";
+    const require = createRequire(import.meta.url);
+    const peerDependencies = (
+      require("../../package.json") as { peerDependencies?: Record<string, string> }
+    ).peerDependencies ?? {};
+
+    vi.resetModules();
+    vi.doMock("node:fs", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:fs")>();
+      return {
+        ...actual,
+        existsSync: (path: unknown) =>
+          String(path).startsWith(FAKE_ROOT) ? true : actual.existsSync(path as never),
+        readFileSync: (path: unknown, options?: unknown) => {
+          const asString = String(path);
+          if (asString.startsWith(FAKE_ROOT) && asString.endsWith("package.json")) {
+            const name = decodeURIComponent(
+              asString.slice(FAKE_ROOT.length + 1, -"/package.json".length),
+            );
+            return JSON.stringify({ name, version: peerDependencies[name] });
+          }
+          return actual.readFileSync(path as never, options as never);
+        },
+      };
+    });
+    vi.doMock("node:module", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:module")>();
+      return {
+        ...actual,
+        createRequire: (...args: Parameters<typeof actual.createRequire>) => {
+          const real = actual.createRequire(...args);
+          const fake = ((id: string) => real(id)) as typeof real;
+          fake.resolve = ((id: string, options?: unknown) =>
+            id in peerDependencies
+              ? `${FAKE_ROOT}/${encodeURIComponent(id)}/index.js`
+              : real.resolve(id, options as never)) as typeof real.resolve;
+          return fake;
+        },
+      };
+    });
+
+    try {
+      const { instrumentationReady } = await import("../instrumentation.js");
+      await instrumentationReady;
+    } finally {
+      vi.doUnmock("node:fs");
+      vi.doUnmock("node:module");
+    }
+
+    for (const call of warn.mock.calls) {
+      expect(String(call[0])).not.toContain("packages are not installed");
+      expect(String(call[0])).not.toContain("Install @opentelemetry/sdk-node");
+    }
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("passed the version check"),
+      expect.anything(),
+    );
+  });
+});
+
 describe("getStartupTracer", () => {
   it("returns a usable tracer-shaped object when OTEL_EXPORTER_OTLP_ENDPOINT is unset", async () => {
     const { getStartupTracer } = await importFreshInstrumentation();

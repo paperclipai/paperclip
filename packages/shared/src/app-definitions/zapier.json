@@ -8,40 +8,25 @@
   ],
   "featured": true,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=zapier.com&sz=128"
+    "logoUrl": "/brands/apps/zapier.svg"
   },
   "urlPatterns": [
     "https://mcp.zapier.com/*"
   ],
   "methods": [
     {
-      "key": "mcp-key",
+      "key": "generated-url",
       "transport": "mcp_remote",
-      "auth": "api_key",
+      "auth": "none",
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
-      "defaults": {
-        "serverUrl": "https://mcp.zapier.com/api/mcp"
-      },
-      "guidanceMd": "Create a Zapier MCP connection, then paste its token here.",
+      "whenToUse": "Use the complete provider-generated MCP URL from Zapier.",
+      "defaults": {},
+      "guidanceMd": "Create a Zapier MCP server, then paste the complete generated connection URL. The token remains embedded in that URL.",
       "riskTier": "S3",
-      "credentialFields": [
-        {
-          "key": "authorization",
-          "label": "Zapier MCP token",
-          "type": "password",
-          "required": true,
-          "placeholder": "Paste your Zapier token",
-          "secret": true
-        }
-      ],
-      "keyPlacement": {
-        "location": "header",
-        "name": "Authorization",
-        "prefix": "Bearer "
-      }
+      "label": "Paste generated MCP URL"
     }
-  ]
+  ],
+  "docsUrl": "https://docs.zapier.com/mcp/quickstart"
 }

@@ -37,14 +37,14 @@ describe("classifySkillDenial", () => {
     );
     expect(denial).not.toBeNull();
     expect(denial?.state).toBe("policy");
-    expect(denial?.title).toBe("Installing external skills is restricted by your company policy.");
+    expect(denial?.title).toBe("Installing external skills is restricted by your organization policy.");
     expect(denial?.remediation).toBe("Contact a company administrator to change the skill policy.");
   });
 
   it("recognises a policy denial from reason alone (policy_default) and falls back to default remediation", () => {
     const denial = classifySkillDenial(apiError(403, { reason: "policy_default" }));
     expect(denial?.state).toBe("policy");
-    expect(denial?.title).toBe("This action is restricted by your company policy.");
+    expect(denial?.title).toBe("This action is restricted by your organization policy.");
     expect(denial?.remediation).toContain("administrator can change the skill policy");
   });
 

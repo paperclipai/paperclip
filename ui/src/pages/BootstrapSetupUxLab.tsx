@@ -143,7 +143,7 @@ function ClaimErrorPrivate() {
           <p className="font-medium">Someone else has already claimed this instance.</p>
           <p className="mt-1 text-destructive/90">
             Refresh to sign in, or ask the existing admin to invite you from{" "}
-            <span className="font-mono">Instance settings → Access</span>.
+            <span className="font-mono">Settings → Access</span>.
           </p>
         </div>
       </div>
@@ -162,7 +162,7 @@ function ClaimSuccess() {
         <div>
           <h1 className="text-xl font-semibold">You&rsquo;re the instance admin</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Setup is complete. Taking you to onboarding to create your first company&hellip;
+            Setup is complete. Taking you to onboarding to create your first organization&hellip;
           </p>
         </div>
       </div>

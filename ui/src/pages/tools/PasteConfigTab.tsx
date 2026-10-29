@@ -7,12 +7,22 @@ import type {
   McpJsonImportDraft,
   McpJsonImportPreview,
   ToolAppConnectionActionSummary,
+  ToolOAuthStartResult,
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
+import { navigateTopLevel } from "@/lib/browserNavigation";
+import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { useNavigate } from "@/lib/router";
+import {
+  OAuthConnectStateScreen,
+  type OAuthConnectPhase,
+} from "@/features/connections/ConnectionSetupFlow";
+import { endpointHost } from "@/pages/apps/generic-mcp-connect";
+import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
 import { ErrorState } from "./shared";
 
 const SAMPLE_CONFIG = `{
@@ -79,7 +89,7 @@ function missingCredentialFields(draft: McpJsonImportDraft, values: Record<strin
 
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
-  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
 
 /**
@@ -91,19 +101,56 @@ function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
  * of the two M8 screens where "MCP" vocabulary is allowed (PAP-10827 vocab map).
  */
 export function PasteConfigTab({ companyId }: { companyId: string }) {
+  const navigate = useNavigate();
   const [draftText, setDraftText] = useState("");
   const [preview, setPreview] = useState<McpJsonImportPreview | null>(null);
+  const [connectionNames, setConnectionNames] = useState<Record<string, string>>({});
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
   const [connectResult, setConnectResult] = useState<ConnectToolAppResult | null>(null);
   const [enabled, setEnabled] = useState<Record<string, boolean>>({});
   const [activatedName, setActivatedName] = useState<string | null>(null);
+  const [oauthPhase, setOAuthPhase] = useState<OAuthConnectPhase>("entry");
+  const [oauthError, setOAuthError] = useState<string | null>(null);
+  const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
 
   const importMutation = useMutation({
     mutationFn: (mcpJson: string) => toolsApi.importMcpJson(companyId, { mcpJson }),
     onSuccess: (result) => {
       setPreview(result);
+      setConnectionNames(Object.fromEntries(result.drafts.map((draft) => [draft.name, draft.name])));
       setConnectResult(null);
       setActivatedName(null);
+    },
+  });
+
+  const openAuthorizationPage = async (
+    authorizationUrl: string,
+    handoff?: ToolOAuthStartResult["handoff"],
+  ) => {
+    try {
+      const target = await prepareOAuthNavigation({ authorizationUrl, handoff });
+      if (target.kind === "reauthentication" && handoff) {
+        savePendingCloudHandoff(handoff.session);
+      }
+      setAuthorizationHost(target.host);
+      setOAuthPhase(target.kind === "authorization" ? "redirecting" : "starting");
+      navigateTopLevel(target.url);
+    } catch (error) {
+      setOAuthPhase("error");
+      setOAuthError(error instanceof Error ? error.message : "Paperclip couldn’t start secure sign-in. Try again.");
+    }
+  };
+
+  const oauthStartMutation = useMutation({
+    mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
+    onSuccess: (start) => void openAuthorizationPage(start.authorizationUrl, start.handoff),
+    onError: (error) => {
+      setOAuthPhase("error");
+      setOAuthError(
+        error instanceof Error
+          ? error.message
+          : "Paperclip couldn’t start secure sign-in. Try again.",
+      );
     },
   });
 
@@ -113,15 +160,35 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       if (!url) throw new Error("Only remote HTTP drafts can be checked and activated from pasted config.");
       return toolsApi.connectApp(companyId, {
         link: url,
-        name: draft.name,
+        name: connectionNames[draft.name]?.trim() || draft.name,
         credentialValues: credentialValuesForDraft(draft, credentialValues),
       });
     },
     onSuccess: (result) => {
       setConnectResult(result);
+      if (result.auth?.kind === "oauth") {
+        setActivatedName(null);
+        setAuthorizationHost(null);
+        setOAuthError(null);
+        if (result.auth.manualClientRequired) {
+          setOAuthPhase("error");
+          setOAuthError(
+            "This server requires OAuth client details from its provider settings. Continue in setup to add them.",
+          );
+          return;
+        }
+        const startUrl = result.auth.startUrl?.trim();
+        if (startUrl) {
+          void openAuthorizationPage(startUrl, result.auth.handoff);
+        } else {
+          setOAuthPhase("starting");
+          oauthStartMutation.mutate(result.connectionId);
+        }
+        return;
+      }
       const defaults: Record<string, boolean> = {};
       for (const action of result.actions.readOnly) defaults[action.catalogEntryId] = true;
-      for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = false;
+      for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = true;
       setEnabled(defaults);
       setActivatedName(null);
     },
@@ -157,11 +224,41 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     }
   }, [draftText]);
 
+  if (connectResult?.auth?.kind === "oauth") {
+    const connectionUrl = typeof connectResult.connection.config?.url === "string"
+      ? connectResult.connection.config.url
+      : typeof connectResult.connection.transportConfig?.url === "string"
+        ? connectResult.connection.transportConfig.url
+        : "";
+    return (
+      <OAuthConnectStateScreen
+        identity={{
+          name: connectResult.application.name,
+          unverifiedHost: endpointHost(connectionUrl),
+        }}
+        phase={oauthPhase}
+        error={oauthError}
+        authorizationHost={authorizationHost}
+        onRetry={() => {
+          setOAuthError(null);
+          setAuthorizationHost(null);
+          setOAuthPhase("starting");
+          oauthStartMutation.mutate(connectResult.connectionId);
+        }}
+        onBack={() => navigate(`/apps/${connectResult.connectionId}/permissions`)}
+        onCancel={() => navigate("/apps")}
+      />
+    );
+  }
+
   return (
     <div className="space-y-5">
-      <p className="max-w-2xl text-sm text-muted-foreground">
-        Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
-      </p>
+      <div className="flex max-w-2xl items-start gap-1.5">
+        <p className="text-sm text-muted-foreground">
+          Paste the MCP config snippet from the tool's README and we'll turn it into a friendly setup.
+        </p>
+        <McpConfigHelpDialog />
+      </div>
       <p className="text-xs text-muted-foreground">
         Just a URL?{" "}
         <Link to="/apps" className="text-primary hover:underline">
@@ -225,6 +322,10 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
                 <DraftCard
                   key={`${draft.name}-${index}`}
                   draft={draft}
+                  connectionName={connectionNames[draft.name] ?? draft.name}
+                  onConnectionNameChange={(value) =>
+                    setConnectionNames((previous) => ({ ...previous, [draft.name]: value }))
+                  }
                   credentialValues={credentialValues}
                   onCredentialChange={(configPath, value) =>
                     setCredentialValues((prev) => ({ ...prev, [credentialValueKey(draft, configPath)]: value }))
@@ -275,6 +376,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
 
 function DraftCard({
   draft,
+  connectionName,
+  onConnectionNameChange,
   credentialValues,
   onCredentialChange,
   checking,
@@ -282,6 +385,8 @@ function DraftCard({
   onCheck,
 }: {
   draft: McpJsonImportDraft;
+  connectionName: string;
+  onConnectionNameChange: (value: string) => void;
   credentialValues: Record<string, string>;
   onCredentialChange: (configPath: string, value: string) => void;
   checking: boolean;
@@ -302,6 +407,18 @@ function DraftCard({
           </Button>
         ) : null}
       </div>
+
+      {onCheck ? (
+        <label className="mt-4 block max-w-sm space-y-1 text-xs font-medium text-foreground">
+          Connection name
+          <Input
+            value={connectionName}
+            onChange={(event) => onConnectionNameChange(event.target.value)}
+            placeholder={draft.name}
+            className="h-8 text-xs"
+          />
+        </label>
+      ) : null}
 
       {draft.credentialFields.length > 0 ? (
         <div className="mt-4 space-y-3">
@@ -376,7 +493,7 @@ function CatalogReview({
             Review actions for {result.application.name}
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Health and catalog checks passed. Read-only actions start on; actions that can change data start off.
+            Health and catalog checks passed. Every discovered action starts allowed; you can narrow access after activation.
           </p>
         </div>
         <Button size="sm" onClick={onFinish} disabled={finishing || enabledCount === 0 || Boolean(activatedName)}>

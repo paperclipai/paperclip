@@ -4,13 +4,24 @@
 
 import { api } from "./client";
 
+/**
+ * The safe scalar login fields the server projects for an adapter that declares
+ * an interactive login capability. The projection carries no function member and
+ * no secret. The form reads it to pick the login flow and the login panel.
+ */
+export interface AdapterLoginProjection {
+  panelMode: "displayed_code" | "submitted_browser_code";
+  timeoutPolicy: "caller_bounded" | "fixed";
+}
+
 export interface AdapterCapabilities {
   supportsInstructionsBundle: boolean;
   supportsSkills: boolean;
   supportsLocalAgentJwt: boolean;
   requiresMaterializedRuntimeSkills: boolean;
-  supportsModelProfiles: boolean;
   supportsAcp: boolean;
+  /** Present only when the adapter declares an interactive login capability. */
+  login?: AdapterLoginProjection;
 }
 
 export interface AcpTargetDescriptor {
@@ -23,6 +34,8 @@ export interface AcpTargetDescriptor {
 }
 
 export interface AdapterInfo {
+  supportedRunners?: import("@paperclipai/shared").AgentRunner[];
+  defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -52,7 +65,14 @@ export interface AdapterInstallResult {
 
 export const adaptersApi = {
   /** List all registered adapters (built-in + external). */
-  list: () => api.get<AdapterInfo[]>("/adapters"),
+  list: (context?: { companyId: string; environmentId?: string | null }) => {
+    const query = new URLSearchParams();
+    if (context) {
+      query.set("companyId", context.companyId);
+      if (context.environmentId) query.set("environmentId", context.environmentId);
+    }
+    return api.get<AdapterInfo[]>(`/adapters${query.size ? `?${query}` : ""}`);
+  },
 
   /** Install an external adapter from npm or a local path. */
   install: (params: { packageName: string; version?: string; isLocalPath?: boolean }) =>

@@ -717,7 +717,7 @@ describe("modal manifest form defaults", () => {
 
   it("pre-fills the required app name and image so the form works out of the box", () => {
     expect(properties.appName?.default).toBe("paperclip");
-    expect(properties.image?.default).toBe("node:22");
+    expect(properties.image?.default).toBe("node:24");
   });
 
   it("declares no default on secret-ref fields, which would be persisted as a company secret", () => {

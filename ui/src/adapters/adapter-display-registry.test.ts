@@ -1,19 +1,37 @@
 import { describe, expect, it } from "vitest";
 
-import { getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
 
 describe("adapter display registry", () => {
+  it.each([
+    ["openai_dot", "OpenAI Dot"],
+    ["grok_bot", "Grok Bot"],
+    ["muse", "Muse — Personal agent"],
+  ])("keeps saved %s external runners branded by provider", (provider, label) => {
+    const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } });
+    expect(getAdapterDisplay(type).label).toBe(label);
+  });
+  it("brands saved Codex runners as Codex without guessing managed or unknown providers", () => {
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })).toBe("codex_local");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: {} })).toBe("codex_local");
+    for (const provider of ["claude_managed", "aws_agentcore", "unknown"]) {
+      expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })).toBe("paperclip_runner");
+    }
+  });
   it("uses user-facing labels without the legacy local qualifier for built-in adapters", () => {
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } })).toBe("opencode_local");
     expect(getAdapterLabel("codex_local")).toBe("Codex");
     expect(getAdapterLabel("claude_local")).toBe("Claude Code");
     expect(getAdapterLabel("acpx_local")).toBe("ACPX (retired)");
     expect(getAdapterLabel("cursor")).toBe("Cursor");
     expect(getAdapterLabel("gemini_local")).toBe("Gemini CLI");
     expect(getAdapterLabel("grok_local")).toBe("Grok Build");
+    expect(getAdapterLabel("kimi_local")).toBe("Kimi Code");
     expect(getAdapterLabel("hermes_local")).toBe("Hermes");
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
+    expect(agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi" } })).toBe("pi_local");
 
     expect(getAdapterLabels()).toMatchObject({
       codex_local: "Codex",
@@ -22,6 +40,7 @@ describe("adapter display registry", () => {
       cursor: "Cursor",
       gemini_local: "Gemini CLI",
       grok_local: "Grok Build",
+      kimi_local: "Kimi Code",
       hermes_local: "Hermes",
       hermes_gateway: "Hermes Gateway",
       opencode_local: "OpenCode",

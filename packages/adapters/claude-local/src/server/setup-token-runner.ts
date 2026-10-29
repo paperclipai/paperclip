@@ -1,4 +1,11 @@
 import {
+  raceLoginRunnerExit,
+  type LoginRunnerDisposable,
+  type LoginRunnerLifecycleOptions,
+  type LoginRunnerOutcome,
+  type LoginRunnerResult,
+} from "@paperclipai/adapter-utils";
+import {
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
   type SetupTokenPrompt,
@@ -19,14 +26,17 @@ import {
 // time through the in-memory `onPrompt` callback. It reads the browser code one
 // time through the in-memory `provideCode` callback and writes the code only to
 // the child, only after it matches the prompt. It delivers the token one time
-// through the in-memory `onCredential` callback. The runner keeps the URL, the
-// code, and any token byte out of every log line and every thrown error.
+// through the in-memory `onCredential` sink. The runner keeps the URL, the code,
+// and any token byte out of every log line and every thrown error.
 //
-// Token delivery binds to the success record. The runner scans the post-prompt
-// stream with {@link parseSetupTokenCredential}, which returns the token only
-// from the exact success record. The {@link SETUP_TOKEN_CREDENTIAL_RELEASE_GATE}
-// stays open only while a caller provides an `onCredential` sink; without a sink
-// the runner never scans for the token.
+// Fail-closed credential delivery. The `onCredential` sink is mandatory and
+// awaited. The runner binds the token from the exact success record with
+// {@link parseSetupTokenCredential}, then it awaits the sink one time. It sets
+// `credentialDelivered` true only after the sink resolves. A missing sink, a
+// success stream with no token, and a sink rejection each end the run as a
+// failure; the runner never reports success without a resolved sink. The runner
+// zeros the token bytes in a `finally` block on every path, so the secret never
+// outlives the delivery.
 
 /** The fixed Claude setup-token command. The login flow needs a PTY. */
 export const CLAUDE_SETUP_TOKEN_COMMAND = "claude setup-token";
@@ -62,19 +72,11 @@ export const CODE_SUBMIT_SETTLE_MS = 150;
 export const CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS = 64 * 1024;
 
 /**
- * The release gate for the credential seam. The gate is open, so the runner
- * delivers the token that {@link parseSetupTokenCredential} binds from the
- * success record. The runner still scans for the token only when a caller
- * provides an `onCredential` sink.
- */
-export const SETUP_TOKEN_CREDENTIAL_RELEASE_GATE: boolean = true;
-
-/**
  * The child side of the setup-token run. The runner never spawns the PTY
  * directly; a caller injects a concrete driver. A production driver binds these
  * methods to a PTY child that runs {@link CLAUDE_SETUP_TOKEN_COMMAND}.
  */
-export interface SetupTokenPtyDriver {
+export interface SetupTokenPtyDriver extends LoginRunnerDisposable {
   /**
    * Starts `command` in a PTY and streams the terminal output to `onData` in
    * memory. Resolves with the child exit code when the child ends. A driver must
@@ -92,8 +94,6 @@ export interface SetupTokenPtyDriver {
    * and safe to call more than one time.
    */
   stop(): void;
-  /** Releases the driver resources. */
-  dispose(): Promise<void>;
 }
 
 /** Receives the parsed prompt one time in memory. The caller displays it. */
@@ -108,44 +108,45 @@ export type SetupTokenCodeProvider = (signal: AbortSignal) => Promise<string>;
 
 /**
  * Receives the credential bytes one time in memory on success. The runner binds
- * the token from the success record, then it invokes this sink one time with the
- * token bytes. The runner never logs the bytes and never stores them on the
- * result.
+ * the token from the success record, then it awaits this sink one time with the
+ * token bytes. The sink is mandatory and it returns a promise; the runner awaits
+ * that promise before it reports success. A sink rejection ends the run as a
+ * failure. The runner never logs the bytes and never stores them on the result.
  */
-export type SetupTokenCredentialSink = (authBytes: Buffer) => void | Promise<void>;
+export type SetupTokenCredentialSink = (authBytes: Buffer) => Promise<void>;
 
-export type SetupTokenOutcome = "success" | "failure" | "timeout" | "cancelled";
+/** The setup-token runner outcome. It is a fixed, non-secret status. */
+export type SetupTokenOutcome = LoginRunnerOutcome;
 
-/** The runner result. It never carries a URL, a code, or a token byte. */
-export interface SetupTokenLoginResult {
-  outcome: SetupTokenOutcome;
-  exitCode: number | null;
-  promptSurfaced: boolean;
+/**
+ * The runner result. It never carries a URL, a code, or a token byte. It extends
+ * the base result with the two setup-token status fields.
+ */
+export interface SetupTokenLoginResult extends LoginRunnerResult {
   codeSubmitted: boolean;
   /** True when the runner bound the token and invoked `onCredential` one time. */
   credentialDelivered: boolean;
 }
 
-export interface RunSetupTokenLoginOptions {
+export interface RunSetupTokenLoginOptions extends LoginRunnerLifecycleOptions {
   /** The login command. Defaults to {@link CLAUDE_SETUP_TOKEN_COMMAND}. */
   command?: string;
   /** Receives the parsed prompt one time in memory. The caller displays it. */
   onPrompt: SetupTokenPromptSink;
   /** Returns the one browser code. The runner writes it to the matched prompt. */
   provideCode: SetupTokenCodeProvider;
-  /** The credential sink. The runner invokes it one time with the token bytes. */
+  /**
+   * The credential sink. The runner awaits it one time with the token bytes and
+   * reports success only after it resolves. The sink is mandatory for a
+   * successful run: a missing sink ends the run as a failure. The option stays
+   * optional so a caller can drive a fail-closed path with no sink.
+   */
   onCredential?: SetupTokenCredentialSink;
   /**
    * The settle delay in milliseconds between the code write and the terminator
    * write. Defaults to {@link CODE_SUBMIT_SETTLE_MS}. A test sets it to 0.
    */
   codeSubmitSettleMs?: number;
-  /** The host-side timeout in milliseconds. */
-  timeoutMs: number;
-  /** An optional cancellation signal. */
-  signal?: AbortSignal;
-  /** A non-leaking progress sink. It receives only fixed status lines. */
-  log?: (line: string) => void;
 }
 
 /**
@@ -164,45 +165,6 @@ function settleDelay(ms: number, signal: AbortSignal): Promise<void> {
     };
     const timer = setTimeout(done, ms);
     signal.addEventListener("abort", done, { once: true });
-  });
-}
-
-type RaceResult =
-  | { kind: "exit"; exitCode: number | null }
-  | { kind: "timeout" }
-  | { kind: "cancelled" };
-
-/**
- * Races the streaming start against the timeout and the cancellation signal. The
- * start result resolves the race; the timeout and the signal resolve the race
- * with a terminal status. A driver error rejects the race, so the caller can
- * convert it to a fixed, non-secret error. A late start rejection after the race
- * already settled is consumed here, so it never becomes an unhandled rejection.
- */
-function raceStart(
-  start: Promise<{ exitCode: number | null }>,
-  timeoutMs: number,
-  signal: AbortSignal,
-): Promise<RaceResult> {
-  return new Promise<RaceResult>((resolve, reject) => {
-    let settled = false;
-    const cleanup = () => {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-    };
-    const finish = (run: () => void) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      run();
-    };
-    const timer = setTimeout(() => finish(() => resolve({ kind: "timeout" })), timeoutMs);
-    const onAbort = () => finish(() => resolve({ kind: "cancelled" }));
-    signal.addEventListener("abort", onAbort, { once: true });
-    start.then(
-      (value) => finish(() => resolve({ kind: "exit", exitCode: value.exitCode })),
-      (error) => finish(() => reject(error)),
-    );
   });
 }
 
@@ -256,13 +218,16 @@ export async function runSetupTokenLogin(
   let promptSurfaced = false;
   let codeSubmitted = false;
   let submitStarted = false;
+  // The runner sets this true one time, only after the mandatory sink resolves.
   let credentialDelivered = false;
+  // The bound token bytes. The runner binds them from the success record during
+  // the stream, holds them in memory only, awaits the sink one time after a
+  // clean exit, and zeros them in a `finally` block on every path. A null value
+  // means the runner never bound a token.
+  let tokenBytes: Buffer | null = null;
   // The code-input routine runs beside the race. It is self-guarding and never
   // rejects, so an unresolved provider cannot become an unhandled rejection.
   let submitPromise: Promise<void> = Promise.resolve();
-  // The credential-delivery routine runs beside the race. It is self-guarding
-  // and never rejects, so an async sink cannot become an unhandled rejection.
-  let credentialPromise: Promise<void> = Promise.resolve();
 
   // The in-memory prompt buffer. The runner drops it as soon as it finds the
   // prompt, so the secret-bearing stream never lives longer than one parse. The
@@ -306,24 +271,39 @@ export async function runSetupTokenLogin(
     }
   };
 
-  // Binds the token from the token buffer and delivers it one time. The runner
-  // scans only when a caller provides an `onCredential` sink and the gate is
-  // open. It drops the token buffer as soon as the parser binds the token. It
-  // never logs the token and never puts it into a thrown error.
+  // Binds the token from the token buffer one time and holds the bytes in
+  // memory. The runner scans only when a caller provides an `onCredential` sink,
+  // so it never holds the secret-bearing stream without a need. It drops the
+  // token buffer as soon as the parser binds the token. The runner delivers the
+  // bytes later, after a clean exit, through {@link deliverCredential}.
   const captureCredential = (): void => {
-    if (!SETUP_TOKEN_CREDENTIAL_RELEASE_GATE || !onCredential || credentialDelivered) return;
+    if (!onCredential || tokenBytes) return;
     const token = parseSetupTokenCredential(tokenBuffer);
     if (!token) return;
-    credentialDelivered = true;
+    tokenBytes = Buffer.from(token, "utf8");
     tokenBuffer = "";
-    const authBytes = Buffer.from(token, "utf8");
+  };
+
+  // Awaits the mandatory sink one time with the bound token bytes and reports
+  // whether the credential landed. It returns false when the sink is missing,
+  // when the runner bound no token, or when the sink rejects. It does not swallow
+  // a sink rejection: it maps the rejection to a false result, so the caller ends
+  // the run as a failure. It zeros the token bytes in a `finally` block on every
+  // path, so the secret never outlives the delivery.
+  const deliverCredential = async (): Promise<boolean> => {
+    const bytes = tokenBytes;
+    tokenBytes = null;
+    if (!bytes) return false;
     try {
-      credentialPromise = Promise.resolve(onCredential(authBytes)).catch(() => {
-        log("[paperclip] Setup-token login: the credential delivery step errored.");
-      });
+      if (!onCredential) return false;
+      await onCredential(bytes);
       log("[paperclip] Setup-token login: delivered the credential to the sink.");
+      return true;
     } catch {
       log("[paperclip] Setup-token login: the credential delivery step errored.");
+      return false;
+    } finally {
+      bytes.fill(0);
     }
   };
 
@@ -352,10 +332,10 @@ export async function runSetupTokenLogin(
     // The prompt already surfaced. Scan the post-prompt stream for the success
     // token. The runner scans only when a caller provides an `onCredential`
     // sink, so it never holds the secret-bearing stream without a need.
-    if (!SETUP_TOKEN_CREDENTIAL_RELEASE_GATE || !onCredential || credentialDelivered) return;
+    if (!onCredential || tokenBytes) return;
     tokenBuffer += chunk;
     captureCredential();
-    if (!credentialDelivered && tokenBuffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
+    if (!tokenBytes && tokenBuffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
       tokenBuffer = tokenBuffer.slice(tokenBuffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
     }
   };
@@ -375,7 +355,7 @@ export async function runSetupTokenLogin(
     }
 
     const start = driver.start(command, onData);
-    const raced = await raceStart(start, timeoutMs, controller.signal);
+    const raced = await raceLoginRunnerExit(start, timeoutMs, controller.signal);
     // Release a pending code-input routine, then let it settle. The routine is
     // self-guarding, so this await never rejects.
     controller.abort();
@@ -396,10 +376,16 @@ export async function runSetupTokenLogin(
       return result("failure", exitCode);
     }
 
-    // The runner captured the token from the stream during `onData` and
-    // delivered it through `onCredential`. Await a pending async sink, so the
-    // credential fully lands before the runner reports success.
-    await credentialPromise;
+    // The command exited cleanly. Deliver the bound token through the mandatory
+    // sink and await it. The runner fails closed: a missing sink, a clean exit
+    // with no bound token, and a sink rejection each end the run as a failure. It
+    // reports success only after the sink resolves.
+    const delivered = await deliverCredential();
+    if (!delivered) {
+      log("[paperclip] Setup-token login: the credential did not land; treating the run as a failure.");
+      return result("failure", exitCode);
+    }
+    credentialDelivered = true;
 
     log("[paperclip] Setup-token login command ended successfully.");
     return result("success", exitCode);
@@ -409,6 +395,14 @@ export async function runSetupTokenLogin(
     throw new Error("setup-token login failed: the sandbox login command errored.");
   } finally {
     if (signal) signal.removeEventListener("abort", onExternalAbort);
+    // Zero any bound token bytes that the delivery path did not consume, so a
+    // timeout, a cancellation, or an error never leaves the secret in memory. The
+    // cast restores the type that the closure assignment widens away.
+    const leftover = tokenBytes as Buffer | null;
+    if (leftover) {
+      leftover.fill(0);
+      tokenBytes = null;
+    }
     // Stop a pending code-input routine, then stop the child and dispose.
     controller.abort();
     await stopAndDispose(driver, log);

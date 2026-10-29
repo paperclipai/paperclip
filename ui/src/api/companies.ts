@@ -21,7 +21,12 @@ import {
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
-import { api } from "./client";
+import { api, detachInflightGet, type RequestOptions } from "./client";
+
+// The board navigates only into companies the user can enter. The unscoped
+// directory also includes companies visible solely through instance admin.
+const COMPANIES_LIST_PATH = "/companies?scope=accessible";
+const COMPANIES_DIRECTORY_PATH = "/companies";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
@@ -75,7 +80,15 @@ export interface CompanyImportJobStatus {
 }
 
 export const companiesApi = {
-  list: () => api.get<Company[]>("/companies"),
+  list: () => api.get<Company[]>(COMPANIES_LIST_PATH),
+  directory: () => api.get<Company[]>(COMPANIES_DIRECTORY_PATH),
+  detachInflightDirectory: () => detachInflightGet(COMPANIES_DIRECTORY_PATH),
+  /**
+   * Call before re-reading the list for a different account: an in-flight
+   * `/companies` GET issued under the previous session would otherwise be
+   * coalesced into, and answer with that account's companies.
+   */
+  detachInflightList: () => detachInflightGet(COMPANIES_LIST_PATH),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
   stats: () => api.get<CompanyStats>("/companies/stats"),
   create: (data: {
@@ -93,11 +106,9 @@ export const companiesApi = {
         | "description"
         | "status"
         | "budgetMonthlyCents"
-        | "attachmentMaxBytes"
         | "requireBoardApprovalForNewAgents"
         | "interactionResolverGovernance"
         | "feedbackDataSharingEnabled"
-        | "brandColor"
         | "logoAssetId"
       >
     >,
@@ -114,8 +125,9 @@ export const companiesApi = {
   exportPreview: (
     companyId: string,
     data: CompanyPortabilityExportRequest,
+    options?: RequestOptions,
   ) =>
-    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
+    api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data, options),
   exportFidelity: (companyId: string) =>
     api.get<ExportFidelityReport>(`/companies/${companyId}/export/fidelity`),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>

@@ -80,6 +80,11 @@ describe("runHealth + failingPaths", () => {
     expect(runHealth(run({ status: "passed" }), steps)).toBe("green");
   });
 
+  it("is amber for a passed partial-catalog run", () => {
+    const steps = [step({ path: "P1", scenarioStep: "connect", status: "pass" })];
+    expect(runHealth(run({ status: "passed", summary: { partial: true } }), steps)).toBe("amber");
+  });
+
   it("is amber for a running run or an empty run", () => {
     expect(runHealth(run({ status: "running" }), [])).toBe("amber");
     expect(runHealth(run({ status: "passed" }), [])).toBe("amber");

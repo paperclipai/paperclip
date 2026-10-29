@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { ChevronRight } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,32 +11,38 @@ import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-
 export function SetupPanel({
   connection,
   galleryEntry,
-  onToggleApp,
-  appToggleDisabled,
   onUpdateConfig,
   configUpdateDisabled,
-  onStartOAuth,
-  oauthStartDisabled,
+  identities,
+  agentsSummary,
+  permissionsSummary,
+  permissionsLoading,
+  onOpenPermissions,
 }: Pick<
   AppDetailSectionProps,
   "connection" | "galleryEntry"
 > & {
-  onToggleApp: () => void;
-  appToggleDisabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
   configUpdateDisabled: boolean;
-  onStartOAuth: () => void;
-  oauthStartDisabled: boolean;
+  /**
+   * The fixed Identity section. It replaces the old generic OAuth "workspace
+   * authorization" block and shows the identity type chosen during setup.
+   */
+  identities?: ReactNode;
+  agentsSummary: string;
+  permissionsSummary: string | null;
+  permissionsLoading: boolean;
+  onOpenPermissions: () => void;
 }) {
-  const description = galleryEntry?.description ?? null;
-  const oauth = connection.config?.oauth;
-  const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
-  const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
   return (
-    <div className="space-y-6">
-      {description && (
-        <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
-      )}
+    <div className="space-y-10">
+      {identities}
+      <SetupLinkSection title="Agents" summary={agentsSummary} onClick={onOpenPermissions} />
+      <SetupLinkSection
+        title="Actions"
+        summary={permissionsLoading ? "Loading permissions…" : permissionsSummary ?? "Manage permissions"}
+        onClick={onOpenPermissions}
+      />
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
@@ -43,47 +50,89 @@ export function SetupPanel({
           onUpdateConfig={onUpdateConfig}
         />
       )}
-      {hasOAuthSignIn && (
-        <OAuthConnectionSection
-          connected={Boolean((oauth as Record<string, unknown>).connectedAt)}
-          providerName={appDefinitionSlug(galleryEntry) === "notion" ? "Notion" : isSmokeLabFixture ? "Smoke OAuth" : "OAuth"}
-          disabled={oauthStartDisabled}
-          onStart={onStartOAuth}
-        />
+      {appDefinitionSlug(galleryEntry) === "posthog" && (
+        <PostHogConfigurationSection connection={connection} />
       )}
-      <AppLifecycleSection connection={connection} disabled={appToggleDisabled} onToggle={onToggleApp} />
     </div>
   );
 }
 
-function OAuthConnectionSection({
-  connected,
-  providerName,
-  disabled,
-  onStart,
+function SetupLinkSection({
+  title,
+  summary,
+  onClick,
 }: {
-  connected: boolean;
-  providerName: string;
-  disabled: boolean;
-  onStart: () => void;
+  title: string;
+  summary: string;
+  onClick: () => void;
 }) {
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">
-            {connected ? `${providerName} connected` : `Connect with ${providerName}`}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {connected
-              ? "Your workspace authorization is active. Reconnect any time to replace it."
-              : "Open the provider's consent page to finish connecting this app."}
-          </p>
-        </div>
-        <Button type="button" disabled={disabled} onClick={onStart}>
-          {connected ? "Reconnect" : `Connect with ${providerName}`}
-        </Button>
-      </div>
+    <section className="space-y-3">
+      <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex w-full items-center justify-between gap-4 rounded-lg border border-border px-4 py-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="min-w-0 text-sm text-muted-foreground">{summary}</span>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </button>
+    </section>
+  );
+}
+
+/**
+ * Provider label used in identity and revoke copy. Falls back to the app's own
+ * display name so a pasted server never reads as a generic "OAuth".
+ */
+export function connectionProviderName(
+  galleryEntry: Parameters<typeof appDefinitionSlug>[0],
+  fallback: string,
+): string {
+  switch (appDefinitionSlug(galleryEntry)) {
+    case "notion":
+      return "Notion";
+    case "posthog":
+      return "PostHog";
+    case "gmail":
+      return "Gmail";
+    case "google-sheets":
+      return "Google Sheets";
+    default:
+      return fallback;
+  }
+}
+
+function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const raw = connection.config?.methodConfig;
+  const config = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
+  const features = typeof config.features === "string" ? config.features : "None";
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const rows = [
+    ["Connection method", method],
+    ["Project pin", typeof config.projectId === "string" ? config.projectId : "Use active project"],
+    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
+    ["Feature groups", features],
+    ["Individual tools", tools],
+    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+  ];
+  return (
+    <section>
+      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">
+        PostHog uses its normal account defaults unless you narrow the optional controls below.
+      </p>
+      <dl className="mt-4 divide-y divide-border">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-4">
+            <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+            <dd className="break-words text-sm text-foreground sm:col-span-2">{value}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -113,7 +162,7 @@ function GoogleSheetsAllowlistSection({
     onUpdateConfig(googleSheetsConfigWithAllowlist(connection.config, nextIds));
 
   return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
+    <section>
       <div>
         <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
@@ -195,41 +244,6 @@ function GoogleSheetsAllowlistSection({
   );
 }
 
-export function AppLifecycleSection({
-  connection,
-  disabled,
-  onToggle,
-}: {
-  connection: ToolConnection;
-  disabled: boolean;
-  onToggle: () => void;
-}) {
-  const enabled = connection.enabled !== false && connection.status !== "disabled";
-  return (
-    <section className="rounded-xl border border-border bg-card px-5 py-4">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-bold text-foreground">
-            {enabled ? "Agents can use this app" : "This app is paused"}
-          </h2>
-          <p className="mt-0.5 text-sm text-muted-foreground">
-            {enabled
-              ? "Pause it to stop every agent from using its actions."
-              : "Resume it when agents should be able to use its actions again."}
-          </p>
-        </div>
-        <ToggleSwitch
-          aria-label={enabled ? "Pause this app" : "Resume this app"}
-          checked={enabled}
-          disabled={disabled}
-          onCheckedChange={onToggle}
-          size="lg"
-        />
-      </div>
-    </section>
-  );
-}
-
 export function QuarantinedActionsReview({
   entries,
   disabled,
@@ -243,8 +257,8 @@ export function QuarantinedActionsReview({
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
   return (
-    <section className="overflow-hidden rounded-xl border border-amber-500/40 bg-amber-500/[0.08]">
-      <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
             Review {count} new {count === 1 ? "action" : "actions"}
@@ -272,12 +286,12 @@ export function QuarantinedActionsReview({
           </button>
         </div>
       </div>
-      <div className="divide-y divide-amber-500/25 border-y border-amber-500/25 bg-background">
+      <div className="divide-y divide-border">
         {entries.map((entry) => {
           const enabled = enabledIds.has(entry.id);
           const label = entry.title ?? entry.toolName;
           return (
-            <div key={entry.id} className="flex items-center gap-3 px-4 py-3">
+            <div key={entry.id} className="flex items-center gap-3 py-3">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium text-foreground">{label}</div>
                 {entry.description && (
@@ -301,7 +315,7 @@ export function QuarantinedActionsReview({
           );
         })}
       </div>
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
           {selectedIds.length} of {count} will be on
         </span>

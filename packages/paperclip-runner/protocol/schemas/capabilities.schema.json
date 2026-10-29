@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json",
+  "title": "PRP negotiated capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "sessionReusePolicy",
+    "driver",
+    "steer",
+    "interrupt",
+    "resume",
+    "runtimeRequests",
+    "structuredResult",
+    "typedEvents"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.prp.capabilities.v1" },
+    "sessionReusePolicy": {
+      "enum": ["new_per_run", "reuse_per_issue", "reuse_per_workspace"]
+    },
+    "driver": {
+      "type": "object",
+      "required": ["kind", "version"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 80 }
+      },
+      "additionalProperties": true
+    },
+    "steer": { "type": "boolean" },
+    "interrupt": { "type": "boolean" },
+    "resume": { "type": "boolean" },
+    "runtimeRequests": { "type": "boolean" },
+    "structuredResult": { "type": "boolean" },
+    "typedEvents": { "type": "boolean" },
+    "typedEventFamilies": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "required": ["family", "version", "availability", "detailLevel"],
+        "properties": {
+          "family": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-z][a-z0-9_.-]*$" },
+          "version": { "const": 1 },
+          "availability": { "enum": ["available", "unsupported", "policy_disabled"] },
+          "detailLevel": { "enum": ["summary", "structured"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "semanticTools": {
+      "type": "object",
+      "required": ["schema", "schemaVersion", "operations"],
+      "properties": {
+        "schema": { "const": "paperclip.prp.semantic_tools.v1" },
+        "schemaVersion": { "const": 1 },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["operationId", "version", "availability", "redactionDisposition"],
+            "properties": {
+              "operationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+              },
+              "version": { "const": 1 },
+              "availability": { "enum": ["available", "denied", "unsupported"] },
+              "redactionDisposition": { "const": "digest_only" },
+              "requiredClaims": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1, "maxLength": 160 },
+                "uniqueItems": true
+              },
+              "reasonCode": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[a-z][a-z0-9_.:-]*$"
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "unsupported": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": true
+}

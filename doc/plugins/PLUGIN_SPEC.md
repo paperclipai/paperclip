@@ -245,10 +245,10 @@ This on-disk model is the reason the current implementation expects a persistent
 Paperclip should add CLI commands:
 
 - `pnpm paperclipai plugin list`
-- `pnpm paperclipai plugin install <package[@version]>`
-- `pnpm paperclipai plugin uninstall <plugin-id>`
-- `pnpm paperclipai plugin upgrade <plugin-id> [version]`
-- `pnpm paperclipai plugin doctor <plugin-id>`
+- `npx paperclipai plugin install <package[@version]>`
+- `npx paperclipai plugin uninstall <plugin-id>`
+- `npx paperclipai plugin upgrade <plugin-id> [version]`
+- `npx paperclipai plugin doctor <plugin-id>`
 
 These commands are instance-level operations.
 
@@ -360,6 +360,7 @@ export interface PaperclipPluginManifestV1 {
         | "sidebarPanel"
         | "projectSidebarItem"
         | "globalToolbarButton"
+        | "appShellOverlay"
         | "toolbarButton"
         | "contextMenuItem"
         | "commentAnnotation"
@@ -372,6 +373,10 @@ export interface PaperclipPluginManifestV1 {
       exportName: string;
       /** For detailTab: which entity types this tab appears on */
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
+      /** Optional agent detail tab mirrored beside a running task.
+       * Declared board GET route scoped to agent :entityId returns { available: boolean }.
+       */
+      taskSidePanel?: { availabilityPath: string };
       /** For page and companySettingsPage: single route segment */
       routePath?: string;
     }>;
@@ -395,6 +400,11 @@ Rules:
   - `projects` → `projects.managed`
   - `routines` → `routines.managed`
   - `skills` → `skills.managed`
+- an `environmentDrivers` entry with `kind: "sandbox_provider"` declares sandbox
+  capabilities through `sandboxCapabilities`. See the
+  [sandbox provider capability contract](./SANDBOX_PROVIDER_CAPABILITIES.md) for
+  the supported keys, the worker-method prerequisites, and the narrowing and
+  failure rules.
 
 ## 11. Agent Tools
 
@@ -490,6 +500,7 @@ If a worker fails:
 - keep the rest of the instance running
 - retry start with bounded backoff
 - do not drop other plugins or core services
+- a bundled plugin (shipped with the release image) that is still `error` at the next server boot is moved back to `ready` once per boot, so the startup loader gets a fresh activation attempt; an operator-`disabled` plugin is never touched
 
 ## 12.5 Graceful Shutdown Policy
 
@@ -1512,7 +1523,7 @@ When a plugin is uninstalled, the host must handle plugin-owned data explicitly.
 3. Plugin-owned data (`plugin_state`, `plugin_entities`, `plugin_jobs`, `plugin_job_runs`, `plugin_webhook_deliveries`, `plugin_config`) is retained for a configurable grace period (default: 30 days).
 4. During the grace period, the operator can reinstall the same plugin and recover its state.
 5. After the grace period, the host purges all plugin-owned data for the uninstalled plugin.
-6. The operator may force-purge immediately via CLI: `pnpm paperclipai plugin purge <plugin-id>`.
+6. The operator may force-purge immediately via CLI: `npx paperclipai plugin purge <plugin-id>`.
 
 ### 25.2 Upgrade Data Considerations
 
@@ -1676,7 +1687,7 @@ expect(data.syncedCount).toBeGreaterThan(0);
 
 For developing a plugin against a running Paperclip instance:
 
-- The operator installs the plugin from a local path: `pnpm paperclipai plugin install ./path/to/plugin`
+- The operator installs the plugin from a local path: `npx paperclipai plugin install ./path/to/plugin`
 - The host watches the plugin directory for changes and restarts the worker on rebuild.
 - `devUiUrl` in plugin config can point to a local Vite dev server for UI hot-reload.
 - The plugin settings page shows real-time logs from the worker for debugging.
@@ -1837,3 +1848,37 @@ Paperclip should implement:
 - strict preservation of core governance and audit rules
 
 That is the complete target design for the Paperclip plugin system.
+
+### Browser WebSocket API routes
+
+A scoped API route may declare `transport: "websocket"` with `method: "GET"`
+and `auth: "board"`. Its upgrade runs through the ordinary HTTP authentication
+and company checks and requires a trusted browser Origin. Use
+`companyResolution: { from: "agent", param: "agentId" }` to apply the existing
+`agent:read` decision to the agent selected by the path.
+
+The worker's `onApiRequest` returns `{ websocket: { url, headers } }` for an
+available upstream. The URL must use WSS. These connection details remain in
+trusted server memory and are never returned to the browser as JSON. Browser
+cookies and Origin are not forwarded. Worker response headers cannot override
+WebSocket negotiation or forwarding headers. A failure can return an HTTP error
+status without an upstream. Ordinary HTTP requests cannot open this transport.
+
+The host pipes binary frames with socket backpressure, closes both ends on
+disconnect or worker shutdown, and limits each connection to five minutes.
+Clients may reconnect; every reconnect repeats authorization and worker
+resolution. The route's worker must resolve targets from its trusted resource
+bindings rather than accepting upstream addresses from browser parameters.
+
+The transport carries opaque text and binary WebSocket frames. For example,
+a plugin can declare `/channels/:channelId` for build output, metrics, or a
+remote tool protocol. The worker receives the route key and parameters and
+selects the upstream; Core does not interpret channel contents or require an
+agent resource. WebSocket routes support query or entity-based company
+resolution; body-based resolution is rejected because browser upgrade requests
+cannot send a request body. Ordinary HTTP routes retain body-based resolution.
+
+Agent detail-tab contributions are also independent of WebSockets. Any plugin
+can mount a detail component, including a report or notes view backed by its
+normal JSON API or UI bridge. The sidebar and detail page select declared slots
+by plugin key and slot ID, with no knowledge of the component's subject.

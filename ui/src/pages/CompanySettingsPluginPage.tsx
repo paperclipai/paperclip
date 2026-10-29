@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useParams } from "@/lib/router";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { QueryErrorState } from "@/components/QueryView";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
 
@@ -25,7 +26,7 @@ export function CompanySettingsPluginPage() {
     ? companies.find((company) => company.id === resolvedCompanyId)?.issuePrefix ?? null
     : null;
 
-  const { slots, isLoading, errorMessage } = usePluginSlots({
+  const { slots, isLoading, errorMessage, error, retry } = usePluginSlots({
     slotTypes: ["companySettingsPage"],
     companyId: resolvedCompanyId,
     enabled: Boolean(resolvedCompanyId && settingsRoutePath),
@@ -50,19 +51,16 @@ export function CompanySettingsPluginPage() {
     if (hasInvalidCompanyPrefix) {
       return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
     }
-    return <div className="text-sm text-muted-foreground">Select a company to view this page.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to view this page.</div>;
   }
 
   if (!settingsRoutePath || isLoading) {
     return <div className="text-sm text-muted-foreground">Loading...</div>;
   }
 
+  // Only a real failure reaches here; an outage keeps `isLoading` true above.
   if (errorMessage) {
-    return (
-      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-        Plugin extensions unavailable: {errorMessage}
-      </div>
-    );
+    return <QueryErrorState error={error} action="load plugin extensions" onRetry={retry} className="max-w-xl" />;
   }
 
   if (pageSlots.length > 1) {
@@ -78,11 +76,13 @@ export function CompanySettingsPluginPage() {
   }
 
   return (
-    <PluginSlotMount
-      slot={pageSlot}
-      context={{ companyId: resolvedCompanyId, companyPrefix }}
-      className="min-h-(--sz-200px)"
-      missingBehavior="placeholder"
-    />
+    <div className="max-w-6xl">
+      <PluginSlotMount
+        slot={pageSlot}
+        context={{ companyId: resolvedCompanyId, companyPrefix }}
+        className="min-h-(--sz-200px)"
+        missingBehavior="placeholder"
+      />
+    </div>
   );
 }

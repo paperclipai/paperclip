@@ -11,7 +11,13 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
 
-export type CrossIssueInfluenceKind = "comment" | "update";
+/**
+ * Every kind shares one per-run counter. `interaction_resolution` covers the
+ * issue-thread accept/reject/respond/verdict routes: an open `anyone` resolver
+ * audience is not a licence to resolve, wake, and spawn suggested tasks across
+ * the whole company from one run.
+ */
+export type CrossIssueInfluenceKind = "comment" | "update" | "interaction_resolution";
 
 export type CrossIssueInfluenceDecision = {
   allowed: boolean;
@@ -103,11 +109,16 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // An unscoped run (timer heartbeat with no checked-out issue) has no source
+    // issue, so every issue write it makes is cross-issue by definition and
+    // spends the cap. The locked run row above is the attribution anchor;
+    // rejecting these writes as run-less left live heartbeat runs unable to
+    // comment or update any task at all.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId !== null &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }

@@ -335,3 +335,144 @@ Check:
 - [doc/RELEASING.md](RELEASING.md)
 - [doc/PUBLISHING.md](PUBLISHING.md)
 - [doc/plans/2026-03-17-release-automation-and-versioning.md](plans/2026-03-17-release-automation-and-versioning.md)
+
+## Runner verification dependency cache
+
+`release-verify.yml` runs `Verify Paperclip Runner` on two independent runners.
+The protocol lane runs `check:eval-kernel` and `check:protocol`. The Rust lane
+runs `check:runner` and `check:api-authority`. Together they retain every check
+in `check:all`; both lanes must pass before Cloud source verification or
+readiness can succeed. A failed lane does not cancel the other lane.
+
+Both lanes restore Cargo dependencies with the pinned Rust Cache action. The
+compiler comes from the Runner package's `rust-toolchain.toml` before the action
+computes its key. Compiler and Cargo metadata changes select a new cache. The
+`release-runner-v2` shared key avoids separate copies for these lanes.
+Only the Rust lane saves this cache. After verification it also runs `build:rust`
+to warm the debug dependencies used by the protocol lane; its own tests already
+warm release dependencies. The cache writer is shorter than the protocol lane.
+
+GitHub matches a cache entry on its key and on a version hash of the absolute
+paths in the entry. The master writer runs on the RunsOn fleet, where the
+checkout is `/home/runner/_work/paperclip/paperclip`. The trusted PR workflow
+restores the same entry read-only on GitHub-hosted runners, where the checkout
+is `/home/runner/work/paperclip/paperclip`. A `Pin the Runner Rust workspace
+path` step in both workflows links `$HOME/paperclip-runner-rust` to the Runner
+crate and passes that path to the cache action, so both layouts hash the same
+paths and the PR lanes can restore master's entry. The guard tests under
+`.github/scripts/tests/` require this step, with identical text, before every
+Rust cache step in both workflows.
+
+Workspace crates and installed Cargo binaries are excluded from this entry.
+Every run runs all assigned checks, including on a cache hit. Only an
+own-repository master-push run verifying that push's exact SHA can restore the
+cache, and only a successful Rust lane saves it. PR, tag, and manual candidate
+verification compile without this cache. A miss or eviction costs compilation
+time but does not change the checks. To discard old dependency caches, increment
+the shared-key version and let the next successful master verification warm it.
+
+### Runner release crate cache
+
+The dependency entry leaves the Runner's own crate out, and a fresh checkout
+invalidates cargo's mtime fingerprints for workspace crates anyway, so every
+pull request build compiled `paperclip-runner-core` in release mode from
+scratch (28-49s per job on 2026-10-11) although most master commits leave its
+inputs untouched. A second, content-addressed entry holds only that crate's
+release artifacts: its fingerprints, the lib's rlib and rmeta, the
+`paperclip-runnerd` binary and their dep-info, about 70 MB. The path list and
+the key inputs live in `scripts/runner-release-crate-cache.mjs`, which both
+workflows call, and `scripts/__tests__/runner-release-crate-cache.test.mjs`
+holds the readers and the writer to them.
+
+The key is `runner-release-crate-v1-<scope>-<hashFiles>`. The scope names the
+platform, the pinned compiler (`rustc --version --verbose`: release, commit and
+host) and a hash of the checkout root, because cargo's dep-info records the
+protocol files the crate includes by relative path as absolute paths. The
+`hashFiles` part covers every input the build reads: the toolchain pin, the
+manifests and lockfile, the crate sources, the protocol schemas and fixtures,
+and the three fixture trees the test modules include (two under the Runner
+package and `tests/runner-e2e/fixtures` at the repository root). Any change
+to any of them selects a new key. A guard test resolves every `include_str!`
+and `include_bytes!` in the crate, whether its argument is a literal or a
+`concat!` of literals, `env!("CARGO_MANIFEST_DIR")` and macro metavariables,
+and fails on an include that lands outside these patterns or uses a form it
+cannot resolve. Readers pass no `restore-keys`: a prefix match would hand
+cargo another revision's output.
+
+The writer is the Rust lane of the same master-push verification, after its
+checks and the debug warm-up. It looks the key up first and, on a miss, runs
+`cargo clean --release -p paperclip-runner-core` and then the package's
+`build:binary` (the exact command the readers run) before saving, so the entry
+carries no test-profile variants. In the trusted PR workflow, the Typecheck,
+Build and Canary Dry Run jobs and the two Verify Paperclip Runner lanes that
+build the crate (`rust` and the final vitest shard) restore the entry
+read-only right after the dependency restore. On a hit, `mark-current` sets
+the mtime of every restored artifact to now, so cargo's freshness check sees
+every source as older than the build and keeps the artifacts. A restore that
+lacks any file cargo reads or checks for either unit (the fingerprint hash
+and dep-info of each unit, the lib's rlib and rmeta, the binary under
+`deps`; measured with cargo 1.97.1, which recompiles without any one of
+them and recreates the uplifted binary without any of the rest) is removed
+instead, the job log names the missing file, and cargo compiles as on a
+miss. `pnpm build`
+then prints `Finished release profile` in well under a second for that crate.
+On a miss nothing changes: cargo compiles the crate as before.
+
+The trust boundary is unchanged: only master writes, a pull request can only
+restore master's entry, and it restores only artifacts built from inputs
+byte-identical to its own merge tree.
+
+The trust boundary is the protected master branch, not the cache-key text.
+GitHub does not let master restore caches created by a child branch, sibling
+branch, tag, or PR merge ref. Both permitted restore scopes (current branch and
+default branch) are master here. A workflow with authority to execute arbitrary
+code on master can affect verification directly and is already trusted. The
+cache contains dependency build artifacts, not credentials or workspace output.
+See [GitHub cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+
+## Chat integration test shards
+
+Release verification runs the large chat integration file on three independent
+runners. Five other server shards cover every remaining general server file.
+The ordinary local test command and trusted PR workflow keep their complete
+`general-server` group. Each chat case shuts down its services, pauses its own
+still-active endpoints, and retires its active/waiting conversations after
+assertions. This keeps workers in later cases from claiming earlier
+fixtures in the shared test database. Application assertions stay unchanged.
+
+Each chat job collects active tests with Vitest, groups cases by source line,
+and balances those groups by case count. Parameterized cases and loop-generated
+cases on one line stay together. The job re-collects with the exact line filters
+it will execute and fails if the selected case identities differ. Hooks and test
+execution remain sequential inside each runner with its own temporary home.
+
+Run one shard locally with:
+
+```sh
+pnpm test:run:general -- --group general-chat --shard-index 0 --shard-count 3
+```
+
+Use indexes 0, 1, and 2 to run the complete chat suite. The CLI validates that
+each shard has work and that collection includes usable source locations. A
+Vitest collection or filtering change fails verification instead of dropping
+tests. Splitting adds three release-verification jobs and repeats collection and
+fixture setup; it does not make a single test faster.
+
+The file-duration manifest also records the native Codex Runner integration
+suite's measured import and execution cost, so the existing file balancer
+accounts for it in both ordinary PR and release verification.
+
+
+## Cloud readiness runner placement
+
+When AWS routing is enabled, Cloud image builds use `paperclip-cloud-build-x64`
+and source verification uses `paperclip-post-merge-x64`. The artifact wait and
+the `Cloud source verified v1` and `Cloud deployable v1` marker jobs run on
+GitHub-hosted runners. These small jobs must not hold or wait for capacity in
+the source-verification fleet. During a merge
+burst, even a completed build must wait for its marker before consumers can
+recognize readiness.
+
+Runner placement does not change readiness requirements: exact-source artifacts,
+all source checks, and the image verification must still pass. The versioned
+markers and their dependency gates are unchanged.

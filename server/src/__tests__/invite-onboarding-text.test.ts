@@ -40,6 +40,9 @@ describe("buildInviteOnboardingTextDocument", () => {
     });
 
     expect(text).toContain("Paperclip Agent Onboarding");
+    expect(text).toContain("use your existing Slack connection");
+    expect(text).toContain("Setup or test restrictions apply only to their stated scope");
+    expect(text).toContain("Never use another Paperclip connection or identity to bypass a denial");
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");

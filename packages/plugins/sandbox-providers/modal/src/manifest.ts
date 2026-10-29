@@ -36,8 +36,8 @@ const manifest: PaperclipPluginManifestV1 = {
           image: {
             type: "string",
             description:
-              "Container image reference passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:22`. The default `node:22` satisfies the sandbox runtime contract (node, sh, and tar on PATH).",
-            default: "node:22",
+              "Container image reference passed to `modal.images.fromRegistry()`, e.g. `python:3.13` or `node:24`. The default `node:24` satisfies the sandbox runtime contract (node, sh, and tar on PATH).",
+            default: "node:24",
           },
           tokenId: {
             type: "string",

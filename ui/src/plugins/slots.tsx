@@ -21,6 +21,7 @@
 import {
   Component,
   createElement,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -39,6 +40,8 @@ import type {
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
 import { authApi } from "@/api/auth";
+import { describeError, isTransientError } from "@/api/errors";
+import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import {
@@ -108,15 +111,25 @@ export type RegisteredPluginComponent =
 
 type SlotFilters = {
   slotTypes: PluginUiSlotType[];
+  taskSidePanel?: boolean;
   entityType?: PluginUiSlotEntityType | null;
   companyId?: string | null;
   enabled?: boolean;
 };
 
 type UsePluginSlotsResult = {
+  /** The last loaded slots. Kept through a transient failure so chrome never disappears. */
   slots: ResolvedPluginSlot[];
+  /** True while nothing has loaded yet, including while reconnecting after an outage. */
   isLoading: boolean;
+  /**
+   * Readable copy for a non-transient failure (`describeError`), or null. A
+   * transient failure never sets this: outlets collapse or render the last
+   * loaded slots, and the app-level connection banner explains the outage.
+   */
   errorMessage: string | null;
+  error: unknown;
+  retry: () => void;
 };
 
 /**
@@ -150,11 +163,6 @@ function usePluginRegistrySubscription(): void {
 
 function requiresEntityType(slotType: PluginUiSlotType): boolean {
   return slotType === "detailTab" || slotType === "taskDetailView" || slotType === "contextMenuItem" || slotType === "commentAnnotation" || slotType === "commentContextMenuItem" || slotType === "projectSidebarItem" || slotType === "toolbarButton";
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error";
 }
 
 /**
@@ -311,12 +319,19 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       source = createReactShimSource(ReactModule);
       break;
     case "react/jsx-runtime":
+      // Prefer the host's real jsx runtime: rebuilding jsx/jsxs on top of
+      // createElement(type, { children }) drops React's static-children
+      // marking, so dev React emits "unique key" warnings for every
+      // multi-child element rendered by a plugin component.
       source = `
-        const R = globalThis.__paperclipPluginBridge__?.react;
+        const BRIDGE = globalThis.__paperclipPluginBridge__;
+        const RUNTIME = BRIDGE?.reactJsxRuntime;
+        const R = BRIDGE?.react;
         const withKey = ${applyJsxRuntimeKey.toString()};
-        export const jsx = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const jsxs = (type, props, key) => R.createElement(type, withKey(props, key));
-        export const Fragment = R.Fragment;
+        const fallbackJsx = (type, props, key) => R.createElement(type, withKey(props, key));
+        export const jsx = RUNTIME?.jsx ?? fallbackJsx;
+        export const jsxs = RUNTIME?.jsxs ?? fallbackJsx;
+        export const Fragment = RUNTIME?.Fragment ?? R.Fragment;
       `;
       break;
     case "react-dom":
@@ -607,10 +622,11 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
   useEffect(() => {
     if (!contributions || contributions.length === 0) return;
 
-    // Filter to contributions that haven't been loaded yet.
+    // Also await imports started by another consumer so this observer gets a
+    // completion render even when there is no export registration (e.g. errors).
     const unloaded = contributions.filter((c) => {
       const state = pluginLoadStates.get(buildPluginModuleKey(c));
-      return state !== "loaded" && state !== "loading";
+      return state !== "loaded";
     });
 
     if (unloaded.length === 0) return;
@@ -640,14 +656,18 @@ function usePluginModuleLoader(contributions: PluginUiContribution[] | undefined
  */
 export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
   const queryEnabled = filters.enabled ?? true;
-  const { data, isLoading: isQueryLoading, error } = useQuery({
+  const query = useQuery({
     queryKey: queryKeys.plugins.uiContributions,
     queryFn: () => pluginsApi.listUiContributions(),
     enabled: queryEnabled,
   });
-
-  // Kick off dynamic imports for any new plugin contributions.
-  usePluginModuleLoader(data);
+  const { data, isLoading: isQueryLoading, error, refetch } = query;
+  // One failed fetch backs every outlet on the page, so an outage must not
+  // fan out into red boxes: only a real (non-transient) failure is reported.
+  const viewKind = queryViewKind(query);
+  const retry = useCallback(() => {
+    void refetch();
+  }, [refetch]);
 
   const slotTypesKey = useMemo(() => [...filters.slotTypes].sort().join("|"), [filters.slotTypes]);
 
@@ -657,6 +677,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     for (const contribution of data ?? []) {
       for (const slot of contribution.slots) {
         if (!allowedTypes.has(slot.type)) continue;
+        if (filters.taskSidePanel && !slot.taskSidePanel) continue;
         if (requiresEntityType(slot.type)) {
           if (!filters.entityType) continue;
           if (!slot.entityTypes?.includes(filters.entityType)) continue;
@@ -679,21 +700,34 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
       return a.displayName.localeCompare(b.displayName);
     });
     return rows;
-  }, [data, filters.entityType, slotTypesKey]);
+  }, [data, filters.entityType, filters.taskSidePanel, slotTypesKey]);
 
-  // Consider loading until both query and module imports are done.
-  const modulesLoaded = data ? aggregateLoadState(data) === "loaded" : true;
-  const isLoading = queryEnabled && (isQueryLoading || !modulesLoaded);
+  // A replacement surface must not disappear while an unrelated plugin loads.
+  const contributions = useMemo(() => {
+    const pluginIds = new Set(slots.map(slot => slot.pluginId));
+    return data?.filter(contribution => pluginIds.has(contribution.pluginId));
+  }, [data, slots]);
+  usePluginModuleLoader(contributions);
+  const modulesLoaded = contributions ? aggregateLoadState(contributions) === "loaded" : true;
+  // Plugin chrome never shows red for a transient failure, even one that
+  // outlasts the retry policy while the server is reachable: with nothing
+  // loaded the outlets stay collapsed, and the next mount or focus refetches.
+  const transientFailure = viewKind === "error" && isTransientError(error);
+  const reportedError = viewKind === "error" && !transientFailure ? error : null;
+  const isLoading = queryEnabled && (isQueryLoading || viewKind === "reconnecting" || transientFailure || !modulesLoaded);
 
   return {
     slots,
     isLoading,
-    errorMessage: error ? getErrorMessage(error) : null,
+    errorMessage: reportedError ? describeError(reportedError).body : null,
+    error: reportedError,
+    retry,
   };
 }
 
 type PluginSlotErrorBoundaryProps = {
   slot: ResolvedPluginSlot;
+  fallback?: ReactNode;
   className?: string;
   children: ReactNode;
 };
@@ -721,6 +755,7 @@ class PluginSlotErrorBoundary extends Component<PluginSlotErrorBoundaryProps, Pl
 
   override render() {
     if (this.state.hasError) {
+      if (this.props.fallback !== undefined) return this.props.fallback;
       return (
         <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", this.props.className)}>
           {this.props.slot.pluginDisplayName}: failed to render
@@ -763,6 +798,10 @@ type PluginSlotMountProps = {
   context: PluginSlotContext;
   className?: string;
   missingBehavior?: "hidden" | "placeholder";
+  /** Host-specific props; slot/context cannot be overridden. */
+  componentProps?: Record<string, unknown>;
+  /** Preserve required host navigation if an optional component is unavailable. */
+  fallback?: ReactNode;
 };
 
 /**
@@ -822,6 +861,8 @@ export function PluginSlotMount({
   context,
   className,
   missingBehavior = "hidden",
+  componentProps,
+  fallback,
 }: PluginSlotMountProps) {
   usePluginRegistrySubscription();
   const [, forceRerender] = useState(0);
@@ -845,6 +886,7 @@ export function PluginSlotMount({
   }, [component, slot.pluginId]);
 
   if (!component) {
+    if (fallback !== undefined) return fallback;
     if (missingBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground", className)}>
@@ -854,15 +896,17 @@ export function PluginSlotMount({
   }
 
   if (component.kind === "react") {
-    const node = createElement(component.component, { slot, context });
+    const node = createElement(component.component, { ...componentProps, slot, context });
     return (
-      <PluginSlotErrorBoundary slot={slot} className={className}>
+      <PluginSlotErrorBoundary key={`${slot.pluginId}:${slot.pluginVersion}:${slot.id}`} slot={slot} className={className} fallback={fallback}>
         <PluginBridgeScope pluginId={slot.pluginId} context={context}>
           {className ? <div className={className}>{node}</div> : node}
         </PluginBridgeScope>
       </PluginSlotErrorBoundary>
     );
   }
+
+  if (componentProps && fallback !== undefined) return fallback;
 
   return (
     <PluginSlotErrorBoundary slot={slot} className={className}>
@@ -882,32 +926,28 @@ type PluginSlotOutletProps = {
   entityType?: PluginUiSlotEntityType | null;
   className?: string;
   itemClassName?: string;
-  errorClassName?: string;
   missingBehavior?: "hidden" | "placeholder";
 };
 
+/**
+ * Renders the plugin slots for a host location. An outlet never shows a
+ * fetch error: while the contributions cannot be loaded it renders the last
+ * loaded slots, or nothing if none have loaded yet. Failures are reported on
+ * the plugin settings pages, where someone can act on them.
+ */
 export function PluginSlotOutlet({
   slotTypes,
   context,
   entityType,
   className,
   itemClassName,
-  errorClassName,
   missingBehavior = "hidden",
 }: PluginSlotOutletProps) {
-  const { slots, errorMessage } = usePluginSlots({
+  const { slots } = usePluginSlots({
     slotTypes,
     entityType,
     companyId: context.companyId,
   });
-
-  if (errorMessage) {
-    return (
-      <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
-        Plugin extensions unavailable: {errorMessage}
-      </div>
-    );
-  }
 
   if (slots.length === 0) return null;
 

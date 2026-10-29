@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1000" width="1500" height="1000"><defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#efe5d2"/><stop offset="1" stop-color="#e2d3b8"/></linearGradient><linearGradient id="fl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9c8a8"/><stop offset="1" stop-color="#cdb992"/></linearGradient><filter id="sh" x="-30%" y="-80%" width="160%" height="260%"><feGaussianBlur stdDeviation="22"/></filter></defs>
+  <rect width="1500" height="1000" fill="url(#bg)"/><path d="M0 640 C400 600 1100 600 1500 640 L1500 1000 L0 1000 Z" fill="url(#fl)"/>
+  <ellipse cx="760" cy="742" rx="430" ry="38" fill="#3b2f1c" opacity="0.38" filter="url(#sh)"/>
+  <g transform="translate(330 250) scale(4.4)">
+    
+    <path d="M56 90 C34 90 10 99 4 110 C2 115 8 118 16 116 C44 108 74 104 108 103 Z" fill="#1d4333"/>
+    <path d="M56 90 C34 90 10 99 4 110 C22 100 44 97 62 96 Z" fill="rgba(0,0,0,0.18)"/>
+    <path d="M48 98 C46 52 76 22 116 22 C156 22 184 52 186 98 C140 104 94 104 48 98 Z" fill="#24523f"/>
+    <path d="M116 22 C100 44 95 70 95 101 M116 22 C140 44 150 70 151 101" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="1.6"/>
+    <path d="M48 98 C94 104 140 104 186 98" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="2.4"/>
+    <circle cx="116" cy="21" r="4.5" fill="#24523f" stroke="rgba(255,255,255,0.16)" stroke-width="1"/>
+    <rect x="60" y="60" width="30" height="19" rx="2.5" fill="#f1e7d2" transform="rotate(-6 75 70)"/>
+  </g>
+  <rect x="96" y="96" width="150" height="150" rx="10" fill="#f8f1e2" opacity="0.6"/><text x="126" y="200" font-family="Georgia, 'Times New Roman', serif" font-size="96" fill="#24523f">a</text></svg>

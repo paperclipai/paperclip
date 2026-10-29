@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
-import { pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
+import { pluginApiRouteDeclarationSchema, pluginManagedRoutineDeclarationSchema, pluginManifestV1Schema, pluginUiSlotDeclarationSchema } from "./plugin.js";
+
+function buildSandboxProviderManifest(driver: Record<string, unknown>) {
+  return {
+    id: "paperclip.capability-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Capability Provider",
+    description: "Sandbox provider that declares fine-grained capabilities.",
+    author: "Paperclip",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "capability-provider",
+        kind: "sandbox_provider",
+        displayName: "Capability Provider",
+        configSchema: { type: "object" },
+        ...driver,
+      },
+    ],
+  };
+}
 
 describe("plugin capability constants", () => {
   it("exposes each capability once", () => {
@@ -9,6 +33,44 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("limits environment skills to unique declarations owned by the plugin", () => {
+    const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
+      capabilities: ["environment.drivers.register", "skills.managed"],
+      skills: [{ skillKey: "desktop", displayName: "Desktop" }] };
+    expect(pluginManifestV1Schema.parse(manifest).environmentDrivers![0].skillKeys).toEqual(["desktop"]);
+    for (const keys of [["missing"], ["desktop", "desktop"]]) {
+      expect(pluginManifestV1Schema.safeParse({ ...manifest,
+        environmentDrivers: [{ ...manifest.environmentDrivers[0], skillKeys: keys }] }).success).toBe(false);
+    }
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["environment.drivers.register"] }).success).toBe(false);
+  });
+  it("retains the agent prerequisite on environment drivers", () => {
+    const manifest = { ...buildSandboxProviderManifest({ requiresAgent: true }), agentLifecycle: true,
+      capabilities: ["environment.drivers.register", "agents.lifecycle.manage"] };
+    expect(pluginManifestV1Schema.parse(manifest).environmentDrivers?.[0]?.requiresAgent).toBe(true);
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ requiresAgent: "true" })).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, agentLifecycle: undefined }).success).toBe(false);
+  });
+  it("requires authority for required agent lifecycle participants", () => {
+    const manifest = { id: "example.lifecycle", apiVersion: 1, version: "0.1.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentLifecycle: true };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["agents.lifecycle.manage"] }).agentLifecycle).toBe(true);
+  });
+
+  it("requires subscription authority and known resource types for durable delivery", () => {
+    const manifest = { id: "example.lifecycle", apiVersion: 1, version: "1.0.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, resourceLifecycle: ["project"] };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["projects.read"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["events.subscribe"] }).resourceLifecycle).toEqual(["project"]);
+    for (const resourceLifecycle of [[], ["issue"]]) {
+      expect(pluginManifestV1Schema.safeParse({ ...manifest, resourceLifecycle, capabilities: ["events.subscribe"] }).success).toBe(false);
+    }
+  });
+
+  it("requires routing authority for native pooled connector declarations without a custom UI bundle", () => {
+    const manifest = { id: "example.pool", apiVersion: 1, version: "0.1.0", displayName: "Pool", description: "Pool", author: "Tests", categories: ["connector"], entrypoints: { worker: "worker.js" }, aiConnectionRouter: { name: "AI connection pool", description: "Use saved connections" } };
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["ui.page.register"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.parse({ ...manifest, capabilities: ["ai.connections.route"] }).aiConnectionRouter).toEqual(manifest.aiConnectionRouter);
+  });
   it("accepts existing-style plugins that do not request access or authorization capabilities", () => {
     const parsed = pluginManifestV1Schema.parse({
       id: "paperclip.compat-dashboard",
@@ -248,5 +310,212 @@ describe("plugin UI slot validators", () => {
     expect(parsed.success).toBe(false);
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
+  });
+});
+
+describe("sandbox provider capability declaration validators", () => {
+  it("preserves a declared acquisition budget and keeps it optional", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ defaultAcquireTimeoutMs: 300_000 }),
+    );
+    expect(parsed.environmentDrivers?.[0]?.defaultAcquireTimeoutMs).toBe(300_000);
+    const legacy = pluginManifestV1Schema.parse(buildSandboxProviderManifest({}));
+    expect(legacy.environmentDrivers?.[0]?.defaultAcquireTimeoutMs).toBeUndefined();
+  });
+
+  it.each([0, -1, 1.5, Infinity, NaN, "300000", 86_400_001])(
+    "rejects an invalid acquisition budget: %s",
+    (defaultAcquireTimeoutMs) => {
+      expect(pluginManifestV1Schema.safeParse(
+        buildSandboxProviderManifest({ defaultAcquireTimeoutMs }),
+      ).success).toBe(false);
+    },
+  );
+
+  it("test_manifest_accepts_sandbox_capabilities_and_rejects_unknown_capability_keys", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          nativeSyncIn: true,
+          nativeSyncOut: false,
+          persistentProcessSessions: true,
+          independentControlCommands: false,
+          incrementalSessionOutput: true,
+        },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      reusableLeases: true,
+      nativeSyncIn: true,
+      nativeSyncOut: false,
+      persistentProcessSessions: true,
+      independentControlCommands: false,
+      incrementalSessionOutput: true,
+    });
+
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: {
+          reusableLeases: true,
+          // A typo or unknown capability name must fail validation, not drop
+          // silently. The nested schema is `.strict()`.
+          nativeSync: true,
+        },
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_manifest_accepts_concurrent_sync_operations_capability", () => {
+    // A provider opts in to parallel bidirectional file sync with this key. The
+    // strict schema accepts it and keeps the declared value.
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncOperations: true },
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.sandboxCapabilities).toEqual({
+      concurrentSyncOperations: true,
+    });
+  });
+
+  it("test_manifest_rejects_unknown_sync_concurrency_capability_key", () => {
+    // A neighboring but unknown concurrency key must fail validation, not drop
+    // silently. The strict schema rejects a capability the host does not honor.
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        sandboxCapabilities: { concurrentSyncAndExec: true },
+      }),
+    );
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_supports_reusable_leases_compat_maps_to_reusable_leases", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsReusableLeases: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    expect(driver?.sandboxCapabilities).toBeUndefined();
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(true);
+  });
+
+  it("test_sandbox_capabilities_reusable_leases_wins_over_compat_field", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsReusableLeases: true,
+        sandboxCapabilities: { reusableLeases: false },
+      }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The nested declaration wins over the legacy compat flag when both exist.
+    expect(resolveDeclaredSandboxCapabilities(driver!).reusableLeases).toBe(false);
+  });
+});
+
+describe("login pty transport capability and legacy alias", () => {
+  it("test_login_pty_new_field_parses_and_carries_the_flag", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsLoginPty: true }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_legacy_alias_only_canonicalizes_onto_login_pty", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({ supportsSetupTokenLogin: true }),
+    );
+    const driver = parsed.environmentDrivers?.[0];
+
+    // The validator maps the deprecated alias onto the canonical field at parse
+    // time, and it drops the alias so a downstream reader cannot read the old
+    // name.
+    expect(driver?.supportsLoginPty).toBe(true);
+    expect(driver).not.toHaveProperty("supportsSetupTokenLogin");
+  });
+
+  it("test_conflicting_alias_and_new_field_reject", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: false,
+      }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_matching_alias_and_new_field_pass", () => {
+    const parsed = pluginManifestV1Schema.parse(
+      buildSandboxProviderManifest({
+        supportsLoginPty: true,
+        supportsSetupTokenLogin: true,
+      }),
+    );
+
+    expect(parsed.environmentDrivers?.[0]?.supportsLoginPty).toBe(true);
+  });
+
+  it("test_unknown_login_field_misspelling_rejects", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPTY: true }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+
+  it("test_login_pty_accepts_literal_booleans_only", () => {
+    const rejected = pluginManifestV1Schema.safeParse(
+      buildSandboxProviderManifest({ supportsLoginPty: "true" }),
+    );
+
+    expect(rejected.success).toBe(false);
+  });
+});
+
+describe("plugin WebSocket company resolution", () => {
+  const route = { routeKey: "channel.connect", method: "GET", path: "/channels/:channelId", auth: "board", capability: "api.routes.register" };
+
+  it("rejects body resolution only for WebSocket routes", () => {
+    const companyResolution = { from: "body", key: "companyId" };
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution }).success).toBe(true);
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(false);
+  });
+
+  it.each([
+    undefined,
+    { from: "query", key: "companyId" },
+    { from: "issue", param: "issueId" },
+    { from: "agent", param: "agentId" },
+  ])("accepts body-free resolution %j", (companyResolution) => {
+    expect(pluginApiRouteDeclarationSchema.safeParse({ ...route, companyResolution, transport: "websocket" }).success).toBe(true);
+  });
+});
+
+describe("plugin task side-panel declarations", () => {
+  const slot = { type: "detailTab", id: "view", displayName: "Live view", exportName: "LiveView", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/view/availability" } };
+  const route = { routeKey: "view.availability", method: "GET", path: slot.taskSidePanel.availabilityPath, auth: "board", capability: "api.routes.register", companyResolution: { from: "agent", param: "entityId" } };
+  const manifest = { id: "example.live-view", apiVersion: 1, version: "1.0.0", displayName: "Live view", description: "Live view", author: "Tests", categories: ["ui"], capabilities: ["ui.detailTab.register", "api.routes.register"], entrypoints: { worker: "worker.js", ui: "ui.js" }, ui: { slots: [slot] }, apiRoutes: [route] };
+  it("accepts an optional panel backed by an authorized plugin-local agent route", () => {
+    expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.taskSidePanel).toEqual(slot.taskSidePanel);
+  });
+  it("accepts a GET availability route when a POST at the same path is declared first", () => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes: [{ ...route, routeKey: "view.update", method: "POST" }, route] }).success).toBe(true);
+  });
+  it.each(["https://example.test/:entityId", "//example/:entityId", "/../:entityId", "/agents/:entityId?redirect=elsewhere", "/agents/:agentId/view"])("rejects unsafe or unsupported path %s", availabilityPath => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { availabilityPath } }).success).toBe(false);
+  });
+  it("rejects non-agent and non-detail contributions", () => {
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, entityTypes: ["issue"] }).success).toBe(false);
+    expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, type: "page" }).success).toBe(false);
+  });
+  it.each([[], [{ ...route, method: "POST" }], [{ ...route, auth: "agent" }], [{ ...route, companyResolution: { from: "query", key: "companyId" } }]].map(apiRoutes => ({ apiRoutes })))("requires a declared board GET route scoped to the supplied agent", ({ apiRoutes }) => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes }).success).toBe(false);
   });
 });

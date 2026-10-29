@@ -1,0 +1,1654 @@
+name: Trusted PR CI
+
+# Rollout is intentionally two-step: merge this reusable workflow first, then
+# replace pr.yml with an immutable-SHA caller so the active CI definition cannot
+# drift from this file.
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+# Test reporters write local artifacts only. The workflow_run exporter owns
+# the Honeycomb credential, so fork PRs cannot execute with it.
+env:
+  PAPERCLIP_CI_PROFILE_DIR: ${{ github.workspace }}/.ci-profile
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
+
+  policy:
+    needs: [gate]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 10
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: policy
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Select compatible Node test command
+        run: |
+          # A rerun can use this trusted workflow with a pre-feature checkout.
+          if [[ -f scripts/ci-profile/node-test.mjs ]]; then
+            echo 'CI_NODE_TEST=scripts/ci-profile/node-test.mjs' >> "$GITHUB_ENV"
+          else
+            echo 'CI_NODE_TEST=--test' >> "$GITHUB_ENV"
+          fi
+
+      - name: Block manual lockfile edits
+        if: >-
+          github.head_ref != 'chore/refresh-lockfile' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
+        run: |
+          # Diff the PR branch against its merge base so recent base-branch commits
+          # do not masquerade as changes made by the PR itself.
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
+            echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
+            exit 1
+          fi
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Validate migration ordering against target branch
+        run: >-
+          node .github/scripts/check-pr-migration-order.mjs
+          "${{ github.event.pull_request.base.sha }}"
+          "${{ github.event.pull_request.head.sha }}"
+
+      - name: Validate Dockerfile deps stage
+        run: |
+          node ./scripts/check-docker-deps-stage.mjs
+          node "$CI_NODE_TEST" ./scripts/docker-deps-postinstall.test.mjs
+
+      - name: Validate Node version policy
+        run: pnpm check:node-version
+
+      - name: Reject git push in adapter/runtime code
+        run: node ./scripts/check-no-git-push.mjs
+
+      - name: Test no-git-push check
+        run: node "$CI_NODE_TEST" ./scripts/check-no-git-push.test.mjs
+
+      - name: Validate feature module boundaries
+        run: pnpm check:module-boundaries
+
+      - name: Test feature module boundary check
+        run: node "$CI_NODE_TEST" ./scripts/check-module-boundaries.test.mjs
+
+      # Report-only for now (always exits 0); --enforce turns findings into failures.
+      - name: Report raw query-error rendering
+        run: node scripts/check-query-error-rendering.mjs --summary
+
+      - name: Test query-error rendering check
+        run: node --test ./scripts/check-query-error-rendering.test.mjs
+
+      - name: Test PR quality-gate scripts
+        run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
+
+      - name: Test general-server shard partition
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/run-vitest-stable-shard.test.mjs
+
+      - name: Test e2e shard partition
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
+
+      - name: Test release verify workflow wiring
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs
+
+      - name: Test standalone package build concurrency
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Verify release package bootstrap for changed manifests
+        run: |
+          mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+            node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
+
+      # Each lane resolves a stale lockfile inline; this early check still
+      # fails fast when the merge tree cannot resolve at all.
+      - name: Validate dependency resolution
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  typecheck_release_registry:
+    name: Typecheck + Release Registry
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Typecheck + Release Registry
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # typecheck:build-gaps builds @paperclipai/server, whose build script
+      # rebuilds the Runner release binary; without the shared Rust cache that
+      # is a ~3m40s cold compile of all third-party crates (run 35036001734,
+      # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      - name: Typecheck workspaces whose build scripts skip TypeScript
+        run: pnpm run typecheck:build-gaps
+
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  general_tests:
+    name: General tests (${{ matrix.group_label }})
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Keep twelve duration-balanced server shards. Each shard overlaps
+          # at most two isolated fork workers; cases within a file stay serial.
+          # The chat fixture keeps three independent database-backed shards.
+          - group: general-server-without-chat
+            group_label: server (1/12)
+            shard_index: 0
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (2/12)
+            shard_index: 1
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (3/12)
+            shard_index: 2
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (4/12)
+            shard_index: 3
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (5/12)
+            shard_index: 4
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (6/12)
+            shard_index: 5
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (7/12)
+            shard_index: 6
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (8/12)
+            shard_index: 7
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (9/12)
+            shard_index: 8
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (10/12)
+            shard_index: 9
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (11/12)
+            shard_index: 10
+            shard_count: 12
+          - group: general-server-without-chat
+            group_label: server (12/12)
+            shard_index: 11
+            shard_count: 12
+          - group: general-chat
+            group_label: chat (1/3)
+            shard_index: 0
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (2/3)
+            shard_index: 1
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (3/3)
+            shard_index: 2
+            shard_count: 3
+          # workspaces-a was the slowest check in the fully-green PR run
+          # 31371439296 (2026-08-10) at 319s, with the ui project's single
+          # vitest invocation accounting for ~224s and the paperclipai CLI
+          # ~37s. Two shards use Vitest's native --shard on each project's
+          # file list (ui: 439 files, cli: 54), bringing each job to roughly
+          # half the suite time (~130s + setup) without a duration manifest.
+          - group: general-workspaces-a
+            group_label: workspaces-a (1/2)
+            shard_index: 0
+            shard_count: 2
+          - group: general-workspaces-a
+            group_label: workspaces-a (2/2)
+            shard_index: 1
+            shard_count: 2
+          # workspaces-b became the slowest check (499-593s) once the server
+          # shards were rebalanced: the db project alone was 168-250s of its
+          # 436-513s of vitest time (PR runs 38084171761, 38083084276 and
+          # 38083020834, 2026-10-10). The db project now runs as its own
+          # workspaces-c lane; the rest of workspaces-b is ~265-275s of
+          # vitest time, so both jobs land near 300-350s with setup.
+          - group: general-workspaces-b
+            group_label: workspaces-b
+          - group: general-workspaces-c
+            group_label: workspaces-c
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: General tests (${{ matrix.group_label }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      - name: Run grouped general test suites
+        run: |
+          if [ -n "${{ matrix.shard_count }}" ]; then
+            pnpm test:run:general -- --group '${{ matrix.group }}' \
+              --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          else
+            pnpm test:run:general -- --group '${{ matrix.group }}'
+          fi
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  docker_context_integrity:
+    name: Docker context integrity
+    needs: gate
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 15
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Docker context integrity
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Not every runner the gate can select ships the Buildx plugin —
+      # the image-build workflows set it up explicitly, so this lane does
+      # too rather than failing before it checks anything.
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2
+        with:
+          version: v5.5.1
+
+      - name: Verify Compose signing secret forwarding
+        run: node --test scripts/docker-compose-secrets.test.mjs
+
+      # Same .dockerignore semantics as the real image builds: a
+      # context-slimming change that strips a committed build input must
+      # fail here, on the pull request, instead of failing every
+      # post-merge image build. (2026-09-04: a new **/*.md ignore rule
+      # stripped the committed capability contract out of the context;
+      # every Docker build on master failed its drift check and no cloud
+      # image published for eight hours while PR CI stayed green.)
+      - name: Run generated-file drift checks against the Docker build context
+        run: docker buildx build --file .github/docker-context-checks.Dockerfile .
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  verify:
+    # Preserve the legacy required-check name while the underlying work runs in parallel.
+    name: verify
+    if: ${{ always() }}
+    needs: [gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any split verify lane failed
+        env:
+          FULL_CI: ${{ needs.gate.outputs.full_ci }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+          TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
+          GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
+          RUNNER_VERIFICATION_RESULT: ${{ needs.verify_paperclip_runner.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          DOCKER_CONTEXT_INTEGRITY_RESULT: ${{ needs.docker_context_integrity.result }}
+        run: |
+          test "$POLICY_RESULT" = "success"
+          case "$FULL_CI" in
+            true)
+              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
+              test "$GENERAL_TESTS_RESULT" = "success"
+              test "$RUNNER_VERIFICATION_RESULT" = "success"
+              test "$BUILD_RESULT" = "success"
+              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "success"
+              ;;
+            false)
+              test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"
+              test "$GENERAL_TESTS_RESULT" = "skipped"
+              test "$RUNNER_VERIFICATION_RESULT" = "skipped"
+              test "$BUILD_RESULT" = "skipped"
+              test "$DOCKER_CONTEXT_INTEGRITY_RESULT" = "skipped"
+              ;;
+            *)
+              echo "Invalid full_ci decision: $FULL_CI" >&2
+              exit 1
+              ;;
+          esac
+
+  verify_paperclip_runner:
+    name: Verify Paperclip Runner (${{ matrix.lane_label }})
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # check:all spent ~380s of its ~600s cache-warm step inside the
+          # runner package's vitest suite (run 35036001734, 2026-09-15); the
+          # Rust tests took ~160s and every remaining check ~60s combined,
+          # which made this single job the PR critical path once the test
+          # lanes were rebalanced. Split the vitest suite across two runners
+          # with Vitest's native --shard, the ~160s Rust tests into their own
+          # lane, and the remaining static checks into a fourth. The four
+          # lanes union to exactly check:all: check:static covers
+          # check:eval-kernel, check:protocol-without-vitest, and
+          # check:api-authority; check:runner covers the Rust half; and the
+          # two vitest shards cover the package vitest file list.
+          - lane_label: static checks
+            command: check:static
+          - lane_label: rust
+            command: check:runner
+            release_crate: true
+          - lane_label: vitest 1/2
+            command: test:typescript:vitest --shard=1/2
+          - lane_label: vitest 2/2
+            command: test:typescript:vitest --shard=2/2
+            release_crate: true
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Verify Paperclip Runner (${{ matrix.lane_label }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # Same restore-only contract as the pnpm store above, for the Rust
+      # dependency tree: master's post-merge verification is the sole writer
+      # of release-runner-v2, and PR merge refs must not save branch-scoped
+      # copies of a ~680MB target directory. Every key input below has to
+      # match that writer in release-verify.yml exactly or each PR misses and
+      # recompiles all 313 third-party crates in both profiles. A miss is a
+      # slow run, never a wrong one.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      #
+      # Only the lanes that build the release crate restore it: the Rust
+      # lane's release tests link the lib, and the final vitest shard hosts
+      # the server's native-runner suite, which builds the binary in its
+      # beforeAll. The static and first vitest lanes run no cargo at all.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        if: ${{ matrix.release_crate == true }}
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        if: ${{ matrix.release_crate == true }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      - name: Verify Paperclip Runner
+        # pnpm appends trailing args to the end of the script's shell chain,
+        # so the vitest lanes' --shard lands on `vitest run`. Do not add a
+        # `--` separator: pnpm forwards it literally and vitest would then
+        # read the shard flag as a test filter.
+        run: pnpm --filter @paperclipai/paperclip-runner ${{ matrix.command }}
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  build:
+    name: Build
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Build
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # The public-install verifier at the end of this lane downloads the whole
+      # public registry graph into an empty npm cache: its consumer install
+      # took 119-129s of the 226-241s step, more than half of this ~415-446s
+      # lane, in runs 38426120144, 38432086560 and 38423713537 (2026-10-13).
+      # That graph is fixed by source manifests, so this fetches it in the
+      # background while the Rust restore, Evalbook and `pnpm build` run, about
+      # 150s before the verifier installs anything. Only the cache is handed
+      # over, and the verify step waits for this first. A failed or partial
+      # warm-up leaves the verifier to fetch what is missing as before.
+      - name: Start warming the public-install npm cache
+        if: ${{ hashFiles('scripts/warm-public-install-npm-cache.mjs') != '' }}
+        run: |
+          (
+            # The default `bash -e` would skip the status line on a failure.
+            set +e
+            PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache" node scripts/warm-public-install-npm-cache.mjs
+            echo $? > "$RUNNER_TEMP/public-install-npm-cache.status"
+          ) > "$RUNNER_TEMP/public-install-npm-cache.log" 2>&1 &
+
+      # pnpm build reaches the Runner package's build:binary step; without the
+      # shared Rust cache that is a ~3m40s cold compile of all third-party
+      # crates (run 35036001734, 2026-09-15). Same restore-only contract as
+      # Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      - name: Build Runner Evalbook viewer
+        run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
+
+      - name: Build
+        run: pnpm build
+
+      # The production image starts the server from this bundle with plain
+      # node (Dockerfile CMD), so prove it boots before the image is built:
+      # bundle the `pnpm build` output, start it against a throwaway embedded
+      # instance, and wait for /api/health to report ok.
+      - name: Boot the production runtime bundle
+        run: |
+          pnpm --filter @paperclipai/server build:runtime
+          scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
+
+      # This verification only needs `pnpm build` output (the verifier stages
+      # the public packages' dist and reuses ui/dist itself), yet it ran at the
+      # end of Canary Dry Run, serially after the ~210-295s release.sh dry run.
+      # That made Canary Dry Run the slowest check in every green PR run:
+      # 484s, 572s and 483s in runs 37310951026, 37309272947 and 37308895471
+      # (2026-10-05), with this step alone at 210-223s of each. The Build lane
+      # finished its `pnpm build` in ~206s total in those same runs, so it
+      # absorbs the step at ~416s while Canary Dry Run drops to ~275-350s and
+      # neither remains the critical path (server 2/12 at ~437-467s is).
+      # docker-runner-check.yml runs the same verifier after `pnpm build`.
+      - name: Verify built-in Grok from a clean public npm install
+        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
+        run: |
+          status="$RUNNER_TEMP/public-install-npm-cache.status"
+          if [ -f "$RUNNER_TEMP/public-install-npm-cache.log" ]; then
+            # Normally finished long before this; never let it hold the lane.
+            for _ in $(seq 180); do [ -f "$status" ] && break; sleep 1; done
+            if [ "$(cat "$status" 2>/dev/null)" = 0 ]; then
+              tail -n 1 "$RUNNER_TEMP/public-install-npm-cache.log"
+            else
+              echo '::notice title=Public-install npm cache::warm-up did not finish cleanly; the verifier fetches what is missing'
+              tail -n 20 "$RUNNER_TEMP/public-install-npm-cache.log"
+            fi
+            export PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache"
+          fi
+          node scripts/verify-grok-npm-install.mjs
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  verify_serialized_server:
+    name: Verify serialized server suites (${{ matrix.shard_label }})
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Shards are balanced by recorded duration
+          # (scripts/serialized-shard-durations.json, refreshed 2026-09-12);
+          # round-robin used to cluster the heavy suites on one runner (291s
+          # vs 170-201s in run 32012408876, 2026-08-17). The suite total has
+          # since grown to ~1926s recorded: five shards ran ~390s of tests
+          # each while the rebalanced general/e2e lanes run ~210-260s, so
+          # nine shards level this lane to ~214s and keep it off the
+          # critical path.
+          - shard_index: 0
+            shard_count: 9
+            shard_label: 1/9
+          - shard_index: 1
+            shard_count: 9
+            shard_label: 2/9
+          - shard_index: 2
+            shard_count: 9
+            shard_label: 3/9
+          - shard_index: 3
+            shard_count: 9
+            shard_label: 4/9
+          - shard_index: 4
+            shard_count: 9
+            shard_label: 5/9
+          - shard_index: 5
+            shard_count: 9
+            shard_label: 6/9
+          - shard_index: 6
+            shard_count: 9
+            shard_label: 7/9
+          - shard_index: 7
+            shard_count: 9
+            shard_label: 8/9
+          - shard_index: 8
+            shard_count: 9
+            shard_label: 9/9
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Verify serialized server suites (${{ matrix.shard_label }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      - name: Run serialized server test shard
+        run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  canary_dry_run:
+    name: Canary Dry Run
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 20
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: Canary Dry Run
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      # release.sh's Step 2/7 workspace build reaches the Runner package's
+      # build:binary step; without the shared Rust cache that is a ~3m40s cold
+      # compile of all third-party crates (run 35036001734, 2026-09-15). Same
+      # restore-only contract as Verify Paperclip Runner.
+
+      # rust-cache hashes its absolute cache paths into the entry's version,
+      # and GitHub only serves an entry whose key and version both match. The
+      # target directory sits under the checkout, and the checkout root
+      # differs by runner: /home/runner/_work on the RunsOn fleets that write
+      # this cache against /home/runner/work on GitHub-hosted runners. Every
+      # key input agreed, yet all 25 completed pull requests on 2026-09-28
+      # logged "No cache found" (run 36424309181) and cold-compiled every
+      # crate for ~4 minutes in four lanes. Point rust-cache at the same
+      # directory through a checkout-independent path so both layouts hash
+      # the same version. Keep this block identical in both workflows: the
+      # reader and the writer must agree or the version matches nothing.
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          # A symlink here is removed as a link, never followed into the checkout.
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+
+          # release-verify.yml runs on a single post-merge fleet image; the
+          # gate here can route to ubuntu-latest or the public PR fleet, so
+          # this tolerates an image without rustup instead of failing every
+          # pull request. Without the pin the cache key simply will not match.
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo '::notice title=Runner Rust cache::rustup is unavailable; building with the image default toolchain'
+            exit 0
+          fi
+
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+          # rust-cache hashes every installed toolchain into the cache key, not
+          # only the active one. Each runner image also ships its own stable
+          # Rust, and those disagree across images: 1.98.0 on the RunsOn fleets
+          # against 1.98.1 on ubuntu-latest. Two runners that agreed on the pin
+          # therefore still computed different keys, and every GitHub-hosted
+          # pull request missed this cache while the fleet hit it. Remove every
+          # toolchain except the pin, so the key depends on the pinned compiler
+          # and the lockfile alone rather than on what the image happens to
+          # carry. Keep this block identical in both workflows: the reader and
+          # the writer must agree or the key matches nothing.
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall \
+              || echo '::notice title=Runner Rust cache::could not remove an extra toolchain; the cache key may not match'
+          fi
+          rustup toolchain list
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2
+          # Mirror the master writer: these also feed the cache key.
+          cache-workspace-crates: false
+          cache-bin: false
+          # Restore only. Never let a pull request evict master's entry.
+          save-if: false
+
+      # The Runner's own crate is the one thing the entry above leaves out:
+      # rust-cache drops workspace crates when it saves, and a fresh checkout
+      # would invalidate cargo's mtime fingerprints for them anyway. So this
+      # job compiled paperclip-runner-core in release mode on every run,
+      # 28-49s (runs 38169436532 to 38183149920, 2026-10-11), while 221 of
+      # the 239 master commits of the preceding week left its inputs alone.
+      # The master Rust lane in release-verify.yml saves that crate's release
+      # artifacts (about 70 MB) under a key made from the compiler, the
+      # checkout root and a hash of every input the build reads. A pull
+      # request whose merge tree carries byte-identical inputs restores them
+      # and marks them newer than the checkout, so cargo keeps them; any
+      # other pull request misses and compiles exactly as before. Exact key
+      # only: a prefix match would hand cargo another revision's output. The
+      # path list and the key live in scripts/runner-release-crate-cache.mjs
+      # and must match the writer's; a guard test holds them together.
+      - name: Compute the Runner release crate cache key
+        id: runner_release_crate_key
+        run: echo "scope=$(node scripts/runner-release-crate-cache.mjs scope)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Runner release crate (read only)
+        id: runner_release_crate
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-runner-core-*
+            packages/paperclip-runner/runner/target/release/deps/libpaperclip_runner_core-*
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runner_core-*.d
+            packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd
+            packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
+          key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
+
+      - name: Mark the restored Runner release crate current
+        if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
+        run: node scripts/runner-release-crate-cache.mjs mark-current
+
+      # `release.sh` always executes its Step 2/7 workspace build, even when
+      # `--skip-verify` bypasses the initial verification gate. release.sh
+      # also requires a clean working tree, and the install step may have
+      # resolved a stale lockfile in place (manifest-changing or stacked
+      # PRs), so stage any changed lockfile into an ephemeral local commit:
+      # release.sh then sees a clean tree and its workspace build sees a
+      # lockfile that matches the manifests.
+      - name: Release canary dry run via release.sh internal build
+        run: |
+          git checkout -B master HEAD
+          if git diff --quiet pnpm-lock.yaml; then
+            git checkout -- pnpm-lock.yaml
+          else
+            git add pnpm-lock.yaml
+            git -c user.email=ci@paperclip.local -c user.name=CI \
+              commit --no-verify -m "ci(canary): stage regenerated lockfile"
+          fi
+          ./scripts/release.sh canary --skip-verify --dry-run
+
+      # The clean public npm install verification for the built-in Grok
+      # provider used to run here, after the dry run. It only needs `pnpm
+      # build` output, which the Build lane also produces, so it moved there:
+      # see "Verify built-in Grok from a clean public npm install" in `build`.
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e_shards:
+    name: e2e shard (${{ matrix.shard_label }})
+    needs: [gate]
+    if: ${{ needs.gate.outputs.full_ci == 'true' }}
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Playwright lane is pinned to workers=1 (tests/e2e/playwright.config.ts)
+          # because every spec shares one throwaway server and some toggle
+          # instance-level flags, so it can only be parallelized across runners.
+          # Each shard boots its own server, which keeps that isolation intact.
+          # The catalog has grown to ~1694s of serial spec time (mean of runs
+          # 35036001734 and 35024948947, 2026-09-15): with three shards and
+          # stale durations the worst shard ran 745s of specs while the best
+          # ran 277s. The former floors — chat-adapters-ui at ~442s and
+          # agent-chat at ~310s — are each split into two specs, so eight
+          # shards with refreshed durations level to ~212s each; the heaviest
+          # remaining single spec is chat-adapters-ui-messaging at ~242s.
+          - shard_index: 0
+            shard_count: 8
+            shard_label: 1/8
+          - shard_index: 1
+            shard_count: 8
+            shard_label: 2/8
+          - shard_index: 2
+            shard_count: 8
+            shard_label: 3/8
+          - shard_index: 3
+            shard_count: 8
+            shard_label: 4/8
+          - shard_index: 4
+            shard_count: 8
+            shard_label: 5/8
+          - shard_index: 5
+            shard_count: 8
+            shard_label: 6/8
+          - shard_index: 6
+            shard_count: 8
+            shard_label: 7/8
+          - shard_index: 7
+            shard_count: 8
+            shard_label: 8/8
+
+    env:
+      PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
+      PAPERCLIP_CI_PROFILE_JOB: e2e shard (${{ matrix.shard_label }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CI profile
+        continue-on-error: true
+        if: env.PAPERCLIP_CI_PROFILE == 'true'
+        run: node scripts/ci-profile/initialize.mjs
+
+      - name: Setup Node.js for pnpm bootstrap
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        env:
+          NPM_CONFIG_AUDIT: "false"
+          NPM_CONFIG_FUND: "false"
+          NPM_CONFIG_UPDATE_NOTIFIER: "false"
+        with:
+          version: 9.15.4
+
+      # Share the checked-in lockfile key with master. PR merge refs must not
+      # save full copies of the store or evict the post-merge build caches.
+      - name: Restore materialized dependencies and shared builds
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') != ''
+        uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Locate pnpm store
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        id: pnpm_store
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore pnpm store (read only)
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm_store.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: node-cache-${{ runner.os }}-${{ steps.pnpm_store.outputs.arch }}-pnpm-
+
+      - name: Install dependencies
+        if: hashFiles('.github/actions/setup-ci-dependencies/action.yml') == ''
+        # Manifest-changing and stacked PRs can hold a pnpm-lock.yaml that is
+        # stale for the merge tree. Resolve it inline instead of waiting on a
+        # policy-job artifact: that dependency put the policy job's queue and
+        # runtime (~60s) on every lane's critical path, and policy still
+        # validates resolution as a required check in parallel.
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+
+      - name: Verify runner Chrome
+        # GitHub's Ubuntu runner image already ships Google Chrome, so use that
+        # directly for the headless e2e lane instead of downloading Playwright
+        # browser bundles inside the 30 minute job budget.
+        run: google-chrome --version
+
+      - name: Generate Paperclip config
+        run: |
+          mkdir -p ~/.paperclip/instances/default
+          cat > ~/.paperclip/instances/default/config.json << 'CONF'
+          {
+            "$meta": { "version": 1, "updatedAt": "2026-01-01T00:00:00.000Z", "source": "onboard" },
+            "database": { "mode": "embedded-postgres" },
+            "logging": { "mode": "file" },
+            "server": { "deploymentMode": "local_trusted", "host": "127.0.0.1", "port": 3100 },
+            "auth": { "baseUrlMode": "auto" },
+            "storage": { "provider": "local_disk" },
+            "secrets": { "provider": "local_encrypted", "strictMode": false }
+          }
+          CONF
+
+      - name: Run e2e tests
+        env:
+          PAPERCLIP_E2E_SKIP_LLM: "true"
+          PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
+        run: |
+          # Playwright's own --shard balances by test count, and one spec
+          # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
+          # spec duration instead so both runners finish together.
+          specs="$(node ./scripts/e2e-shard.mjs \
+            --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
+          echo "shard ${{ matrix.shard_label }} specs: $specs"
+          # specs is an intentional argument list.
+          # shellcheck disable=SC2086
+          pnpm run test:e2e $specs
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: playwright-report-${{ matrix.shard_index }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 14
+
+      - name: Upload CI profile timings
+        continue-on-error: true
+        if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-profile-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: .ci-profile/*.ndjson
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  e2e:
+    # Preserve the legacy required-check name while the specs run sharded
+    # across the matrix above (same pattern as the `verify` aggregate).
+    name: e2e
+    if: ${{ always() }}
+    needs: [gate, policy, e2e_shards]
+    runs-on: ${{ needs.gate.outputs.runner }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any e2e shard failed
+        env:
+          FULL_CI: ${{ needs.gate.outputs.full_ci }}
+          POLICY_RESULT: ${{ needs.policy.result }}
+          E2E_SHARDS_RESULT: ${{ needs.e2e_shards.result }}
+        run: |
+          test "$POLICY_RESULT" = "success"
+          case "$FULL_CI" in
+            true) test "$E2E_SHARDS_RESULT" = "success" ;;
+            false) test "$E2E_SHARDS_RESULT" = "skipped" ;;
+            *)
+              echo "Invalid full_ci decision: $FULL_CI" >&2
+              exit 1
+              ;;
+          esac

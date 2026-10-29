@@ -10,6 +10,15 @@ import { isValidOpenCodeModelId } from "../index.js";
 
 const MODELS_CACHE_TTL_MS = 60_000;
 const MODELS_DISCOVERY_TIMEOUT_MS = 20_000;
+// `opencode models` is a lightweight metadata call, but on a shared ollama
+// daemon it can queue behind an in-flight `opencode run` generation on the
+// same host and either time out or fail with an opaque error. Retry a few
+// times with backoff before surfacing a hard failure (SAG-6326/SAG-6336).
+const MODELS_DISCOVERY_RETRY_DELAYS_MS = [2_000, 4_000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function resolveOpenCodeCommand(input: unknown): string {
   const envOverride =
@@ -20,14 +29,26 @@ function resolveOpenCodeCommand(input: unknown): string {
   return asString(input, envOverride);
 }
 
-const discoveryCache = new Map<string, { expiresAt: number; models: AdapterModel[] }>();
+const discoveryCache = new Map<
+  string,
+  { expiresAt: number; models: AdapterModel[] }
+>();
 const VOLATILE_ENV_KEY_PREFIXES = ["PAPERCLIP_", "npm_", "NPM_"] as const;
-const VOLATILE_ENV_KEY_EXACT = new Set(["PWD", "OLDPWD", "SHLVL", "_", "TERM_SESSION_ID", "HOME"]);
+const VOLATILE_ENV_KEY_EXACT = new Set([
+  "PWD",
+  "OLDPWD",
+  "SHLVL",
+  "_",
+  "TERM_SESSION_ID",
+  "HOME",
+]);
 
 export function requireOpenCodeModelId(input: unknown): string {
   const model = asString(input, "").trim();
   if (!isValidOpenCodeModelId(model)) {
-    throw new Error("OpenCode requires `adapterConfig.model` in provider/model format.");
+    throw new Error(
+      "OpenCode requires `adapterConfig.model` in provider/model format.",
+    );
   }
   return model;
 }
@@ -75,9 +96,10 @@ export function parseOpenCodeModelsOutput(stdout: string): AdapterModel[] {
 }
 
 function normalizeEnv(input: unknown): Record<string, string> {
-  const envInput = typeof input === "object" && input !== null && !Array.isArray(input)
-    ? (input as Record<string, unknown>)
-    : {};
+  const envInput =
+    typeof input === "object" && input !== null && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envInput)) {
     if (typeof value === "string") env[key] = value;
@@ -94,7 +116,11 @@ function hashValue(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function discoveryCacheKey(command: string, cwd: string, env: Record<string, string>) {
+function discoveryCacheKey(
+  command: string,
+  cwd: string,
+  env: Record<string, string>,
+) {
   const envKey = Object.entries(env)
     .filter(([key]) => !isVolatileEnvKey(key))
     .sort(([a], [b]) => a.localeCompare(b))
@@ -109,11 +135,14 @@ function pruneExpiredDiscoveryCache(now: number) {
   }
 }
 
-export async function discoverOpenCodeModels(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
+export async function discoverOpenCodeModels(
+  input: {
+    command?: unknown;
+    cwd?: unknown;
+    env?: unknown;
+    refresh?: boolean;
+  } = {},
+): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
@@ -130,37 +159,63 @@ export async function discoverOpenCodeModels(input: {
     // image). Fall back to process.env.HOME.
   }
   // Prevent OpenCode from writing an opencode.json into the working directory.
-  const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...env, ...(resolvedHome ? { HOME: resolvedHome } : {}), OPENCODE_DISABLE_PROJECT_CONFIG: "true" }));
-
-  const result = await runChildProcess(
-    `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    command,
-    ["models"],
-    {
-      cwd,
-      env: runtimeEnv,
-      timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
-      graceSec: 3,
-      onLog: async () => {},
-    },
+  const runtimeEnv = normalizeEnv(
+    ensurePathInEnv({
+      ...process.env,
+      ...env,
+      ...(resolvedHome ? { HOME: resolvedHome } : {}),
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+    }),
   );
 
-  if (result.timedOut) {
-    throw new Error(`\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`);
-  }
-  if ((result.exitCode ?? 1) !== 0) {
-    const detail = firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
-    throw new Error(detail ? `\`opencode models\` failed: ${detail}` : "`opencode models` failed.");
+  const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await runChildProcess(
+      `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["models", ...(input.refresh ? ["--refresh"] : [])],
+      {
+        cwd,
+        env: runtimeEnv,
+        timeoutSec: MODELS_DISCOVERY_TIMEOUT_MS / 1000,
+        graceSec: 3,
+        onLog: async () => {},
+      },
+    );
+
+    if (result.timedOut) {
+      lastError = new Error(
+        `\`opencode models\` timed out after ${MODELS_DISCOVERY_TIMEOUT_MS / 1000}s.`,
+      );
+    } else if ((result.exitCode ?? 1) !== 0) {
+      const detail =
+        firstNonEmptyLine(result.stderr) || firstNonEmptyLine(result.stdout);
+      lastError = new Error(
+        detail
+          ? `\`opencode models\` failed: ${detail}`
+          : "`opencode models` failed.",
+      );
+    } else {
+      return sortModels(parseOpenCodeModelsOutput(result.stdout));
+    }
+
+    const delayMs = MODELS_DISCOVERY_RETRY_DELAYS_MS[attempt - 1];
+    if (delayMs === undefined) break;
+    await sleep(delayMs);
   }
 
-  return sortModels(parseOpenCodeModelsOutput(result.stdout));
+  throw lastError ?? new Error("`opencode models` failed.");
 }
 
-export async function discoverOpenCodeModelsCached(input: {
-  command?: unknown;
-  cwd?: unknown;
-  env?: unknown;
-} = {}): Promise<AdapterModel[]> {
+export async function discoverOpenCodeModelsCached(
+  input: {
+    command?: unknown;
+    cwd?: unknown;
+    env?: unknown;
+  } = {},
+): Promise<AdapterModel[]> {
   const command = resolveOpenCodeCommand(input.command);
   const cwd = asString(input.cwd, process.cwd());
   const env = normalizeEnv(input.env);
@@ -172,6 +227,34 @@ export async function discoverOpenCodeModelsCached(input: {
 
   const models = await discoverOpenCodeModels({ command, cwd, env });
   discoveryCache.set(key, { expiresAt: now + MODELS_CACHE_TTL_MS, models });
+  return models;
+}
+
+async function refreshOpenCodeModelsCached(input: {
+  command?: unknown;
+  cwd?: unknown;
+  env?: unknown;
+}): Promise<AdapterModel[]> {
+  const command = resolveOpenCodeCommand(input.command);
+  const cwd = asString(input.cwd, process.cwd());
+  const env = normalizeEnv(input.env);
+  // OpenCode 1.18.17 uses `models --refresh` only to update its on-disk
+  // models.dev cache. Its stdout is a confirmation message, not the refreshed
+  // catalog, so enumerate once more after the refresh under the exact same
+  // command/cwd/env before deciding whether the configured model exists.
+  await discoverOpenCodeModels({
+    command,
+    cwd,
+    env,
+    refresh: true,
+  });
+  const models = await discoverOpenCodeModels({ command, cwd, env });
+  if (models.length > 0) {
+    discoveryCache.set(discoveryCacheKey(command, cwd, env), {
+      expiresAt: Date.now() + MODELS_CACHE_TTL_MS,
+      models,
+    });
+  }
   return models;
 }
 
@@ -195,7 +278,11 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   // we still enforce the provider/model format above and do not second-guess
   // the configured model. Prefer the explicit run env, then the process env.
   const env = normalizeEnv(input.env);
-  if (isTruthyEnvFlag(env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS)) {
+  if (
+    isTruthyEnvFlag(
+      env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS,
+    )
+  ) {
     return [{ id: model, label: model }];
   }
 
@@ -231,7 +318,33 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   }
 
   if (!models.some((entry) => entry.id === model)) {
-    const sample = models.slice(0, 12).map((entry) => entry.id).join(", ");
+    // `opencode models` reads a persistent models.dev cache. Long-lived runner
+    // hosts can therefore report a stale non-empty catalog even while the
+    // configured provider serves the model. Refresh once before treating a
+    // cached miss as authoritative; a successful refresh that still omits the
+    // model retains the strict availability rejection below.
+    try {
+      const refreshedModels = await refreshOpenCodeModelsCached({
+        command: input.command,
+        cwd: input.cwd,
+        env: input.env,
+      });
+      if (refreshedModels.some((entry) => entry.id === model)) {
+        return refreshedModels;
+      }
+      if (refreshedModels.length > 0) models = refreshedModels;
+    } catch (err) {
+      console.warn(
+        `[opencode-local] Model availability refresh failed for "${model}" (${
+          err instanceof Error ? err.message : String(err)
+        }); preserving the cached availability rejection.`,
+      );
+    }
+
+    const sample = models
+      .slice(0, 12)
+      .map((entry) => entry.id)
+      .join(", ");
     throw new Error(
       `Configured OpenCode model is unavailable: ${model}. Available models: ${sample}${models.length > 12 ? ", ..." : ""}`,
     );

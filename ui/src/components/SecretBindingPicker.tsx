@@ -197,7 +197,7 @@ export function SecretBindingPicker({
             {selectedMissing && value ? (
               <option value={value.secretId}>
                 {missingHint
-                  ? `${missingHint.name} — ${missingHint.companyName ?? "another company"}`
+                  ? `${missingHint.name} — ${missingHint.companyName ?? "another organization"}`
                   : hintsPending
                     ? `Secret (${value.secretId.slice(0, 8)}…)`
                     : `Missing secret (${value.secretId.slice(0, 8)}…)`}
@@ -257,7 +257,7 @@ export function SecretBindingPicker({
       ) : crossCompanyHint ? (
         <p className="text-(length:--text-micro) text-muted-foreground flex items-center gap-1">
           <AlertCircle className="h-3 w-3" />
-          Owned by {crossCompanyHint.companyName ? `the ${crossCompanyHint.companyName} company` : "another company"}. The binding keeps working; selecting a secret from this list re-points it here.
+          Owned by {crossCompanyHint.companyName ? `the ${crossCompanyHint.companyName} organization` : "another organization"}. The binding keeps working; selecting a secret from this list re-points it here.
         </p>
       ) : missingHint ? (
         <p className="text-(length:--text-micro) text-destructive flex items-center gap-1">

@@ -1,3 +1,4 @@
+import { writeApprovalChange } from "./approval-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { approvals, issueApprovals, issues } from "@paperclipai/db";
@@ -107,7 +108,7 @@ export function issueApprovalService(db: Db) {
     link: async (issueId: string, approvalId: string, actor?: LinkActor) => {
       const { issue } = await assertIssueAndApprovalSameCompany(issueId, approvalId);
 
-      await db
+      await writeApprovalChange(db, issue.companyId, tx => tx
         .insert(issueApprovals)
         .values({
           companyId: issue.companyId,
@@ -116,7 +117,7 @@ export function issueApprovalService(db: Db) {
           linkedByAgentId: actor?.agentId ?? null,
           linkedByUserId: actor?.userId ?? null,
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing(), { issueIds: [issueId] });
 
       return db
         .select()
@@ -126,10 +127,10 @@ export function issueApprovalService(db: Db) {
     },
 
     unlink: async (issueId: string, approvalId: string) => {
-      await assertIssueAndApprovalSameCompany(issueId, approvalId);
-      await db
+      const { issue } = await assertIssueAndApprovalSameCompany(issueId, approvalId);
+      await writeApprovalChange(db, issue.companyId, tx => tx
         .delete(issueApprovals)
-        .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId)));
+        .where(and(eq(issueApprovals.issueId, issueId), eq(issueApprovals.approvalId, approvalId))), { issueIds: [issueId] });
     },
 
     linkManyForApproval: async (approvalId: string, issueIds: string[], actor?: LinkActor) => {
@@ -157,7 +158,7 @@ export function issueApprovalService(db: Db) {
         }
       }
 
-      await db
+      await writeApprovalChange(db, approval.companyId, tx => tx
         .insert(issueApprovals)
         .values(
           uniqueIssueIds.map((issueId) => ({
@@ -168,7 +169,7 @@ export function issueApprovalService(db: Db) {
             linkedByUserId: actor?.userId ?? null,
           })),
         )
-        .onConflictDoNothing();
+        .onConflictDoNothing(), { issueIds: uniqueIssueIds });
     },
   };
 }

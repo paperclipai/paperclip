@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
 import { Lock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,8 @@ export function TrustPresetSection({
   projectCandidates = [],
   issueCandidates = [],
   candidatesLoading,
+  allowSingleIssue = true,
+  projectAccessEditor,
 }: {
   permissions: Partial<AgentPermissions> | null | undefined;
   onChange: (permissions: Partial<AgentPermissions>) => void;
@@ -66,6 +68,8 @@ export function TrustPresetSection({
   projectCandidates?: LowTrustBoundaryCandidate[];
   issueCandidates?: LowTrustBoundaryCandidate[];
   candidatesLoading?: boolean;
+  allowSingleIssue?: boolean;
+  projectAccessEditor?: ReactNode;
 }) {
   const [policyOpen, setPolicyOpen] = useState(false);
   const preset = getTrustPreset(permissions);
@@ -146,7 +150,7 @@ export function TrustPresetSection({
                     : "This agent is set to low-trust review, but no project, root issue, or issue scope is set in the core policy. Add a scope before this agent can run without denial."}
                 </p>
               </div>
-              {boundaryEditable ? (
+              {projectAccessEditor && (boundary?.projectIds?.length ?? 0) > 1 ? null : boundaryEditable ? (
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-(--gtc-12)">
                     <Field label="Boundary type">
@@ -158,7 +162,7 @@ export function TrustPresetSection({
                       >
                         <option value="project">Project</option>
                         <option value="root_issue">Root issue</option>
-                        <option value="issue">Issue</option>
+                        {allowSingleIssue && <option value="issue">Issue</option>}
                       </select>
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>
@@ -185,7 +189,7 @@ export function TrustPresetSection({
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="text-xs text-muted-foreground">
-                      CE saves one containment boundary at a time. Saved policies include this company id.
+                      CE saves one containment boundary at a time. Saved policies include this organization id.
                     </p>
                     {boundaryTarget ? (
                       <Button
@@ -209,7 +213,7 @@ export function TrustPresetSection({
                   </p>
                 </div>
               )}
-              <p className="text-xs text-muted-foreground">
+              {!projectAccessEditor && <p className="text-xs text-muted-foreground">
                 Want to set more than one containment boundary?{" "}
                 <a
                   className="underline underline-offset-2 hover:text-foreground"
@@ -219,7 +223,7 @@ export function TrustPresetSection({
                 >
                   Get Paperclip EE.
                 </a>
-              </p>
+              </p>}
               <CollapsibleSection
                 title="View policy"
                 open={policyOpen}
@@ -246,6 +250,8 @@ export function TrustPresetSection({
             </div>
           </div>
         ) : null}
+
+        {lowTrust && projectAccessEditor}
 
         {managedPermissions.authorizationPolicy?.reviewPreset ? null : (
           <p className="text-xs text-muted-foreground">

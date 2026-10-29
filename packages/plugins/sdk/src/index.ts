@@ -82,6 +82,12 @@ export {
   parseMessage,
   JsonRpcParseError,
   JsonRpcCallError,
+  LOGIN_PTY_OUTPUT_NOTIFICATION,
+  LOGIN_PTY_EXIT_NOTIFICATION,
+  DUPLEX_CHANNEL_DATA_NOTIFICATION,
+  DUPLEX_CHANNEL_EXIT_NOTIFICATION,
+  encodeChannelBytes,
+  decodeChannelBytes,
   _resetIdCounter,
 } from "./protocol.js";
 
@@ -177,11 +183,16 @@ export type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentRunnerIngressEndpointParams,
+  PluginEnvironmentRunnerIngressEndpoint,
   PluginSyncFileMapping,
   PluginPostUploadCommand,
   PluginSyncOperation,
@@ -229,6 +240,8 @@ export type {
   PluginLocalFolderListing,
   PluginLocalFoldersClient,
   PluginEventsClient,
+  ResourceLifecycleEvent,
+  ResourceLifecycleResult,
   PluginJobsClient,
   PluginLaunchersClient,
   PluginHttpClient,
@@ -259,6 +272,10 @@ export type {
   PluginIssueSubtree,
   PluginIssueSummariesClient,
   PluginAgentsClient,
+  PluginAgentRuntimeState,
+  PluginAgentRuntimeIdentity,
+  PluginAgentConnectionAssignments,
+  PluginAgentRuntimeSkill,
   PluginAccessClient,
   PluginAccessMembersClient,
   PluginAccessInvitesClient,
@@ -382,6 +399,12 @@ export type {
   PluginApiRouteMethod,
   PluginEventType,
   PluginBridgeErrorCode,
+  ConnectionIntentInteraction,
+  ConnectionIntentPayload,
+  ConnectionIntentResult,
+  ConnectionIntentSetupOptions,
+  ConnectionRequestResult,
+  ConnectionsSearchResult,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -433,3 +456,18 @@ export {
   MEMBERSHIP_STATUSES,
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
+
+export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
+export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
+export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+
+export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
+
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential } from "./environment-tasks.js";
+export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
+
+export type { PluginEnvironmentRunnerLaunchRequirements, PluginEnvironmentPreparedLaunch } from "./environment-tasks.js";
+
+export * from "./workspace-provider.js";

@@ -8,6 +8,7 @@ const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(),
   listFeedbackTraces: vi.fn(),
   saveIssueVote: vi.fn(),
+  flushPendingFeedbackTraces: vi.fn(() => new Promise(() => {})),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -18,9 +19,6 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(),
 }));
 
-const mockFeedbackExportService = vi.hoisted(() => ({
-  flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 1, sent: 1, failed: 0 })),
-}));
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
@@ -72,61 +70,60 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("@paperclipai/shared/telemetry", () => ({
-    trackAgentTaskCompleted: vi.fn(),
-    trackErrorHandlerCrash: vi.fn(),
-  }));
+// Keep service factories stable while each request uses the hoisted test doubles.
+vi.mock("@paperclipai/shared/telemetry", () => ({
+  trackAgentTaskCompleted: vi.fn(),
+  trackErrorHandlerCrash: vi.fn(),
+}));
 
-  vi.doMock("../telemetry.js", () => ({
-    getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
-  }));
+vi.mock("../telemetry.js", () => ({
+  getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
 
-  vi.doMock("../services/index.js", () => ({
-    companyService: () => ({
-      getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
-    }),
-    accessService: () => mockAccessService,
-    agentService: () => mockAgentService,
-    companySkillService: () => ({
-      completeTestRunForIssue: vi.fn(async () => null),
-    }),
-    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
-    executionWorkspaceService: () => mockExecutionWorkspaceService,
-    goalService: () => ({}),
-    heartbeatService: () => mockHeartbeatService,
-    issueApprovalService: () => ({}),
-    issueReferenceService: () => mockIssueReferenceService,
-    issueRecoveryActionService: () => ({
-      getActiveForIssue: vi.fn(async () => null),
-      listActiveForIssues: vi.fn(async () => new Map()),
-    }),
-    issueService: () => mockIssueService,
-    issueThreadInteractionService: () => mockIssueThreadInteractionService,
-    logActivity: mockLogActivity,
-    projectService: () => ({}),
-    routineService: () => mockRoutineService,
-    workProductService: () => ({}),
-  }));
+vi.mock("../services/index.js", () => ({
+  companyService: () => ({
+    getById: vi.fn(async () => ({ id: "company-1" })),
+  }),
+  accessService: () => mockAccessService,
+  agentService: () => mockAgentService,
+  companySkillService: () => ({
+    completeTestRunForIssue: vi.fn(async () => null),
+  }),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentService: () => ({}),
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  goalService: () => ({}),
+  heartbeatService: () => mockHeartbeatService,
+  issueApprovalService: () => ({}),
+  issueReferenceService: () => mockIssueReferenceService,
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
+  issueService: () => mockIssueService,
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
+  logActivity: mockLogActivity,
+  projectService: () => ({}),
+  routineService: () => mockRoutineService,
+  workProductService: () => ({}),
+}));
 
-  vi.doMock("../services/environments.js", () => ({
-    environmentService: () => mockEnvironmentService,
-  }));
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
 
-  vi.doMock("../services/execution-workspaces.js", () => ({
-    executionWorkspaceService: () => mockExecutionWorkspaceService,
-    STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
-  }));
+vi.mock("../services/execution-workspaces.js", () => ({
+  executionWorkspaceService: () => mockExecutionWorkspaceService,
+  STALE_REOPEN_PENDING_CONSUMPTION_GRACE_MS: 5 * 60 * 1000,
+}));
 
-  vi.doMock("../services/feedback.js", () => ({
-    feedbackService: () => mockFeedbackService,
-  }));
+vi.mock("../services/feedback.js", () => ({
+  feedbackService: () => mockFeedbackService,
+}));
 
-  vi.doMock("../services/instance-settings.js", () => ({
-    instanceSettingsService: () => mockInstanceSettingsService,
-  }));
-}
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
 
 async function createApp(actor: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
@@ -139,30 +136,20 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any, { feedbackExportService: mockFeedbackExportService }));
+  app.use("/api", issueRoutes({} as any, {} as any));
+  const routeErrors: string[] = [];
+  app.locals.routeErrors = routeErrors;
+  app.use((error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    routeErrors.push(error instanceof Error ? error.stack ?? error.message : String(error));
+    next(error);
+  });
   app.use(errorHandler);
   return app;
 }
 
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("@paperclipai/shared/telemetry");
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/environments.js");
-    vi.doUnmock("../services/execution-workspaces.js");
-    vi.doUnmock("../services/feedback.js");
-    vi.doUnmock("../services/instance-settings.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
-    mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
-      attempted: 1,
-      sent: 1,
-      failed: 0,
-    });
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockResolvedValue(null);
@@ -180,7 +167,7 @@ describe("issue feedback trace routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
+  it("returns the saved vote without waiting for feedback uploads", async () => {
     const targetId = "11111111-1111-4111-8111-111111111111";
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
@@ -217,11 +204,9 @@ describe("issue feedback trace routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
-    expect(mockFeedbackExportService.flushPendingFeedbackTraces).toHaveBeenCalledWith({
-      companyId: "company-1",
-      traceId: "trace-1",
-      limit: 1,
-    });
+    expect(mockFeedbackService.saveIssueVote).toHaveBeenCalledTimes(1);
+    expect(mockFeedbackService.flushPendingFeedbackTraces).not.toHaveBeenCalled();
+
   });
 
   it("rejects non-board callers before fetching a feedback trace", async () => {
@@ -253,7 +238,9 @@ describe("issue feedback trace routes", () => {
 
     const res = await request(app).get("/api/feedback-traces/trace-1");
 
-    expect(res.status).toBe(404);
+    expect(res.status, JSON.stringify({ body: res.body, errors: app.locals.routeErrors })).toBe(404);
+    expect(mockFeedbackService.getFeedbackTraceById).toHaveBeenCalledExactlyOnceWith("trace-1", true);
+    expect(mockFeedbackService.getFeedbackTraceBundle).not.toHaveBeenCalled();
   });
 
   it("returns 404 for bundle fetches when a board user lacks access to the trace company", async () => {
@@ -273,6 +260,8 @@ describe("issue feedback trace routes", () => {
 
     const res = await request(app).get("/api/feedback-traces/trace-1/bundle");
 
-    expect(res.status).toBe(404);
+    expect(res.status, JSON.stringify({ body: res.body, errors: app.locals.routeErrors })).toBe(404);
+    expect(mockFeedbackService.getFeedbackTraceBundle).toHaveBeenCalledExactlyOnceWith("trace-1");
+    expect(mockFeedbackService.getFeedbackTraceById).not.toHaveBeenCalled();
   });
 });

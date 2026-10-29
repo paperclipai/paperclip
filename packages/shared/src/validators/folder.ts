@@ -7,10 +7,10 @@ export const folderSlugSchema = z.string().trim().min(1).max(120).regex(
 );
 
 export const folderSchema = z.object({
-  id: z.string().uuid(),
-  companyId: z.string().uuid(),
+  id: z.string().guid(),
+  companyId: z.string().guid(),
   kind: folderKindSchema,
-  parentId: z.string().uuid().nullable(),
+  parentId: z.string().guid().nullable(),
   name: z.string().min(1),
   slug: folderSlugSchema,
   systemKey: z.string().nullable(),
@@ -35,7 +35,7 @@ export const folderListResultSchema = z.object({
 
 export const createFolderSchema = z.object({
   kind: folderKindSchema,
-  parentId: z.string().uuid().optional().nullable(),
+  parentId: z.string().guid().optional().nullable(),
   name: z.string().trim().min(1).max(120),
   slug: folderSlugSchema.optional().nullable(),
   color: z.string().trim().min(1).max(80).optional().nullable(),
@@ -52,7 +52,7 @@ export const updateFolderSchema = z.object({
 });
 
 export const moveFolderSchema = z.object({
-  parentId: z.string().uuid().optional().nullable(),
+  parentId: z.string().guid().optional().nullable(),
   position: z.number().int().min(0),
 });
 
@@ -62,8 +62,8 @@ export const ensureMySkillFolderSchema = z.object({
 
 export const moveFolderItemSchema = z.object({
   kind: folderKindSchema,
-  itemId: z.string().uuid(),
-  folderId: z.string().uuid().optional().nullable(),
+  itemId: z.string().guid(),
+  folderId: z.string().guid().optional().nullable(),
 });
 
 export type CreateFolder = z.infer<typeof createFolderSchema>;

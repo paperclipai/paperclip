@@ -22,8 +22,8 @@ import {
   type ToolGatewayActivityEvent,
 } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
+import { AgentSelect } from "@/components/AgentMultiSelect";
 import { ToolsPageHeader, LoadingState, ErrorState, RelativeTime } from "./shared";
-import { advancedTabHref } from "./tool-tabs";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -48,6 +48,7 @@ const OUTCOME_FILTERS: { value: string; label: string }[] = [
 ];
 
 const WINDOW_FILTERS: { value: ToolAuditWindow; label: string }[] = [
+  { value: "all", label: "All time" },
   { value: "1h", label: "Last 1 hour" },
   { value: "24h", label: "Last 24 hours" },
   { value: "7d", label: "Last 7 days" },
@@ -86,8 +87,38 @@ function formattedArguments(details: Record<string, unknown> | null): string | u
   }
 }
 
+function lifecycleSummary(event: ToolGatewayActivityEvent): string | null {
+  if (!event.lifecycleType) return null;
+  const who = event.actorDisplayName ?? event.agentDisplayName ?? "Someone";
+  const app = event.appDisplayName ?? event.connectionDisplayName ?? "this app";
+  const count = detailNumber(event.details, "count") ?? 0;
+  const added = detailNumber(event.details, "added") ?? 0;
+  const removed = detailNumber(event.details, "removed") ?? 0;
+  switch (event.lifecycleType) {
+    case "app_connected":
+      return `${who} connected ${app}`;
+    case "app_paused":
+      return `${who} paused ${app}`;
+    case "app_resumed":
+      return `${who} resumed ${app}`;
+    case "reconnected":
+      return `${who} reconnected ${app}`;
+    case "disconnected":
+      return `${who} disconnected ${app}`;
+    case "allowlist_changed":
+      if (added > 0 && removed === 0) return `${who} added ${added} allowed ${added === 1 ? "item" : "items"} in ${app}`;
+      if (removed > 0 && added === 0) return `${who} removed ${removed} allowed ${removed === 1 ? "item" : "items"} in ${app}`;
+      return `${who} updated the allowlist for ${app}`;
+    case "actions_quarantined":
+      return `${count} new ${count === 1 ? "action needs" : "actions need"} review in ${app}`;
+    default:
+      return `${who} updated ${app}`;
+  }
+}
+
 /** Plain-words "why" for the row expander, keyed off the reason code. */
 function plainReason(event: ToolGatewayActivityEvent): string {
+  if (event.lifecycleType) return "This connection change was recorded in the app's activity history.";
   const code = detailString(event.details, "reasonCode");
   if (code === "permitted_connections_not_installed") {
     return "Permitted connections were not installed, so their tools were not added to this run.";
@@ -138,6 +169,7 @@ function ActivityRow({
   const who = event.agentDisplayName ?? "An agent";
   const action = event.toolDisplayName ?? "an action";
   const app = event.appDisplayName ?? event.connectionDisplayName ?? event.applicationDisplayName ?? null;
+  const lifecycle = lifecycleSummary(event);
   const rawTool = detailString(event.details, "tool") ?? detailString(event.details, "toolName");
 
   const issueId = detailString(event.details, "issueId");
@@ -180,7 +212,9 @@ function ActivityRow({
           <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
         )}
         <span className="min-w-0 flex-1">
-          {isRuntimeMcpDeliveryDiagnostic ? (
+          {lifecycle ? (
+            <span className="block text-foreground">{lifecycle}</span>
+          ) : isRuntimeMcpDeliveryDiagnostic ? (
             <span className="block text-foreground">
               <span className="font-medium">{who}</span>'s run received 0 MCP servers —{" "}
               <span className="font-medium">{permittedNotInstalledCount ?? permittedNotInstalledConnections.length}</span>{" "}
@@ -199,7 +233,7 @@ function ActivityRow({
           )}
         </span>
         <span className="flex shrink-0 items-center gap-2 whitespace-nowrap">
-          <OutcomeChip outcome={event.normalizedOutcome} />
+          {event.lifecycleType ? null : <OutcomeChip outcome={event.normalizedOutcome} />}
           <span className="text-xs text-muted-foreground">
             · <RelativeTime value={event.createdAt} />
           </span>
@@ -213,9 +247,7 @@ function ActivityRow({
             {matchedRuleName ? (
               <>
                 {" "}
-                <Link to={advancedTabHref("policies")} className="text-primary hover:underline">
-                  {matchedRuleName}
-                </Link>
+                <span className="font-medium">{matchedRuleName}</span>
               </>
             ) : null}
           </p>
@@ -295,7 +327,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
   const [app, setApp] = useState<string>(ALL);
   const [agent, setAgent] = useState<string>(ALL);
   const [outcome, setOutcome] = useState<string>(ALL);
-  const [windowKey, setWindowKey] = useState<ToolAuditWindow>("24h");
+  const [windowKey, setWindowKey] = useState<ToolAuditWindow>("all");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
 
@@ -331,7 +363,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
     search: search || undefined,
   };
   const hasActiveFilters =
-    app !== ALL || agent !== ALL || outcome !== ALL || windowKey !== "24h" || search.length > 0;
+    app !== ALL || agent !== ALL || outcome !== ALL || windowKey !== "all" || search.length > 0;
 
   const activity = useInfiniteQuery({
     queryKey: queryKeys.tools.activity(companyId, {
@@ -356,7 +388,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
     setApp(ALL);
     setAgent(ALL);
     setOutcome(ALL);
-    setWindowKey("24h");
+    setWindowKey("all");
     setSearchInput("");
     setSearch("");
   };
@@ -382,19 +414,12 @@ export function AuditTab({ companyId }: { companyId: string }) {
             ))}
           </SelectContent>
         </Select>
-        <Select value={agent} onValueChange={setAgent}>
-          <SelectTrigger className="w-40">
-            <SelectValue placeholder="Agent" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All agents</SelectItem>
-            {(agents.data ?? []).map((a) => (
-              <SelectItem key={a.id} value={a.id}>
-                {a.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <AgentSelect
+          agents={[{ id: ALL, name: "All agents" }, ...(agents.data ?? [])]}
+          value={agent}
+          onChange={setAgent}
+          triggerClassName="w-40"
+        />
         <Select value={outcome} onValueChange={setOutcome}>
           <SelectTrigger className="w-40">
             <SelectValue />
@@ -489,10 +514,6 @@ export function AuditTab({ companyId }: { companyId: string }) {
           </Button>
         </div>
       ) : null}
-
-      <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
-      </p>
     </div>
   );
 }

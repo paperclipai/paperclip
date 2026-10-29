@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueDocumentRow } from "./import-write-types.js";
 
@@ -14,10 +15,6 @@ function normalizeDocumentKey(key: string) {
     throw unprocessable("Invalid document key", parsed.error.issues);
   }
   return parsed.data;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return !!error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "23505";
 }
 
 function nextAvailableDocumentKey(sourceKey: string, existingKeys: string[]) {
@@ -128,7 +125,7 @@ export function documentService(db: Db) {
           .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, "plan")))
           .then((rows) => rows[0] ?? null),
         db
-          .select(issueDocumentSelect)
+          .select({ ...issueDocumentSelect, latestBody: sql<string>`''` })
           .from(issueDocuments)
           .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
           .where(eq(issueDocuments.issueId, issue.id))
@@ -172,6 +169,23 @@ export function documentService(db: Db) {
       return row ? mapIssueDocumentRow(row, true) : null;
     },
 
+    /** Bounded receipt read: never load every historical body for one revision. */
+    getIssueDocumentRevision: async (issueId: string, rawKey: string, revisionId: string) => {
+      const key = normalizeDocumentKey(rawKey);
+      const [revision] = await db.select({
+        id: documentRevisions.id, companyId: documentRevisions.companyId,
+        documentId: documentRevisions.documentId, issueId: issueDocuments.issueId, key: issueDocuments.key,
+        revisionNumber: documentRevisions.revisionNumber, title: documentRevisions.title,
+        format: documentRevisions.format, body: documentRevisions.body, changeSummary: documentRevisions.changeSummary,
+        createdByAgentId: documentRevisions.createdByAgentId, createdByUserId: documentRevisions.createdByUserId,
+        createdByRunId: documentRevisions.createdByRunId, createdAt: documentRevisions.createdAt,
+      }).from(issueDocuments)
+        .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+        .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
+        .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
+      return revision ?? null;
+    },
+
     listIssueDocumentRevisions: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db
@@ -188,6 +202,7 @@ export function documentService(db: Db) {
           changeSummary: documentRevisions.changeSummary,
           createdByAgentId: documentRevisions.createdByAgentId,
           createdByUserId: documentRevisions.createdByUserId,
+          createdByRunId: documentRevisions.createdByRunId,
           createdAt: documentRevisions.createdAt,
         })
         .from(issueDocuments)
@@ -351,7 +366,7 @@ export function documentService(db: Db) {
             }
 
             if (!input.baseRevisionId) {
-              throw conflict("Document update requires baseRevisionId", {
+              throw conflict("Document update requires baseRevisionId. GET the current document, read its body and latestRevisionId, then set baseRevisionId to that latestRevisionId when updating.", {
                 currentRevisionId: existing.latestRevisionId,
               });
             }
@@ -502,7 +517,7 @@ export function documentService(db: Db) {
           };
           });
         } catch (error) {
-          if (isUniqueViolation(error)) {
+          if (isUniqueViolation(error, "issue_documents_company_issue_key_uq")) {
             if (input.lockedDocumentStrategy === "create_new_document" && attempt < maxAttempts - 1) {
               continue;
             }

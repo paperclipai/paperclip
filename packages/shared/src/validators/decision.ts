@@ -5,7 +5,7 @@ export const decisionEffectStalenessSchema = z.enum(["strict", "lenient"]);
 export const decisionOptionStyleSchema = z.enum(["default", "primary", "destructive"]);
 
 const decisionEffectBaseShape = {
-  targetIssueId: z.string().uuid(),
+  targetIssueId: z.string().guid(),
   staleness: decisionEffectStalenessSchema,
 };
 
@@ -21,12 +21,12 @@ export const createIssueDecisionEffectSchema = z.object({
   draft: z.object({
     title: z.string().trim().min(1).max(500),
     description: z.string().max(100_000).nullable().optional(),
-    parentId: z.string().uuid().nullable().optional(),
-    assigneeAgentId: z.string().uuid().nullable().optional(),
+    parentId: z.string().guid().nullable().optional(),
+    assigneeAgentId: z.string().guid().nullable().optional(),
     assigneeUserId: z.string().trim().min(1).nullable().optional(),
-    projectId: z.string().uuid().nullable().optional(),
-    goalId: z.string().uuid().nullable().optional(),
-    blockedByIssueIds: z.array(z.string().uuid()).max(100).optional(),
+    projectId: z.string().guid().nullable().optional(),
+    goalId: z.string().guid().nullable().optional(),
+    blockedByIssueIds: z.array(z.string().guid()).max(100).optional(),
   }),
 });
 
@@ -40,14 +40,14 @@ export const updateIssueStatusDecisionEffectSchema = z.object({
 export const assignIssueDecisionEffectSchema = z.object({
   type: z.literal("assign_issue"),
   ...decisionEffectBaseShape,
-  assigneeAgentId: z.string().uuid().nullable().optional(),
+  assigneeAgentId: z.string().guid().nullable().optional(),
   assigneeUserId: z.string().trim().min(1).nullable().optional(),
   comment: z.string().trim().min(1).max(20_000).nullable().optional(),
 });
 
 export const cancelIssueTreeDecisionEffectSchema = z.object({
   type: z.literal("cancel_issue_tree"),
-  targetIssueId: z.string().uuid(),
+  targetIssueId: z.string().guid(),
   staleness: z.literal("strict"),
   reasonComment: z.string().trim().min(1).max(20_000),
 });
@@ -55,7 +55,7 @@ export const cancelIssueTreeDecisionEffectSchema = z.object({
 export const resolveBlockerDecisionEffectSchema = z.object({
   type: z.literal("resolve_blocker"),
   ...decisionEffectBaseShape,
-  removeBlockedByIssueIds: z.array(z.string().uuid()).min(1).max(100),
+  removeBlockedByIssueIds: z.array(z.string().guid()).min(1).max(100),
 });
 
 export const decisionEffectSchema = z.discriminatedUnion("type", [
