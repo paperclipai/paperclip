@@ -1,3 +1,13 @@
+import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
+import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { releaseRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "../idle-local-work.js";
+import type { NativeCleanupOutcome } from "./retained-native-session-cleanup.js";
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
@@ -127,6 +137,7 @@ import {
   resolveSourceCodexHome,
   readRunnerdArtifactBinding,
   retainedRunnerdMaintenanceIsIdle,
+  drainRetainedRunnerdMaintenanceOperations,
   settleRetainedRunnerdSession,
   validatePrpEvent,
   validatePrpStructuredRunResult,
@@ -541,6 +552,7 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  onReleased: () => void;
   pluginTaskId?: string;
   observabilityCompatibilityKey?: string;
   runId: string;
@@ -588,10 +600,21 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
+function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
+  if (warmNativeSessions.get(scope) !== entry) return;
+  warmNativeSessions.delete(scope);
+  entry.onReleased();
+}
+
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
 // Closing a remote owner saves its checkpoint asynchronously. A new turn must
 // not inspect or quarantine that owner's state until the save has finished.
 const closingWarmNativeSessions = new Map<string, Promise<void>>();
+
+export function readNativeSessionIdleWork(): IdleLocalWork {
+  return warmNativeSessions.size !== 0 || closingWarmNativeSessions.size !== 0 ? "present" : "none";
+}
+registerIdleLocalWorkProbe(readNativeSessionIdleWork);
 
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
  * task guidance. The final execution/configuration fence still owns admission. */
@@ -625,7 +648,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     entry.closeOnReleaseReason = reason;
     try {
       await closeWarmNativeSession(entry, reason);
-      if (warmNativeSessions.get(scope) === entry) warmNativeSessions.delete(scope);
+      forgetWarmNativeSession(scope, entry);
     } finally { entry.busy = false; }
   };
   try {
@@ -677,7 +700,7 @@ export async function reserveWarmNativeInstructionDirectory(input: {
       entry.closeOnReleaseReason = reason;
       try {
         await closeWarmNativeSession(entry, reason);
-        if (warmNativeSessions.get(id) === entry) warmNativeSessions.delete(id);
+        forgetWarmNativeSession(id, entry);
       } finally {
         // Failed containment remains registered and cannot be adopted. The next
         // admission retries retirement instead of launching over a live owner.
@@ -760,10 +783,10 @@ async function closeIdleWarmNativeSessions(input: {
     closingWarmNativeSessions.set(sessionId, closing);
     try {
       await closing;
-      if (warmNativeSessions.get(sessionId) === entry) warmNativeSessions.delete(sessionId);
+      forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
-      if (!entry.instructionWorkingCopy?.runId) warmNativeSessions.delete(sessionId);
+      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       failed += 1;
     } finally {
       entry.busy = false;
@@ -1889,7 +1912,7 @@ async function retireSupersededWarmNativeSessions(
     entry.closeOnReleaseReason = "warm native session identity changed";
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-      if (warmNativeSessions.get(scope) === entry) warmNativeSessions.delete(scope);
+      forgetWarmNativeSession(scope, entry);
     } finally {
       // A failed close retains the owner and prevents launch. A later attempt
       // must retry retirement, never adopt this partially closed transport.
@@ -3038,14 +3061,22 @@ export async function verifyStoppedNativeSessionForReplacement(
  * inspection, not retried from an older snapshot with unknown process owners. */
 export async function reconcileRetainedNativeSessionCleanup(
   db: Db,
-  input: {
-    companyId: string;
-    runId: string;
-  },
-): Promise<{
-  status: "settled" | "not_eligible" | "operator_required";
-  runId: string;
-}> {
+  input: { companyId: string; runId: string },
+): Promise<NativeCleanupOutcome> {
+
+
+  const outcome = await inspectRetainedNativeSessionCleanup(db, input)
+    .finally(() => drainRetainedRunnerdMaintenanceOperations());
+  if (outcome.status === "deferred" && outcome.waitFor === "maintenance_settlement") {
+    releaseRetainedNativeSessionCleanup(db, input);
+  }
+  return outcome;
+}
+
+async function inspectRetainedNativeSessionCleanup(
+  db: Db,
+  input: { companyId: string; runId: string },
+): Promise<NativeCleanupOutcome> {
   const denied = () => new Error("native_cleanup_maintenance_unproven");
   const leaseOwner = `native-cleanup:${randomUUID()}`;
   let reservedScope: string | null = null;
@@ -3057,7 +3088,7 @@ export async function reconcileRetainedNativeSessionCleanup(
       executingRunnerdSessionScopes.delete(reservedScope);
     }
   };
-  let claim: {
+  type CleanupClaim = {
     execution: NativeExecutionInput;
     run: typeof heartbeatRuns.$inferSelect;
     quarantine: string;
@@ -3086,7 +3117,12 @@ export async function reconcileRetainedNativeSessionCleanup(
       itemId: string;
     };
     history: Array<Record<string, unknown>>;
-  } | null = null;
+  };
+  type DeferredCleanup = Extract<NativeCleanupOutcome, { status: "deferred" }>;
+  const defer = (waitFor: Exclude<DeferredCleanup["waitFor"], "lease_expiry">): DeferredCleanup => ({
+    runId: input.runId, status: "deferred", waitFor,
+  });
+  let claim: CleanupClaim | DeferredCleanup | null = null;
   try {
     claim = await db.transaction(async (tx) => {
       const row = await tx
@@ -3112,10 +3148,12 @@ export async function reconcileRetainedNativeSessionCleanup(
         !run.runnerInstanceId ||
         !["succeeded", "failed"].includes(run.status) ||
         !run.finishedAt ||
-        !cleanupProcessAbsent(run.processPid) ||
+        process.platform === "win32" ||
+        !Number.isSafeInteger(run.processPid) || Number(run.processPid) <= 0 ||
         run.processGroupId !== run.processPid
       )
         return null;
+      if (!cleanupProcessAbsent(run.processPid)) return defer("process_exit");
       const execution = parseNativeExecutionInput(
         record(run.runnerProfileJson).nativeExecutionInput,
       );
@@ -3144,7 +3182,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         initializingSessionToolAuthorities.has(scope) ||
         warmNativeSessions.has(scope)
       )
-        return null;
+        return defer("session_release");
       executingRunnerdSessionScopes.set(scope, leaseOwner);
       reservedScope = scope;
       const coordinator = await tx
@@ -3167,14 +3205,14 @@ export async function reconcileRetainedNativeSessionCleanup(
         !coordinator.assessmentId ||
         !coordinator.decisionId ||
         coordinator.nextAttemptAt ||
-        (coordinator.leaseOwner &&
-          coordinator.leaseExpiresAt &&
-          coordinator.leaseExpiresAt > new Date()) ||
         coordinator.recoveryHistory.some(
           (event) => event.kind === "native_cleanup_runner_epoch",
         )
       )
         return null;
+      if (coordinator.leaseOwner && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt > new Date()) {
+        return { runId: input.runId, status: "deferred" as const, waitFor: "lease_expiry" as const, retryAt: coordinator.leaseExpiresAt };
+      }
       const result = await tx
         .select()
         .from(nativeRunResults)
@@ -3201,7 +3239,7 @@ export async function reconcileRetainedNativeSessionCleanup(
           ),
         )
         .limit(1);
-      if (environment.length) return null;
+      if (environment.length) return defer("environment_release");
       const root = scopedRunnerdStateRoot(execution);
       const maintenanceHistory = coordinator.recoveryHistory.filter(
         (event) => event.kind === "native_cleanup_maintenance",
@@ -3220,7 +3258,7 @@ export async function reconcileRetainedNativeSessionCleanup(
       let emptyRoot: ReturnType<typeof cleanupCanonicalVacancy> = null;
       let sourceDirectory: string;
       let quarantine: string;
-      let sourceArchive: NonNullable<typeof claim>["sourceArchive"] = null;
+      let sourceArchive: CleanupClaim["sourceArchive"] = null;
       const rootExists = !!lstatSync(root, { throwIfNoEntry: false });
       if (rootExists && !isSafeNativeStateDirectory(root)) return null;
       if (archiveHistory.length) {
@@ -3347,7 +3385,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         providerEvent.sourceKind !== "runner" ||
         providerEvent.turnId !== identity.turnId ||
         providerEvent.itemId !== identity.itemId ||
-        !cleanupProcessAbsent(provider.processId) ||
+        !Number.isSafeInteger(provider.processId) || Number(provider.processId) <= 0 ||
         typeof provider.providerSessionId !== "string" ||
         source.provider.threadId !== provider.providerSessionId ||
         providerEvent.runId !== run.id ||
@@ -3356,6 +3394,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         typeof providerEvent.sourceEventId !== "string"
       )
         return null;
+      if (!cleanupProcessAbsent(provider.processId)) return defer("process_exit");
       const persisted = await tx
         .select()
         .from(heartbeatRunEvents)
@@ -3444,13 +3483,8 @@ export async function reconcileRetainedNativeSessionCleanup(
         );
         if (attemptedNames.length !== 1) return null;
         const directory = resolve(runnerdStateBase(), attemptedNames[0]!);
-        if (
-          !retainedRunnerdMaintenanceIsIdle(directory) ||
-          lstatSync(resolve(directory, CLEANUP_ACTIVATION_FILE), {
-            throwIfNoEntry: false,
-          })
-        )
-          return null;
+        if (lstatSync(resolve(directory, CLEANUP_ACTIVATION_FILE), { throwIfNoEntry: false })) return null;
+        if (!retainedRunnerdMaintenanceIsIdle(directory)) return defer("maintenance_settlement");
         const attempted = cleanupStateSnapshot(directory);
         const receipts = await tx
           .select()
@@ -3552,13 +3586,26 @@ export async function reconcileRetainedNativeSessionCleanup(
         history,
       };
     });
-  } catch {
+  } catch (error) {
     releaseScope();
-    return { status: "not_eligible", runId: input.runId };
+
+
+
+    const code = record(error).code;
+    if (error instanceof SyntaxError || code === "native_execution_input_invalid"
+      || code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP"
+      || (error instanceof Error && ["native_cleanup_maintenance_unproven", "native_state_file_changed"].includes(error.message))) {
+      return { status: "not_eligible", runId: input.runId };
+    }
+    throw error;
   }
   if (!claim) {
     releaseScope();
     return { status: "not_eligible", runId: input.runId };
+  }
+  if ("status" in claim) {
+    releaseScope();
+    return claim;
   }
   const owned = claim;
   let stagingDirectory: string | null = null;
@@ -3894,6 +3941,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         renameSync(owned.root, archive);
       }
       renameSync(copy, owned.root);
+      await notifyNativeFinalizationWork(tx, { companyId: owned.run.companyId, runId: owned.run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({
@@ -3951,6 +3999,7 @@ export async function reconcileRetainedNativeSessionCleanup(
         .limit(1)
         .then((rows) => rows[0]);
       if (!current || current.leaseOwner !== leaseOwner) return;
+      await notifyNativeFinalizationWork(tx, { companyId: owned.run.companyId, runId: owned.run.id });
       await tx
         .update(nativeRunFinalizations)
         .set({
@@ -6520,9 +6569,9 @@ async function releaseWarmNativeSession(
     entry.busy = true;
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-      if (warmNativeSessions.get(sessionId) === entry) warmNativeSessions.delete(sessionId);
+      forgetWarmNativeSession(sessionId, entry);
     } catch (error) {
-      if (!entry.instructionWorkingCopy?.runId) warmNativeSessions.delete(sessionId);
+      if (!entry.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, entry);
       if (requireCleanClose) throw error;
     } finally { entry.busy = false; }
     return;
@@ -6548,8 +6597,8 @@ function armWarmNativeSessionIdleTimer(
     current.busy = true;
     current.closeOnReleaseReason = "warm native session idle timeout";
     const closing = closeWarmNativeSession(current, current.closeOnReleaseReason)
-      .then(() => { if (warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
-      .catch(() => { if (!current.instructionWorkingCopy?.runId && warmNativeSessions.get(sessionId) === current) warmNativeSessions.delete(sessionId); })
+      .then(() => { forgetWarmNativeSession(sessionId, current); })
+      .catch(() => { if (!current.instructionWorkingCopy?.runId) forgetWarmNativeSession(sessionId, current); })
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);
@@ -7419,6 +7468,7 @@ export async function cancelNativeSession(
       if (!written) throw new Error("native_cancellation_binding_changed");
       // Cancellation is also an authority fence for a durable retry whose
       // preceding provider has already failed. No in-memory session is needed.
+      await notifyNativeResultCommit(tx, { companyId: cancellationContext.companyId, runId });
       await tx
         .update(nativeRunFinalizations)
         .set({
@@ -7654,6 +7704,7 @@ export async function cancelNativeSession(
         const acknowledgementAuditId = activity.activity?.id ?? null;
         if (!acknowledgementAuditId)
           throw new Error("native_cancellation_ack_audit_missing");
+        await notifyCancelledWorkspacePreservation(tx, { companyId: cancellationContext.companyId, runId });
         const cancellationWrite = await tx
           .update(heartbeatRuns)
           .set({
@@ -7746,6 +7797,8 @@ export async function executePaperclipNativeSession(input: {
   turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
+  /** Release recovery preparation's renewal after execution owns its reference. */
+  onExecutionLeaseAcquired?: () => Promise<void>;
   onSpawn?: (meta: {
     pid: number;
     processGroupId: number | null;
@@ -7995,6 +8048,9 @@ export async function executePaperclipNativeSession(input: {
         })
         .catch(() => undefined);
     }
+    releaseRetainedNativeSessionCleanup(input.db, {
+      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    });
   }
 }
 
@@ -8347,7 +8403,7 @@ async function executePaperclipNativeSessionWithinScope(
             })
             .where(eq(heartbeatRuns.id, coordinator.runId));
           return nextAttempt;
-        }).then(claimedAttempt => {
+        }).then(async claimedAttempt => {
           const startup = nativeSessionStartups.get(input.execution.binding.runId);
           if (!startup) throw new Error("native_session_startup_owner_missing");
           startup.leaseOwner = leaseOwner;
@@ -8362,6 +8418,7 @@ async function executePaperclipNativeSessionWithinScope(
               ? detachNativeSessionsForRestart([input.execution.binding.runId], leaseOwner)
               : cancelNativeSession(input.execution.binding.runId, "native session execution lease lost"),
           });
+          await input.onExecutionLeaseAcquired?.();
           return claimedAttempt;
         }),
       { parentName: "task.prepare" },
@@ -8913,7 +8970,7 @@ async function executePaperclipNativeSessionWithinScope(
         entry.closeOnReleaseReason = "warm native session configuration changed";
         try {
           await closeWarmNativeSession(entry, entry.closeOnReleaseReason, input.execution.binding.runId);
-          warmNativeSessions.delete(warmSessionId);
+          forgetWarmNativeSession(warmSessionId, entry);
         } finally { entry.busy = false; }
         if (preparedCopy) throw new Error("native_instruction_preparation_configuration_changed");
         persistedWarmSession = loadWarmNativeCheckpoint(
@@ -8930,7 +8987,7 @@ async function executePaperclipNativeSessionWithinScope(
           entry.closeOnReleaseReason = "warm instruction copy changed during preparation";
           try {
             await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
-            warmNativeSessions.delete(warmSessionId);
+            forgetWarmNativeSession(warmSessionId, entry);
           } finally { entry.busy = false; }
           throw new Error("native_instruction_preparation_copy_changed");
         }
@@ -9337,6 +9394,9 @@ async function executePaperclipNativeSessionWithinScope(
                   existing.issueId = input.execution.binding.issueId;
                 } else
                   warmNativeSessions.set(warmSessionId, {
+                    onReleased: () => releaseRetainedNativeSessionCleanup(input.db, {
+                      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+                    }),
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     runId: input.execution.binding.runId,
@@ -9384,7 +9444,7 @@ async function executePaperclipNativeSessionWithinScope(
                   if (existing.idleTimer !== null) {
                     clearTimeout(existing.idleTimer);
                   }
-                  warmNativeSessions.delete(warmSessionId);
+                  forgetWarmNativeSession(warmSessionId, existing);
                 }
               }
               if (session) {
@@ -9693,6 +9753,7 @@ async function executePaperclipNativeSessionWithinScope(
           )
           .for("update");
         await notifyExecutionRunWork(tx);
+        await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
           .update(nativeRunFinalizations)
           .set({
@@ -9817,6 +9878,10 @@ async function executePaperclipNativeSessionWithinScope(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .for("update");
+        if (!ownershipUnverified) await notifyExternalAgentSettlement(tx, input.execution.binding);
+        if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
+        if (!ownershipUnverified) await notifyCancelledWorkspacePreservation(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
+        if (!ownershipUnverified) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId });
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
@@ -9871,6 +9936,7 @@ async function executePaperclipNativeSessionWithinScope(
           stillOwnsTask &&
           phase === "terminal_failure"
         ) {
+          await notifyNativeStatusReassessment(tx, { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId });
           await tx
             .update(issues)
             .set({ executionRunId: null, checkoutRunId: null, updatedAt: now })
@@ -10024,33 +10090,35 @@ async function executePaperclipNativeSessionWithinScope(
     }
   }
   const releaseNow = new Date();
-  const released = await timeController("coordinator_release", () => input.db
-    .update(nativeRunFinalizations)
-    .set({
-      leaseOwner: null,
-      leaseExpiresAt: null,
-      recoveryState: null,
-      recoveryRequestId: null,
-      updatedAt: releaseNow,
-    })
-    .where(
-      and(
-        eq(nativeRunFinalizations.runId, input.execution.binding.runId),
-        eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
-        eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
-        eq(nativeRunFinalizations.leaseOwner, leaseOwner),
-        eq(nativeRunFinalizations.attempt, attempt),
-        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
-        eq(nativeRunFinalizations.controllerPid, controller.pid),
-        eq(
-          nativeRunFinalizations.controllerProcessStartedAt,
-          controller.processStartedAt,
+  const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
+    await notifyNativeFinalizationWork(tx, input.execution.binding);
+    return tx.update(nativeRunFinalizations)
+      .set({
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        recoveryState: null,
+        recoveryRequestId: null,
+        updatedAt: releaseNow,
+      })
+      .where(
+        and(
+          eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+          eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+          eq(nativeRunFinalizations.issueId, input.execution.binding.issueId),
+          eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+          eq(nativeRunFinalizations.attempt, attempt),
+          eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+          eq(nativeRunFinalizations.controllerPid, controller.pid),
+          eq(
+            nativeRunFinalizations.controllerProcessStartedAt,
+            controller.processStartedAt,
+          ),
+          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
         ),
-        gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
-      ),
-    )
-    .returning({ runId: nativeRunFinalizations.runId })
-    .then((rows) => rows[0] ?? null));
+      )
+      .returning({ runId: nativeRunFinalizations.runId })
+      .then((rows) => rows[0] ?? null);
+  }));
   if (!released) throw new Error("native_session_lease_lost");
   const finalization: NativeFinalizationResult = {
     schema: "paperclip.native-finalization.v1",
@@ -11837,6 +11905,9 @@ export async function createRunnerdBackend(input: {
     );
   } finally {
     initializingSessionToolAuthorities.delete(sessionScopeId);
+    releaseRetainedNativeSessionCleanup(input.db, {
+      companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    });
   }
 }
 
@@ -12863,6 +12934,8 @@ async function createRunnerdBackendWithinSessionClaim(
       .select({
         metadata: environmentLeases.metadata,
         providerLeaseId: environmentLeases.providerLeaseId,
+        companyId: environmentLeases.companyId,
+        heartbeatRunId: environmentLeases.heartbeatRunId,
       })
       .from(environmentLeases)
       .where(eq(environmentLeases.id, remoteTarget.leaseId))
@@ -12897,7 +12970,7 @@ async function createRunnerdBackendWithinSessionClaim(
       })
       .where(eq(environmentLeases.id, leaseId))
       .returning({ id: environmentLeases.id })
-      .then((rows) => rows[0] ?? null));
+      .then((rows) => rows[0] ?? null), { companyId: leaseRow.companyId, runId: leaseRow.heartbeatRunId ?? undefined });
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 

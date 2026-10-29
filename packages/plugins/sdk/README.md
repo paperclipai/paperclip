@@ -271,6 +271,44 @@ views, access failures, inactive runs and missing plugins contribute no task tab
 Closing a tab preserves dismissal during polling; available panels remain in the
 launcher. Only tab identity is persisted, never availability responses or secrets.
 
+#### Runtime activity recording
+
+A runtime client captures Runner's opaque activity context before an eligible
+operation, then sends a structured notification after successful use:
+
+```sh
+context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context)
+# Perform the operation; notify only on success.
+"$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used
+```
+
+Runner supplies the matching absolute executable as
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER` and an atomic endpoint descriptor as
+`PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
+override them. Provider launch boundaries preserve both values. Codex receives
+read access to the helper, descriptor and publisher lock, plus write access to
+one named pipe. The pipe and lock live in a private temporary directory, outside
+durable Runner state. The enclosing directories remain protected.
+
+The helper captures context locally. After success, it publishes newline-delimited
+JSON through a nonblocking pipe. A leading newline terminates an interrupted
+previous write. A read-only file lock serializes publishers with a 500 ms deadline.
+Runner reuses its bounded line reader: 2 KiB per record, 128 queued records and
+16 records per control-loop iteration. Idle transport blocks; cleanup removes
+only its pipe, lock and empty private directory.
+
+A successful helper exit means publication to the pipe. Runner validates context
+against the active run, deduplicates up to 128 activity pairs per authority, and
+persists `runtime.activity.recorded` through its authenticated event stream.
+Warm attachment and process recovery rotate context. The helper accepts no run
+identity. Clients treat this hint as best effort, including with older runtimes.
+Notify only after successful use; exclude help, schema discovery, status probes
+and failures. No agent instruction is required.
+
+Identifiers are 1–160 Unicode code points, excluding C0 controls and DEL.
+Core maps declared activity identifiers to its consumers and applies their
+existing discovery, authorization and availability checks.
+
 #### `taskDetailView`
 
 A specialized slot rendered in the context of a task or issue detail view. Similar to `detailTab` but designed for inline content within the task detail layout rather than a separate tab. Receives `context.companyId`, `context.entityId`, and `context.entityType` like `detailTab`. Requires the `ui.detailTab.register` capability.

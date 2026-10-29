@@ -23,6 +23,8 @@ never start a server or depend on a tenant filesystem.
 
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
+| `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
+| `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
@@ -77,6 +79,24 @@ server proves that no provider work started. A scheduled replacement remains
 pending and consumes the run limit. It cannot satisfy completion; the child must
 still finish through native execution and pass the independent artifact checks.
 
+The attached `ask-question` recipe requires a prepared native general agent and
+an explicit execution environment. Legacy execution is unsupported until its
+saved model/provider identity can be verified. A registered
+agent avoids a new setup probe; a disposable QA agent uses the existing native
+fixture defaults and its setup remains separately unpriced. A restricted review
+bot is not a general-work fixture.
+The private provider supplies its exact execution identity through the `agent`
+capability and collects normalized run usage. The existing Cloud provider still
+owns authentication, conditional leases, fixture ownership, and cleanup.
+A model allowance is an accounting threshold; reused direct-provider routes do
+not acquire the onboarding gateway's request-level cash guarantee. The question
+observer allows one run and waits at most four minutes. Cleanup stops only
+run-owned question work; shared agent configuration stays outside ownership.
+When the QA adapter explicitly selects terminal-history retention, it terminates
+its disposable agent, makes owned tasks terminal, verifies no active runs, retains
+the records for decision-history integrity, and releases both QA leases. This is
+reported as retained data, rather than confirmed deletion.
+
 ## Evidence and lifecycle
 
 Results use the existing campaign/result schemas and dashboard. Each result
@@ -115,7 +135,8 @@ contract before successful cleanup. Missing assertions or paid accounting proof
 turn the campaign into a failure while preserving valid cost receipts, so an
 invalid success cannot trigger disposable-stack deletion.
 
-Only post-journey screenshots are captured. Browser state, login codes, raw
+Only post-journey screenshots are captured. Failed task/search screens are
+retained only after tenant setup; authentication pages are excluded. Browser state, login codes, raw
 errors, credentials, request headers, and auth screenshots are excluded. All
 Cloud evidence is private; the public history publisher rejects these bundles.
 The private provider uses conditional S3 identity/stack leases and intent/receipt

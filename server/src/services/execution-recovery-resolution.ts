@@ -1,3 +1,5 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
@@ -450,6 +452,7 @@ export async function settleUnrecoverableExecutions(
       .limit(25).for("update", { skipLocked: true });
     for (const candidate of foldable) {
       if (await getConversationOwnershipBlocker(tx as unknown as Db, candidate.companyId, candidate.sourceIssueId)) continue;
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: candidate.companyId, issueId: candidate.sourceIssueId });
       const [action] = await tx.update(issueRecoveryActions).set({
         status: "resolved",
         outcome: "cancelled",
@@ -585,10 +588,14 @@ export async function settleUnrecoverableExecutions(
             ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
             : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
         if (current) {
+          await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
           if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           const [projected] = await tx
             .update(issues)
             .set({

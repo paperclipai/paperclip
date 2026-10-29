@@ -11,6 +11,11 @@ The server also retires an unowned failed sandbox retry after its linked explici
 Retry completes. This only registers exact-source preservation; it neither changes
 the current task nor supplies stop or saved-file proof.
 
+Daytona's directory-export capacity fallback stays inside this server-owned file
+preservation path. It changes the archive transport, grants no new agent entry
+point, and still requires the caller's exact stopped-source and workspace fences.
+Provider transfer tests do not establish task admission or agent authority.
+
 Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
 zombie with the saved generation. Unknown adopted-process ownership rejects the
 probe and grants no permission to replace a runner, signal a different process,

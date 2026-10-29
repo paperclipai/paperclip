@@ -193,13 +193,14 @@ export {
 } from "./tool_access.js";
 export {
   companySkills,
-  companySkillVersions, companySkillRepositorySnapshots,
+  companySkillVersions, companySkillRepositorySnapshots, skillPackageDeletions,
   companySkillStars,
   companySkillComments,
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
 } from "./company_skills.js";
+export type { SkillPackageStorageReceipt, SkillPackageUpload, SkillPackageRestoreRecipe, SkillPackageFileMapping } from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";

@@ -1,3 +1,4 @@
+import { notifyInstructionCollection, type InstructionCollectionScope } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup, type DirectoryCleanupScope } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit, type InstructionCommitScope } from "./instruction-commit-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -9,7 +10,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
@@ -95,21 +96,23 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     const [row] = await db.select().from(copies).where(scope(companyId, runId));
     return row ?? null;
   }
-  async function tryPatch(row: Copy, values: Partial<typeof copies.$inferInsert>, requireDue = false) {
+  async function tryPatch(row: Copy, values: Partial<typeof copies.$inferInsert>, requireDue = false, condition?: SQL) {
+    const signalsCollection = collectionCandidate(row) || collectionCandidate({ ...row, ...values });
     const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry({ ...row, ...values }) !== null;
     const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
     const write = async (tx: Db) => {
       if (signalsCommit)
         await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
       if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
+      if (signalsCollection) await notifyInstructionCollection(tx, { companyId: row.companyId, runId: row.runId });
       const [updated] = await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(and(
         scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash),
         sql`${copies.receipt}->>'retainedByRunId' IS NOT DISTINCT FROM ${typeof row.receipt?.retainedByRunId === "string" ? row.receipt.retainedByRunId : null}`,
-        requireDue ? or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())) : undefined,
+        requireDue ? or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())) : undefined, condition,
       )).returning();
       return updated;
     };
-    return signalsCommit || signalsCleanup ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
+    return signalsCommit || signalsCleanup || signalsCollection ? db.transaction(tx => write(tx as unknown as Db)) : write(db);
   }
   async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
     const updated = await tryPatch(row, values);
@@ -199,11 +202,14 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       ? path.posix.join(target.remoteCwd, ".paperclip-runtime", `instruction-edits-${input.runId}`, "instructions")
       : localRoot;
     if (!existing) {
-      await db.insert(copies).values({
+      await db.transaction(async tx => {
+        await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
+      await tx.insert(copies).values({
         runId: input.runId, companyId: input.companyId, agentId: input.agentId,
         responsibleUserId: bound.onBehalfOfUserId!, entryFile,
         baseRevisionId: baseline?.revision.id ?? null, baseHash: hash(content),
         localRoot, executionRoot, location, state: "preparing",
+      });
       });
     }
     const row = (await get(input.companyId, input.runId))!;
@@ -363,53 +369,114 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   /** Recover only the registered copy after independently recorded process-stop
    * proof. Terminal run status is never a substitute for that proof. Remote
    * receipts mean the environment is stopped; do not restart it just to read. */
-  async function recoverStopped() {
-    const pending = await db.select({ copy: copies, runtimeMode: heartbeatRuns.runtimeMode }).from(copies)
-      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
-      .where(and(or(and(or(inArray(copies.state, ["prepared", "pending_collection", "unchanged_turn", "warm_saved"]),
-          and(eq(copies.state, "preparing"), sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
-          lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1)),
-        and(eq(copies.state, "unavailable"), isNull(copies.processStoppedAt),
-          sql`${copies.location} like 'remote:%'`,
-          sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
-        sql`NOT (coalesce(${copies.receipt}, '{}'::jsonb) ? 'retainedByRunId')`,
-        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
-        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())))).orderBy(asc(copies.updatedAt)).limit(20);
-    for (const { copy: row, runtimeMode } of pending) {
-      if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
-        await recoverDirectoryCleanup(row, () => directories.recoverUnavailable(row));
-      } else if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
-        // A provider cannot launch until preparation records "prepared". With
-        // the owning run terminal, this is an interrupted staging copy only.
-        await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),
-          errorCode: "AGENT_FILES_PREPARE_FAILED", errorMessage: "Agent-file preparation was interrupted. The temporary copy was discarded.", nextAttemptAt: null }));
-      } else if (row.location === "local" && (row.processStoppedAt || runtimeMode === "native" &&
-          await hasNativeLocalProcessStop(db, row.companyId, row.runId))) {
-        const result = await collectStopped({ companyId: row.companyId, runId: row.runId });
-        if (result && isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
-      } else if (row.location !== "local" && await remoteExecutionHasStopped(db, row.companyId, row.runId)) {
-        if (row.receipt?.warm === true) {
-        const unavailable = row.receipt?.warm === true
-          ? await patch(row, { state: "unavailable", errorCode: "AGENT_FILES_FINAL_COLLECTION_UNAVAILABLE",
-            errorMessage: "The last completed checkpoint remains saved. Files changed afterwards could not be collected after remote termination.", nextAttemptAt: null })
-          : await reportUnavailable(row.companyId, row.runId);
-        if (unavailable && isAgentDirectoryCopy(unavailable)) {
-          await directories.release(await patch(unavailable, { processStoppedAt: unavailable.processStoppedAt ?? new Date() }));
-        }
-        } else {
-        if (isAgentDirectoryCopy(row)) await directories.recoverStoppedRemote(row);
-        else await reportUnavailable(row.companyId, row.runId);
-        }
-      } else if (row.state === "prepared") {
-        await patch(row, { state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED",
-          errorMessage: "The provider's stop has not been confirmed. Instruction collection is pending; no save is claimed.", nextAttemptAt: new Date(Date.now() + 30_000) });
-      } else if (["warm_saved", "pending_collection", "unchanged_turn"].includes(row.state)) {
-        // Live retained sessions must not occupy every batch and starve stopped
-        // copies from other agents. This does not permit reads without stop proof.
-        await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) });
+  function collectionCandidate(row: Copy) {
+    return !row.receipt?.retainedByRunId && (
+      row.attempts < MAX_COLLECTION_ATTEMPTS && (["prepared", "pending_collection", "unchanged_turn", "warm_saved"].includes(row.state)
+        || row.state === "preparing" && isAgentDirectoryCopy(row))
+      || row.state === "unavailable" && !row.processStoppedAt && row.location.startsWith("remote:") && isAgentDirectoryCopy(row));
+  }
+  function collectionPredicate() {
+    return and(sql`NOT (coalesce(${copies.receipt}, '{}'::jsonb) ? 'retainedByRunId') AND (
+      (${copies.attempts} < 3 AND (${copies.state} IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')
+        OR (${copies.state} = 'preparing' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1')))
+      OR (${copies.state} = 'unavailable' AND ${copies.processStoppedAt} IS NULL
+        AND ${copies.location} LIKE 'remote:%' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'))`,
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]));
+  }
+  async function collectRecovered(row: Copy, runtimeMode: string | null) {
+    if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
+      await recoverDirectoryCleanup(row, () => directories.recoverUnavailable(row));
+    } else if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
+
+
+      await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),
+        errorCode: "AGENT_FILES_PREPARE_FAILED", errorMessage: "Agent-file preparation was interrupted. The temporary copy was discarded.", nextAttemptAt: null }));
+    } else if (row.location === "local" && (row.processStoppedAt || runtimeMode === "native" &&
+        await hasNativeLocalProcessStop(db, row.companyId, row.runId))) {
+      const result = await collectStopped({ companyId: row.companyId, runId: row.runId });
+      if (result && isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
+    } else if (row.location !== "local" && await remoteExecutionHasStopped(db, row.companyId, row.runId)) {
+      if (row.receipt?.warm === true) {
+      const unavailable = row.receipt?.warm === true
+        ? await patch(row, { state: "unavailable", errorCode: "AGENT_FILES_FINAL_COLLECTION_UNAVAILABLE",
+          errorMessage: "The last completed checkpoint remains saved. Files changed afterwards could not be collected after remote termination.", nextAttemptAt: null })
+        : await reportUnavailable(row.companyId, row.runId);
+      if (unavailable && isAgentDirectoryCopy(unavailable)) {
+        await directories.release(await patch(unavailable, { processStoppedAt: unavailable.processStoppedAt ?? new Date() }));
       }
+      } else {
+      if (isAgentDirectoryCopy(row)) await directories.recoverStoppedRemote(row);
+      else await reportUnavailable(row.companyId, row.runId);
+      }
+    } else if (row.state === "prepared") {
+      await patch(row, { state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED",
+        errorMessage: "The provider's stop has not been confirmed. Instruction collection is pending; no save is claimed.", nextAttemptAt: new Date(Date.now() + 30_000) });
+    } else if (["warm_saved", "pending_collection", "unchanged_turn"].includes(row.state)) {
+
+
+      await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) });
     }
-    return pending.length;
+  }
+  type CollectionEntry = { id: string; companyId: string; dueAt: number };
+  async function loadCollection(scope: InstructionCollectionScope | undefined, admitted: () => boolean) {
+    const entries: CollectionEntry[] = [];
+    let cursor: string | undefined;
+    while (admitted()) {
+      const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+        .from(copies).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
+        .where(and(collectionPredicate(), scope ? eq(copies.companyId, scope.companyId) : undefined,
+          scope?.runId ? eq(copies.runId, scope.runId) : undefined, cursor ? gt(copies.runId, cursor) : undefined))
+        .orderBy(asc(copies.runId)).limit(100);
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].id;
+    }
+    throw new Error("Instruction collection reconstruction stopped");
+  }
+  async function readCollection(entry: CollectionEntry) {
+    const [current] = await db.select({ copy: copies, runtimeMode: heartbeatRuns.runtimeMode }).from(copies)
+      .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
+      .where(and(collectionPredicate(), scope(entry.companyId, entry.id)));
+    return current;
+  }
+  async function recoverCollection(entry: CollectionEntry, admitted: () => boolean) {
+    const current = await readCollection(entry);
+    if (!current) return null;
+    const dueAt = current.copy.nextAttemptAt?.getTime() ?? 0;
+    if (dueAt > Date.now()) return { ...entry, dueAt };
+    if (!admitted()) throw new Error("Instruction collection recovery stopped");
+    const claimed = await tryPatch(current.copy, { nextAttemptAt: new Date(Date.now() + 30_000) }, true,
+      sql`EXISTS (SELECT 1 FROM ${heartbeatRuns} WHERE ${heartbeatRuns.id} = ${copies.runId}
+        AND ${heartbeatRuns.companyId} = ${copies.companyId}
+        AND ${heartbeatRuns.status} IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`);
+    if (claimed) await collectRecovered(claimed, current.runtimeMode);
+    const remaining = await readCollection(entry);
+    if (!remaining) return null;
+    const next = { ...entry, dueAt: remaining.copy.nextAttemptAt?.getTime() ?? 0 };
+    if (next.dueAt <= Date.now()) throw new Error("Instruction collection remains unresolved without a future retry");
+    return next;
+  }
+  async function recoverStopped() {
+    const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+      .from(copies).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
+      .where(and(collectionPredicate(), or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date()))))
+      .orderBy(asc(copies.updatedAt)).limit(20);
+    for (const row of rows) {
+      try { await recoverCollection({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 }, () => true); }
+      catch (error) { logger.warn({ err: error, runId: row.id }, "Instruction collection recovery deferred"); }
+    }
+    return rows.length;
+  }
+  function registerStoppedCollectionWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean, canRecover: () => Promise<boolean>) {
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.instructionCollection, batchSize: 20,
+      decodeScope: (hint: string): InstructionCollectionScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: CollectionEntry, scope?: InstructionCollectionScope) => !scope ||
+        entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+      load: async (scope, signal) => await canRecover() ? loadCollection(scope, () => canRun() && !signal?.aborted) : [],
+      check: async (entry, signal) => await canRecover() ? recoverCollection(entry, () => canRun() && !signal?.aborted) : null,
+    }, canRun);
   }
 
   type DirectoryCleanupEntry = { id: string; companyId: string; dueAt: number };
@@ -566,5 +633,5 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     }
     return row;
   }
-  return { registerDirectoryCleanupWork, registerCapturedCommitWork, prepare, checkpointWarm, canReuseWarm: directories.canReuse, adopt, reportRetirementUnconfirmed, get, hasChanges, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
+  return { registerStoppedCollectionWork, registerDirectoryCleanupWork, registerCapturedCommitWork, prepare, checkpointWarm, canReuseWarm: directories.canReuse, adopt, reportRetirementUnconfirmed, get, hasChanges, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
 }

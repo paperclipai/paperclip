@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +21,8 @@ import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { ConfigurationTab } from "../pages/AgentDetail";
+import { ConfigurationTab as ClassicConfigurationTab } from "../pages/AgentDetail.production";
 
 const mockAgentsApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -103,9 +106,9 @@ vi.mock("../lib/clipboard", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip" }],
+    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "CO" }],
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "CO" },
     selectionSource: "bootstrap",
     loading: false,
     error: null,
@@ -1480,8 +1483,38 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).toContain("Secret access");
-    expect(result.container.textContent).toContain("No secrets are bound to this agent yet.");
+    expect(result.container.textContent).toContain("No company secret references are bound to this agent yet.");
     expect(result.container.textContent).not.toContain("Environment variables");
+  });
+
+  it.each([
+    { variant: "current", adapterType: "paperclip_runner" },
+    { variant: "current", adapterType: "claude_local" },
+    { variant: "classic", adapterType: "paperclip_runner" },
+    { variant: "classic", adapterType: "claude_local" },
+  ])("shows saved $adapterType environment credentials on the $variant agent Secrets page", async ({ variant, adapterType }) => {
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const agent = { ...makeAgent({ adapterType, adapterConfig: {
+      provider: "acpx", acpxAgent: "claude",
+      env: { RELEASE_WEBHOOK: { type: "plain", value: "***REDACTED***" } },
+    } }), chainOfCommand: [], access: { canAssignTasks: false, taskAssignSource: "none" as const, membership: null, grants: [] } };
+    const Settings = variant === "current" ? ConfigurationTab : ClassicConfigurationTab;
+    await act(async () => renderFormView(root, createFormQueryClient(), <MemoryRouter>
+      <Settings agent={agent} companyId="company-1" content="secrets"
+        onDirtyChange={vi.fn()} onSaveActionChange={vi.fn()} onCancelActionChange={vi.fn()} onSavingChange={vi.fn()}
+        updatePermissions={{ mutate: vi.fn(), isPending: false }} />
+    </MemoryRouter>));
+    await flushReact();
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')?.value).toBe("RELEASE_WEBHOOK");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')?.value).toBe("***REDACTED***");
+    expect(container.textContent).toContain("Environment variables");
+    expect(container.textContent).toContain("Secret access");
+    expect(container.textContent).not.toContain("No environment variables");
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {

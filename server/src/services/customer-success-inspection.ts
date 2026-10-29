@@ -19,6 +19,7 @@ import {
 } from "./workspace-file-resources.js";
 import { deriveBundleState } from "./agent-instructions.js";
 import { readInstructionBytes } from "./agent-instruction-files.js";
+import { skillPackageStore } from "./skill-package-store.js";
 import { getRunLogStore } from "./run-log-store.js";
 
 // This is a reviewed catalog of readers, not a proxy for existing GET routes.
@@ -281,7 +282,8 @@ export async function readCustomerSuccessResource(
         assertWorkspaceFilePathAllowed(relative);
         const versionId = q.versionId ?? skill.currentVersionId;
         // Installed version snapshots are authoritative. Reading must not invoke
-        // inventory reconciliation, checkout, fetching, adoption or materialization.
+        // inventory reconciliation or Git recovery. Stored packages are verified in
+        // an isolated scratch directory, outside the agent preparation lock.
         if (versionId) {
           const version = await ownRow(
             tx,
@@ -290,18 +292,15 @@ export async function readCustomerSuccessResource(
             String(versionId),
           );
           if (version.companySkillId !== skill.id) throw notFound("Skill version not found");
-          const files = version.fileInventory as Array<{
-            path: string;
-            content?: string;
-            encoding?: string;
-          }>;
-          const file = files.find((f) => f.path === relative);
+          const file = await skillPackageStore(tx, storage, db).readVersionFile(
+            version as typeof schema.companySkillVersions.$inferSelect, relative, false);
           if (file?.content !== undefined) {
             const bytes = Buffer.from(file.content, file.encoding === "base64" ? "base64" : "utf8");
             if (bytes.length > MAX_INSPECTION_BYTES)
               throw unprocessable("Skill snapshot exceeds inspection limit");
             return binary(bytes, bytes.length);
           }
+          return unavailable("skill_file_not_snapshotted");
         }
         if (relative === "SKILL.md")
           return binary(

@@ -3,6 +3,7 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
+  signal?: AbortSignal;
   // Readable bodies stream straight to the backend (contentLength must be the
   // exact byte size); Buffer stays supported for small payloads.
   body: Buffer | Readable;
@@ -45,6 +46,7 @@ export interface StorageProvider {
 }
 
 export type PutFileInput = {
+  signal?: AbortSignal;
   /** Server-allocated, company-prefixed key for durable idempotent uploads. Never accept from client input. */
   objectKey?: string;
   companyId: string;
@@ -65,7 +67,7 @@ export interface PutFileResult {
 export interface StorageService {
   provider: StorageProviderId;
   putFile(input: PutFileInput): Promise<PutFileResult>;
-  getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range">): Promise<GetObjectResult>;
-  headObject(companyId: string, objectKey: string): Promise<HeadObjectResult>;
-  deleteObject(companyId: string, objectKey: string): Promise<void>;
+  getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range" | "signal">): Promise<GetObjectResult>;
+  headObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<HeadObjectResult>;
+  deleteObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<void>;
 }

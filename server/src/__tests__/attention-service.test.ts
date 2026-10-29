@@ -7,7 +7,6 @@ import { eq, sql } from "drizzle-orm";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
-  activityLog,
   agents,
   approvals,
   assets,
@@ -17,11 +16,8 @@ import {
   createDb,
   decisionQueueItems,
   decisionQueues,
-  decisionArchiveNotificationOutbox,
-  decisionRetention,
   decisions,
   decisionTriage,
-  decisionTriageEvents,
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -70,35 +66,9 @@ describeEmbeddedPostgres("attention service", () => {
   }, 30_000);
 
   afterEach(async () => {
-    await db.delete(inboxDismissals);
-    await db.delete(decisionArchiveNotificationOutbox);
-    await db.delete(decisionRetention);
-    await db.delete(decisionTriageEvents);
-    await db.delete(decisionTriage);
-    await db.delete(decisionQueueItems);
-    await db.delete(decisionQueues);
-    await db.delete(decisions);
-    await db.delete(issueThreadInteractions);
-    await db.delete(issueApprovals);
-    await db.delete(issueAttachments);
-    await db.delete(issueDocuments);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(budgetIncidents);
-    await db.delete(budgetPolicies);
-    await db.delete(joinRequests);
-    await db.delete(invites);
-    await db.delete(issueRecoveryActions);
-    await db.delete(issueRelations);
-    await db.delete(activityLog);
-    await db.delete(approvals);
-    await db.delete(issues);
-    await db.delete(assets);
-    await db.delete(documents);
-    await db.delete(projectWorkspaces);
-    await db.delete(projects);
-    await db.delete(agents);
-    await db.delete(companies);
+
+
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {

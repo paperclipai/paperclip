@@ -100,6 +100,10 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
     },
 
     rejectPendingHire: async (id: string) => {
+      const [pending] = await db.select({ companyId: agents.companyId, status: agents.status }).from(agents)
+        .where(and(eq(agents.id, id), eq(agents.lifecycleState, "pending_approval"))).for("update");
+      if (!pending) return [];
+      await effects.beforeStatusChange(db, pending.companyId, id, pending.status, "terminated");
       const rows = await db.update(agents).set({ status: "terminated", lifecycleState: "rejected",
         lifecycleVersion: sql`${agents.lifecycleVersion} + 1`, lifecycleOperation: null,
         updatedAt: new Date() }).where(and(eq(agents.id, id), eq(agents.lifecycleState, "pending_approval"))).returning();

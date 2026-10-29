@@ -1,3 +1,5 @@
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
 import { environmentService } from "./environments.js";
@@ -29,7 +31,6 @@ import { resumePreservedResultFinalization } from "./preserved-result-finalizati
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { prepareNativeWorkspaceSync } from "./native-runtime/native-workspace-sync.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -54,7 +55,8 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
 });
 
 describe("automatic retained workspace recovery", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+  let connectionString: string;
   let db: ReturnType<typeof createDb>;
   let root: string;
   const priorHome = process.env.PAPERCLIP_HOME, priorInstance = process.env.PAPERCLIP_INSTANCE_ID;
@@ -66,7 +68,8 @@ describe("automatic retained workspace recovery", () => {
       await applyPendingMigrations(external);
       temporary = { connectionString: external, cleanup: async () => {} };
     } else temporary = await startEmbeddedPostgresTestDatabase("workspace-recovery-");
-    db = createDb(temporary.connectionString);
+    connectionString = temporary.connectionString;
+    db = createDb(connectionString);
     if (external) await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   }, 30_000);
   afterAll(async () => {
@@ -478,6 +481,21 @@ describe("automatic retained workspace recovery", () => {
       systemRecovery: { ...state, nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, actionId));
   }
 
+  it("publishes the committed finalization barrier after real retained workspace recovery", async () => {
+    const f = await seed();
+    const observed: Array<Promise<Array<{ status: string }>>> = [];
+    const stop = subscribeDeliveryWork(db, DELIVERY_QUEUES.nativeStatusReassessment, () => {
+      observed.push(db.select({ status: workspaceOperations.status }).from(workspaceOperations).where(and(
+        eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+      )).then(rows => rows));
+    });
+    try { await recoverRetainedWorkspace(f.input); } finally { stop(); }
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(observed.length).toBeGreaterThan(0);
+    expect((await Promise.all(observed)).some(rows => rows.some(row => row.status === "succeeded"))).toBe(true);
+  });
+
   it("re-enters only the existing finalizer for an accepted result, once per intent, preserving failure history", async () => {
     const f = await seed();
     const contractId = randomUUID(), resultId = randomUUID();
@@ -582,7 +600,7 @@ describe("automatic retained workspace recovery", () => {
     expect(pending.status).toBe("running");
     expect(uploads).toBe(2);
     await makeRetryDue(f.actionId);
-    const restarted = createDb(temporary.connectionString);
+    const restarted = createDb(connectionString);
     try { await recoverRetainedWorkspace({ ...f.input, db: restarted }); }
     finally { await restarted.$client.end(); }
     const operations = await db.select().from(workspaceOperations).where(and(
@@ -791,7 +809,7 @@ describe("automatic retained workspace recovery", () => {
     const pending = await action(f.actionId);
     await db.update(issueRecoveryActions).set({ evidence: { ...pending.evidence,
       systemRecovery: { ...readSystemRecovery(pending.evidence), nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, f.actionId));
-    const restarted = createDb(temporary.connectionString);
+    const restarted = createDb(connectionString);
     try {
       await recoverRetainedWorkspace({ ...f.input, db: restarted });
       expect(await hasVerifiedWorkspaceRepair(restarted, await run(f.runId))).toBe(true);
@@ -1061,11 +1079,11 @@ describe("automatic retained workspace recovery", () => {
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson, nativeWorkspaceFinalizationOwner: prior } }).where(eq(heartbeatRuns.id, f.runId));
     // This is the verified platform boundary. Signature and identity validation
     // have independent coverage in native-workspace-platform-proof.test.ts.
-    const proof = vi.spyOn(workerProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({
+    const proof = vi.spyOn(workerProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: {
       v: 1, iss: "paperclip-cloud", aud: "paperclip-workspace-worker-stop/v1", sub: "test-stack", stopped: true,
       iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 30,
       runId: f.runId, ownerToken: prior.token, worker,
-    });
+    } });
     try {
       await recoverRetainedWorkspace(f.input);
       expect(proof).toHaveBeenCalledWith({ runId: f.runId, ownerToken: prior.token, worker });
@@ -1143,7 +1161,7 @@ describe("automatic retained workspace recovery", () => {
     }
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
     expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].status).toBe("released");
-    const restarted = createDb(temporary.connectionString), onRecovered = vi.fn(async (_source: { id: string }) => {});
+    const restarted = createDb(connectionString), onRecovered = vi.fn(async (_source: { id: string }) => {});
     try {
       await expect.poll(async () => {
         await reconcileRetainedWorkspaces(restarted, f.input.environmentRuntime, onRecovered);

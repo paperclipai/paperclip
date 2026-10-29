@@ -433,25 +433,15 @@ describe("persistent agent directories", () => {
       const first = await run();
       expect(await copies.hasChanges({ companyId, runId: first.runId })).toBe(false);
       const secondId = await nextRun();
-      const update = db.update.bind(db);
+      const transaction = db.transaction.bind(db);
       let injected = false;
-      const spy = vi.spyOn(db, "update").mockImplementation(table => {
-        const builder = update(table);
-        if (table !== agentInstructionWorkingCopies) return builder;
-        const set = builder.set.bind(builder);
-        builder.set = (values => {
-          const query = set(values);
-          if (!("processStoppedAt" in values) || !values.processStoppedAt || injected) return query;
-          const returning = query.returning.bind(query);
-          query.returning = (async () => {
-            injected = true;
-            expect(await copies.adopt({ companyId, agentId, runId: secondId, previousRunId: first.runId, cwd: home })).not.toBeNull();
-            return returning();
-          }) as typeof query.returning;
-          return query;
-        }) as typeof builder.set;
-        return builder;
-      });
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+        if (!injected) {
+          injected = true;
+          expect(await copies.adopt({ companyId, agentId, runId: secondId, previousRunId: first.runId, cwd: home })).not.toBeNull();
+        }
+        return transaction(callback, options);
+      }) as typeof db.transaction);
       try {
         expect(await copies.collectStopped({ companyId, runId: first.runId })).toMatchObject({
           receipt: { retainedByRunId: secondId }, processStoppedAt: null, attempts: 0,

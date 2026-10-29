@@ -118,6 +118,16 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
 
+  it("passes preparation renewal ownership to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const acquired = vi.fn(async () => undefined);
+    input.runtime.runOptions.onNativeExecutionLeaseAcquired = acquired;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({ onExecutionLeaseAcquired: acquired }));
+    // Preparation is still protected until the native executor claims its lease.
+    expect(acquired).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
     input.control.dispatchResolvedInteractionContinuationWithAtomicGate = async () => ({ dispatched: false });

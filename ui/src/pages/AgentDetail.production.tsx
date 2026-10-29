@@ -2083,7 +2083,7 @@ function AgentConfigurePage({
 
 /* ---- Configuration Tab ---- */
 
-function ConfigurationTab({
+export function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
@@ -2209,6 +2209,7 @@ function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         content={content}
         sectionLayout="cards"
+        environmentVariablesPlacement={content === "secrets" ? "secrets" : "configuration"}
       />
       {content === "configuration" ? (
         <p className="text-xs text-muted-foreground">

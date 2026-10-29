@@ -1,3 +1,5 @@
+import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -65,6 +67,8 @@ import {
   subscribeCompanyLiveEvents,
 } from "../live-events.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CONTROL_PLANE_TEST_DATABASE_URL");
+
 describe("PaperclipControlPlanePort conformance", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -87,8 +91,11 @@ describe("PaperclipControlPlanePort conformance", () => {
   const governanceRunnerId = "00000000-0000-4000-8000-000000000021";
 
   beforeAll(async () => {
-    temporary = await startRecoveryPostgres("paperclip-native-port-");
-    db = createDb(temporary.connectionString);
+    if (external) db = createDb(external);
+    else {
+      temporary = await startRecoveryPostgres("paperclip-native-port-");
+      db = createDb(temporary.connectionString);
+    }
     const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
     await db.insert(companies).values({ id: identity.companyId, name: "Phase 6", issuePrefix: "P6C" });
     await db.insert(agents).values({
@@ -397,6 +404,41 @@ describe("PaperclipControlPlanePort conformance", () => {
       terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL })).resolves.toBeUndefined();
   });
 
+  it("persists panel activation under the authenticated run and recovers it across source replay", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `panel-${identity.runId}` };
+    const event: PrpEvent = {
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "runtime.activity.recorded", schemaVersion: 1,
+      priority: 1, emittedAt: new Date().toISOString(),
+      payload: { namespace: "example.runtime", activityKey: "desktop.used" },
+    };
+    const port = new PaperclipControlPlanePort(db, binding);
+    const replayBinding = structuredClone(binding);
+    binding.runId = randomUUID();
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const notifications: string[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(identity.companyId, event => {
+      if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) notifications.push(String(event.payload.eventType));
+    });
+    try { await port.appendEvent(event); } finally { unsubscribe(); }
+    expect(notifications).toEqual(["runtime.activity.recorded"]);
+    const restarted = new PaperclipControlPlanePort(db, replayBinding);
+    expect((await restarted.appendEvent(event)).disposition).toBe("duplicate");
+    const activations = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
+  });
+
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -645,7 +687,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       completionContractSha256: localContractSha,
       contextSnapshot: { issueId },
     });
-    const observerDb = createDb(temporary!.connectionString);
+    const observerDb = createDb(external ?? temporary!.connectionString);
     const observed: Array<Record<string, unknown>> = [];
     const committedCallbacks: string[] = [];
     let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
@@ -1096,7 +1138,10 @@ describe("PaperclipControlPlanePort conformance", () => {
       .where(eq(heartbeatRuns.id, taskRunId));
     expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
-    expect(await repair()).toBe(true);
+    const work = nativeResponsePresentationWork(db);
+    const [entry] = await work.load({ companyId: identity.companyId, runId: taskRunId });
+    expect(entry?.id).toBe(taskRunId);
+    expect(await work.check(entry)).toBeNull();
     expect(await repair()).toBe(false);
     expect(await db.select({ body: issueComments.body }).from(issueComments)
       .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))

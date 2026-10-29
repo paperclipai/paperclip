@@ -1,4 +1,7 @@
-import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
@@ -557,7 +560,7 @@ export function accessService(db: Db) {
 
       if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
         && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
 
       if (
@@ -739,6 +742,9 @@ export function accessService(db: Db) {
         eq(issues.assigneeUserId, existing.principalId),
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
+      await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const resetInProgress = await tx
         .update(issues)
         .set({
@@ -751,6 +757,7 @@ export function accessService(db: Db) {
         })
         .where(and(assignedOpenIssueWhere, eq(issues.status, "in_progress")))
         .returning({ id: issues.id });
+      if (assignmentPatch.assigneeAgentId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
       const reassigned = await tx
         .update(issues)
         .set(assignmentPatch)
@@ -892,7 +899,7 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
-            if (existingMembership.membershipRole !== "viewer") await notifyChatRunMilestones(tx, { companyId });
+            if (existingMembership.membershipRole !== "viewer") await notifyChatCompanyAuthorityChange(tx, { companyId });
             await tx
               .update(companyMemberships)
               .set({
@@ -904,7 +911,7 @@ export function accessService(db: Db) {
           }
           continue;
         }
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
         await tx.insert(companyMemberships).values({
           companyId,
           principalType: "user",
@@ -934,7 +941,7 @@ export function accessService(db: Db) {
         if (existing.status !== status || existing.membershipRole !== membershipRole) {
           if (principalType === "user" && status === "active" && membershipRole !== "viewer"
             && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-            await notifyChatRunMilestones(tx, { companyId });
+            await notifyChatCompanyAuthorityChange(tx, { companyId });
           }
           const updated = await tx
             .update(companyMemberships)
@@ -948,7 +955,7 @@ export function accessService(db: Db) {
       }
 
       if (principalType === "user" && status === "active" && membershipRole !== "viewer") {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
       return tx
         .insert(companyMemberships)
@@ -1144,7 +1151,7 @@ export function accessService(db: Db) {
 
       if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
         && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
 
       if (

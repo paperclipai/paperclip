@@ -6,15 +6,18 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { NativeRunCoordinatorStore } from "./native-runtime/native-run-coordinator-store.js";
 import { getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { isExternalChatPresentationContext } from "./heartbeat-run-summary.js";
-import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
+import { finalizeNativeRun, recoverCommittedNativeChatResponse, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PRESENTATION_READ_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read projections", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("presentation-ownership-read-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("presentation-ownership-read-");
+    db = createDb(external ?? database!.connectionString);
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
@@ -113,8 +116,8 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   async function compareRepair(f: Awaited<ReturnType<typeof fixture>>) {
     const baseline = captureReads(true), projected = captureReads();
     const input = { companyId: f.companyId, issueId: f.issueId, runId: f.run.id };
-    expect(await repairCommittedNativeChatResponse(projected.recorded, input))
-      .toBe(await repairCommittedNativeChatResponse(baseline.recorded, input));
+    expect(await recoverCommittedNativeChatResponse(projected.recorded, { ...input, onlyWhenDue: true }))
+      .toBe(await recoverCommittedNativeChatResponse(baseline.recorded, { ...input, onlyWhenDue: true }));
     expect(projected.rows.flat()).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(projected.rows))).toBeLessThan(4096);
     expect(Buffer.byteLength(JSON.stringify(baseline.rows))).toBeGreaterThan(128 * 1024);
@@ -123,7 +126,7 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   }
 
   it("preserves selected answers without downloading prompts, profiles, or excerpts", async () => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", resultJson: {
+    const f = await repairFixture({ resultJson: {
       presentationDecision: { commentId: randomUUID() }, unknownFutureReceipt: { preserved: true } } });
     const row = await compareRepair(f);
     expect(row.resultJson).toEqual(f.run.resultJson);
@@ -167,6 +170,18 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     return { ...f, before, reply };
   }
 
+  async function repairFixture(patch: Partial<typeof heartbeatRuns.$inferInsert>) {
+
+
+    const f = await unpublishedAcceptedReply();
+    const [run] = await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id)).returning();
+
+
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    return { ...f, run };
+  }
+
   it("publishes the same accepted reply and decision from equivalent full-row and projected starting states", async () => {
     const outcomes: unknown[] = [];
     for (const fullRows of [true, false]) {
@@ -200,7 +215,7 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     { source: "chat:fixture", skipIssueComment: true, paperclipWake: { externalInteractionContinuation: "true" } },
     { source: "internal", paperclipWake: { externalInteractionContinuation: true } },
   ].map(context => ({ context })))("preserves typed publication flags for $context", async ({ context }) => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", contextSnapshot: context as Record<string, unknown> | null });
+    const f = await repairFixture({ contextSnapshot: context as Record<string, unknown> | null });
     const row = await compareRepair(f);
     expect(isExternalChatPresentationContext(row.contextSnapshot)).toBe(isExternalChatPresentationContext(context));
     const original = context && typeof context === "object" && !Array.isArray(context) ? context : {};
@@ -208,7 +223,7 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   });
 
   it.each([null, ["stdout", { receipt: true }], "scalar", 42].map(result => ({ result })))("preserves non-object result evidence $result", async ({ result }) => {
-    const f = await fixture({ runtimeMode: "native", status: "succeeded", resultJson: result as Record<string, unknown> | null });
+    const f = await repairFixture({ resultJson: result as Record<string, unknown> | null });
     expect((await compareRepair(f)).resultJson).toEqual(result);
   });
 });

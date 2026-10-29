@@ -52,8 +52,8 @@ assert.equal(JSON.parse(await readFile(join(server, 'package.json'), 'utf8')).na
 const { resolvePaperclipRunnerBinary } = await import(pathToFileURL(join(server, 'dist/services/native-runtime/native-codex-runner.js')));
 const { createCapabilityRunnerdCodexTransport } = await import(pathToFileURL(join(server, 'dist/vendor/paperclip-runner/live/runnerd-codex-transport.js')));
 const { QUALIFIED_ACPX_PROFILES } = await import(pathToFileURL(join(server, 'dist/vendor/paperclip-runner/drivers/acpx/qualified-profiles.js')));
-assert.equal(QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, 32);
-assert.equal(QUALIFIED_ACPX_PROFILES.pi.commandDigest, 'sha256:ce13b75699331c813f8a42f2803c3e0e0fb1e6d24847452cb12b50d6ed2d0baf');
+assert.equal(QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion, 34);
+assert.equal(QUALIFIED_ACPX_PROFILES.pi.commandDigest, 'sha256:ed4b32cc8fbf36309d38b3bd378f41f8e7b9e96a2405d275cc55e89042d94c7f');
 assert.equal(Object.hasOwn(QUALIFIED_ACPX_PROFILES.pi, 'qualificationModel'), false);
 assert.equal(Object.hasOwn(QUALIFIED_ACPX_PROFILES.pi, 'reportedModelId'), false);
 const daemon = resolvePaperclipRunnerBinary();

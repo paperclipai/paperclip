@@ -3037,10 +3037,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       : logsAreInitiallyHydrating;
   });
   // Hydrating a run inserts activity around its saved reply and can move the
-  // latest viewport substantially in the full-history view. Cold opens reveal
-  // the brief and recent messages independently; neither plans nor transcripts
-  // may hold them behind the loading screen.
-  const historyPending = !props.compactHistory && (initialHistoryPending || planLoading || transcriptHistoryPending);
+  // latest viewport substantially. Compact opens hydrate only their bounded
+  // recent window, but its saved cards and latest turn must arrive together so
+  // the first readable frame already has its final structure.
+  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
   const scrollNavigation = useTaskChatScrollNavigation();
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
@@ -3055,10 +3055,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         : Boolean(logErrorsByRun?.has(run.id)),
     );
   const historyKey = conversationMode && draftKey ? draftKey : issueId;
-  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(
-    () => (historyPending ? undefined : historyKey),
-  );
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(undefined);
   const historyRevealed = revealedHistoryKey === historyKey;
+  const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
   const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
@@ -3073,12 +3072,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [historyRevealed, historyKey]);
-  // Mount and measure the real thread while concealed, then reveal in one
-  // commit. A frame also lets ancestor navigation scroll restoration finish.
+  // Mount and measure the real thread while concealed. The properties pane
+  // can still be opening when data becomes ready; revealing during its width
+  // transition rewraps cards and races initial anchor/focus scrolling.
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    const frame = requestAnimationFrame(() => setRevealedHistoryKey(historyKey));
+    let previousWidth: number | undefined;
+    let stableFrames = 0;
+    let frame: number;
+    const revealWhenSettled = () => {
+      const width = historyShellRef.current?.getBoundingClientRect().width;
+      stableFrames = width === previousWidth ? stableFrames + 1 : 0;
+      previousWidth = width;
+      if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
+      else frame = requestAnimationFrame(revealWhenSettled);
+    };
+    frame = requestAnimationFrame(revealWhenSettled);
     return () => cancelAnimationFrame(frame);
   }, [historyPending, historyRevealed, historyKey]);
   useEffect(() => {
@@ -3105,6 +3115,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
+            ref={historyShellRef}
           >
             <div
               className={cn(

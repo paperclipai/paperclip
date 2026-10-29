@@ -569,3 +569,8 @@ Runner hook performs it. Only synthetic source bytes and proof JSON enter the
 existing private attempt evidence and registered-artifact verification pipeline.
 A failed attempt remains retained. These development checks are not staging or
 Slack qualification, and they do not publish trusted archives or credentials.
+
+
+Report identities preserve legacy chat tasks and exact `area.case` chat catalog
+tasks. Additional task segments, path separators and dotted nonchat tasks remain
+invalid. This parsing does not qualify a result or grant a new execution.

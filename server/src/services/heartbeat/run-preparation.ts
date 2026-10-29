@@ -1,3 +1,4 @@
+import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
 import type { AuthorizationActor } from "../authorization.js";
@@ -2960,7 +2961,7 @@ export function createHeartbeatRunPreparation(db: Db) {
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
-        fileInventory: companySkillVersions.fileInventory,
+        version: skillVersionMetadataColumns,
         revisionNumber: companySkillVersions.revisionNumber,
         label: companySkillVersions.label,
       })
@@ -2980,8 +2981,9 @@ export function createHeartbeatRunPreparation(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const fileInventory = Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
+    const savedFiles = await skillPackageStore(db).versionFiles(row.version);
+    const fileInventory = Array.isArray(savedFiles)
+      ? savedFiles.flatMap((entry) => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry))
             return [];
           const record = entry as unknown as Record<string, unknown>;

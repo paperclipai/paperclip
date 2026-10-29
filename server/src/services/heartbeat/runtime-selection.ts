@@ -137,7 +137,7 @@ export interface HeartbeatRuntimeSelectionInput {
     resolvedConfig: Record<string, unknown>;
     managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
   };
-  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim };
+  recovery: { nativeLeaseOwner?: string; nativeRestartRecovery?: NativeRestartRecoveryClaim; onNativeExecutionLeaseAcquired?: () => Promise<void> };
   trace: { providerTraceRequested: boolean; providerTraceCapture: { metadata: { id: string } } | null };
   issuesSvc: Pick<ReturnType<typeof issueService>, "addComment">;
   runtimeEnv: Record<string, string | undefined>;
@@ -967,6 +967,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            nativeResourceDisposition: providerResourceDispositionForRun,
             nativeToolContractFingerprint:
               nativeToolContractFingerprintForTarget(
                 executionTarget?.kind ?? "local",

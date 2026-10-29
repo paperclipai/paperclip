@@ -53,6 +53,12 @@ Automated: [Studio](../../ui/src/pages/SkillStudio.test.tsx) covers UI behavior;
 
 Manual: Create or fork a disposable skill, edit instructions, save, and reload. Run a bounded test, respond to any question, and inspect the output. Verify the saved version matches what was tested and failed saves retain the draft.
 
+Version history lists file metadata without downloading archives. Opening a diff
+fetches only its selected versions; restoring fetches the chosen version. The
+[library UI regression](../../ui/src/pages/CompanySkills.test.tsx) checks deferred
+loads; the [package regression](../../server/src/__tests__/skill-package-store.test.ts)
+checks that slow archive verification cannot hold up a warm agent preparation.
+
 ### `agent-enablement`
 
 Automated: [policy service](../../server/src/__tests__/company-skill-policy-service.test.ts) and [agent skills state](../../ui/src/pages/agent-skills/AgentSkillsTab.test.ts) cover policy/state contracts.
@@ -80,6 +86,14 @@ refresh before cache locking. Each run retains its own selection and durable
 version pins. The [concurrency regression](../../server/src/__tests__/company-skills-runtime-concurrency.test.ts)
 checks shared work and separate actor access; the cache tests check that cleanup
 cannot remove a snapshot before the run stores its pins.
+
+The [package storage regression](../../server/src/__tests__/skill-package-store.test.ts)
+covers external snapshots, automatic legacy conversion and exact-commit recovery. A warm selected-repository
+check must perform no object reads or repository-content SQL. Source/library
+reconciliation remains available for discovery and mutable sources. The native context
+regression checks that warm asset packaging reuses verified files, repairs missing/corrupt copies,
+and notices source edits. Verify both writer-switch states during rollout; see
+[package storage](../../doc/skill-package-storage.md).
 
 ## Gotchas
 

@@ -43,7 +43,7 @@ patchedDependencies:
     hash: 6st5fzvttegjv64llnfegwwpca
     path: patches/acpx@0.12.0.patch
   acpx@0.13.1:
-    hash: j4huaoi2baejrlq7vdcgzlx54m
+    hash: xh3fclih3ztrbsibpfnxdcx7pe
     path: patches/acpx@0.13.1.patch
   embedded-postgres@18.1.0-beta.16:
     hash: 55uhvnotpqyiy37rn3pqpukhei
@@ -517,7 +517,7 @@ importers:
         version: 0.160.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m)
+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -1015,7 +1015,7 @@ importers:
         version: 8.18.0
       acpx:
         specifier: 0.13.1
-        version: 0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m)
+        version: 0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe)
       ai:
         specifier: 7.0.130
         version: 7.0.130(zod@4.4.3)
@@ -1100,6 +1100,9 @@ importers:
       svix:
         specifier: 1.76.1
         version: 1.76.1
+      tar-stream:
+        specifier: 3.2.0
+        version: 3.2.0
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -1150,6 +1153,9 @@ importers:
       '@types/supertest':
         specifier: ^7.2.1
         version: 7.2.1
+      '@types/tar-stream':
+        specifier: ^3.1.5
+        version: 3.1.5
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
@@ -5521,6 +5527,9 @@ packages:
 
   '@types/supertest@7.2.1':
     resolution: {integrity: sha512-4CbBvoYVLHL7+yhbYrZET0vsvuyXTC05aRe7dNQkwMzm56auceoy6Yu3K50uZmwfHna1os3CMSgM/3QVkUtPTw==}
+
+  '@types/tar-stream@3.1.5':
+    resolution: {integrity: sha512-zCUA6CSDw0t2cpQiZixpyzfubpeuVZmBr5wztvuCG4bhy7reX/9wGXdZxEzz2CjMFLQ32UPR/01jzUUSRJeCeQ==}
 
   '@types/three@0.185.4':
     resolution: {integrity: sha512-gAsBIC07NIFrxjbf7tH2t71c38uulFfk/RFoC7FNBSjMRAQ8J1x/RBvusX0N5PJouaYFJawXQqfCQ0RKUx/1nA==}
@@ -13688,6 +13697,10 @@ snapshots:
       '@types/methods': 1.1.4
       '@types/superagent': 8.1.11
 
+  '@types/tar-stream@3.1.5':
+    dependencies:
+      '@types/node': 24.13.3
+
   '@types/three@0.185.4':
     dependencies:
       '@dimforge/rapier3d-compat': 0.12.0
@@ -13900,7 +13913,7 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  acpx@0.13.1(patch_hash=j4huaoi2baejrlq7vdcgzlx54m):
+  acpx@0.13.1(patch_hash=xh3fclih3ztrbsibpfnxdcx7pe):
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       commander: 15.0.0

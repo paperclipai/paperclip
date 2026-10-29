@@ -95,6 +95,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           ContentType: input.contentType,
           ContentLength: input.contentLength,
         }),
+        { abortSignal: input.signal },
       ));
     },
 
@@ -158,6 +159,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           Bucket: bucket,
           Key: key,
         }),
+        { abortSignal: input.signal },
       ));
     },
   };

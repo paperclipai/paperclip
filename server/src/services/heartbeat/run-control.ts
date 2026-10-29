@@ -361,6 +361,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     status: string | null | undefined;
     failureReason?: string | null;
     providerResourceDisposition?: ProviderResourceDisposition;
+    respectCleanupDeadlines?: boolean;
     nativeLifecycleTelemetry?: {
       provider: string;
       harness: string;
@@ -466,6 +467,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         status: leaseReleaseStatusForRunStatus(status),
         failureReason: input.failureReason ?? undefined,
         providerResourceDisposition,
+        ...(input.respectCleanupDeadlines ? { respectCleanupDeadlines: true } : {}),
         nativeLifecycleTelemetry: input.nativeLifecycleTelemetry,
       })
       .catch((err) => {
@@ -726,7 +728,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             or(isNull(environmentLeases.releasedAt), inArray(environmentLeases.status, ["active", "retained", "pending_cleanup"])),
           )).limit(1);
           if (otherOwner) continue;
-          await notifyEnvironmentCleanup(tx);
+          await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
           await tx.update(environmentLeases).set({ status: "pending_cleanup", updatedAt: new Date() })
             .where(eq(environmentLeases.id, lease.id));
         }
