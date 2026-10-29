@@ -7,6 +7,11 @@ import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import type { ConnectionApi } from "./connection-target.js";
 import { antigravityKnownCostObservation } from "./antigravity-journey-launch.js";
 
+// These cleanup-ordering calibrations use synthetic retired process receipts.
+vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFileSync: vi.fn(() => "") }));
+vi.mock("./antigravity-journey-evidence.js", async original => ({ ...await original<typeof import("./antigravity-journey-evidence.js")>(),
+  reacquireAntigravityNativeFences: vi.fn(async () => {}) }));
+
 const companyId = "11111111-1111-4111-8111-111111111111", environmentId = "22222222-2222-4222-8222-222222222222";
 const connectionId = "33333333-3333-4333-8333-333333333333", agentId = "44444444-4444-4444-8444-444444444444", runId = "55555555-5555-4555-8555-555555555555";
 function fixture() { return { version: 1, setupId: "synthetic", hosting: "self-hosted", executionEnvironment: "local",
@@ -54,7 +59,7 @@ it("retains an owned failed run when physical ownership was never captured", asy
   const get = vi.fn(async (route: string) => route.includes("/agents") ? [agent] : route.includes("heartbeat-runs?") ? [run] : run);
   const remove = vi.fn(), patch = vi.fn();
   await expect(cleanupAntigravityJourney({ api: { get, patch, delete: remove } as unknown as ConnectionApi,
-    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: false, connectionPreserved: false }, persistResources: async () => {} }))
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: false, connectionPreserved: false }, persistResources: async () => {}, captureRun: async () => {} }))
     .rejects.toThrow("cleanup_physical_owner_not_captured");
   expect(remove).not.toHaveBeenCalled(); expect(patch).toHaveBeenCalledWith(`/api/agents/${agentId}`, { status: "paused" });
 });
@@ -74,16 +79,53 @@ it("terminates the owned ready agent before purge and preserves the shared accou
   const post = vi.fn(async (route: string) => { expect(route).toBe(`/api/agents/${agentId}/terminate`); lifecycleState = "terminated"; return agent(); });
   const remove = vi.fn(async () => { expect(lifecycleState).toBe("terminated"); });
   await cleanupAntigravityJourney({ api: { get, post, patch: async () => { lifecycleState = "paused"; }, delete: remove } as unknown as ConnectionApi,
-    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup, persistResources: async () => {} });
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup, persistResources: async () => {}, captureRun: async () => {} });
   expect(remove).toHaveBeenCalledWith(`/api/agents/${agentId}`);
   expect(cleanup).toEqual({ agent: true, runs: true, connectionPreserved: true });
+});
+it.each([false, true])("captures a cleanup-discovered run's settled usage before purge (storage failure: %s)", async storageFailure => {
+  const owned = resources(); owned.setupProbe = "retired";
+  owned.processes[runId] = { captured: true, identityChanged: false, journal: [
+    { pid: 9000001, parent: 1, start: "2020-01-01T00:00:00Z" }, { pid: 9000002, parent: 9000001, start: "2020-01-01T00:00:00Z" },
+  ] };
+  let status = "running", lifecycleState = "ready";
+  const agent = () => ({ id: agentId, companyId, name: owned.agentName, lifecycleState });
+  const run = () => ({ id: runId, agentId, companyId, status, costAccountingPending: status === "running",
+    usageJson: { inputTokens: 100, outputTokens: 20, costUsd: status === "running" ? 0.01 : 0.25 },
+    contextSnapshot: { paperclipEnvironment: { leaseId: "lease" } } });
+  const snapshots: any[] = [];
+  const captureRun = vi.fn(async row => {
+    if (storageFailure && row.status === "cancelled") throw new Error("fixture accounting storage unavailable");
+    snapshots.push(structuredClone(row));
+  });
+  const get = vi.fn(async (route: string) => {
+    if (route.endsWith("/agents")) return [agent()];
+    if (route.includes("heartbeat-runs?")) return [run()];
+    if (route === `/api/heartbeat-runs/${runId}`) return run();
+    if (route === "/api/environment-leases/lease") return { companyId, heartbeatRunId: runId, environmentId, status: "released" };
+    if (route === `/api/agents/${agentId}`) return agent();
+    if (route.endsWith("/ai-connections")) return { connections: [{ id: connectionId, provider: "google", method: "subscription", ownerUserId: "synthetic-user", isDefault: true, status: "connected" }] };
+    throw new Error("Unexpected cleanup read");
+  });
+  const post = vi.fn(async (route: string) => {
+    if (route.endsWith("/cancel")) status = "cancelled";
+    else if (route.endsWith("/terminate")) lifecycleState = "terminated";
+    else throw new Error("Unexpected cleanup mutation");
+  });
+  const remove = vi.fn(async () => { expect(snapshots.at(-1)).toMatchObject({ status: "cancelled", costAccountingPending: false, usageJson: { costUsd: 0.25 } }); });
+  const cleanup = cleanupAntigravityJourney({ api: { get, post, patch: async () => {}, delete: remove } as unknown as ConnectionApi,
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: false, connectionPreserved: false }, persistResources: async () => {}, captureRun });
+  if (storageFailure) { await expect(cleanup).rejects.toThrow("fixture accounting storage unavailable"); expect(remove).not.toHaveBeenCalled(); }
+  else { await cleanup; expect(remove).toHaveBeenCalledOnce(); }
+  expect(owned.runIds).toEqual([runId]);
+  expect(snapshots[0]).toMatchObject({ status: "running", usageJson: { costUsd: 0.01 } });
 });
 it("does not erase a failed native setup Test's unconfirmed cleanup with an empty task-run list", async () => {
   const owned = resources(); owned.setupProbe = "retirement_unconfirmed";
   const agent = { id: agentId, companyId, name: owned.agentName }, remove = vi.fn();
   const get = vi.fn(async (route: string) => route.endsWith("/agents") ? [agent] : []);
   await expect(cleanupAntigravityJourney({ api: { get, patch: vi.fn(), delete: remove } as unknown as ConnectionApi,
-    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: true, connectionPreserved: true }, persistResources: async () => {} }))
+    config: parseAntigravityJourneyConfig(fixture()), resources: owned, cleanup: { agent: false, runs: true, connectionPreserved: true }, persistResources: async () => {}, captureRun: async () => {} }))
     .rejects.toThrow("setup_probe_retirement_unconfirmed");
   expect(remove).not.toHaveBeenCalled();
 });

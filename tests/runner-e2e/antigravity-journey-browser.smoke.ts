@@ -3,6 +3,8 @@
 import { createServer } from "node:http";
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
+import { build } from "esbuild";
+import path from "node:path";
 import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAntigravityReady, assertAntigravityTaskDone, openAntigravityAgentFromRoster, selectAntigravityFromOrdinaryPicker } from "./antigravity-journey-ui.js";
 
 const agent = "Antigravity QA synthetic", model = "gemini-3.8-flash-low";
@@ -19,11 +21,41 @@ const fixtures: Record<string, string> = {
   composer: `<div role="dialog" aria-labelledby="composer"><h2 id="composer">New task</h2><button aria-label="Select assignee">${agent}</button><button aria-label="Select model and effort"><span data-testid="task-chat-composer-model-label">${model}</span></button><div hidden data-testid="new-issue-paused-assignee-note">paused</div></div><div data-testid="new-issue-paused-assignee-note">unrelated paused agent</div>`,
   "paused-composer": `<div role="dialog" aria-labelledby="composer"><h2 id="composer">New task</h2><button aria-label="Select assignee">${agent}</button><button aria-label="Select model and effort"><span data-testid="task-chat-composer-model-label">${model}</span></button><div data-testid="new-issue-paused-assignee-note">paused</div></div>`,
   "wrong-model": `<div role="dialog" aria-labelledby="composer"><h2 id="composer">New task</h2><button aria-label="Select assignee">${agent}</button><button aria-label="Select model and effort"><span data-testid="task-chat-composer-model-label">gemini-3.8-flash-high</span></button><p>${model}</p></div>`,
-  activity: `<button data-testid="task-chat-activity-phase-toggle" aria-expanded="false" onclick="this.setAttribute('aria-expanded','true');document.getElementById('history').hidden=false">Expand activity history</button><ul id="history" hidden><li data-activity-row="edit">Ran a command operation: edit, target: antigravity-proof.txt</li><li data-activity-row="read">Ran read file operation: read, target: antigravity-proof.txt</li><li data-activity-row="finish">Ran Paperclip finish · failed operation: execute</li></ul><p>Unrelated task failed</p>`,
-  "wrong-file-activity": `<button data-testid="task-chat-activity-phase-toggle" aria-expanded="true">Collapse activity history</button><ul><li data-activity-row="edit">Ran a command · failed operation: edit, target: antigravity-proof.txt</li><li data-activity-row="read">Ran read file · failed operation: read, target: antigravity-proof.txt</li></ul><p>File work succeeded</p>`,
 };
+// The activity calibration bundles the shipped adapter and React renderer.
+// No hand-authored activity markup can accidentally validate invented copy.
+const activityBundle = await build({ stdin: { loader: "tsx", resolveDir: path.resolve(import.meta.dirname, "../../ui"), contents: `
+  import React from 'react';
+  import { createRoot } from 'react-dom/client';
+  import { TaskChatRunnerActivityGroup } from './src/components/task-chat/TaskChatRunnerActivityGroup';
+  import { transcriptToTaskChatItems } from './src/components/task-chat/transcript-adapter';
+  const scenario = new URL(location.href).pathname.slice(1);
+  const target = scenario === 'wrong-target-activity' ? 'backup/antigravity-proof.txt' : 'antigravity-proof.txt';
+  const event = (operation, status, executionId, name = 'client_' + operation + '_file') => ({
+    kind: 'provider_activity', ts: '2026-10-29T00:00:00Z', family: 'tool_execution',
+    eventType: status === 'running' ? 'tool.execution.started' : 'tool.execution.completed', status,
+    title: 'Tool execution', summary: 'Native file operation',
+    payload: { name, operation, target, status, executionId, transport: 'builtin' },
+  });
+  const entries = [event('edit', 'completed', 'edit'), event('read', 'completed', 'read'),
+    event('execute', 'failed', 'finish', 'paperclip_paperclip_finish')];
+  if (scenario === 'failed-read-activity') entries.unshift(event('read', 'failed', 'failed-read'));
+  if (scenario === 'interrupted-edit-activity') entries.unshift(event('edit', 'interrupted', 'interrupted-edit'));
+  if (scenario === 'running-read-activity') entries.unshift(event('read', 'running', 'running-read'));
+  if (scenario === 'failed-renderer-activity') entries.unshift({ ...event('read', 'completed', 'failed-renderer'), status: 'failed' });
+  if (scenario === 'interrupted-renderer-activity') entries.unshift({ ...event('edit', 'completed', 'interrupted-renderer'), status: 'interrupted' });
+  if (scenario === 'write-activity') entries[0] = event('write', 'completed', 'write');
+  const items = transcriptToTaskChatItems(entries, { runId: 'synthetic-run', agentName: 'Synthetic agent', running: false });
+  createRoot(document.getElementById('activity-root')).render(<TaskChatRunnerActivityGroup item={{ id: 'synthetic-phase', kind: 'activity_phase',
+    active: false, summary: '', items }} />);
+` }, bundle: true, write: false, format: "iife", platform: "browser", jsx: "automatic", tsconfig: path.resolve(import.meta.dirname, "../../ui/tsconfig.json"),
+  define: { "process.env.NODE_ENV": '"production"', "import.meta.env": "{}" }, logLevel: "silent" });
 const server = createServer((request, response) => {
   const name = new URL(request.url ?? "/", "http://localhost").pathname.slice(1);
+  if (name === "activity-client.js") { response.writeHead(200, { "Content-Type": "text/javascript" }).end(activityBundle.outputFiles[0]!.text); return; }
+  if (name.endsWith("activity")) {
+    response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><html><head><style>svg{width:14px;height:14px}button{display:block}</style></head><body><div id="activity-root"></div><p>The file work succeeded; unrelated task failed.</p><script src="/activity-client.js"></script></body></html>`); return;
+  }
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(`<!doctype html><html><body>${fixtures[name] ?? "missing fixture"}</body></html>`);
 });
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -46,8 +78,14 @@ try {
   await visit("paused-composer"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
   await visit("wrong-model"); await assert.rejects(assertAntigravityCleanComposer(page, agent, model, 300));
   await visit("activity"); await assertAntigravityFileActivity(page, 300);
-  await visit("wrong-file-activity"); await assert.rejects(assertAntigravityFileActivity(page, 300));
-  console.log("PASS synthetic Antigravity browser calibration: roster navigation, ordinary picker, readiness, actual Done, stale pause, exact Low model and file-activity status");
+  await visit("write-activity"); await assertAntigravityFileActivity(page, 300);
+  for (const fixture of ["failed-read-activity", "interrupted-edit-activity", "running-read-activity", "failed-renderer-activity", "interrupted-renderer-activity", "wrong-target-activity"]) {
+    await visit(fixture);
+    let rejected = false;
+    try { await assertAntigravityFileActivity(page, 300); } catch { rejected = true; }
+    assert.ok(rejected, `${fixture}: ${await page.locator("body").innerText()}`);
+  }
+  console.log("PASS Antigravity browser calibration: synthetic navigation/setup controls plus production transcript adapter/activity renderer; completed read/edit/write, exact target, failure/interruption rejection and unrelated failed finish");
 } finally {
   await browser?.close();
   await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

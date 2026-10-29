@@ -8,11 +8,12 @@ import { parseAntigravityJourneyConfig } from "./antigravity-journey-config.js";
 import { runAntigravityJourneyCampaign } from "./antigravity-journey-launch.js";
 import { buildMatrixJobs, parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
-const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn() }));
+const scenario = vi.hoisted(() => ({ config: undefined as any, authReads: 0, prepare: vi.fn(), flow: vi.fn(), close: vi.fn(), cleanup: vi.fn() }));
 vi.mock("./antigravity-journey-config.js", async original => ({ ...await original<typeof import("./antigravity-journey-config.js")>(),
   loadAntigravityJourneyConfig: async () => scenario.config }));
 vi.mock("./antigravity-journey-fixtures.js", async original => ({ ...await original<typeof import("./antigravity-journey-fixtures.js")>(),
-  prepareAntigravityJourney: (...args: unknown[]) => scenario.prepare(...args) }));
+  prepareAntigravityJourney: (...args: unknown[]) => scenario.prepare(...args),
+  cleanupAntigravityJourney: (...args: unknown[]) => scenario.cleanup(...args) }));
 vi.mock("./antigravity-journey-flow.js", () => ({ runAntigravityJourneyFlow: (...args: unknown[]) => scenario.flow(...args) }));
 vi.mock("./connection-launch.js", () => ({
   withConnectionCampaignCancellation: (run: (signal: AbortSignal) => Promise<unknown>) => run(new AbortController().signal),
@@ -32,6 +33,7 @@ let originalExitCode: typeof process.exitCode;
 beforeEach(() => {
   originalExitCode = process.exitCode;
   scenario.authReads = 0; scenario.prepare.mockReset(); scenario.flow.mockReset(); scenario.close.mockReset();
+  scenario.cleanup.mockReset();
   scenario.config = parseAntigravityJourneyConfig({ version: 1, setupId: "assisted-login-calibration", hosting: "self-hosted", executionEnvironment: "local",
     target: { mode: "attach", baseURL: "http://127.0.0.1:3104", expectedCommit: "a".repeat(40), deploymentMode: "authenticated",
       companyId: "11111111-1111-4111-8111-111111111111", environmentId: "22222222-2222-4222-8222-222222222222" },
@@ -67,4 +69,43 @@ it("allows assisted setup-only preflight to save board authentication without cr
 it("rejects explicit private Antigravity selection from paid matrix generation", () => {
   expect(executions()).toHaveLength(1);
   expect(() => buildMatrixJobs(executions())).toThrow("not admitted to paid CI matrix jobs");
+});
+it("packages final usage captured during cleanup before the agent's public run rows are purged", async () => {
+  scenario.authReads = 1;
+  const first = "44444444-4444-4444-8444-444444444444", discovered = "55555555-5555-4555-8555-555555555555";
+  const agentId = "66666666-6666-4666-8666-666666666666";
+  const run = (id: string, cost: number) => ({ id, agentId, companyId: scenario.config.target.companyId,
+    status: "cancelled", costAccountingPending: false, usageJson: { inputTokens: 100, outputTokens: 20, costUsd: cost },
+    startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z" });
+  scenario.flow.mockImplementationOnce(async ({ resources, observeRun }) => {
+    resources.agentId = agentId;
+    await observeRun({ ...run(first, 0.01), status: "running", costAccountingPending: true });
+    throw new Error("fixture interrupted turn");
+  });
+  scenario.cleanup.mockImplementationOnce(async input => {
+    input.resources.runIds.push(discovered);
+    await input.captureRun(run(first, 0.6));
+    await input.captureRun(run(discovered, 0.4));
+    Object.assign(input.cleanup, { agent: true, runs: true, connectionPreserved: true });
+  });
+  const output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot }); outputs.push(output);
+  const result = JSON.parse(await readFile(path.join(output, "evidence/result.json"), "utf8"));
+  expect(result.runIds).toEqual([first, discovered]);
+  expect(result.billing.llm.reportedCostUsd).toBe(1);
+  expect(result.runtimeUsage.agentRunDurationMs).toBe(2000);
+  expect(result.cleanup).toBe("passed");
+  expect(JSON.parse(await readFile(path.join(output, "run-usage-observations.json"), "utf8")).runs).toHaveLength(2);
+});
+it("retains cleanup-discovered run identities with unknown usage when their public rows are unavailable", async () => {
+  scenario.authReads = 1;
+  const missing = "77777777-7777-4777-8777-777777777777";
+  scenario.flow.mockImplementationOnce(async ({ resources }) => { resources.agentId = "66666666-6666-4666-8666-666666666666"; throw new Error("fixture interruption"); });
+  scenario.cleanup.mockImplementationOnce(async ({ resources }) => { resources.runIds.push(missing); throw new Error("fixture run unavailable"); });
+  const output = await runAntigravityJourneyCampaign({ executions: executions(), catalog: runnerMatrix, repositoryRoot }); outputs.push(output);
+  const result = JSON.parse(await readFile(path.join(output, "evidence/result.json"), "utf8"));
+  expect(result.runIds).toEqual([missing]);
+  expect(result.usage.runs).toEqual([{ usage: null }]);
+  expect(result.billing.complete).toBe(false);
+  expect(result.runtimeUsage.agentRunDurationMs).toBeNull();
+  expect(result.cleanup).toBe("failed");
 });

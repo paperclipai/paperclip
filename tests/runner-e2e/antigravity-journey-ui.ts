@@ -58,11 +58,33 @@ export async function assertAntigravityFileActivity(page: Page, timeout = 30_000
   const histories = page.getByTestId("task-chat-activity-phase-toggle");
   await expect.poll(() => histories.count(), { timeout }).toBeGreaterThan(0);
   for (const toggle of await histories.all()) if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
-  const fileRows = page.locator("[data-activity-row]:visible").filter({ hasText: /operation:\s*(?:read|edit|write),\s*target:\s*antigravity-proof\.txt/ });
-  await expect.poll(() => fileRows.count(), { timeout }).toBeGreaterThanOrEqual(2);
-  await expect(fileRows.filter({ hasText: /\b(?:failed|interrupted)\b/i })).toHaveCount(0, { timeout });
-  await expect(fileRows.filter({ hasText: /operation:\s*read,/ })).not.toHaveCount(0, { timeout });
-  await expect(fileRows.filter({ hasText: /operation:\s*(?:edit|write),/ })).not.toHaveCount(0, { timeout });
+  const items = page.locator("li[data-activity-item-id]:visible").filter({ has: page.locator('[data-activity-family="tool_execution"]') });
+  await expect.poll(() => items.count(), { timeout }).toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => {
+    let reads = 0, edits = 0;
+    for (const item of await items.all()) {
+      const toggle = item.locator(":scope > button");
+      await expect(toggle).toHaveCount(1, { timeout });
+      if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click();
+      const details = item.getByTestId("task-chat-provider-detail-list");
+      const value = (label: string) => details.locator(":scope > div").filter({ has: page.locator("dt").getByText(label, { exact: true }) }).locator("dd");
+      const operation = value("Operation");
+      if (await operation.count() !== 1) continue;
+      const name = (await operation.innerText()).trim();
+      if (!["read", "edit", "write"].includes(name)) continue;
+      const target = value("Target");
+      await expect(target).toHaveCount(1, { timeout });
+      if ((await target.innerText()).trim() !== "antigravity-proof.txt") continue;
+      // The shipped renderer presents friendly labels and structured details;
+      // serialized event text and unrelated finish failures are not file proof.
+      await expect(value("Status")).toHaveText("completed", { timeout });
+      const row = item.locator('[data-activity-row][data-activity-family="tool_execution"]');
+      await expect(row).toBeVisible({ timeout });
+      await expect(row).not.toContainText(/·\s*(?:failed|stopped)/u, { timeout });
+      if (name === "read") reads++; else edits++;
+    }
+    return reads > 0 && edits > 0;
+  }, { timeout }).toBe(true);
 }
 
 /** Open the card bound to the independently observed attachment, then download

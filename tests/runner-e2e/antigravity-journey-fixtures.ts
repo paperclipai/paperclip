@@ -124,6 +124,8 @@ export function parseAntigravityOwnedResources(input: unknown, config: Antigravi
 export async function cleanupAntigravityJourney(input: {
   api: ConnectionApi; config: AntigravityJourneyConfig; resources: AntigravityJourneyResources;
   cleanup: AntigravityJourneyEvidence["cleanup"]; persistResources(): Promise<void>;
+  /** Save public usage while these exact owned rows still exist. No launch or admission checks. */
+  captureRun(run: Row): Promise<void>;
   observers?: AntigravityProcessObservers;
 }) {
   const { api, config, resources, cleanup } = input;
@@ -144,7 +146,9 @@ export async function cleanupAntigravityJourney(input: {
     for (const run of runs) {
       if (run.agentId !== agent.id || run.companyId !== resources.companyId) throw new ConnectionFailure("cleanup_run_owner_mismatch");
       if (!resources.runIds.includes(run.id)) resources.runIds.push(run.id);
-      observeAntigravityRun(resources, await api.get<Row>(`/api/heartbeat-runs/${run.id}`), input.observers ?? new Map());
+      const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
+      await input.captureRun(observed);
+      observeAntigravityRun(resources, observed, input.observers ?? new Map());
       await input.persistResources();
       if (["queued", "running"].includes(run.status)) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
     }
@@ -152,10 +156,22 @@ export async function cleanupAntigravityJourney(input: {
     const deadline = Date.now() + 60_000;
     while (true) {
       const latest = await api.get<Row[]>(`/api/companies/${resources.companyId}/heartbeat-runs?agentId=${agent.id}&limit=100`);
+      for (const run of latest) {
+        if (run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        if (resources.runIds.includes(run.id)) continue;
+        resources.runIds.push(run.id);
+        const observed = await api.get<Row>(`/api/heartbeat-runs/${run.id}`);
+        await input.captureRun(observed);
+        observeAntigravityRun(resources, observed, input.observers ?? new Map());
+        await input.persistResources();
+        if (["queued", "running"].includes(observed.status)) await api.post(`/api/heartbeat-runs/${run.id}/cancel`);
+      }
       let retired = !latest.some(run => run.agentId === agent.id && ["queued", "running"].includes(run.status));
       for (const runId of resources.runIds) {
         const run = await api.get<Row>(`/api/heartbeat-runs/${runId}`);
         if (run.companyId !== resources.companyId || run.agentId !== agent.id) throw new ConnectionFailure("cleanup_run_owner_mismatch");
+        await input.captureRun(run);
+        if (!["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false) retired = false;
         const receipt = resources.processes[runId];
         if (!receipt?.captured || receipt.journal.length < 2) throw new ConnectionFailure("cleanup_physical_owner_not_captured");
         const observed = remainingRecordedProcesses(receipt);

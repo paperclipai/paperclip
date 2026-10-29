@@ -112,14 +112,22 @@ export async function runAntigravityJourneyFlow(input: AntigravityJourneyFlowInp
   await input.phase("agent_navigation");
   await openAntigravityAgentFromRoster(page, resources.agentName);
   await input.phase("instructions");
-  await page.getByRole("link", { name: "Instructions", exact: true }).click();
+  await page.getByRole("navigation", { name: `${resources.agentName} navigation`, exact: true })
+    .getByRole("link", { name: "Instructions", exact: true }).click();
   await page.getByRole("group", { name: "Instruction file view", exact: true }).getByRole("button", { name: "edit", exact: true }).click();
   const editor = page.locator('[contenteditable="true"]:visible,textarea[aria-label="Instruction file editor"]:visible');
   await expect(editor).toHaveCount(1);
   const current = await editor.evaluate(element => element instanceof HTMLTextAreaElement ? element.value : (element as HTMLElement).innerText);
   if (!current.includes("You are an agent in a Paperclip company.")) throw new ConnectionFailure("default_instructions_missing");
-  const instructions = `${current.trimEnd()}\n\nFor file verification tasks, your configured verification marker is:\n${marker}\n\nWhen a task asks for your configured verification marker, write exactly that marker as the first line of the requested proof file followed by one newline. Read the actual file back and attach it as the task result.`;
-  await editor.fill(instructions);
+  const addition = `\nFor file verification tasks, your configured verification marker is:\n${marker}\n\nWhen a task asks for your configured verification marker, write exactly that marker as the first line of the requested proof file followed by one newline. Read the actual file back and attach it as the task result.`;
+  // Follow the existing instruction-persistence journey's keyboard path. The
+  // rich editor distinguishes real interaction from initial normalization.
+  await editor.click();
+  await editor.press("ControlOrMeta+End");
+  for (const line of addition.split("\n")) {
+    await editor.press("Enter");
+    if (line) await editor.pressSequentially(line);
+  }
   const save = page.getByRole("button", { name: "Save changes", exact: true });
   await expect(save).toBeEnabled();
   await save.click();

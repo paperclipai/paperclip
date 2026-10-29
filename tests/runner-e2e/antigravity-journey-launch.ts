@@ -83,6 +83,18 @@ export async function runAntigravityJourneyCampaign(input: {
     let operationOnly = Boolean(input.preflight || input.recoverFile), operationPassed = false;
     const assertActive = () => { if (signal.aborted) throw new ConnectionBlock("blocked_target", campaignSignal.aborted ? "test_interrupted" : "journey_deadline_reached"); };
     const persistResources = () => save("owned-resources.json", resources);
+    const captureRun = async (run: Row) => {
+      if (typeof run.id !== "string" || run.companyId !== resources.companyId || run.agentId !== resources.agentId)
+        throw new ConnectionFailure("observed_run_owner_mismatch");
+      observed.set(run.id, run);
+      // Preserve only accounting fields, before teardown can purge public rows.
+      // This also runs after the attempt deadline while cleanup settles work.
+      await save("run-usage-observations.json", { version: 1, runs: [...observed.values()].map(row => ({
+        id: row.id, companyId: row.companyId, agentId: row.agentId, status: row.status,
+        startedAt: row.startedAt ?? null, finishedAt: row.finishedAt ?? null,
+        costAccountingPending: row.costAccountingPending ?? null, usageJson: row.usageJson ?? null,
+      })) });
+    };
     const abort = () => { for (const page of browser?.context.pages() ?? []) void page.close().catch(() => {}); };
     signal.addEventListener("abort", abort, { once: true });
     try {
@@ -125,14 +137,14 @@ export async function runAntigravityJourneyCampaign(input: {
         const owned = parseAntigravityOwnedResources(JSON.parse(await readFile(input.recoverFile, "utf8")), config);
         Object.assign(resources, owned);
         await persistResources();
-        await cleanupAntigravityJourney({ api, config, resources, cleanup: evidence.cleanup, persistResources, observers });
+        await cleanupAntigravityJourney({ api, config, resources, cleanup: evidence.cleanup, persistResources, observers, captureRun });
         await save("recovery.json", { version: 1, outcome: "released", cleanup: evidence.cleanup, sourceReceipt: createHash("sha256").update(await readFile(input.recoverFile)).digest("hex") });
         operationPassed = true; console.log(`[antigravity-agent-journey] Owned resource recovery complete: ${output}`); return output;
       }
       const registry = new FixtureRegistry();
       registry.register({ id: "antigravity-existing-state", setup: () => prepareAntigravityJourney(api!, config) });
       if (!operationOnly) registry.register({ id: "antigravity-owned-resources", dependencies: ["antigravity-existing-state"], setup: async () => resources,
-        teardown: () => cleanupAntigravityJourney({ api: api!, config, resources, cleanup: evidence.cleanup, persistResources, observers }) });
+        teardown: () => cleanupAntigravityJourney({ api: api!, config, resources, cleanup: evidence.cleanup, persistResources, observers, captureRun }) });
       fixtures = await registry.setupAll();
       const prepared = fixtures.values.get("antigravity-existing-state") as Awaited<ReturnType<typeof prepareAntigravityJourney>>;
       evidence.targetCommit = prepared.identity.commit;
@@ -144,7 +156,7 @@ export async function runAntigravityJourneyCampaign(input: {
       if (input.preflight) { operationPassed = true; console.log(`[antigravity-agent-journey] Read-only preflight ready: ${output}`); return output; }
       const observeRun = async (run: Row) => {
         assertActive();
-        observed.set(run.id, run); observeAntigravityRun(resources, run, observers); await persistResources();
+        await captureRun(run); observeAntigravityRun(resources, run, observers); await persistResources();
         if (observed.size > config.limits.maxRuns) throw new ConnectionFailure("provider_run_limit_exceeded");
         const cost = antigravityKnownCostObservation([...observed.values()], config.limits.budgetCents);
         await save("known-cost.json", cost);
@@ -198,9 +210,6 @@ export async function runAntigravityJourneyCampaign(input: {
       catch (error) { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure";
         const code = error instanceof AggregateError && error.errors[0] instanceof ConnectionFailure ? error.errors[0].message : "fixture_cleanup_failed";
         result.error = `${result.error ? `${result.error}; ` : ""}${code}`; resources.retained = Boolean(resources.agentId); await persistResources(); }
-      for (const runId of resources.runIds) if (api) {
-        try { observed.set(runId, await api.get<Row>(`/api/heartbeat-runs/${runId}`)); } catch { /* Deleted owned agents may remove their public logs; retained observations own billing. */ }
-      }
       try { await browser?.close(); }
       catch { result.cleanup = "failed"; result.status = "failed"; evidence.outcome = "failed"; result.failureClass = "cleanup_failure"; result.error = "qa_browser_cleanup_failed"; }
       result.finishedAt = new Date().toISOString(); result.durationMs = Date.parse(result.finishedAt) - Date.parse(startedAt);
@@ -208,9 +217,12 @@ export async function runAntigravityJourneyCampaign(input: {
       if (operationOnly) {
         if (!operationPassed || result.cleanup === "failed") process.exitCode = 1;
       } else {
-        result.runIds = [...observed.keys()];
-        result.usage = { runs: [...observed.values()].map(run => ({ usage: run.usageJson })) };
-        result.runtimeUsage = buildRuntimeUsage({ environmentId: execution.environment.id, runs: [...observed.values()], fallbackFinishedAt: result.finishedAt });
+        result.runIds = [...new Set([...resources.runIds, ...observed.keys()])];
+        const runs = result.runIds.map(id => observed.get(id) ?? { id });
+        result.usage = { runs: runs.map(run => ({ usage: !run.usageJson ? null
+          : !["succeeded", "failed", "cancelled"].includes(run.status) || run.costAccountingPending !== false
+            ? { ...run.usageJson, accountingReceiptReady: false } : run.usageJson })) };
+        result.runtimeUsage = buildRuntimeUsage({ environmentId: execution.environment.id, runs, fallbackFinishedAt: result.finishedAt });
         result.billing = summarizeExecutionBilling(result);
         result.matcherResults = gradeAntigravityJourney(evidence);
         if (result.status === "passed" && !result.matcherResults.every(check => check.passed)) {
