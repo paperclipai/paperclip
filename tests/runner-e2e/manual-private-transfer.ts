@@ -62,14 +62,16 @@ export async function validateSealedInventory(directory: string, inventory: stri
       || row.path.split("/").some((part: string) => !part || part === "." || part === "..") || row.path.includes("\\")
       || expected.has(row.path) || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !/^[0-9a-f]{64}$/.test(row.sha256)) throw new Error("Invalid original evidence inventory row");
     const standard = isStandardEvidenceFile(id === undefined ? `html-report/${row.path}` : row.path);
-    if (!standard && (id !== undefined || treeKind !== "generated-report" || !canonicalGeneratedReportAsset(row.path))) throw new Error("Invalid original evidence inventory row");
+    const canonical = id === undefined && treeKind === "generated-report" ? canonicalGeneratedReportAsset(row.path) : undefined;
+    const staticReportOwner = id === undefined && treeKind === "generated-report" && (row.path.startsWith("html/trace/") || canonical !== undefined);
+    if (staticReportOwner ? !canonical : !standard) throw new Error("Invalid original evidence inventory row");
     if (row.bytes > 256 * 1024 * 1024 - bytes) throw new Error("Original evidence byte accounting changed");
     expected.add(row.path); bytes += row.bytes;
     const file = path.join(directory, row.path), metadata = await lstat(file);
     if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size !== row.bytes) throw new Error("Original evidence changed after its scan");
     const data = await readFile(file);
     if (hash(data) !== row.sha256) throw new Error("Original evidence changed after its scan");
-    if (!standard && !await isTrustedGeneratedReportAsset(row.path, data)) throw new Error("Invalid original evidence inventory row");
+    if (staticReportOwner && !await isTrustedGeneratedReportAsset(row.path, data)) throw new Error("Invalid original evidence inventory row");
   }
   if (bytes !== receipt.sourceBytes || bytes > 256 * 1024 * 1024) throw new Error("Original evidence byte accounting changed");
   const actual = new Set<string>();

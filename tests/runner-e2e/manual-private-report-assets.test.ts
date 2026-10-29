@@ -41,3 +41,18 @@ it("rejects map/watch/traversal and foreign asset owners", async () => {
   for (const name of ["html/trace/../InterVariable.woff2", "html/trace/assets/xtermModule.js", "html/trace/index.js.map", "html/trace/watch.js", "normalized/assets/other.woff2", "snapshots/private.db"])
     expect(await isTrustedGeneratedReportAsset(name, Buffer.from("synthetic"))).toBe(false);
 });
+it.each(["tampered-index", "watch", "xterm"])("sealer rejects standard-extension trace owner bypass %s", async kind => {
+  const f = await fixture("html/trace/index.html");
+  if (kind === "tampered-index") await writeFile(path.join(f.source, f.name), Buffer.concat([f.bytes, Buffer.from("<!-- synthetic changed static producer -->")]));
+  else { const name = kind === "watch" ? "html/trace/watch.js" : "html/trace/assets/xtermModule.synthetic.js"; await mkdir(path.dirname(path.join(f.source, name)), { recursive: true }); await writeFile(path.join(f.source, name), "synthetic unapproved script"); }
+  await expect(sealManualResultEvidence(f.context, [], f.source, "generated-report")).rejects.toThrow("Unsupported packaged evidence carrier");
+});
+it.each(["tampered-index", "watch", "xterm"])("validator rejects a rehashed standard-extension trace owner bypass %s", async kind => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "synthetic-trace-owner-")); roots.push(root);
+  const name = kind === "tampered-index" ? "html/trace/index.html" : kind === "watch" ? "html/trace/watch.js" : "html/trace/assets/xtermModule.synthetic.js";
+  const data = kind === "tampered-index" ? Buffer.concat([await readFile(canonicalGeneratedReportAsset(name)!), Buffer.from("<!-- synthetic changed static producer -->")]) : Buffer.from("synthetic unapproved script");
+  await mkdir(path.dirname(path.join(root, name)), { recursive: true }); await writeFile(path.join(root, name), data);
+  const files = [{ path: name, bytes: data.length, sha256: createHash("sha256").update(data).digest("hex") }];
+  await writeFile(path.join(root, "inventory.json"), JSON.stringify({ protocol: MANUAL_PRIVATE_PROTOCOL, treeKind: "generated-report", complete: true, sourceBytes: data.length, files, inventorySha256: createHash("sha256").update(JSON.stringify(files)).digest("hex") }));
+  await expect(validateSealedInventory(root, "inventory.json", undefined, "generated-report")).rejects.toThrow("Invalid original evidence inventory row");
+});
