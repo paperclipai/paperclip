@@ -287,3 +287,33 @@ it.each(["not-ready", "server-error"])("reports unexpected failures only after b
   expect(current).toEqual([]);
   expect(reportError).toHaveBeenCalledTimes(failure === "not-ready" ? 0 : 1);
 });
+
+
+it.each(["1.0.0", "2.0.0"])("requires current activity after a mapping change at version %s", async pluginVersion => {
+  vi.useFakeTimers();
+  await render(); expect(current).toHaveLength(1);
+  const changed = { ...slot, pluginVersion, taskSidePanel: { ...slot.taskSidePanel!,
+    activation: { namespace: "example.runtime", activityKey: "new-view.used" } } };
+  history.mockResolvedValue([]); plugin.slots = [changed];
+  await render(); expect(current).toEqual([]); expect(get).toHaveBeenCalledTimes(1);
+  await emit(event()); expect(current).toEqual([]); expect(get).toHaveBeenCalledTimes(1);
+  plugin.healthy = true; plugin.epoch++; await render();
+  expect(current).toEqual([]);
+  await emit(event({ payload: { prpEvent: { eventType: "runtime.activity.recorded", sourceKind: "runner",
+    payload: changed.taskSidePanel.activation } } }));
+  expect(current).toEqual([{ entityId: "agent", runId: "run", slot: changed }]);
+  expect(get).toHaveBeenCalledTimes(2);
+});
+
+it("does not carry an old in-flight activation read into a changed declaration", async () => {
+  vi.useFakeTimers();
+  let resolve!: (value: Array<{ pluginKey: string; slotId: string }>) => void;
+  history.mockReturnValueOnce(new Promise(done => { resolve = done; }));
+  await render(); await emit(event()); expect(current).toHaveLength(1);
+  history.mockResolvedValue([]);
+  plugin.slots = [{ ...slot, pluginVersion: "2.0.0", taskSidePanel: { ...slot.taskSidePanel!,
+    activation: { namespace: "example.runtime", activityKey: "new-view.used" } } }];
+  await render(); expect(current).toEqual([]);
+  await act(async () => { resolve([{ pluginKey: slot.pluginKey, slotId: slot.id }]); await vi.advanceTimersByTimeAsync(30); });
+  expect(current).toEqual([]); expect(get).toHaveBeenCalledTimes(1);
+});

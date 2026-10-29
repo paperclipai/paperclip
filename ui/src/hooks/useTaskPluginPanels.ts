@@ -45,7 +45,9 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
   const run = runs?.find(run => run.status === "running"
     && (!issue?.executionRunId || run.id === issue.executionRunId));
   const active = savedTask && slots.length > 0 && !!run && !runsError && !errorMessage;
-  const activationKey = ["task-plugin-panel-activations", issue?.companyId, issue?.id, run?.id, run?.agentId];
+  const activationScope = JSON.stringify(slots.map(slot => [slot.pluginKey, slot.id, slot.pluginVersion,
+    slot.taskSidePanel!.activation!.namespace, slot.taskSidePanel!.activation!.activityKey]));
+  const activationKey = ["task-plugin-panel-activations", issue?.companyId, issue?.id, run?.id, run?.agentId, activationScope];
   const { data: activations = [], isError: activationsError } = useQuery({
     queryKey: activationKey,
     queryFn: ({ signal }) => heartbeatsApi.taskPanelActivations(run!.id, { signal, cache: "no-store" }),
@@ -89,7 +91,7 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     // A pre-subscription history read must settle before the recovery read.
     createLiveQueryRecovery(queryClient, () => current, { queryKey: activationKey, exact: true })();
     return () => { current = false; };
-  }, [active, stream.healthy, stream.epoch, queryClient, issue?.companyId, issue?.id, run?.id, run?.agentId]);
+  }, [active, stream.healthy, stream.epoch, queryClient, issue?.companyId, issue?.id, run?.id, run?.agentId, activationScope]);
   const availability = useQueries({ queries: slots.map(slot => ({
     queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run?.id, run?.agentId, slot.pluginKey, slot.id, slot.pluginVersion],
     queryFn: async ({ signal }: { signal: AbortSignal }) => {
