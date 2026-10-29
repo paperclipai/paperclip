@@ -1410,6 +1410,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
   "missing_issue_comment",
   "process_lost_retry",
   "run_liveness_continuation",
+  "execution_reconciliation_required",
   "heartbeat.disabled",
   "heartbeat.timer.no_actionable_work",
   "heartbeat.wakeOnDemand.disabled",
@@ -1438,7 +1439,7 @@ function projectWakeDiagnosticSource(value: string | null) {
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES.has(value) ? value : "other";
 }
 
-function projectWakeDiagnosticReason(value: string | null) {
+export function projectWakeDiagnosticReason(value: string | null) {
   if (!value) return null;
   return ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS.has(value) ? value : "other";
 }
