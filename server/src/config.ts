@@ -88,6 +88,9 @@ export interface Config {
   nestedCloneMigrationDryRun: boolean;
   workspaceReaperCooldownDays: number;
   workspaceCompactionDelayHours: number | null;
+  workspaceRowJanitorEnabled: boolean;
+  workspaceRowJanitorCooldownDays: number;
+  workspaceRowJanitorDryRun: boolean;
   skillVersionRetentionEnabled: boolean;
   skillVersionRetentionDryRun: boolean;
   skillVersionRetentionKeepNewest: number;
@@ -320,6 +323,24 @@ export function loadConfig(): Config {
       && workspaceReaperCooldownDaysRaw >= 0
       ? workspaceReaperCooldownDaysRaw
       : 1;
+  // The execution workspace row janitor removes the rows that no longer have
+  // a user. It waits this many days after the last use and the last update of
+  // a row before it removes the row. The default is 1 day, the same window
+  // A manual cleanup of 311 stale rows used. A value of 0
+  // removes a row as soon as it has no user. A negative or non-numeric value
+  // falls back to the default.
+  // PAPERCLIP_WORKSPACE_ROW_JANITOR_ENABLED=false turns the janitor off.
+  // PAPERCLIP_WORKSPACE_ROW_JANITOR_DRY_RUN=true reports the rows the janitor
+  // would remove and removes none.
+  const workspaceRowJanitorCooldownDaysEnv =
+    process.env.PAPERCLIP_WORKSPACE_ROW_JANITOR_COOLDOWN_DAYS?.trim();
+  const workspaceRowJanitorCooldownDaysRaw = Number(workspaceRowJanitorCooldownDaysEnv);
+  const workspaceRowJanitorCooldownDays =
+    workspaceRowJanitorCooldownDaysEnv
+      && Number.isFinite(workspaceRowJanitorCooldownDaysRaw)
+      && workspaceRowJanitorCooldownDaysRaw >= 0
+      ? workspaceRowJanitorCooldownDaysRaw
+      : 1;
   // The terminal-workspace reaper removes regenerable files (installed
   // dependencies, build output, tool caches) from a terminal workspace this
   // many hours after its issue tree becomes terminal. The worktree and every
@@ -411,6 +432,9 @@ export function loadConfig(): Config {
     nestedCloneMigrationEnabled: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED === "true",
     nestedCloneMigrationDryRun: process.env.PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN === "true",
     workspaceReaperCooldownDays,
+    workspaceRowJanitorEnabled: process.env.PAPERCLIP_WORKSPACE_ROW_JANITOR_ENABLED !== "false",
+    workspaceRowJanitorCooldownDays,
+    workspaceRowJanitorDryRun: process.env.PAPERCLIP_WORKSPACE_ROW_JANITOR_DRY_RUN === "true",
     workspaceCompactionDelayHours,
     skillVersionRetentionEnabled: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_ENABLED !== "false",
     skillVersionRetentionDryRun: process.env.PAPERCLIP_SKILL_VERSION_RETENTION_DRY_RUN === "true",

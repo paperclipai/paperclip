@@ -46,6 +46,7 @@ import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js"
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
+import { createExecutionWorkspaceRowJanitor } from "./services/execution-workspace-row-janitor.js";
 import { isIdleTaskDrainActive, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
 import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
 import { clearIdleBackupWakeRequired, idleBackupWakeMarker, markIdleBackupWakeRequired, verifyIdleDatabaseBackup } from "./services/idle-database-backup.js";
@@ -1552,6 +1553,14 @@ async function startServerWithDatabaseTeardown(
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
+    // The row janitor removes the execution workspace rows that no longer have
+    // a user. It runs on the terminal workspace queue, next to the terminal
+    // reaper that archives the same rows.
+    const workspaceRowJanitor = createExecutionWorkspaceRowJanitor(db as any, {
+      enabled: config.workspaceRowJanitorEnabled,
+      cooldownMs: config.workspaceRowJanitorCooldownDays * 24 * 60 * 60 * 1000,
+      dryRun: config.workspaceRowJanitorDryRun,
+    });
     const terminalWorkspaces = executionWorkspaceService(db as any, {
       pluginWorkerManager,
       gitCacheExpirationEnabled: config.gitCacheExpirationEnabled,
@@ -1630,6 +1639,8 @@ async function startServerWithDatabaseTeardown(
         }
         return result;
       },
+      sweepStaleExecutionWorkspaceRows: (limit, signal) => workspaceRowJanitor.sweep(limit, signal),
+      nextExecutionWorkspaceRowJanitorAt: () => workspaceRowJanitor.nextDeadline(),
     }, () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
     unregisterTerminalWorkspaceProbe = registerIdleLocalWorkProbe(() => terminalWorkspaceWorker.hasUnrecoveredWork() ? "present" : "none");
     await terminalWorkspaceWorker.ready;
