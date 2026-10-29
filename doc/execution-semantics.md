@@ -1959,6 +1959,14 @@ The controller persists a newly spawned runner's process identity before
 waiting for provider startup. An abrupt controller exit during session opening
 can then recover through the same exact process-identity checks as an active turn.
 
+Remote native launch markers use a Node-generated UTC timestamp on both Linux
+and macOS. Linux process generations use the boot ID and `/proc` start ticks.
+macOS uses the kernel boot time and `ps` process start time, with the exact random
+Runner ID in the live command line to disambiguate the second-resolution start
+time. Launch supervision, recovery, and signals reject unavailable or changed
+identity evidence. Failed-launch cleanup also verifies the live Runner ID before
+sending a signal; a marker alone does not prove ownership.
+
 Both graceful and hot restarts detach the old controller from native sessions.
 Remote Runner processes use their authenticated connection lease as the bound
 on disconnected lifetime. The controller's shorter connection-recovery budget

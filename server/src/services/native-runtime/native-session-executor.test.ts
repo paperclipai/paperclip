@@ -728,7 +728,9 @@ describe("remote controller restart adoption", () => {
         // Run the actual ownership shell against controlled Linux proc files.
         // kill -0 still checks a real live PID; only its generation changes.
         const args = [...request.args];
-        args[1] = args[1].replaceAll("/proc/", `${proc}/`);
+        args[1] = args[1]
+          .replace('const fs=require("node:fs");', 'Object.defineProperty(process,"platform",{value:"linux"});const fs=require("node:fs");')
+          .replaceAll("/proc/", `${proc}/`);
         args[3] = markerPath;
         let exitCode = 0;
         try { execFileSync("sh", args, { stdio: "pipe" }); } catch (error) { exitCode = (error as { status?: number }).status ?? 4; }
@@ -878,6 +880,7 @@ describe("remote runner launch fingerprint compatibility", () => {
       await writeFile(join(root, "stat"), `123 (runner) ${["S", ...Array(18).fill("0"), 1234].join(" ")}\n`);
       if (hasBootIdentity) await writeFile(join(root, "sys/kernel/random/boot_id"), "abcd-1234\n");
       const script = REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT
+        .replace('const fs=require("node:fs");', 'Object.defineProperty(process,"platform",{value:"linux"});const fs=require("node:fs");')
         .replaceAll('"/proc/"+process.argv[1]+"/stat"', JSON.stringify(`${root}/stat`))
         .replaceAll("/proc/sys/kernel/random/boot_id", `${root}/sys/kernel/random/boot_id`);
       // Node is part of the remote runtime contract; awk is not required.

@@ -239,3 +239,10 @@ Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
+
+Remote native process ownership on Linux and macOS is covered by
+[native process identity regressions](../../server/src/services/native-runtime/native-remote-process-identity.test.ts).
+The macOS cases run real shell processes and check launch timestamps, boot/start
+identity, changed Runner IDs, and refusal to signal an unrelated process during
+Stop or failed-launch cleanup. This controlled check does not establish live SSH,
+TLS, model authentication, or useful-task acceptance.

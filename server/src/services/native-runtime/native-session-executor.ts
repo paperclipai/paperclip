@@ -11265,21 +11265,44 @@ async function readRemoteRunnerProviderState(input: {
 const REMOTE_RUNNER_PROCESS_IDENTITY_WAIT_MS = 20_000;
 const REMOTE_RUNNER_PROCESS_POLL_MS = 1_000;
 
-// Linux boot identity plus start ticks identifies a process generation across
-// PID reuse. exec preserves both the launch shell's PID and its start ticks.
+// exec preserves the launch shell's PID and process start time. Darwin ps has
+// second precision, so also require the exact random Runner ID in its command line.
+const REMOTE_RUNNER_PROCESS_FINGERPRINT_NODE_SCRIPT = [
+  'const fs=require("node:fs");try{',
+  'if(process.platform==="darwin"){',
+  'const {execFileSync}=require("node:child_process");const pid=process.argv[1];const runner=process.argv[2];',
+  'if(!/^\\d+$/.test(pid)||!/^[-a-zA-Z0-9_.:]+$/.test(runner||""))process.exit(4);',
+  'const options={encoding:"utf8",timeout:1000,maxBuffer:65536,env:{...process.env,LC_ALL:"C"}};',
+  'const boot=execFileSync("/usr/sbin/sysctl",["-n","kern.boottime"],options);',
+  'const seconds=/\\bsec\\s*=\\s*(\\d+)/.exec(boot)?.[1];const micros=/\\busec\\s*=\\s*(\\d+)/.exec(boot)?.[1];',
+  'const start=Date.parse(execFileSync("/bin/ps",["-p",pid,"-o","lstart="],options).trim());',
+  'const argv=execFileSync("/bin/ps",["-ww","-p",pid,"-o","command="],options).trim().split(/\\s+/);',
+  'if(!seconds||!micros||Number(micros)>999999||!Number.isSafeInteger(start)||!argv.some((arg,i)=>arg==="--runner-id"&&argv[i+1]===runner))process.exit(4);',
+  'process.stdout.write("darwin:"+seconds+"."+micros+":"+start);',
+  '}else if(process.platform==="linux"){',
+  'const stat=fs.readFileSync("/proc/"+process.argv[1]+"/stat","utf8");const end=stat.lastIndexOf(") ");const ticks=stat.slice(end+2).trim().split(/\\s+/)[19];const boot=fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim();if(end<0||!/^\\d+$/.test(ticks||"")||!/^[-a-fA-F0-9]+$/.test(boot))process.exit(4);process.stdout.write("linux:"+boot+":"+ticks)',
+  '}else{process.exit(4)}}catch{process.exit(4)}',
+].join("");
 const REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT =
-  "process_fingerprint=$(node -e 'const fs=require(\"node:fs\");try{const stat=fs.readFileSync(\"/proc/\"+process.argv[1]+\"/stat\",\"utf8\");const end=stat.lastIndexOf(\") \");const ticks=stat.slice(end+2).trim().split(/\\s+/)[19];const boot=fs.readFileSync(\"/proc/sys/kernel/random/boot_id\",\"utf8\").trim();if(end<0||!/^\\d+$/.test(ticks||\"\")||!/^[-a-fA-F0-9]+$/.test(boot))process.exit(4);process.stdout.write(\"linux:\"+boot+\":\"+ticks)}catch{process.exit(4)}' \"$pid\")";
+  `process_fingerprint=$(node -e '${REMOTE_RUNNER_PROCESS_FINGERPRINT_NODE_SCRIPT}' "$pid" "\${expected_runner_id:-\${runner_instance_id:-}}")`;
+
+// A marker alone never authorizes a signal. On hosts without /proc, the
+// platform fingerprint probe also checks the exact Runner ID in the live command line.
+const REMOTE_RUNNER_COMMAND_IDENTITY_CHECK_SCRIPT =
+  'if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; else if ' +
+  REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
+  '; then :; else exit 4; fi; fi';
 
 const REMOTE_RUNNER_IDENTITY_CHECK_SCRIPT =
-  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi';
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; expected_pid=$4; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test "$pid" = "$expected_pid" && test -n "$started_at" || exit 4; kill -0 "$pid" 2>/dev/null || exit 3; ' + REMOTE_RUNNER_COMMAND_IDENTITY_CHECK_SCRIPT + '; if test -n "${5:-}"; then if ' + REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT + '; then :; else exit 4; fi; test "$process_fingerprint" = "$5" || exit 4; fi';
 
 export const REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT =
-  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"); pid=$$; process_fingerprint=""; if ' +
+  'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; diagnostics_directory=$4; shift 4; umask 077; test ! -L "$diagnostics_directory"; if test -e "$diagnostics_directory"; then test -d "$diagnostics_directory"; else mkdir -p -- "$diagnostics_directory"; fi; chmod 0700 "$diagnostics_directory"; started_at=$(node -e \'process.stdout.write(new Date().toISOString())\'); pid=$$; process_fingerprint=""; if ' +
   REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT +
   '; then :; else process_fingerprint=""; fi; identity_tmp="${identity_path}.tmp.$$"; printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "$identity_nonce" "$$" "$started_at" "$runner_instance_id" "$process_fingerprint" > "$identity_tmp"; chmod 0600 "$identity_tmp"; mv -f -- "$identity_tmp" "$identity_path"; exec "$@"';
 
 const REMOTE_RUNNER_FAILED_IDENTITY_CLEANUP_SCRIPT =
-  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then if test -r "/proc/$pid/cmdline"; then command_line=$(tr "\\000" "\\n" < "/proc/$pid/cmdline"); printf "%s\\n" "$command_line" | grep -Fqx -- "--runner-id" || exit 4; printf "%s\\n" "$command_line" | grep -Fqx -- "$expected_runner_id" || exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
+  'set -eu; identity_path=$1; expected_nonce=$2; expected_runner_id=$3; marker_wait=0; while { test ! -f "$identity_path" || test -L "$identity_path"; } && test "$marker_wait" -lt 50; do marker_wait=$((marker_wait + 1)); sleep 0.1; done; test -f "$identity_path" && test ! -L "$identity_path" || exit 3; { IFS= read -r nonce; IFS= read -r pid; IFS= read -r started_at; IFS= read -r runner_id; } < "$identity_path"; test "$nonce" = "$expected_nonce" && test "$runner_id" = "$expected_runner_id" && test -n "$started_at" || exit 4; case "$pid" in ""|*[!0-9]*) exit 4 ;; esac; test "$pid" -gt 0 || exit 4; if kill -0 "$pid" 2>/dev/null; then ' + REMOTE_RUNNER_COMMAND_IDENTITY_CHECK_SCRIPT + '; if ' + REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT + '; then cleanup_fingerprint=$process_fingerprint; else exit 4; fi; signal_target=$pid; if command -v ps >/dev/null 2>&1; then session_id=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d " ") || true; if test "$session_id" = "$pid"; then signal_target="-$pid"; fi; fi; kill -TERM -- "$signal_target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; term_wait=0; while kill -0 "$pid" 2>/dev/null && test "$term_wait" -lt 50; do term_wait=$((term_wait + 1)); sleep 0.1; done; if kill -0 "$pid" 2>/dev/null; then ' + REMOTE_RUNNER_COMMAND_IDENTITY_CHECK_SCRIPT + '; if ' + REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT + '; then :; else exit 4; fi; test "$process_fingerprint" = "$cleanup_fingerprint" || exit 4; kill -KILL -- "$signal_target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; kill_wait=0; while kill -0 "$pid" 2>/dev/null && test "$kill_wait" -lt 50; do kill_wait=$((kill_wait + 1)); sleep 0.1; done; fi; kill -0 "$pid" 2>/dev/null && exit 5; fi; test -f "$identity_path" && test ! -L "$identity_path" || exit 4; { IFS= read -r final_nonce; IFS= read -r final_pid; IFS= read -r final_started_at; IFS= read -r final_runner_id; } < "$identity_path"; test "$final_nonce" = "$nonce" && test "$final_pid" = "$pid" && test "$final_started_at" = "$started_at" && test "$final_runner_id" = "$runner_id" || exit 4; rm -f -- "$identity_path"';
 
 export function parseRemoteRunnerProcessIdentity(
   value: string,
@@ -11297,7 +11320,7 @@ export function parseRemoteRunnerProcessIdentity(
     pid <= 0 ||
     !startedAt ||
     Number.isNaN(new Date(startedAt).getTime()) ||
-    (processStartFingerprint !== undefined && !/^linux:[0-9a-f-]+:[0-9]+$/.test(processStartFingerprint))
+    (processStartFingerprint !== undefined && !/^(?:linux:[0-9a-f-]+:[0-9]+|darwin:[0-9]+\.[0-9]{1,6}:[0-9]+)$/.test(processStartFingerprint))
   ) {
     return null;
   }
@@ -11515,6 +11538,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       nonce: string;
       pid: number;
       startedAt: string;
+      processStartFingerprint?: string;
     } | null = null;
     const child: RunnerProcessHandle["child"] = {
       pid: undefined,
@@ -11551,6 +11575,7 @@ export function createRemoteRunnerProcessLauncher(input: {
             identity.nonce,
             input.runnerInstanceId,
             String(identity.pid),
+            identity.processStartFingerprint ?? "",
           ],
           bypassSession: true,
           timeoutMs: 10_000,
