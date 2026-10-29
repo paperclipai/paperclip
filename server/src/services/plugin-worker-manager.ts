@@ -916,6 +916,7 @@ export function createPluginWorkerHandle(
   // completion receipt. A worker crash cannot manufacture one.
   const unsettledCalls = new Map<string | number, () => void>();
   const unsettledInspections = new Set<() => void>();
+  const unsettledInitializations = new Set<() => void>();
   let activeHostHandlers = 0;
   let idleHold: { ownerId: string; expiresAt: number; ready: boolean } | null = null;
 
@@ -1058,6 +1059,7 @@ export function createPluginWorkerHandle(
 
   // Shutdown coordination
   let intentionalStop = false;
+  let stopRequests = 0;
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const initializeTimeoutMs = options.initializeTimeoutMs ?? resolvePluginWorkerInitializeTimeoutMs();
@@ -3038,6 +3040,7 @@ export function createPluginWorkerHandle(
     // Read-only requests cannot continue in an exited worker. Do not infer
     // completion for execute/cleanup calls, whose provider work may outlive it.
     for (const finish of [...unsettledInspections]) finish();
+    for (const finish of [...unsettledInitializations]) finish();
 
     // Close the one login pseudo-terminal route with a fixed non-secret exit and
     // clear the route one time. The pending pseudo-terminal calls
@@ -3177,6 +3180,7 @@ export function createPluginWorkerHandle(
   // -----------------------------------------------------------------------
 
   async function startWithInitializeRetry(): Promise<void> {
+    const stopRequestsAtStart = stopRequests;
     for (let attempt = 0; ; attempt++) {
       try {
         await startInternal();
@@ -3185,7 +3189,7 @@ export function createPluginWorkerHandle(
         const cause = err instanceof Error ? err.cause : undefined;
         const timedOut = cause instanceof JsonRpcCallError
           && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT;
-        if (!timedOut || attempt >= INITIALIZE_TIMEOUT_RETRIES) throw err;
+        if (!timedOut || attempt >= INITIALIZE_TIMEOUT_RETRIES || stopRequests !== stopRequestsAtStart) throw err;
         log.warn(
           { attempt: attempt + 1, initializeTimeoutMs },
           "worker initialize timed out, retrying",
@@ -3244,6 +3248,7 @@ export function createPluginWorkerHandle(
   }
 
   async function stopInternal(): Promise<void> {
+    stopRequests++;
     cancelPendingRestart();
 
     if (status === "stopped" || status === "stopping") {
@@ -3418,11 +3423,13 @@ export function createPluginWorkerHandle(
           completed = true;
           finishIdle();
           unsettledInspections.delete(finish);
+          unsettledInitializations.delete(finish);
           unsettledCalls.delete(id);
           onWorkerSettled?.();
         };
         unsettledCalls.set(id, finish);
         if (method === "environmentInspectLease") unsettledInspections.add(finish);
+        if (method === "initialize") unsettledInitializations.add(finish);
       }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);

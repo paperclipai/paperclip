@@ -38,6 +38,7 @@ import {
   resolvePluginWorkerInitializeTimeoutMs,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const DELAYED_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-delayed.cjs");
@@ -194,6 +195,48 @@ describe("plugin worker initialize timeout", () => {
       expect(handle.status).toBe("crashed");
       expect(readAttempts(attemptsFile)).toBe(2);
     } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("releases the timed-out initialize call's tracked work after a retry succeeds", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-plugin-init-retry-"));
+    const attemptsFile = path.join(dir, "attempts");
+    const handle = slowInitializeHandle({ slowAttempts: 1, attemptsFile });
+    const activeBefore = idleWorkSnapshot().active;
+    try {
+      await handle.start();
+      expect(handle.status).toBe("running");
+      expect(readAttempts(attemptsFile)).toBe(2);
+      expect(idleWorkSnapshot().active).toBe(activeBefore);
+    } finally {
+      await handle.stop().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it("does not retry after a stop that arrives while the timed-out worker is killed", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "paperclip-plugin-init-retry-"));
+    const attemptsFile = path.join(dir, "attempts");
+    const handle = slowInitializeHandle({ slowAttempts: 5, attemptsFile });
+    let stopping: Promise<void> | undefined;
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockImplementation(((_context: unknown, message?: string) => {
+      if (message === "worker initialize failed") stopping ??= handle.stop();
+    }) as never);
+    try {
+      await expect(handle.start()).rejects.toThrow(/timed out after 1500ms/);
+      await stopping;
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      expect(readAttempts(attemptsFile)).toBe(1);
+      expect(handle.status).not.toBe("running");
+      expect(vi.mocked(logger.warn)).not.toHaveBeenCalledWith(
+        expect.anything(),
+        "worker initialize timed out, retrying",
+      );
+    } finally {
+      vi.mocked(logger.error).mockReset();
       await handle.stop().catch(() => undefined);
       rmSync(dir, { recursive: true, force: true });
     }
