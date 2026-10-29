@@ -1,9 +1,11 @@
 import { Router } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { authUsers } from "@paperclipai/db";
+import { authAccounts, authUsers } from "@paperclipai/db";
 import {
+  authAccountSecuritySchema,
   authSessionSchema,
+  authSignInOptionsSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
@@ -35,8 +37,45 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   });
 }
 
-export function authRoutes(db: Db) {
+export function authRoutes(db: Db, opts: { passkeyOrigin?: string | null } = {}) {
   const router = Router();
+
+  router.get("/sign-in-options", (_req, res) => {
+    res.json(authSignInOptionsSchema.parse({
+      passkeyOrigin: opts.passkeyOrigin ?? null,
+    }));
+  });
+
+  router.get("/account-security", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+
+    // Better Auth keeps the password on the "credential" account. Users provisioned
+    // through handoff have none, and every two-factor change re-checks the password.
+    const user = await db
+      .select({ twoFactorEnabled: authUsers.twoFactorEnabled, credentialAccountId: authAccounts.id })
+      .from(authUsers)
+      .leftJoin(
+        authAccounts,
+        and(
+          eq(authAccounts.userId, authUsers.id),
+          eq(authAccounts.providerId, "credential"),
+          isNotNull(authAccounts.password),
+        ),
+      )
+      .where(eq(authUsers.id, req.actor.userId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!user) {
+      throw unauthorized("Signed-in user not found");
+    }
+
+    res.json(authAccountSecuritySchema.parse({
+      twoFactorEnabled: user.twoFactorEnabled,
+      hasPassword: user.credentialAccountId !== null,
+    }));
+  });
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {

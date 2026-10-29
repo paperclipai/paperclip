@@ -90,7 +90,7 @@ const {
       toolActionDeliveries: { hasPending: vi.fn(async () => false), sweepPending: vi.fn(async () => ({ scanned: 0, delivered: 0 })) },
     },
   }) as never);
-  const createBetterAuthInstanceMock = vi.fn(() => ({}));
+  const createBetterAuthInstanceMock = vi.fn(() => ({ auth: {}, passkeyRelyingParty: null }));
   const createDbMock = vi.fn(() => ({
     select: vi.fn(() => ({
       from: vi.fn(() => ({ where: vi.fn(async () => []) })),
@@ -550,7 +550,7 @@ describe("startServer feedback export wiring", () => {
       suppressed: false,
       reason: null,
     });
-    createBetterAuthInstanceMock.mockReturnValue({});
+    createBetterAuthInstanceMock.mockReturnValue({ auth: {}, passkeyRelyingParty: null });
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
@@ -1264,7 +1264,7 @@ describe("startServer authenticated auth origin setup", () => {
     vi.clearAllMocks();
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
-    createBetterAuthInstanceMock.mockReturnValue({});
+    createBetterAuthInstanceMock.mockReturnValue({ auth: {}, passkeyRelyingParty: null });
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });

@@ -70,3 +70,42 @@ describe("authApi.signOut", () => {
     });
   });
 });
+
+describe("authApi.regenerateBackupCodes", () => {
+  it("fails instead of returning an empty list once the old codes are replaced", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: true, backupCodes: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ));
+
+    await expect(authApi.regenerateBackupCodes({ password: "supersecret" })).rejects.toThrow(
+      "The server did not return any backup codes",
+    );
+  });
+});
+
+describe("authApi.signInPasskey", () => {
+  it("asks the authenticator for user verification before the ceremony", async () => {
+    const startAuthentication = vi.fn().mockResolvedValue({ id: "credential" });
+    vi.doMock("@simplewebauthn/browser", () => ({ startAuthentication }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ challenge: "abc", userVerification: "preferred" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ session: {} }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await authApi.signInPasskey();
+
+    expect(startAuthentication).toHaveBeenCalledWith({
+      optionsJSON: { challenge: "abc", userVerification: "required" },
+    });
+    vi.doUnmock("@simplewebauthn/browser");
+  });
+});

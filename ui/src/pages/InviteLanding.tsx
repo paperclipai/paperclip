@@ -4,6 +4,7 @@ import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
 import type { AgentAdapterType, JoinRequest } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
+import { TwoFactorChallenge, signInCompletionErrorMessage } from "@/components/auth/TwoFactorChallenge";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
@@ -228,6 +229,7 @@ export function InviteLandingPage() {
   const [error, setError] = useState<string | null>(null);
   const [authFeedback, setAuthFeedback] = useState<AuthFeedback | null>(null);
   const [autoAcceptStarted, setAutoAcceptStarted] = useState(false);
+  const [twoFactorPending, setTwoFactorPending] = useState(false);
   const authErrorId = "invite-auth-error";
 
   const healthQuery = useQuery({
@@ -377,50 +379,75 @@ export function InviteLandingPage() {
     acceptMutation.mutate();
   }, [acceptMutation, autoAcceptStarted, shouldAutoAcceptHumanInvite]);
 
+  async function completeInviteSignIn() {
+    setAuthFeedback(null);
+    rememberPendingInviteToken(token);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    setTwoFactorPending(false);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
+    // Keyed to the account that just signed in — the helper resolves the
+    // identity past the invalidation above rather than trusting the session
+    // entry still sitting in the cache — and forced past whatever is cached
+    // for it. This replaces the hand-rolled cancel-and-refetch this PR
+    // originally carried, which #11488 made both unnecessary and weaker.
+    const { companies: freshCompanies } = await fetchCompanyListForCurrentAccount(queryClient);
+
+    if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
+      clearPendingInviteToken(token);
+      setSelectedCompanyId(invite.companyId, { source: "manual" });
+      navigate("/", { replace: true });
+      return;
+    }
+
+    if (!invite || invite.inviteType !== "bootstrap_ceo") {
+      return;
+    }
+
+    try {
+      const payload = await acceptMutation.mutateAsync();
+      if (isBootstrapAcceptancePayload(payload)) {
+        navigate("/", { replace: true });
+      }
+    } catch {
+      return;
+    }
+  }
+
+  // The server already accepted the credentials, so this is not a credential failure.
+  // Once the session lands the page shows its signed-in panel, which renders `error`
+  // and whose accept button retries; without a session it is still on the sign-in form.
+  function reportInviteSignInCompletionFailure(err: unknown) {
+    if (queryClient.getQueryData(queryKeys.auth.session)) {
+      setError(signInCompletionErrorMessage(err));
+      return;
+    }
+    setAuthFeedback({
+      tone: "error",
+      message: err instanceof Error && err.message.trim() ? err.message : "Sign-in could not be completed.",
+    });
+  }
+
   const authMutation = useMutation({
     mutationFn: async () => {
       if (authMode === "sign_in") {
-        await authApi.signInEmail({ email: email.trim(), password });
-        return;
+        return authApi.signInEmail({ email: email.trim(), password });
       }
       await authApi.signUpEmail({
         name: name.trim(),
         email: email.trim(),
         password,
       });
+      return { twoFactorRequired: false };
     },
-    onSuccess: async () => {
-      setAuthFeedback(null);
-      rememberPendingInviteToken(token);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
-      // Keyed to the account that just signed in — the helper resolves the
-      // identity past the invalidation above rather than trusting the session
-      // entry still sitting in the cache — and forced past whatever is cached
-      // for it. This replaces the hand-rolled cancel-and-refetch this PR
-      // originally carried, which #11488 made both unnecessary and weaker.
-      const { companies: freshCompanies } = await fetchCompanyListForCurrentAccount(queryClient);
-
-      if (invite?.companyId && freshCompanies.some((company) => company.id === invite.companyId)) {
-        clearPendingInviteToken(token);
-        setSelectedCompanyId(invite.companyId, { source: "manual" });
-        navigate("/", { replace: true });
+    onSuccess: async (signInResult) => {
+      if (signInResult.twoFactorRequired) {
+        setAuthFeedback(null);
+        setPassword("");
+        setTwoFactorPending(true);
         return;
       }
-
-      if (!invite || invite.inviteType !== "bootstrap_ceo") {
-        return;
-      }
-
-      try {
-        const payload = await acceptMutation.mutateAsync();
-        if (isBootstrapAcceptancePayload(payload)) {
-          navigate("/", { replace: true });
-        }
-      } catch {
-        return;
-      }
+      await completeInviteSignIn().catch(reportInviteSignInCompletionFailure);
     },
     onError: (err) => {
       const nextFeedback = mapInviteAuthFeedback(err, authMode, email);
@@ -667,6 +694,28 @@ export function InviteLandingPage() {
                 >
                   {acceptMutation.isPending ? "Working..." : joinButtonLabel}
                 </Button>
+              </div>
+            ) : requiresHumanAccount && twoFactorPending ? (
+              <div className="space-y-5">
+                <div>
+                  <h2 className="text-lg font-semibold">Two-factor authentication</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Enter the code from your authenticator app, or use one of your backup codes.
+                  </p>
+                </div>
+                {/* Once the session lands this page re-renders into its signed-in panel and
+                    unmounts the challenge, so report a failure there; its accept button retries. */}
+                <TwoFactorChallenge
+                  onVerified={() => completeInviteSignIn().catch(reportInviteSignInCompletionFailure)}
+                  onCancel={() => {
+                    setAuthFeedback(null);
+                    setTwoFactorPending(false);
+                  }}
+                  onExpired={(message) => {
+                    setTwoFactorPending(false);
+                    setAuthFeedback({ tone: "error", message });
+                  }}
+                />
               </div>
             ) : requiresHumanAccount ? (
               <div className="space-y-5">

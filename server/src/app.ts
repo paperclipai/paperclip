@@ -437,6 +437,7 @@ export async function createApp(
     authPublicBaseUrl?: string;
     chatWebhookPublicBaseUrl?: string;
     authReady: boolean;
+    passkeyOrigin?: string | null;
     companyDeletionEnabled: boolean;
     announcements?: { enabled: boolean; feedUrl: string };
     instanceId?: string;
@@ -577,7 +578,7 @@ export async function createApp(
   // the one endpoint it authorizes (see the middleware for the contract).
   app.use(cloudControlMiddleware());
   app.use(skillAccessRequestContext);
-  app.use("/api/auth", authRoutes(db));
+  app.use("/api/auth", authRoutes(db, { passkeyOrigin: opts.passkeyOrigin }));
   if (opts.betterAuthHandler) {
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }

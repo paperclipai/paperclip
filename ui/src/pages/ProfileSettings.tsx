@@ -4,10 +4,12 @@ import { Camera, LoaderCircle, Save, Trash2, UserRoundPen } from "lucide-react";
 import type { AuthSession, CurrentUserProfile, UpdateCurrentUserProfile } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
 import { assetsApi } from "@/api/assets";
+import { healthApi } from "@/api/health";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
+import { AccountSecuritySettings } from "@/components/auth/AccountSecuritySettings";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,6 +36,13 @@ export function ProfileSettings() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+  });
+  const showAccountSecurity =
+    healthQuery.data?.deploymentMode === "authenticated" && !healthQuery.data.cloud;
 
   useEffect(() => {
     setBreadcrumbs([
@@ -271,6 +280,8 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
+
+        {showAccountSecurity ? <AccountSecuritySettings /> : null}
       </section>
     </div>
   );

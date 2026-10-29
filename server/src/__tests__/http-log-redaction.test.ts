@@ -57,6 +57,19 @@ describe("HTTP logger redaction", () => {
     expect(logs.length).toBe(4);for(const log of logs){expect(log.req.url).toBe("/api/muse/:protocol");if(status>=400)expect(log.reqBody).toBe("[REDACTED]");}
   });
 
+  it("keeps rejected two-factor and backup codes out of auth failure logs", async () => {
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    app.post("/api/auth/two-factor/:step", (_req, res) => res.status(401).json({ code: "INVALID_TWO_FACTOR_COOKIE" }));
+    await request(app).post("/api/auth/two-factor/verify-backup-code").send({ code: "backup-canary", trustDevice: false });
+    await request(app).post("/api/auth/two-factor/verify-totp").send({ code: "totp-canary", trustDevice: false });
+    expect(chunks).toHaveLength(2);
+    expect(chunks.join("")).not.toMatch(/backup-canary|totp-canary/);
+  });
+
   it("redacts inbound MCP OAuth codes, PKCE verifiers, refresh tokens and redirect credentials", async () => {
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });

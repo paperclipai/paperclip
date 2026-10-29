@@ -39,7 +39,7 @@ export async function startRunnerApiTestServer(options: {
   const auth = options.humanSessions ? createBetterAuthInstance(db, {
     deploymentMode: "authenticated", deploymentExposure: "private", authBaseUrlMode: "explicit",
     authPublicBaseUrl: origin, authDisableSignUp: true,
-  } as Config, [origin]) : undefined;
+  } as Config, [origin]).auth : undefined;
   const humanCookies = new Map<string, string>();
   const app = await createApp(db, {
     uiMode: "none", serverPort: 0, storageService: storage,

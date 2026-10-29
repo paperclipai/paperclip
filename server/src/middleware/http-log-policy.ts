@@ -54,6 +54,13 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
 }
 
+/** TOTP and backup codes are login credentials; `code` is not a redacted key name. */
+export function isPrivateAuthTwoFactorHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/auth\/two-factor(?:\/|$)/i.test(pathname);
+}
+
 /** Destination credentials stay private even on malformed settings requests. */
 export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
   if (!url) return false;

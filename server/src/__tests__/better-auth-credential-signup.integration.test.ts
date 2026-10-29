@@ -75,7 +75,7 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     database = await startEmbeddedPostgresTestDatabase("paperclip-better-auth-signup-");
     db = createDb(database.connectionString);
 
-    const auth = createBetterAuthInstance(db, testConfig(), [ORIGIN]);
+    const { auth } = createBetterAuthInstance(db, testConfig(), [ORIGIN]);
     app = express();
     // Mounted exactly as `createApp` mounts it, and with no body parser in
     // front of it: Better Auth reads the raw request body itself.

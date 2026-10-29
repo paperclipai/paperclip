@@ -1,12 +1,18 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
+import { isIP } from "node:net";
+import { passkey } from "@better-auth/passkey";
+import { APIError } from "@better-auth/core/error";
 import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
+import { twoFactor } from "better-auth/plugins";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
+  authPasskeys,
   authSessions,
+  authTwoFactors,
   authUsers,
   authVerifications,
 } from "@paperclipai/db";
@@ -46,7 +52,14 @@ type BetterAuthSessionResolver = {
 
 type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
 
+export type BetterAuthSetup = {
+  auth: BetterAuthInstance;
+  /** Null when the public URL cannot serve as a WebAuthn relying party; passkeys are then off. */
+  passkeyRelyingParty: PasskeyRelyingParty | null;
+};
+
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
+const AUTH_APP_NAME = "Paperclip";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
 
 export function deriveAuthCookiePrefix(instanceId = resolvePaperclipInstanceId()): string {
@@ -182,7 +195,7 @@ function headersFromExpressRequest(req: Request): Headers {
 }
 
 export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: number }): string[] {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+  const baseUrl = resolveExplicitAuthBaseUrl(config);
   const trustedOrigins = new Set<string>();
 
   if (baseUrl) {
@@ -208,6 +221,59 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   }
 
   return Array.from(trustedOrigins);
+}
+
+export type PasskeyRelyingParty = {
+  rpID: string;
+  origin: string;
+};
+
+export function resolveAuthPublicUrl(
+  config: Pick<Config, "authBaseUrlMode" | "authPublicBaseUrl">,
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return env.PAPERCLIP_PUBLIC_URL?.trim() || resolveExplicitAuthBaseUrl(config);
+}
+
+function resolveExplicitAuthBaseUrl(
+  config: Pick<Config, "authBaseUrlMode" | "authPublicBaseUrl">,
+): string | undefined {
+  return config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+}
+
+function passkeyUserVerificationRequired(): APIError {
+  return new APIError("UNAUTHORIZED", {
+    message: "This passkey did not verify you with a PIN or biometric.",
+    code: "PASSKEY_USER_VERIFICATION_REQUIRED",
+  });
+}
+
+export function resolvePasskeyRelyingParty(publicUrl: string | undefined): PasskeyRelyingParty | null {
+  if (!publicUrl) return null;
+  let url: URL;
+  try {
+    url = new URL(publicUrl);
+  } catch {
+    return null;
+  }
+  const hostname = url.hostname.toLowerCase();
+  if (isIP(hostname.replace(/^\[|\]$/g, "")) !== 0) return null;
+  const localhost = hostname === "localhost" || hostname.endsWith(".localhost");
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && localhost)) return null;
+  return { rpID: hostname, origin: url.origin };
+}
+
+/**
+ * The relying party Better Auth will accept a ceremony from. Better Auth rejects
+ * requests from untrusted origins before the passkey plugin runs, so an origin
+ * outside `trustedOrigins` would show passkeys that can never verify.
+ */
+export function resolveTrustedPasskeyRelyingParty(
+  url: string | undefined,
+  trustedOrigins: readonly string[],
+): PasskeyRelyingParty | null {
+  const relyingParty = resolvePasskeyRelyingParty(url);
+  return relyingParty && trustedOrigins.includes(relyingParty.origin) ? relyingParty : null;
 }
 
 /**
@@ -238,9 +304,9 @@ export function resolveWorkspaceHandoffIdentity(
   };
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthSetup {
+  const baseUrl = resolveExplicitAuthBaseUrl(config);
+  const publicUrl = resolveAuthPublicUrl(config);
   const managedRuntimePublicUrl = process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim() || undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
@@ -257,6 +323,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
+  const passkeyRelyingParty = resolveTrustedPasskeyRelyingParty(baseUrl ?? publicUrl, trustedOrigins);
+  const workspaceHandoffIdentity = resolveWorkspaceHandoffIdentity(config);
+
   const authConfig = {
     baseURL: baseUrl,
     secret,
@@ -268,6 +337,8 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         session: authSessions,
         account: authAccounts,
         verification: authVerifications,
+        twoFactor: authTwoFactors,
+        passkey: authPasskeys,
       },
     }),
     emailAndPassword: {
@@ -281,12 +352,39 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
-    // Registered only for a managed workspace instance: the plugin is what makes
-    // `Open workspace` password-independent, and a control-plane instance that
-    // was never handed a workspace key must not expose the exchange at all.
-    ...(resolveWorkspaceHandoffIdentity(config)
-      ? {
-          plugins: [
+    plugins: [
+      twoFactor({ issuer: AUTH_APP_NAME }),
+      ...(passkeyRelyingParty
+        ? [
+            passkey({
+              rpID: passkeyRelyingParty.rpID,
+              rpName: AUTH_APP_NAME,
+              origin: passkeyRelyingParty.origin,
+              // Signed-out sign-in sends no `allowCredentials`, so only a discoverable credential can
+              // ever be offered there.
+              authenticatorSelection: { residentKey: "required", userVerification: "required" },
+              // The plugin verifies both ceremonies with `requireUserVerification: false`
+              // and asks for UV only as "preferred" at sign-in, so the selection above is
+              // a registration hint. A passkey sign-in skips both the password and TOTP,
+              // so reject any ceremony the authenticator did not user-verify.
+              registration: {
+                afterVerification: ({ verification }) => {
+                  if (!verification.registrationInfo?.userVerified) throw passkeyUserVerificationRequired();
+                },
+              },
+              authentication: {
+                afterVerification: ({ verification }) => {
+                  if (!verification.authenticationInfo.userVerified) throw passkeyUserVerificationRequired();
+                },
+              },
+            }),
+          ]
+        : []),
+      // Registered only for a managed workspace instance: the plugin is what makes
+      // `Open workspace` password-independent, and a control-plane instance that
+      // was never handed a workspace key must not expose the exchange at all.
+      ...(workspaceHandoffIdentity
+        ? [
             workspaceLoginHandoffPlugin({
               db,
               // Re-resolved per exchange so a hot restart cannot keep validating
@@ -300,9 +398,9 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
                   origin: null,
                 },
             }),
-          ],
-        }
-      : {}),
+          ]
+        : []),
+    ],
   };
 
   if (!baseUrl) {
@@ -315,7 +413,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     isHttpsUrl(publicUrl) &&
     isHttpsUrl(managedRuntimePublicUrl),
   );
-  if (!supportsManagedLoopbackAuth) return defaultAuth;
+  if (!supportsManagedLoopbackAuth) return { auth: defaultAuth, passkeyRelyingParty };
 
   // Better Auth fixes both the Secure attribute and the __Secure- name prefix
   // when an instance is created. Keep the public instance unchanged and route
@@ -333,7 +431,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     managedRuntimePublicUrl,
   };
 
-  return {
+  const auth: BetterAuthInstance = {
     handler: (request) => {
       const auth = shouldDisableSecureAuthCookies({
         ...cookieSecurityInput,
@@ -351,6 +449,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       },
     },
   };
+  return { auth, passkeyRelyingParty };
 }
 
 export function createBetterAuthHandler(auth: BetterAuthHandlerTarget): RequestHandler {

@@ -1,7 +1,15 @@
+import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from "@simplewebauthn/browser";
 import {
+  authAccountSecuritySchema,
   authSessionSchema,
+  authSignInOptionsSchema,
   currentUserProfileSchema,
+  type AuthAccountSecurity,
   type AuthSession,
+  type AuthSignInOptions,
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
@@ -22,6 +30,22 @@ type AuthErrorBody =
 export interface SignOutResult {
   success?: boolean;
   redirectTo?: string;
+}
+
+export interface EmailSignInResult {
+  twoFactorRequired: boolean;
+}
+
+export interface TwoFactorEnrollment {
+  totpURI: string;
+  backupCodes: string[];
+}
+
+export interface AuthPasskey {
+  id: string;
+  name: string | null;
+  deviceType: string | null;
+  createdAt: string | null;
 }
 
 export class AuthApiError extends Error {
@@ -120,27 +144,64 @@ function logAuthHttpError(method: string, path: string, status: number, statusTe
   });
 }
 
-async function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function authRequest(method: "GET" | "POST", path: string, init: RequestInit): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetch(`/api/auth${path}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    res = await fetch(`/api/auth${path}`, { ...init, method, credentials: "include" });
   } catch (networkError) {
-    logAuthNetworkFailure("POST", path, networkError);
+    logAuthNetworkFailure(method, path, networkError);
     throw networkError;
   }
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
     const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
     if (recovery) return recovery;
-    logAuthHttpError("POST", path, res.status, res.statusText, payload);
+    logAuthHttpError(method, path, res.status, res.statusText, payload);
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return payload;
+}
+
+function authPost(path: string, body: Record<string, unknown>): Promise<unknown> {
+  return authRequest("POST", path, {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function authGet(path: string): Promise<unknown> {
+  return authRequest("GET", path, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+// Better Auth replaces the stored codes before it responds, so an empty list
+// means the user's old codes are gone and no new ones arrived.
+function toBackupCodes(payload: unknown): string[] {
+  const codes = payload && typeof payload === "object"
+    ? stringList((payload as Record<string, unknown>).backupCodes)
+    : [];
+  if (codes.length === 0) {
+    throw new Error("The server did not return any backup codes. Try again.");
+  }
+  return codes;
+}
+
+function toPasskey(value: unknown): AuthPasskey | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.id !== "string") return null;
+  return {
+    id: row.id,
+    name: typeof row.name === "string" && row.name.trim().length > 0 ? row.name : null,
+    deviceType: typeof row.deviceType === "string" ? row.deviceType : null,
+    createdAt: typeof row.createdAt === "string" ? row.createdAt : null,
+  };
 }
 
 async function authPatch<T>(path: string, body: Record<string, unknown>, parse: (value: unknown) => T): Promise<T> {
@@ -179,8 +240,69 @@ export const authApi = {
     return nested;
   },
 
-  signInEmail: async (input: { email: string; password: string }) => {
-    await authPost("/sign-in/email", input);
+  signInEmail: async (input: { email: string; password: string }): Promise<EmailSignInResult> => {
+    const payload = await authPost("/sign-in/email", input);
+    const twoFactorRequired = Boolean(
+      payload && typeof payload === "object" && (payload as Record<string, unknown>).twoFactorRedirect === true,
+    );
+    return { twoFactorRequired };
+  },
+
+  verifyTotp: async (input: { code: string; trustDevice: boolean }) => {
+    await authPost("/two-factor/verify-totp", input);
+  },
+
+  verifyBackupCode: async (input: { code: string; trustDevice: boolean }) => {
+    await authPost("/two-factor/verify-backup-code", input);
+  },
+
+  signInPasskey: async () => {
+    const optionsJSON = await authGet("/passkey/generate-authenticate-options") as PublicKeyCredentialRequestOptionsJSON;
+    // The plugin asks only for "preferred"; the server rejects ceremonies without
+    // user verification, so have the authenticator demand a PIN or biometric up front.
+    optionsJSON.userVerification = "required";
+    const { startAuthentication } = await import("@simplewebauthn/browser");
+    const response = await startAuthentication({ optionsJSON });
+    await authPost("/passkey/verify-authentication", { response });
+  },
+
+  getSignInOptions: async (): Promise<AuthSignInOptions> =>
+    authSignInOptionsSchema.parse(await authGet("/sign-in-options")),
+
+  getAccountSecurity: async (): Promise<AuthAccountSecurity> =>
+    authAccountSecuritySchema.parse(await authGet("/account-security")),
+
+  enableTwoFactor: async (input: { password: string }): Promise<TwoFactorEnrollment> => {
+    const payload = await authPost("/two-factor/enable", input);
+    const totpURI = payload && typeof payload === "object" ? (payload as Record<string, unknown>).totpURI : null;
+    if (typeof totpURI !== "string") throw new Error("The server did not return an authenticator setup key.");
+    return { totpURI, backupCodes: toBackupCodes(payload) };
+  },
+
+  disableTwoFactor: async (input: { password: string }) => {
+    await authPost("/two-factor/disable", input);
+  },
+
+  regenerateBackupCodes: async (input: { password: string }): Promise<string[]> =>
+    toBackupCodes(await authPost("/two-factor/generate-backup-codes", input)),
+
+  listPasskeys: async (): Promise<AuthPasskey[]> => {
+    const payload = await authGet("/passkey/list-user-passkeys");
+    if (!Array.isArray(payload)) return [];
+    return payload.map(toPasskey).filter((passkey): passkey is AuthPasskey => passkey !== null);
+  },
+
+  addPasskey: async (input: { name: string }) => {
+    const optionsJSON = await authGet("/passkey/generate-register-options");
+    const { startRegistration } = await import("@simplewebauthn/browser");
+    const response = await startRegistration({
+      optionsJSON: optionsJSON as PublicKeyCredentialCreationOptionsJSON,
+    });
+    await authPost("/passkey/verify-registration", { response, name: input.name });
+  },
+
+  deletePasskey: async (id: string) => {
+    await authPost("/passkey/delete-passkey", { id });
   },
 
   signUpEmail: async (input: { name: string; email: string; password: string }) => {

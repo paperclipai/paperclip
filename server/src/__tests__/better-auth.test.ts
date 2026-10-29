@@ -1,22 +1,31 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
+import type { Db } from "@paperclipai/db";
 import {
   buildBetterAuthAdvancedOptions,
   buildBetterAuthRateLimitOptions,
+  createBetterAuthInstance,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
+  resolveAuthPublicUrl,
+  resolvePasskeyRelyingParty,
+  resolveTrustedPasskeyRelyingParty,
   shouldDisableSecureAuthCookies,
 } from "../auth/better-auth.js";
+import type { Config } from "../config.js";
 
 const ORIGINAL_INSTANCE_ID = process.env.PAPERCLIP_INSTANCE_ID;
 const ORIGINAL_PUBLIC_URL = process.env.PAPERCLIP_PUBLIC_URL;
+const ORIGINAL_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
 
 afterEach(() => {
   if (ORIGINAL_INSTANCE_ID === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
   else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_INSTANCE_ID;
   if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
   else process.env.PAPERCLIP_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
+  if (ORIGINAL_AUTH_SECRET === undefined) delete process.env.BETTER_AUTH_SECRET;
+  else process.env.BETTER_AUTH_SECRET = ORIGINAL_AUTH_SECRET;
 });
 
 describe("Better Auth cookie scoping", () => {
@@ -240,5 +249,90 @@ describe("Better Auth cookie scoping", () => {
     ]));
     expect(trustedOrigins).not.toContain("https://board.example.test:3100");
     expect(trustedOrigins).not.toContain("http://board.example.test:3100");
+  });
+});
+
+describe("Passkey relying party", () => {
+  it("serves passkeys from the trusted auth base URL, not PAPERCLIP_PUBLIC_URL", () => {
+    process.env.BETTER_AUTH_SECRET = "better-auth-secret-for-passkey-rp-tests";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.example.test";
+    const config = {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://auth.example.test",
+      authDisableSignUp: false,
+      allowedHostnames: [],
+      port: 3100,
+    } as unknown as Config;
+    const trustedOrigins = deriveAuthTrustedOrigins(config);
+
+    const { passkeyRelyingParty } = createBetterAuthInstance({} as Db, config, trustedOrigins);
+
+    expect(passkeyRelyingParty).toEqual({ rpID: "auth.example.test", origin: "https://auth.example.test" });
+    expect(trustedOrigins).toContain(passkeyRelyingParty?.origin);
+  });
+
+  it("uses the public HTTPS hostname as the relying party ID", () => {
+    expect(resolvePasskeyRelyingParty("https://paperclip.example.com/some/path")).toEqual({
+      rpID: "paperclip.example.com",
+      origin: "https://paperclip.example.com",
+    });
+    expect(resolvePasskeyRelyingParty("https://paperclip.example.com:8443")).toEqual({
+      rpID: "paperclip.example.com",
+      origin: "https://paperclip.example.com:8443",
+    });
+  });
+
+  it("keeps passkeys for auto-mode instances whose public URL is a trusted origin", () => {
+    process.env.BETTER_AUTH_SECRET = "better-auth-secret-for-passkey-rp-tests";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://public.example.test";
+    const config = {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      authBaseUrlMode: "auto",
+      authPublicBaseUrl: "https://public.example.test",
+      authDisableSignUp: false,
+      allowedHostnames: ["public.example.test"],
+      port: 443,
+    } as unknown as Config;
+
+    const { passkeyRelyingParty } = createBetterAuthInstance({} as Db, config, deriveAuthTrustedOrigins(config));
+
+    expect(passkeyRelyingParty).toEqual({ rpID: "public.example.test", origin: "https://public.example.test" });
+  });
+
+  it("turns passkeys off when their origin is not trusted", () => {
+    expect(resolveTrustedPasskeyRelyingParty("https://public.example.test", ["https://auth.example.test"])).toBeNull();
+    expect(resolveTrustedPasskeyRelyingParty("https://auth.example.test", ["https://auth.example.test"])).toEqual({
+      rpID: "auth.example.test",
+      origin: "https://auth.example.test",
+    });
+  });
+
+  it("allows plain HTTP only for localhost", () => {
+    expect(resolvePasskeyRelyingParty("http://localhost:3100")).toEqual({
+      rpID: "localhost",
+      origin: "http://localhost:3100",
+    });
+    expect(resolvePasskeyRelyingParty("http://paperclip.example.com")).toBeNull();
+  });
+
+  it("disables passkeys when the browser cannot use the host as a relying party ID", () => {
+    expect(resolvePasskeyRelyingParty(undefined)).toBeNull();
+    expect(resolvePasskeyRelyingParty("not a url")).toBeNull();
+    expect(resolvePasskeyRelyingParty("http://127.0.0.1:3100")).toBeNull();
+    expect(resolvePasskeyRelyingParty("https://10.0.0.5")).toBeNull();
+    expect(resolvePasskeyRelyingParty("https://[::1]:3100")).toBeNull();
+  });
+
+  it("prefers PAPERCLIP_PUBLIC_URL over an explicit auth base URL", () => {
+    const config = { authBaseUrlMode: "explicit" as const, authPublicBaseUrl: "https://auth.example.com" };
+    expect(resolveAuthPublicUrl(config, {})).toBe("https://auth.example.com");
+    expect(resolveAuthPublicUrl(config, { PAPERCLIP_PUBLIC_URL: " https://public.example.com " })).toBe(
+      "https://public.example.com",
+    );
+    expect(resolveAuthPublicUrl({ authBaseUrlMode: "auto", authPublicBaseUrl: "https://auth.example.com" }, {}))
+      .toBeUndefined();
   });
 });

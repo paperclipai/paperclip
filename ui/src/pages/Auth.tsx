@@ -4,11 +4,14 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { CloudSignIn } from "@/components/CloudSignIn";
+import { TwoFactorChallenge, signInCompletionErrorMessage } from "@/components/auth/TwoFactorChallenge";
+import { isPasskeyOriginCurrent, passkeyErrorMessage } from "@/lib/passkeys";
 import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 import { tenantSignInReturnPath } from "@/lib/cloudLinks";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
+import { KeyRound } from "lucide-react";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -25,6 +28,7 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [twoFactorPending, setTwoFactorPending] = useState(false);
   const errorId = "auth-error";
 
   const nextPath = useMemo(
@@ -41,6 +45,12 @@ export function AuthPage() {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const signInOptionsQuery = useQuery({
+    queryKey: queryKeys.auth.signInOptions,
+    queryFn: () => authApi.getSignInOptions(),
+    retry: false,
+    enabled: healthQuery.isSuccess && !healthQuery.data.cloud,
+  });
 
   useEffect(() => {
     if (session) {
@@ -49,34 +59,62 @@ export function AuthPage() {
     }
   }, [session, navigate, nextPath]);
 
+  async function completeSignIn() {
+    setError(null);
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.health });
+    // Reset rather than invalidate: the `["companies"]` entry is shared app-wide and
+    // is not account-scoped, so invalidating leaves the previous account's list
+    // readable (and any fetch for that session in flight) until the refetch lands.
+    // Sign-in can change accounts, so drop the list outright.
+    await queryClient.resetQueries({ queryKey: queryKeys.companies.all });
+    navigate(nextPath, { replace: true });
+  }
+
+  // Kept apart from the sign-in mutations: by now the session exists, so a failure
+  // here is not a sign-in failure and retrying the credentials would not help.
+  const completion = useMutation({
+    mutationFn: completeSignIn,
+    onError: (err) => {
+      setError(`${signInCompletionErrorMessage(err)}. Refresh the page to continue.`);
+    },
+  });
+
   const mutation = useMutation({
     mutationFn: async () => {
       if (mode === "sign_in") {
-        await authApi.signInEmail({ email: email.trim(), password });
-        return;
+        return authApi.signInEmail({ email: email.trim(), password });
       }
       await authApi.signUpEmail({
         name: name.trim(),
         email: email.trim(),
         password,
       });
+      return { twoFactorRequired: false };
     },
-    onSuccess: async () => {
-      setError(null);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-      // Reset rather than invalidate: the `["companies"]` entry is shared app-wide and
-      // is not account-scoped, so invalidating leaves the previous account's list
-      // readable (and any fetch for that session in flight) until the refetch lands.
-      // Sign-in can change accounts, so drop the list outright.
-      await queryClient.resetQueries({ queryKey: queryKeys.companies.all });
-      navigate(nextPath, { replace: true });
+    onSuccess: (result) => {
+      if (result.twoFactorRequired) {
+        setError(null);
+        setPassword("");
+        setTwoFactorPending(true);
+        return;
+      }
+      completion.mutate();
     },
     onError: (err) => {
       setError(err instanceof Error ? err.message : "Authentication failed");
     },
   });
 
+  const passkeyMutation = useMutation({
+    mutationFn: () => authApi.signInPasskey(),
+    onSuccess: () => completion.mutate(),
+    onError: (err) => {
+      setError(passkeyErrorMessage(err, "Passkey sign-in failed"));
+    },
+  });
+
+  const signInBusy = mutation.isPending || passkeyMutation.isPending || completion.isPending;
   const canSubmit =
     email.trim().length > 0 &&
     password.trim().length > 0 &&
@@ -111,112 +149,149 @@ export function AuthPage() {
             <PaperclipLockup className="h-5 w-auto" />
           </div>
 
-          <h1 className="text-xl font-semibold">
-            {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {mode === "sign_in"
-              ? "Use your email and password to access this instance."
-              : "Create an account for this instance. Email confirmation is not required in v1."}
-          </p>
+          {twoFactorPending ? (
+            <>
+                <h1 className="text-xl font-semibold">Two-factor authentication</h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Enter the code from your authenticator app, or use one of your backup codes.
+                </p>
+                <TwoFactorChallenge
+                  onVerified={completeSignIn}
+                  onCancel={() => {
+                    setError(null);
+                    setTwoFactorPending(false);
+                  }}
+                  onExpired={(message) => {
+                    setTwoFactorPending(false);
+                    setError(message);
+                  }}
+                />
+            </>
+          ) : (
+            <>
+            <h1 className="text-xl font-semibold">
+              {mode === "sign_in" ? "Sign in to Paperclip" : "Create your Paperclip account"}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {mode === "sign_in"
+                ? "Use your email and password to access this instance."
+                : "Create an account for this instance. Email confirmation is not required in v1."}
+            </p>
 
-          <form
-            className="mt-6 space-y-4"
-            method="post"
-            action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (mutation.isPending) return;
-              if (!canSubmit) {
-                setError("Please fill in all required fields.");
-                return;
-              }
-              mutation.mutate();
-            }}
-          >
-            {mode === "sign_up" && (
+            <form
+              className="mt-6 space-y-4"
+              method="post"
+              action={mode === "sign_up" ? "/api/auth/sign-up/email" : "/api/auth/sign-in/email"}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (signInBusy) return;
+                if (!canSubmit) {
+                  setError("Please fill in all required fields.");
+                  return;
+                }
+                mutation.mutate();
+              }}
+            >
+              {mode === "sign_up" && (
+                <div>
+                  <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
+                  <input
+                    id="name"
+                    name="name"
+                    className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    autoComplete="name"
+                    required
+                    aria-required="true"
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? errorId : undefined}
+                    autoFocus
+                  />
+                </div>
+              )}
               <div>
-                <label htmlFor="name" className="text-xs text-muted-foreground mb-1 block">Name</label>
+                <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
                 <input
-                  id="name"
-                  name="name"
+                  id="email"
+                  name="email"
                   className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  autoComplete="name"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  autoComplete="username"
                   required
                   aria-required="true"
                   aria-invalid={error ? true : undefined}
                   aria-describedby={error ? errorId : undefined}
-                  autoFocus
+                  autoFocus={mode === "sign_in"}
                 />
               </div>
-            )}
-            <div>
-              <label htmlFor="email" className="text-xs text-muted-foreground mb-1 block">Email</label>
-              <input
-                id="email"
-                name="email"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                autoComplete="username"
-                required
-                aria-required="true"
-                aria-invalid={error ? true : undefined}
-                aria-describedby={error ? errorId : undefined}
-                autoFocus={mode === "sign_in"}
-              />
-            </div>
-            <div>
-              <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
-              <input
-                id="password"
-                name="password"
-                className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
-                required
-                aria-required="true"
-                aria-invalid={error ? true : undefined}
-                aria-describedby={error ? errorId : undefined}
-              />
-            </div>
-            {error && (
-              <p id={errorId} role="alert" className="text-xs text-destructive">
-                {error}
-              </p>
-            )}
-            <Button
-              type="submit"
-              disabled={mutation.isPending}
-              aria-disabled={!canSubmit || mutation.isPending}
-              className={`w-full ${!canSubmit && !mutation.isPending ? "opacity-50" : ""}`}
-            >
-              {mutation.isPending
-                ? "Working…"
-                : mode === "sign_in"
-                  ? "Sign In"
-                  : "Create Account"}
-            </Button>
-          </form>
+              <div>
+                <label htmlFor="password" className="text-xs text-muted-foreground mb-1 block">Password</label>
+                <input
+                  id="password"
+                  name="password"
+                  className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete={mode === "sign_in" ? "current-password" : "new-password"}
+                  required
+                  aria-required="true"
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                />
+              </div>
+              {error && (
+                <p id={errorId} role="alert" className="text-xs text-destructive">
+                  {error}
+                </p>
+              )}
+              <Button
+                type="submit"
+                disabled={signInBusy}
+                aria-disabled={!canSubmit || signInBusy}
+                className={`w-full ${!canSubmit && !signInBusy ? "opacity-50" : ""}`}
+              >
+                {mutation.isPending || completion.isPending
+                  ? "Working…"
+                  : mode === "sign_in"
+                    ? "Sign In"
+                    : "Create Account"}
+              </Button>
+              {mode === "sign_in" && isPasskeyOriginCurrent(signInOptionsQuery.data?.passkeyOrigin) ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  disabled={signInBusy}
+                  onClick={() => {
+                    setError(null);
+                    passkeyMutation.mutate();
+                  }}
+                >
+                  <KeyRound className="size-4" />
+                  {passkeyMutation.isPending ? "Waiting for passkey…" : "Sign in with a passkey"}
+                </Button>
+              ) : null}
+            </form>
 
-          <div className="mt-5 text-sm text-muted-foreground">
-            {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
-            <button
-              type="button"
-              className="font-medium text-foreground underline underline-offset-2"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "sign_in" ? "sign_up" : "sign_in");
-              }}
-            >
-              {mode === "sign_in" ? "Create one" : "Sign in"}
-            </button>
-          </div>
+            <div className="mt-5 text-sm text-muted-foreground">
+              {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}
+              <button
+                type="button"
+                className="font-medium text-foreground underline underline-offset-2"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "sign_in" ? "sign_up" : "sign_in");
+                }}
+              >
+                {mode === "sign_in" ? "Create one" : "Sign in"}
+              </button>
+            </div>
+            </>
+          )}
         </div>
       </div>
 

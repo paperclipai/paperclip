@@ -22,6 +22,7 @@ Review: `baseline`.
 API: `present` — representative operation IDs:
 
 - `GET /api/auth/get-session`.
+- `GET /api/auth/sign-in-options`.
 - `POST /api/bootstrap/claim`.
 
 Agent access: `restricted` — Agent authenticates with its own issued bearer; board login

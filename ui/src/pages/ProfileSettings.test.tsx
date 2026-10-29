@@ -22,6 +22,7 @@ const mockAssetsApi = vi.hoisted(() => ({
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockHealthGet = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
@@ -29,6 +30,14 @@ vi.mock("@/api/auth", () => ({
 
 vi.mock("@/api/assets", () => ({
   assetsApi: mockAssetsApi,
+}));
+
+vi.mock("@/api/health", () => ({
+  healthApi: { get: () => mockHealthGet() },
+}));
+
+vi.mock("@/components/auth/AccountSecuritySettings", () => ({
+  AccountSecuritySettings: () => <div data-testid="account-security">Sign-in security</div>,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -70,6 +79,7 @@ describe("ProfileSettings", () => {
         image: "https://example.com/jane.png",
       },
     });
+    mockHealthGet.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
     mockAssetsApi.uploadImage.mockResolvedValue({
       assetId: "asset-1",
       contentPath: "/api/assets/asset-1/content",
@@ -98,6 +108,31 @@ describe("ProfileSettings", () => {
     expect(container.textContent).toContain("Jane Example");
     expect(container.textContent).not.toContain("Keyboard shortcuts");
     expect(container.querySelector('[aria-label="Toggle keyboard shortcuts"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    ["authenticated self-hosted", { status: "ok", deploymentMode: "authenticated" }, true],
+    ["local trusted", { status: "ok", deploymentMode: "local_trusted" }, false],
+    [
+      "Cloud-managed",
+      {
+        status: "ok",
+        deploymentMode: "authenticated",
+        cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: "https://my.paperclip.app", stackSlug: "team" },
+      },
+      false,
+    ],
+  ])("shows sign-in security settings only where the instance owns sign-in (%s)", async (_label, health, expected) => {
+    mockHealthGet.mockResolvedValue(health);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
+    });
+    await flushReact();
+    await flushReact();
+    expect(container.querySelector('[data-testid="account-security"]') !== null).toBe(expected);
     await act(async () => root.unmount());
   });
 

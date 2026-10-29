@@ -13,6 +13,7 @@ const acceptInviteMock = vi.hoisted(() => vi.fn());
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const verifyTotpMock = vi.hoisted(() => vi.fn());
 const healthGetMock = vi.hoisted(() => vi.fn());
 const listCompaniesMock = vi.hoisted(() => vi.fn());
 const setSelectedCompanyIdMock = vi.hoisted(() => vi.fn());
@@ -29,6 +30,8 @@ vi.mock("../api/auth", () => ({
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    verifyTotp: (input: unknown) => verifyTotpMock(input),
+    verifyBackupCode: vi.fn(),
   },
 }));
 
@@ -61,6 +64,13 @@ vi.mock("@/context/CompanyContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -130,7 +140,7 @@ describe("InviteLandingPage", () => {
     });
     listCompaniesMock.mockResolvedValue([]);
     getSessionMock.mockResolvedValue(null);
-    signInEmailMock.mockResolvedValue(undefined);
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: false });
     signUpEmailMock.mockResolvedValue(undefined);
     setSelectedCompanyIdMock.mockReset();
   });
@@ -734,6 +744,152 @@ describe("InviteLandingPage", () => {
       unauthorized: false,
     });
     expect(localStorage.getItem("paperclip:pending-invite-token")).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("finishes the invite only after the two-factor code is verified", async () => {
+    getSessionMock.mockResolvedValueOnce(null);
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: true });
+    verifyTotpMock.mockResolvedValue(undefined);
+    listCompaniesMock.mockResolvedValue([{ id: "company-1", name: "Acme Robotics" }]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      renderInviteLanding(root, queryClient);
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const existingAccountButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "I already have an account",
+    );
+    await act(async () => {
+      existingAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+    await act(async () => {
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement;
+    await act(async () => {
+      authForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Two-factor authentication");
+    expect(setSelectedCompanyIdMock).not.toHaveBeenCalled();
+
+    const codeInput = container.querySelector('input[name="code"]') as HTMLInputElement;
+    await act(async () => {
+      inputValueSetter!.call(codeInput, "123456");
+      codeInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      (codeInput.form as HTMLFormElement).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(verifyTotpMock).toHaveBeenCalledWith({ code: "123456", trustDevice: false });
+    expect(acceptInviteMock).not.toHaveBeenCalled();
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("reports a failure to finish the invite after the two-factor code is accepted", async () => {
+    getSessionMock.mockResolvedValueOnce(null);
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: true });
+    verifyTotpMock.mockResolvedValue(undefined);
+    listCompaniesMock.mockRejectedValue(new Error("Failed to load companies"));
+    acceptInviteMock.mockReturnValue(new Promise(() => {}));
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      renderInviteLanding(root, queryClient);
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const existingAccountButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "I already have an account",
+    );
+    await act(async () => {
+      existingAccountButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+    await act(async () => {
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement;
+    await act(async () => {
+      authForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    const codeInput = container.querySelector('input[name="code"]') as HTMLInputElement;
+    await act(async () => {
+      inputValueSetter!.call(codeInput, "123456");
+      codeInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      (codeInput.form as HTMLFormElement).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(verifyTotpMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('input[name="code"]')).toBeNull();
+    expect(container.textContent).toContain("You are signed in, but Paperclip could not finish loading");
+    expect(container.textContent).toContain("Failed to load companies");
 
     await act(async () => {
       root.unmount();

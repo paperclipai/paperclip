@@ -25,6 +25,8 @@ Agent access: [companion](../agent-access-map/access.md).
 ### `login`
 
 Open `/auth`; first-owner bootstrap uses `/board-claim/:token` when configured.
+Set up an authenticator app (TOTP) or passkeys under Settings → Profile → Sign-in security.
+Passkeys appear only when the instance has a public HTTPS URL (or `http://localhost`).
 
 ### `invite-members`
 
@@ -43,7 +45,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). For 
 
 ### `login`
 
-Automated: [auth UI](../../ui/src/pages/Auth.test.tsx) and [session routes](../../server/src/__tests__/auth-session-route.test.ts) cover their respective layers.
+Automated: [auth UI](../../ui/src/pages/Auth.test.tsx) and [session routes](../../server/src/__tests__/auth-session-route.test.ts) cover their respective layers. [Two-factor and passkey auth](../../server/src/__tests__/better-auth-two-factor-passkey.integration.test.ts) covers TOTP enrollment, the sign-in challenge, backup codes, and passkey registration options against a migrated database.
 
 Manual: Sign in, reload a company deep link, sign out, and revisit it. Confirm the browser requests authentication rather than showing cached company data. Test an invalid claim separately on disposable state.
 

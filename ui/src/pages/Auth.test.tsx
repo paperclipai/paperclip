@@ -14,6 +14,10 @@ import { ApiError } from "../api/client";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const getSignInOptionsMock = vi.hoisted(() => vi.fn());
+const verifyTotpMock = vi.hoisted(() => vi.fn());
+const verifyBackupCodeMock = vi.hoisted(() => vi.fn());
+const signInPasskeyMock = vi.hoisted(() => vi.fn());
 const healthMock = vi.hoisted(() => vi.fn());
 const beginCloudSignInMock = vi.hoisted(() => vi.fn());
 
@@ -28,6 +32,10 @@ vi.mock("../api/auth", () => ({
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    getSignInOptions: () => getSignInOptionsMock(),
+    verifyTotp: (input: unknown) => verifyTotpMock(input),
+    verifyBackupCode: (input: unknown) => verifyBackupCodeMock(input),
+    signInPasskey: () => signInPasskeyMock(),
   },
 }));
 
@@ -65,6 +73,13 @@ vi.mock("@/context/CompanyContext", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -99,8 +114,12 @@ describe("AuthPage", () => {
     getSessionMock.mockResolvedValue(null);
     healthMock.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
     beginCloudSignInMock.mockReturnValue(true);
-    signInEmailMock.mockResolvedValue(undefined);
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: false });
     signUpEmailMock.mockResolvedValue(undefined);
+    getSignInOptionsMock.mockResolvedValue({ passkeyOrigin: null });
+    verifyTotpMock.mockResolvedValue(undefined);
+    verifyBackupCodeMock.mockResolvedValue(undefined);
+    signInPasskeyMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -307,6 +326,147 @@ describe("AuthPage", () => {
       password: "supersecret",
     });
     expect(healthMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  function setInputValue(input: HTMLInputElement, value: string) {
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    inputValueSetter!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  async function submitForm() {
+    const form = container.querySelector("form") as HTMLFormElement;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+  }
+
+  it("asks for an authenticator code before finishing a two-factor sign-in", async () => {
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: true });
+    const { root } = await mount();
+
+    await act(async () => {
+      setInputValue(container.querySelector('input[name="email"]') as HTMLInputElement, "jane@example.com");
+      setInputValue(container.querySelector('input[name="password"]') as HTMLInputElement, "supersecret");
+    });
+    await submitForm();
+
+    expect(container.textContent).toContain("Two-factor authentication");
+    expect(container.querySelector('input[name="password"]')).toBeNull();
+    expect(healthMock).toHaveBeenCalledTimes(1);
+
+    const codeInput = container.querySelector('input[name="code"]') as HTMLInputElement;
+    expect(codeInput.getAttribute("autocomplete")).toBe("one-time-code");
+    await act(async () => {
+      setInputValue(codeInput, " 123 456 ");
+    });
+    await submitForm();
+
+    expect(verifyTotpMock).toHaveBeenCalledWith({ code: "123456", trustDevice: false });
+    expect(verifyBackupCodeMock).not.toHaveBeenCalled();
+    expect(healthMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("accepts a backup code in place of an authenticator code", async () => {
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: true });
+    const { root } = await mount();
+
+    await act(async () => {
+      setInputValue(container.querySelector('input[name="email"]') as HTMLInputElement, "jane@example.com");
+      setInputValue(container.querySelector('input[name="password"]') as HTMLInputElement, "supersecret");
+    });
+    await submitForm();
+
+    const useBackup = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Use a backup code",
+    );
+    await act(async () => {
+      useBackup?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    await act(async () => {
+      setInputValue(container.querySelector('input[name="code"]') as HTMLInputElement, "abcde-fghij");
+    });
+    await submitForm();
+
+    expect(verifyBackupCodeMock).toHaveBeenCalledWith({ code: "abcde-fghij", trustDevice: false });
+    expect(verifyTotpMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("returns to the password step when the two-factor challenge has expired", async () => {
+    signInEmailMock.mockResolvedValue({ twoFactorRequired: true });
+    verifyTotpMock.mockRejectedValue(
+      Object.assign(new Error("Invalid two factor cookie"), { code: "INVALID_TWO_FACTOR_COOKIE" }),
+    );
+    const { root } = await mount();
+
+    await act(async () => {
+      setInputValue(container.querySelector('input[name="email"]') as HTMLInputElement, "jane@example.com");
+      setInputValue(container.querySelector('input[name="password"]') as HTMLInputElement, "supersecret");
+    });
+    await submitForm();
+    await act(async () => {
+      setInputValue(container.querySelector('input[name="code"]') as HTMLInputElement, "123456");
+    });
+    await submitForm();
+
+    expect(container.querySelector('input[name="code"]')).toBeNull();
+    expect(container.querySelector('input[name="password"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "Your sign-in timed out. Enter your password again.",
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows a passkey sign-in button only when the instance supports passkeys", async () => {
+    const first = await mount();
+    const findPasskeyButton = () => Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign in with a passkey"),
+    );
+    expect(findPasskeyButton()).toBeUndefined();
+    await act(async () => {
+      first.root.unmount();
+    });
+
+    // The relying party is another hostname: WebAuthn would reject this page.
+    getSignInOptionsMock.mockResolvedValue({ passkeyOrigin: "https://paperclip.example.com" });
+    const elsewhere = await mount();
+    expect(findPasskeyButton()).toBeUndefined();
+    await act(async () => {
+      elsewhere.root.unmount();
+    });
+
+    getSignInOptionsMock.mockResolvedValue({ passkeyOrigin: window.location.origin });
+    const { root } = await mount();
+    const passkeyButton = findPasskeyButton();
+    expect(passkeyButton).toBeDefined();
+
+    await act(async () => {
+      passkeyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(signInPasskeyMock).toHaveBeenCalledTimes(1);
+    expect(signInEmailMock).not.toHaveBeenCalled();
 
     await act(async () => {
       root.unmount();

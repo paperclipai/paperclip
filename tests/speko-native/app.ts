@@ -99,7 +99,7 @@ const { createStorageService } = await import("../../server/src/storage/service.
 const { createLocalDiskStorageProvider } = await import("../../server/src/storage/local-disk-provider.js");
 const authModule = await import("../../server/src/auth/better-auth.js");
 const { loadConfig } = await import("../../server/src/config.js");
-const auth = authenticated ? authModule.createBetterAuthInstance(db, loadConfig(), [origin]) : undefined;
+const auth = authenticated ? authModule.createBetterAuthInstance(db, loadConfig(), [origin]).auth : undefined;
 const app = await createApp(db, {
   uiMode: "static", serverPort: port, bindHost: "127.0.0.1", allowedHostnames: ["127.0.0.1", "localhost", new URL(callbackOrigin).hostname],
   deploymentMode,

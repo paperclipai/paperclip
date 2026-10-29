@@ -7385,6 +7385,22 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/auth/sign-in-options",
+  tags: ["auth"],
+  summary: "List the sign-in methods this instance offers",
+  responses: { 200: r.ok() },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/auth/account-security",
+  tags: ["auth"],
+  summary: "Get the current user's two-factor and password state",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/users/{userSlug}/profile",
   tags: ["auth"],
   summary: "Get a user profile within a company",

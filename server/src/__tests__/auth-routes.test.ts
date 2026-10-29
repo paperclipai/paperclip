@@ -5,13 +5,17 @@ import { errorHandler } from "../middleware/index.js";
 import { authRoutes } from "../routes/auth.js";
 
 function createSelectChain(rows: unknown[]) {
+  const query = {
+    leftJoin() {
+      return query;
+    },
+    where() {
+      return Promise.resolve(rows);
+    },
+  };
   return {
     from() {
-      return {
-        where() {
-          return Promise.resolve(rows);
-        },
-      };
+      return query;
     },
   };
 }
@@ -39,14 +43,18 @@ function createDb(row: Record<string, unknown>) {
   } as any;
 }
 
-function createApp(actor: Express.Request["actor"], row: Record<string, unknown>) {
+function createApp(
+  actor: Express.Request["actor"],
+  row: Record<string, unknown>,
+  opts: { passkeyOrigin?: string | null } = {},
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/api/auth", authRoutes(createDb(row)));
+  app.use("/api/auth", authRoutes(createDb(row), opts));
   app.use(errorHandler);
   return app;
 }
@@ -306,5 +314,52 @@ describe("auth routes", () => {
       .send({ name: "Jane Example", image: "not-a-url" });
 
     expect(res.status).toBe(400);
+  });
+
+  it("reports the passkey relying-party origin to anonymous callers", async () => {
+    const disabled = createApp({ type: "none", source: "none" }, baseUser);
+    const enabled = createApp({ type: "none", source: "none" }, baseUser, {
+      passkeyOrigin: "https://paperclip.example.com",
+    });
+
+    const off = await request(disabled).get("/api/auth/sign-in-options");
+    const on = await request(enabled).get("/api/auth/sign-in-options");
+
+    expect(off.status).toBe(200);
+    expect(off.body).toEqual({ passkeyOrigin: null });
+    expect(on.status).toBe(200);
+    expect(on.body).toEqual({ passkeyOrigin: "https://paperclip.example.com" });
+  });
+
+  it("returns the signed-in user's two-factor and password state", async () => {
+    const app = createApp(
+      { type: "board", userId: "user-1", source: "session" },
+      { twoFactorEnabled: true, credentialAccountId: "account-1" },
+    );
+
+    const res = await request(app).get("/api/auth/account-security");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ twoFactorEnabled: true, hasPassword: true });
+  });
+
+  it("reports no password for an account without a credential login", async () => {
+    const app = createApp(
+      { type: "board", userId: "user-1", source: "session" },
+      { twoFactorEnabled: false, credentialAccountId: null },
+    );
+
+    const res = await request(app).get("/api/auth/account-security");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ twoFactorEnabled: false, hasPassword: false });
+  });
+
+  it("rejects account security reads without a board session", async () => {
+    const app = createApp({ type: "none", source: "none" }, { twoFactorEnabled: false });
+
+    const res = await request(app).get("/api/auth/account-security");
+
+    expect(res.status).toBe(401);
   });
 });

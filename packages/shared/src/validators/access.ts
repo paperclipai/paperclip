@@ -220,3 +220,21 @@ export const updateCurrentUserProfileSchema = z.object({
 });
 
 export type UpdateCurrentUserProfile = z.infer<typeof updateCurrentUserProfileSchema>;
+
+export const authSignInOptionsSchema = z.object({
+  /**
+   * The WebAuthn relying-party origin, or null when passkeys are off. A browser
+   * can use passkeys only on a page served from exactly this origin.
+   */
+  passkeyOrigin: z.string().nullable(),
+});
+
+export type AuthSignInOptions = z.infer<typeof authSignInOptionsSchema>;
+
+export const authAccountSecuritySchema = z.object({
+  twoFactorEnabled: z.boolean(),
+  /** False for accounts with no password (e.g. handoff-provisioned); two-factor setup needs one. */
+  hasPassword: z.boolean(),
+});
+
+export type AuthAccountSecurity = z.infer<typeof authAccountSecuritySchema>;
