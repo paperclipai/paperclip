@@ -7,7 +7,7 @@ import { assertAntigravityCleanComposer, assertAntigravityFileActivity, assertAn
 
 const agent = "Antigravity QA synthetic", model = "gemini-3.8-flash-low";
 const fixtures: Record<string, string> = {
-  dashboard: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">An older agent</a></aside><main>Dashboard</main>`,
+  dashboard: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">An older agent</a></aside><nav aria-label="breadcrumb"><a href="/roster">Agents</a></nav><main>Ready confirmation after closing composer</main>`,
   roster: `<aside><a href="/roster">Agents</a><a href="/wrong-agent">${agent}</a></aside><main><div role="toolbar" aria-label="Agents controls"><input aria-label="Search agents"></div><a href="/wrong-agent"><span>${agent} older</span>Engineer idle</a><a href="/owned-agent"><span>${agent}</span>Engineer idle</a><a hidden href="/wrong-agent"><span>${agent}</span>Engineer idle</a></main>`,
   "owned-agent": `<main><h1>${agent}</h1></main>`,
   picker: `<div role="dialog" aria-labelledby="picker"><h2 id="picker">Choose an adapter</h2><label><input type="radio" name="adapter">Google Antigravity Candidate</label><details><summary>Advanced</summary><label><input type="radio" name="adapter">Other harness</label></details><button>Configure agent</button></div><div hidden><label><input type="radio">Google Antigravity Candidate</label></div>`,
