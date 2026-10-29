@@ -458,7 +458,7 @@ export async function prepareManagedAiRuntime(
               if (prior && prior.value !== incoming && !ownsGoogleRecovery) {
                 // A previous retired owner keeps its first recoverable refresh.
                 // Settle it before this owner can stage another generation.
-                await aiConnectionService(db).runtimeCredential(selection);
+                await aiConnectionService(db).runtimeCredential(selection, { credentialLockHeld: true });
               }
               // Physical retirement is the caller's cleanup precondition. Save
               // before network verification or a database write can fail; only

@@ -69,25 +69,28 @@ export function localAiLoginService(db: Db) {
       .where(and(eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
         lte(adapterAuthSessions.expiresAt, new Date())))
       .orderBy(adapterAuthSessions.expiresAt).limit(100);
-    for (const row of rows) {
+    await Promise.all(rows.map(async row => {
+      // Physical retirement can remain pending. It must not hold a row lock
+      // or prevent other expired attempts in this bounded batch from settling.
+      await stopBrowserLogin(row.id);
       await db.transaction(async (tx) => {
         const [session] = await tx.select().from(adapterAuthSessions)
           .where(eq(adapterAuthSessions.id, row.id)).for("update");
         if (!session || !session.expiresAt || session.expiresAt.getTime() > Date.now()) return;
-        await stopBrowserLogin(row.id);
         await rm(loginHome(row.id), { recursive: true, force: true });
         await tx.update(adapterAuthSessions).set({
           status: session.connectionId ? "authenticated" : "timed_out",
           expiresAt: null, finishedAt: session.finishedAt ?? new Date(), updatedAt: new Date(),
         }).where(eq(adapterAuthSessions.id, row.id));
       });
-    }
+    }));
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false, managementContext?: ConnectionManagementContext): Promise<LocalAiLoginAttempt> {
     if (!["openai", "xai", "anthropic", "google"].includes(intent.provider))
       throw unprocessable("This provider does not use a separate local login home.");
-    await reapExpired();
+    // Expiry is owned by the durable localLoginCleanup deadline. Starting a
+    // sign-in must not wait for another user's or provider's native retirement.
     await managementContext?.reauthorize();
     const attempt = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-local-login:${companyId}:${userId}:${intent.provider}`}, 0))`);

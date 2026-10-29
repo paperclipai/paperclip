@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import {
-  bindRetainedGoogleCredentialHome, reconcileRetainedGoogleCleanup,
+  assertGoogleCredentialCleanupSettled, bindRetainedGoogleCredentialHome, reconcileRetainedGoogleCleanup,
   reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanup,
   retainGoogleCredentialCleanupForHome,
 } from "./retained-google-credential-cleanup.js";
@@ -65,10 +65,11 @@ it("lets a durable encrypted journal take over without replaying the retired cal
 
 it("does not recurse through cleanup wrappers and settles peers once", async () => {
   const owner = scope();
-  const first = vi.fn(async () => { await reconcileRetainedGoogleCleanup(owner); });
+  const first = vi.fn(async () => { assertGoogleCredentialCleanupSettled(owner); await reconcileRetainedGoogleCleanup(owner); });
   const second = vi.fn(async () => { await reconcileRetainedGoogleCleanup(owner); });
   retainGoogleCredentialCleanup({ scope: owner, cleanup: first });
   retainGoogleCredentialCleanup({ scope: owner, cleanup: second });
+  expect(() => assertGoogleCredentialCleanupSettled(owner)).toThrow("still completing credential cleanup");
   await reconcileRetainedGoogleCleanup(owner);
   expect(first).toHaveBeenCalledOnce();
   expect(second).toHaveBeenCalledOnce();

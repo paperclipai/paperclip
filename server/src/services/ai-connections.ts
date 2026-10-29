@@ -44,7 +44,7 @@ import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
-import { reconcileRetainedGoogleCleanup } from "./retained-google-credential-cleanup.js";
+import { assertGoogleCredentialCleanupSettled, reconcileRetainedGoogleCleanup } from "./retained-google-credential-cleanup.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
@@ -968,13 +968,22 @@ export function aiConnectionService(db: Db) {
   }
 
   /** Never hand a consumed token to a new provider while its replacement awaits commit. */
-  async function runtimeCredential(row: Parameters<typeof credential>[0]) {
+  async function runtimeCredential(row: Parameters<typeof credential>[0], ownership?: { credentialLockHeld: true }) {
     const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
     if (!metadata.success || !["openai", "google"].includes(metadata.data.provider) || metadata.data.method !== "subscription") return credential(row);
+    if (metadata.data.provider === "google") {
+      // Retirement callbacks acquire this same mutation lock to persist their
+      // final generation. Join them before taking the lock they need.
+      const scope = { companyId: row.connection.companyId, accountKey: row.grant.id };
+      if (ownership?.credentialLockHeld) assertGoogleCredentialCleanupSettled(scope);
+      else await reconcileRetainedGoogleCleanup(scope);
+    }
     let savingReplacement = false;
     return withAccountHomeSecretMutationLock(undefined, row.connection.companyId, async () => {
       if (metadata.data.provider === "google") {
-        await reconcileRetainedGoogleCleanup({ companyId: row.connection.companyId, accountKey: row.grant.id });
+        // Another owner can arrive while lock acquisition waits. Never join it
+        // under this lock; defer admission and let its retirement save finish.
+        assertGoogleCredentialCleanupSettled({ companyId: row.connection.companyId, accountKey: row.grant.id });
         const recovery = quotaCredentialRecovery(row.connection.companyId, row.grant.id);
         const pending = await recovery.read();
         if (pending?.provider === "google" && pending.google && !pending.google.verified

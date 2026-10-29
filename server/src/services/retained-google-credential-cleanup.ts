@@ -33,6 +33,15 @@ function warn(entry: Cleanup) {
   entry.warned = true;
   logger.warn({ companyId: entry.scope.companyId, code: "GOOGLE_CREDENTIAL_CLEANUP_PENDING" }, "Selected Google credential cleanup remains pending");
 }
+function cleaningScope(scope: RetainedGoogleCleanupScope) {
+  return [...(active.getStore() ?? [])].some(entry => entry.executing && key(entry.scope) === key(scope));
+}
+
+/** Check without joining work that may need the mutation lock already held by
+ * the caller. A cleanup's own nested journal recovery shares its ownership. */
+export function assertGoogleCredentialCleanupSettled(scope: RetainedGoogleCleanupScope): void {
+  if (!cleaningScope(scope) && retained.get(key(scope))?.size) throw pending();
+}
 function attempt(entry: Cleanup): Promise<void> {
   if (!retained.get(key(entry.scope))?.has(entry)) return Promise.resolve();
   if (entry.retired !== "confirmed") return Promise.reject(pending());
@@ -71,7 +80,7 @@ export function retainGoogleCredentialCleanup(input: {
 export async function reconcileRetainedGoogleCleanup(scope: RetainedGoogleCleanupScope): Promise<void> {
   await Promise.resolve();
   const scopeKey = key(scope);
-  if ([...(active.getStore() ?? [])].some(entry => entry.executing && key(entry.scope) === scopeKey)) return;
+  if (cleaningScope(scope)) return;
   const existing = reconciling.get(scopeKey);
   if (existing) return existing;
   const operation = (async () => {

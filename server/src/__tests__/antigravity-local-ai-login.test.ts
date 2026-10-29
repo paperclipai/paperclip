@@ -26,12 +26,26 @@ function database() {
   let session: Record<string, any>;
   const db: any = {
     selections,
+    expiredSessions: undefined as Record<string, any>[] | undefined,
+    expiredReads: [] as Record<string, any>[],
+    activeTransactions: 0,
     get session() { return session; },
-    async transaction(run: (tx: unknown) => unknown) { return run(db); },
+    async transaction(run: (tx: unknown) => unknown) {
+      db.activeTransactions += 1;
+      try { return await run(db); }
+      finally { db.activeTransactions -= 1; }
+    },
     async execute() {},
-    select() {
-      if (!selections.length) throw new Error("Unexpected test database selection");
-      const values = selections.shift()!;
+    select(fields?: unknown) {
+      let values: unknown[];
+      if (fields && db.expiredSessions) {
+        db.expiredReads = [...db.expiredSessions];
+        values = db.expiredSessions.map((row: Record<string, any>) => ({ id: row.id }));
+      } else if (db.expiredReads.length) values = [db.expiredReads.shift()];
+      else {
+        if (!selections.length) throw new Error("Unexpected test database selection");
+        values = selections.shift()!;
+      }
       const result: any = { from: () => result, where: () => result, for: () => result, orderBy: () => result, limit: () => result,
         then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) => Promise.resolve(values).then(resolve, reject) };
       return result;
@@ -52,7 +66,7 @@ async function fixture() {
   mocks.credential.mockResolvedValue({ credential: "private-native-credential", accountLabel: "person@example.test" });
   mocks.save.mockResolvedValue({ connectionId: "connection-1", grantId: "grant-1" });
   const db = database(), service = localAiLoginService(db);
-  db.selections.push([], [], [{ id: "local-environment", driver: "local", status: "active" }]);
+  db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
   const attempt = await service.start("company", "user", intent);
   const home = join(root, "ai-local-logins", attempt.sessionId);
   return { db, service, browser, attempt, home, release: release! };
@@ -92,6 +106,62 @@ describe("Google local sign-in service admission", () => {
     expect(mocks.credential).not.toHaveBeenCalled(); expect(mocks.save).not.toHaveBeenCalled();
   });
 
+  it("starts another user's provider without waiting for a globally expired Google browser", async () => {
+    const f = await fixture();
+    f.db.session.expiresAt = new Date(Date.now() - 1);
+    const other = database(), otherService = localAiLoginService(other);
+    other.expiredSessions = [f.db.session];
+    other.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
+    mocks.browser.mockReturnValue({ abort: vi.fn() });
+    let attempt: Awaited<ReturnType<typeof otherService.start>> | undefined;
+    let failure: unknown;
+    const starting = otherService.start("another-company", "another-user", { ...intent, provider: "openai" })
+      .then(result => { attempt = result; }, error => { failure = error; });
+    try {
+      await vi.waitFor(() => { if (failure) throw failure; expect(attempt).toBeDefined(); });
+      expect(f.browser.abort).not.toHaveBeenCalled();
+      await expect(access(f.home)).resolves.toBeUndefined();
+    } finally {
+      f.release(); await starting;
+      f.db.selections.push([f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
+      if (attempt) { other.selections.push([other.session]); await otherService.cancel("another-company", "another-user", attempt.sessionId); }
+    }
+  });
+
+  it("does not hold an expired attempt's database transaction while browser retirement is pending", async () => {
+    const f = await fixture();
+    f.db.session.expiresAt = new Date(Date.now() - 1);
+    f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]);
+    const reaping = f.service.reapExpired();
+    try {
+      await vi.waitFor(() => expect(f.browser.abort).toHaveBeenCalledOnce());
+      expect(f.db.activeTransactions).toBe(0);
+      await expect(access(f.home)).resolves.toBeUndefined();
+    } finally { f.release(); await reaping; }
+    await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("starts retirement of other expired attempts while the first browser remains pending", async () => {
+    const f = await fixture(), first = f.db.session;
+    let release!: () => void;
+    const retirement = new Promise<void>(resolve => { release = resolve; });
+    const browser = { abort: vi.fn(() => retirement) };
+    mocks.browser.mockReturnValue(browser);
+    f.db.selections.push([], [{ id: "local-environment", driver: "local", status: "active" }]);
+    const second = await f.service.start("company", "another-user", { ...intent, provider: "openai" });
+    first.expiresAt = f.db.session.expiresAt = new Date(Date.now() - 1);
+    f.db.selections.push([{ id: first.id }, { id: second.sessionId }], [first], [f.db.session]);
+    const reaping = f.service.reapExpired();
+    try {
+      await vi.waitFor(() => { expect(f.browser.abort).toHaveBeenCalledOnce(); expect(browser.abort).toHaveBeenCalledOnce(); });
+      expect(f.db.activeTransactions).toBe(0);
+      await expect(access(f.home)).resolves.toBeUndefined();
+      await expect(access(join(f.home, "..", second.sessionId))).resolves.toBeUndefined();
+    } finally { f.release(); release(); await reaping; }
+    await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(join(f.home, "..", second.sessionId))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it.each(["cancel", "expiry", "restart", "complete"] as const)("awaits physical browser retirement before deleting the login home on %s", async action => {
     const f = await fixture();
     let operation: Promise<unknown>;
@@ -101,7 +171,7 @@ describe("Google local sign-in service admission", () => {
       f.db.session.expiresAt = new Date(Date.now() - 1);
       f.db.selections.push([{ id: f.attempt.sessionId }], [f.db.session]); operation = f.service.reapExpired();
     } else if (action === "restart") {
-      f.db.selections.push([], [f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
+      f.db.selections.push([f.db.session], [{ id: "local-environment", driver: "local", status: "active" }]);
       operation = f.service.start("company", "user", intent, true);
     } else {
       f.browser.outcome = "success";

@@ -15,6 +15,9 @@ import { aiConnectionService } from "../services/ai-connections.js";
 import { managedAiSessionFingerprintConfig, prepareManagedAiRuntime, withManagedAiProbe } from "../services/ai-connection-runtime.js";
 import { secretService } from "../services/secrets.js";
 import { quotaCredentialHash, quotaCredentialRecovery, quotaCredentialRecoveryPath } from "../services/quota-credential-recovery.js";
+import * as codexAdapter from "@paperclipai/adapter-codex-local/server";
+import * as workspaceLocks from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { reconcileRetainedGoogleCleanup, retainGoogleCredentialCleanup } from "../services/retained-google-credential-cleanup.js";
 
 // External runs require an already migrated dedicated database ending in _test.
 // The shared helper rejects ordinary application database names and overrides.
@@ -271,6 +274,94 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
       expect(await quotaCredentialRecovery(f.companyId, f.saved.grantId).read()).toBeNull();
       expect(request).not.toHaveBeenCalled();
     } finally { unavailable = false; open.mockRestore(); }
+  });
+
+  it("lets retirement cleanup acquire the credential lock before another account use joins it", async () => {
+    const f = await fixture("subscription"), runtime = await prepareManagedAiRuntime(db, f.runtime);
+    const replacement = googleCredential("retirement-concurrency-project");
+    await writeFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), replacement);
+    const scope = { companyId: f.companyId, accountKey: f.saved.grantId };
+    let entered!: () => void, release!: () => void, lockEntered!: () => void;
+    const cleanupEntered = new Promise<void>(resolve => { entered = resolve; });
+    const permitCleanup = new Promise<void>(resolve => { release = resolve; });
+    const credentialLockEntered = new Promise<void>(resolve => { lockEntered = resolve; });
+    const cleanup = async () => { entered(); await permitCleanup; await runtime.cleanup(); };
+    retainGoogleCredentialCleanup({ scope, cleanup, retired: Promise.resolve() });
+    await cleanupEntered;
+    const originalLock = codexAdapter.withAccountHomeSecretMutationLock;
+    const originalDirectoryLock = workspaceLocks.withDirectoryMergeLock;
+    let requestedLock = false;
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementation((env, company, callback) => {
+      if (requestedLock) return originalLock(env, company, callback);
+      requestedLock = true;
+      return originalLock(env, company, async () => { lockEntered(); return callback(); });
+    });
+    // Exercise the real filesystem mutex with its existing bounded test seam;
+    // a regression reports contention promptly instead of waiting 30 seconds.
+    const directoryLock = vi.spyOn(workspaceLocks, "withDirectoryMergeLock").mockImplementation((directory, callback, env, operation) =>
+      originalDirectoryLock(directory, callback, env, operation, 100));
+    const using = f.service.runtimeCredential(f.selection);
+    void using.catch(() => undefined);
+    try {
+      if (requestedLock) await credentialLockEntered;
+      release();
+      await expect(using).resolves.toBe(replacement);
+      await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await f.service.credential(await f.service.select(f.select))).toBe(replacement);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      release(); await Promise.allSettled([using]);
+      lock.mockRestore(); directoryLock.mockRestore();
+      await reconcileRetainedGoogleCleanup(scope);
+      await runtime.cleanup();
+      await quotaCredentialRecovery(f.companyId, f.saved.grantId).clear();
+    }
+  });
+
+  it("defers credential use when another retained owner arrives before lock acquisition", async () => {
+    const f = await fixture("subscription"), scope = { companyId: f.companyId, accountKey: f.saved.grantId };
+    let retire!: () => void;
+    const retired = new Promise<void>(resolve => { retire = resolve; });
+    const cleanup = vi.fn(async () => {});
+    const originalLock = codexAdapter.withAccountHomeSecretMutationLock;
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementationOnce((env, company, callback) => {
+      retainGoogleCredentialCleanup({ scope, cleanup, retired });
+      return originalLock(env, company, callback);
+    });
+    try {
+      await expect(f.service.runtimeCredential(f.selection)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    } finally { lock.mockRestore(); retire(); await reconcileRetainedGoogleCleanup(scope); }
+  });
+
+  it("does not join another retirement from cleanup that already holds the credential lock", async () => {
+    const f = await fixture("subscription"), scope = { companyId: f.companyId, accountKey: f.saved.grantId };
+    let retire!: () => void, entered!: () => void;
+    const retired = new Promise<void>(resolve => { retire = resolve; });
+    const cleanupEntered = new Promise<void>(resolve => { entered = resolve; });
+    let failedLock = false, finished = false;
+    const originalDirectoryLock = workspaceLocks.withDirectoryMergeLock;
+    const directoryLock = vi.spyOn(workspaceLocks, "withDirectoryMergeLock").mockImplementation((directory, callback, env, operation) =>
+      originalDirectoryLock(directory, callback, env, operation, 100));
+    retainGoogleCredentialCleanup({ scope, retired, cleanup: async () => {
+      entered();
+      try { await codexAdapter.withAccountHomeSecretMutationLock(undefined, f.companyId, async () => { finished = true; }); }
+      catch (error) { failedLock = true; throw error; }
+    } });
+    try {
+      await codexAdapter.withAccountHomeSecretMutationLock(undefined, f.companyId, async () => {
+        retire(); await cleanupEntered;
+        await expect(f.service.runtimeCredential(f.selection, { credentialLockHeld: true }))
+          .rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+        expect(failedLock).toBe(false);
+        expect(finished).toBe(false);
+      });
+    } finally {
+      retire(); await reconcileRetainedGoogleCleanup(scope); directoryLock.mockRestore();
+    }
+    expect(finished).toBe(true);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it.each(["epoch", "version", "account"] as const)("discards a retired journal after the selected Google %s changes", async change => {
