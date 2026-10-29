@@ -2,7 +2,7 @@ import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-p
 import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { PluginAgentRuntimeState, PluginAgentRuntimeIdentity } from "./types.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
-import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
+import type { AiConnectionRouterRequest, AiConnectionRouterResult, PluginPrepareAgentRunRequest, PluginPrepareAgentRunResult } from "@paperclipai/shared";
 /**
  * JSON-RPC 2.0 message types and protocol helpers for the host ↔ worker IPC
  * channel.
@@ -1399,6 +1399,7 @@ export interface HostToWorkerMethods {
     result: DetectExternalObjectsResult,
   ];
   routeAiConnection: [params: AiConnectionRouterRequest, result: AiConnectionRouterResult];
+  prepareAgentRun: [params: PluginPrepareAgentRunRequest, result: PluginPrepareAgentRunResult];
   resolveExternalObject: [
     params: ResolveExternalObjectParams,
     result: PluginExternalObjectResolveResult,
@@ -1539,6 +1540,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "executeTool",
   "detectExternalObjects",
   "routeAiConnection",
+  "prepareAgentRun",
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",

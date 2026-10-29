@@ -1227,6 +1227,42 @@ describe("AI connection router RPC", () => {
   });
 });
 
+describe("Agent run configuration RPC", () => {
+  const manifest = { id: "fixture.run-config", apiVersion: 1, version: "1.0.0", displayName: "Run config", description: "Fixture", author: "Tests", categories: ["automation"], capabilities: ["agent.runs.configure"], entrypoints: {} };
+  const request = { companyId: "company", agentId: "agent", runId: "run", adapterType: "claude_local", invocationSource: "assignment", wakeReason: null, retryAttempt: 0, issueId: null, issue: null, adapterConfig: { model: "large" }, issueOverrides: {} };
+
+  function connect(plugin: ReturnType<typeof definePlugin>) {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    return { call, close: () => { worker.stop(); reader.close(); input.destroy(); output.destroy(); } };
+  }
+
+  it("advertises and calls an implemented run configuration hook", async () => {
+    let received: unknown;
+    const rpc = connect(definePlugin({ async setup() {}, onPrepareAgentRun(params) { received = params; return { adapterConfig: { model: "small", effort: "low" }, reason: "short task" }; } }));
+    try {
+      const initialized = await rpc.call("initialize", { manifest, config: {}, databaseNamespace: null });
+      expect((initialized as { result: { supportedMethods: string[] } }).result.supportedMethods).toContain("prepareAgentRun");
+      expect((await rpc.call("prepareAgentRun", request) as { result: unknown }).result).toEqual({ adapterConfig: { model: "small", effort: "low" }, reason: "short task" });
+      expect(received).toEqual(request);
+    } finally { rpc.close(); }
+  });
+
+  it("does not advertise the hook when the plugin does not implement it", async () => {
+    const rpc = connect(definePlugin({ async setup() {} }));
+    try {
+      const initialized = await rpc.call("initialize", { manifest, config: {}, databaseNamespace: null });
+      expect((initialized as { result: { supportedMethods: string[] } }).result.supportedMethods).not.toContain("prepareAgentRun");
+      expect((await rpc.call("prepareAgentRun", request) as { error?: unknown }).error).toBeDefined();
+    } finally { rpc.close(); }
+  });
+});
+
 describe("Durable lifecycle inbox RPC", () => {
   it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
     const input = new PassThrough(), output = new PassThrough();

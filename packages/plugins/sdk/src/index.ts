@@ -470,6 +470,7 @@ export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from
 export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
+export type { PluginPrepareAgentRunRequest, PluginPrepareAgentRunResult, PluginRunAdapterConfig, PluginRunAdapterConfigKey } from "@paperclipai/shared";
 
 export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
 export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
