@@ -42,6 +42,7 @@ import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
+import { DEFAULT_MUSE_LOCAL_MODEL } from "@paperclipai/adapter-muse-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -1426,7 +1427,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : harnessType === "grok_local" ? "reasoningEffort"
+          : harnessType === "grok_local" || harnessType === "muse_local" ? "reasoningEffort"
           : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     isCodexHarness
@@ -1442,7 +1443,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : harnessType === "claude_local" || harnessType === "grok_local"
+              : harnessType === "claude_local" || harnessType === "grok_local" || harnessType === "muse_local"
                 ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
                     id,
                     label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
@@ -1460,7 +1461,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
+          : adapterType === "grok_local" || adapterType === "muse_local"
+            ? eff(
+                "adapterConfig",
+                thinkingEffortKey,
+                String(config[thinkingEffortKey] ?? config.reasoningEffort ?? config.effort ?? ""),
+              )
+            : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
@@ -1814,6 +1821,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_GEMINI_LOCAL_MODEL;
                     } else if (t === "kimi_local") {
                       nextValues.model = DEFAULT_KIMI_LOCAL_MODEL;
+                    } else if (t === "muse_local") {
+                      nextValues.model = DEFAULT_MUSE_LOCAL_MODEL;
                     } else if (t === "cursor") {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
@@ -1839,6 +1848,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             ? DEFAULT_GEMINI_LOCAL_MODEL
                             : t === "kimi_local"
                               ? DEFAULT_KIMI_LOCAL_MODEL
+                            : t === "muse_local"
+                              ? DEFAULT_MUSE_LOCAL_MODEL
                             : t === "opencode_local"
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
@@ -1934,7 +1945,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(isRunnerHarness ? harnessType : adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(isRunnerHarness ? harnessType : adapterType)
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local", "muse_local"].includes(isRunnerHarness ? harnessType : adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
@@ -2001,7 +2012,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         ? set!({ thinkingEffort: v })
                         : (() => {
                             mark("adapterConfig", thinkingEffortKey, v || undefined);
-                            if (isRunnerHarness) {
+                            if (isRunnerHarness || adapterType === "grok_local" || adapterType === "muse_local") {
                               for (const key of ["modelReasoningEffort", "reasoningEffort", "effort"]) if (key !== thinkingEffortKey) mark("adapterConfig", key, undefined);
                             }
                           })()

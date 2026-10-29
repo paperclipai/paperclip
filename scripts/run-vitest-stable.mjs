@@ -34,6 +34,7 @@ const nonServerProjects = [
   "@paperclipai/adapter-grok-local",
   "@paperclipai/hermes-paperclip-adapter",
   "@paperclipai/adapter-kimi-local",
+  "@paperclipai/adapter-muse-local",
   "@paperclipai/adapter-openclaw-gateway",
   "@paperclipai/adapter-opencode-local",
   "@paperclipai/adapter-pi-local",

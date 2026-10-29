@@ -360,7 +360,7 @@ export function fastResponseService(
   }
   async function choices(companyId: string, userId: string) {
     return (await aiConnectionService(db).list(companyId, userId)).filter(
-      (c) => c.ownership === "shared" && c.method === "api_key",
+      (c) => c.ownership === "shared" && c.method === "api_key" && c.provider !== "muse",
     );
   }
   async function configure(

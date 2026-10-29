@@ -36,6 +36,18 @@ describe("built-in adapter login capabilities", () => {
     expect(() => assertValidAdapterLoginCapability(capability, "codex_local")).not.toThrow();
   });
 
+  it("registers the Muse device-login capability", () => {
+    const capability = requireServerAdapter("muse_local").loginCapability;
+    expect(capability).toBeDefined();
+    if (!capability) return;
+    expect(capability.panelMode).toBe("displayed_code");
+    expect(capability.timeoutPolicy).toBe("caller_bounded");
+    expect(capability.completionClaim).toBeUndefined();
+    expect(typeof capability.getCommand).toBe("function");
+    expect(typeof capability.parsePrompt).toBe("function");
+    expect(() => assertValidAdapterLoginCapability(capability, "muse_local")).not.toThrow();
+  });
+
   it("registers the Grok device-login capability", () => {
     const capability = requireServerAdapter("grok_local").loginCapability;
     expect(capability).toBeDefined();
@@ -74,6 +86,7 @@ describe("built-in runtime connection tool delivery", () => {
     ["hermes_gateway", "invocation_context"],
     ["hermes_local", "environment"],
     ["kimi_local", "environment"],
+    ["muse_local", "environment"],
     ["openclaw_gateway", "invocation_context"],
     ["opencode_local", "environment"],
     ["paperclip_runner", "environment"],

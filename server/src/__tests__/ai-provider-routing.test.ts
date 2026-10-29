@@ -28,6 +28,15 @@ describe("provider routing", () => {
     expect(isAiConnectionCompatible({ provider, method: "subscription", mode: "responsible_user" }, "pi_local", `${provider}/model`)).toBe(true);
     expect(isAiConnectionCompatible({ provider, method: "api_key" }, "pi_local", "different/model")).toBe(false);
   });
+  it("rejects paperclip_runner muse provider from Meta muse AI connection compatibility", () => {
+    expect(aiRoutingHarness("paperclip_runner", "muse")).toBe("unsupported");
+    expect(aiRoutingHarness("muse_local")).toBe("muse_local");
+    expect(isAiConnectionCompatible({ provider: "muse", method: "api_key" }, "paperclip_runner", "muse-model", "muse")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "muse", method: "subscription" }, "paperclip_runner", "muse-model", "muse")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "muse", method: "api_key", mode: "responsible_user" }, "paperclip_runner", "muse-model", "muse")).toBe(false);
+    expect(isAiConnectionCompatible({ provider: "muse", method: "api_key" }, "muse_local")).toBe(true);
+    expect(isAiConnectionCompatible({ provider: "muse", method: "subscription" }, "muse_local")).toBe(true);
+  });
   it.each([
     "https://user:secret@gateway.example/v1",
     "https://gateway.example/v1?key=secret",

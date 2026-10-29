@@ -53,7 +53,7 @@ import { sendPtyInputInChunks } from "./pty-chunked-input.js";
  * compile-time command. A value outside this set fails closed before the module
  * touches the filesystem.
  */
-export type LoginCommandKey = "claude" | "codex" | "grok";
+export type LoginCommandKey = "claude" | "codex" | "grok" | "muse";
 
 /**
  * The host-resolved launch descriptor. It carries the closed command key and the
@@ -78,6 +78,7 @@ const LOGIN_COMMAND_BY_KEY: Readonly<Record<LoginCommandKey, string>> = {
   claude: "claude setup-token",
   codex: "codex login --device-auth",
   grok: "grok login --device-auth",
+  muse: "muse login",
 };
 
 /** The fixed root for a login session home. */
@@ -109,7 +110,7 @@ export function encodePosixShellArg(value: string): string {
 
 /** Reports whether a value is a member of the closed login command key set. */
 export function isLoginCommandKey(value: unknown): value is LoginCommandKey {
-  return value === "claude" || value === "codex" || value === "grok";
+  return value === "claude" || value === "codex" || value === "grok" || value === "muse";
 }
 
 /**
@@ -130,6 +131,9 @@ export function composeLaunchLine(descriptor: LoginPtyLaunchDescriptor): string 
   }
   if (descriptor.loginCommandKey === "grok") {
     return `exec env GROK_HOME=${encodedHome} ${command}`;
+  }
+  if (descriptor.loginCommandKey === "muse") {
+    return `exec env MUSE_AUTH_PATH=${encodedHome}/auth.json ${command}`;
   }
   return `exec ${command}`;
 }

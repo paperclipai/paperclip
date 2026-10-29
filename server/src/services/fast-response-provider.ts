@@ -156,7 +156,9 @@ export function fastResponseModel(
   }
   if (metadata.provider === "google")
     return createGoogleGenerativeAI({ ...common, apiKey: credential })(model);
-  return createXai({ ...common, apiKey: credential })(model);
+  if (metadata.provider === "xai")
+    return createXai({ ...common, apiKey: credential })(model);
+  throw new Error(`Unsupported fast response provider: ${metadata.provider}`);
 }
 export async function runFastResponseProvider(
   input: {

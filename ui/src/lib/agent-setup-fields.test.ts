@@ -20,4 +20,10 @@ describe("model-specific setup efforts", () => {
     expect(setupEfforts("codex_local", "gpt-6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(setupEfforts("codex_local", "gpt-6-sol")).toContain("ultra");
   });
+
+  it("exposes full effort range on muse_local", () => {
+    expect(setupEfforts("muse_local", "muse-wonder-1.0")).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]);
+  });
 });

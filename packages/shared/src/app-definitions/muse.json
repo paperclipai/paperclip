@@ -1,0 +1,76 @@
+{
+    "schemaVersion": 1,
+    "slug": "muse",
+    "name": "Muse Code",
+    "description": "Connect Meta Muse Code subscriptions and models.",
+    "categories": [
+        "ai"
+    ],
+    "featured": true,
+    "branding": {
+        "logoUrl": "/brands/apps/meta.svg",
+        "darkLogoUrl": "/brands/apps/meta-dark.svg"
+    },
+    "urlPatterns": [
+        "https://api.meta.ai/*",
+        "https://auth.meta.com/*"
+    ],
+    "methods": [
+        {
+            "key": "ai-subscription",
+            "label": "Muse Code subscription",
+            "purpose": "ai",
+            "transport": "runtime_auth",
+            "auth": "oauth",
+            "ai": {
+                "provider": "muse",
+                "method": "subscription"
+            },
+            "grantKinds": [
+                "user",
+                "organization"
+            ],
+            "ownershipModes": [
+                "customer"
+            ],
+            "whenToUse": "Authenticate an agent with this account.",
+            "guidanceMd": "Sign in with your Meta account via the device code flow.",
+            "riskTier": "S3"
+        },
+        {
+            "key": "ai-api_key",
+            "label": "Meta API key",
+            "purpose": "ai",
+            "transport": "runtime_auth",
+            "auth": "api_key",
+            "ai": {
+                "provider": "muse",
+                "method": "api_key"
+            },
+            "grantKinds": [
+                "user",
+                "organization"
+            ],
+            "ownershipModes": [
+                "customer"
+            ],
+            "whenToUse": "Authenticate an agent with this account.",
+            "guidanceMd": "Use your personal account or an explicitly shared company account.",
+            "riskTier": "S3",
+            "credentialFields": [
+                {
+                    "key": "apiKey",
+                    "label": "API key",
+                    "type": "password",
+                    "required": true,
+                    "placeholder": "Enter Meta API key",
+                    "secret": true
+                }
+            ],
+            "keyPlacement": {
+                "location": "env",
+                "name": "META_API_KEY"
+            }
+        }
+    ]
+}

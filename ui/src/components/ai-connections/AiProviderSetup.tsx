@@ -39,6 +39,11 @@ const providers = [
   { id: "google", name: "Google", description: "Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
+    id: "muse",
+    name: "Meta",
+    description: "Muse Code subscription or API key",
+  },
+  {
     id: "openrouter",
     name: "OpenRouter",
     description: "Models through one API key",

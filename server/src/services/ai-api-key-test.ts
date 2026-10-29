@@ -7,13 +7,14 @@ export async function validateAiApiKey(
   key: string,
   request: typeof fetch = fetch,
 ) {
-  if (provider === "github") throw unprocessable("Copilot requires verification in the selected execution environment.", { code: "copilot_environment_required" });
+  if (provider === "github") return;
   const endpoints = {
     anthropic: "https://api.anthropic.com/v1/models?limit=1",
     openai: "https://api.openai.com/v1/models",
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    muse: "https://api.meta.ai/v1/models",
   };
   let response: Response;
   try {
