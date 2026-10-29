@@ -167,7 +167,7 @@ import {
   shouldCancelRunsForNonInvokableAgent,
   type AgentOrgRow,
 } from "../agent-invokability.js";
-import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
+import { isHeartbeatWakeOnDemandEnabled, supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
@@ -2645,6 +2645,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
+    const genericTimerWake =
+      source === "timer" &&
+      !issueId &&
+      !wakeCommentId &&
+      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
+      !effectiveTaskKey;
+    // Old or direct timer producers cannot create a doomed taskless Runner
+    // run. Explicit session restoration above can supply a real task scope.
+    if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
     const sessionBefore =
       explicitResumeSession?.sessionDisplayId ??
       (await resolveSessionBeforeForWakeup(agent, effectiveTaskKey));
@@ -2816,12 +2825,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return null;
     }
 
-    const genericTimerWake =
-      source === "timer" &&
-      !issueId &&
-      !wakeCommentId &&
-      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
-      !readNonEmptyString(enrichedContextSnapshot.taskKey);
     if (
       policy.skipTimerWhenNoActionableWork &&
       genericTimerWake &&

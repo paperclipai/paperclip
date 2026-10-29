@@ -148,6 +148,17 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining(`runner=${adapterType === "paperclip_runner" ? "paperclip" : "legacy"}`));
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
+  it("reopens the saved pending Antigravity choice while its execution adapter remains held", async () => {
+    render(makeAgent({ adapterType: "process", adapterConfig: {}, status: "paused", lifecycleState: "paused", pauseReason: "setup",
+      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } } }));
+    await flushReact();
+    const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
+    await act(() => finish!.click());
+    const params = new URL(mockNavigate.mock.calls[0][0], "http://local").searchParams;
+    expect(Object.fromEntries(params)).toMatchObject({ adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto", setupAgentId: "agent-1" });
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+  });
 
   it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
     render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));

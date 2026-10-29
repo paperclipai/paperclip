@@ -57,6 +57,7 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { failRunnerGoalAction } from "../runner-goals.js";
 import { evaluateAgentInvokability } from "../agent-invokability.js";
+import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import type { Db } from "@paperclipai/db";
 import type { issueService } from "../issues.js";
 import type { createHeartbeatQueue } from "./queue.js";
@@ -1305,6 +1306,7 @@ export function createHeartbeatScheduling(
         agentsByCompany.get(agent.companyId) ?? [],
       );
       if (!invokability.invokable) continue;
+      if (!supportsUnscopedTimerHeartbeat(agent)) continue;
       const policy = parseHeartbeatPolicy(agent);
       if (!policy.enabled || policy.intervalSec <= 0) continue;
 

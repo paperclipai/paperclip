@@ -259,6 +259,12 @@ The sandbox uses its injected run credential. See
 
 Policy: Same company, company-scope read authority and run/task visibility still
 apply. Task-bound history and recovery records require task read authority.
+Generic interval scheduling and direct unscoped timer requests cannot create
+taskless native Runner runs. Task-bound monitors, routines, assignments and
+timer requests retain existing authorization; Legacy intervals are unchanged.
+The [queue](../../server/src/services/heartbeat/queue.test.ts) and
+[scheduler](../../server/src/services/heartbeat/scheduling.test.ts) PostgreSQL
+regressions use synthetic execution and grant no new agent API or credential authority.
 Each run-linked task is filtered by the caller's task-read predicate; a readable
 company run cannot expose inaccessible private task titles. Existing content
 and credential redaction apply. Adapter installation, raw host login, execution

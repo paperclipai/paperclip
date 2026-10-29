@@ -26,7 +26,7 @@ The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:
 | Claude / Anthropic | Claude subscription token or Anthropic API key | Claude |
 | OpenAI | ChatGPT/Codex subscription or OpenAI API key | Codex |
 | OpenRouter (legacy, no routing metadata) | API key | OpenCode or Pi, with an `openrouter/` model |
-| Google | API key | Gemini CLI |
+| Google | Gemini API key; separate local Antigravity sign-in | Gemini CLI / Pi (API key); Antigravity candidate (pending execution acceptance) |
 | Grok / xAI | Grok subscription or xAI API key | Grok |
 
 Native runner supports the corresponding existing Codex, OpenCode, and Claude
@@ -424,6 +424,22 @@ operator's existing login: copying a rotating refresh token would
 allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in, then clicks Connect.
 Grok retains its terminal sign-in flow until it has a local browser login runner.
+
+Google Antigravity sign-in uses the pinned native ACP runtime installed with
+`paperclipai runtime setup antigravity`. Its browser redirect returns to a
+loopback listener; no code is pasted into Paperclip. Setup sends only initialize
+and authenticate, verifies the Google account email, then saves the credential
+through the existing encrypted connection grant. It never imports an existing
+Google CLI, browser, Workspace, or Drive credential. Connection readiness waits
+for native onboarding and physical login-process retirement. Cancellation and
+expiry await retirement before removing the private home. After a server restart,
+start a new Google sign-in attempt.
+
+Antigravity task execution remains pending acceptance. Its managed subscription
+path is local and turn-by-turn: native execution retires before refreshed tokens
+are verified and saved with generation checks. Remote and warm OAuth execution
+are rejected. Browser sign-in success does not qualify a model turn or the native
+Runner task lifecycle.
 
 Attempts reuse `adapter_auth_sessions`, binding company, owner, provider, access
 intent, reconnect target, and a 30-minute expiry. Validation and completion are
