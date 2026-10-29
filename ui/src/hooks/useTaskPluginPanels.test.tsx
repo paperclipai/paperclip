@@ -184,6 +184,34 @@ it("bounds readiness retries to three attempts after an activation", async () =>
   expect(get).toHaveBeenCalledTimes(3);
 });
 
+it.each(["not-ready", "server-error"])("restarts bounded readiness on fresh activity after %s", async failure => {
+  vi.useFakeTimers();
+  if (failure === "not-ready") get.mockResolvedValue({ available: false });
+  else get.mockRejectedValue(new ApiError("Unavailable", 500, {}));
+  await render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(3);
+  await emit(event());
+  await emit(event());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(6);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(6);
+  get.mockResolvedValue({ available: true });
+  await emit(event());
+  expect(get).toHaveBeenCalledTimes(7); expect(current).toHaveLength(1);
+});
+it("does not retry denied readiness on fresh activity", async () => {
+  vi.useFakeTimers(); get.mockRejectedValue(new ApiError("Denied", 403, {}));
+  await render();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(1);
+  get.mockResolvedValue({ available: true });
+  await emit(event());
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(get).toHaveBeenCalledTimes(1); expect(current).toEqual([]);
+});
+
 it.each(["runs", "history"])("recovers from a transient %s read without recurring polling", async source => {
   vi.useFakeTimers();
   const error = new ApiError("Unavailable", 500, {});

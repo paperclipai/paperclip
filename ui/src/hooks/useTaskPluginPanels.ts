@@ -71,6 +71,11 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
       const missing = panels.filter(panel => !previous?.some(item => item.pluginKey === panel.pluginKey && item.slotId === panel.slotId));
       return missing.length ? [...(previous ?? []), ...missing] : previous;
     });
+    for (const panel of panels) void queryClient.invalidateQueries({
+      queryKey: ["task-plugin-panel", issue?.companyId, issue?.id, run.id, run.agentId, panel.pluginKey, panel.slotId],
+      predicate: ({ state }) => state.status === "error" && state.fetchStatus === "idle"
+        && !(state.error instanceof ApiError && state.error.status >= 400 && state.error.status < 500),
+    });
   });
   const previousStream = useRef(stream);
   useEffect(() => {
