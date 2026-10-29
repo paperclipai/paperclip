@@ -748,14 +748,16 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   it("names the unblock descriptor owner of a stalled chain's blocked leaf", async () => {
-    const { companyId, agentId, pausedAgentId } = await createCompany("BCD");
+    const { companyId, agentId } = await createCompany("BCD");
+    const assigneeId = randomUUID();
+    await db.insert(agents).values({ id: assigneeId, companyId, name: "BCD Assignee", role: "engineer", status: "idle" });
     const parentId = await insertIssue({ companyId, identifier: "BCD-1", title: "Blocked source", status: "blocked" });
     const leafId = await insertIssue({
       companyId,
       identifier: "BCD-2",
       title: "Leaf waiting on upstream",
       status: "blocked",
-      assigneeAgentId: pausedAgentId,
+      assigneeAgentId: assigneeId,
       unblockDescriptor: { owner: { agentId }, action: "Re-check after the upstream PR merges" },
     });
     await block({ companyId, blockerIssueId: leafId, blockedIssueId: parentId });
