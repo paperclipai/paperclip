@@ -58,6 +58,7 @@ import type { AgentRunnerAvailability } from "@paperclipai/shared";
 import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 
 const execFileAsync = promisify(execFile);
+let warnedMalformedAntigravityAdmission = false;
 
 /**
  * Floor: on cloud-managed instances adapter code is bundled into the platform
@@ -311,7 +312,15 @@ export function adapterRoutes(options: {
       // An expired optional preview must not hide the ordinary adapter catalog.
       // Execution and model discovery still perform strict admission checks.
       try { candidate = resolveAntigravityCandidateAdmission({ companyId }); }
-      catch { candidate = undefined; }
+      catch (error) {
+        candidate = undefined;
+        // Expiry is ordinary catalog state. Invalid trusted startup JSON needs
+        // one operator diagnostic, without logging its payload or error.
+        if (!warnedMalformedAntigravityAdmission && error instanceof Error && error.message === "Invalid Antigravity candidate admission") {
+          warnedMalformedAntigravityAdmission = true;
+          logger.warn({ code: "ANTIGRAVITY_CANDIDATE_ADMISSION_INVALID" }, "Invalid Google Antigravity preview authorization");
+        }
+      }
     }
     const result: AdapterInfo[] = registeredAdapters.map((adapter) => ({
       ...buildAdapterInfo(adapter, externalRecords.get(adapter.type), disabledSet, target),

@@ -9,12 +9,30 @@ import { reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanupFor
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
-import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
+import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 
 const AUTH_SECRET = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
 const TOKEN_FILE = "acp_token.json";
 const REFRESH_FILE = "auth-refresh.json";
+const retirementProofs = new WeakMap<object, () => Promise<void>>();
+type RunnerdTransport = ReturnType<typeof createRunnerdCodexTransport>;
+
+/** Preserve the exact process owner's proof without changing a failed native
+ * session's durable settlement error or making that session reusable. */
+export function bindAntigravityTransportRetirement(bundle: RunnerdTransport): RunnerdTransport["transport"] {
+  const close = bundle.transport.close.bind(bundle.transport);
+  bundle.transport.close = async reason => {
+    try { await close(reason); }
+    catch (error) {
+      if (error && typeof error === "object" && bundle.retireProbeResources) {
+        retirementProofs.set(error, () => bundle.retireProbeResources!());
+      }
+      throw error;
+    }
+  };
+  return bundle.transport;
+}
 
 /** Only explicit run credentials may enter Antigravity's isolated runtime. */
 export async function prepareAntigravityRunnerCredentials(input: {
@@ -286,22 +304,38 @@ export function bindAntigravityCredentialTurn(session: NativeSession, input: Par
   let copied = false;
   let removed = false;
   let handoffRunning: Promise<void> | undefined;
-  const retire: NativeSession["close"] = options => retirement ??= close(options);
+  let proveRetirement: (() => Promise<void>) | undefined;
+  const retryRetirement = async () => {
+    if (retired) return;
+    if (!proveRetirement) throw new Error("Google Antigravity runtime retirement remains unconfirmed.");
+    await proveRetirement();
+    retired = true;
+  };
+  const retain = () => retainGoogleCredentialCleanupForHome(input.managedHome, {
+    cleanup: handoff, ...(retired ? {} : { retired: retirement, ...(proveRetirement ? { retryRetirement } : {}) }),
+  });
+  const retire: NativeSession["close"] = options => retirement ??= Promise.resolve().then(() => close(options)).catch(error => {
+    if (error && typeof error === "object") proveRetirement = retirementProofs.get(error);
+    // close() may be called before the turn-completion callback. It still
+    // owns the same private credential and must keep that account fenced.
+    retain();
+    throw error;
+  });
   session.close = retire;
   if (detach) session.detachControllerForRestart = async () => { detached = true; await detach(); };
   const handoff = (): Promise<void> => handoffRunning ??= (async () => {
     if (detached) return;
     try {
-      await retire({ reason: "Google Antigravity subscription credential handoff" });
-      retired = true;
+      if (!retired) {
+        await retire({ reason: "Google Antigravity subscription credential handoff" });
+        retired = true;
+      }
       if (!copied) { await callbacks.copyBack(); copied = true; }
       if (!removed) { await callbacks.remove(); removed = true; }
     } catch (error) {
       // Until copy-back succeeds, this private runtime can hold the only valid
       // rotated token. The same account must settle this owner before launch.
-      retainGoogleCredentialCleanupForHome(input.managedHome, {
-        cleanup: handoff, ...(retired ? {} : { retired: retirement }),
-      });
+      retain();
       throw error;
     }
   })().finally(() => { handoffRunning = undefined; });

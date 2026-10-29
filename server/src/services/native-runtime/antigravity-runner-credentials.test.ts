@@ -3,9 +3,9 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { antigravityCredentialTurn, bindAntigravityCredentialTurn, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+import { antigravityCredentialTurn, bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
-import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
+import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindRetainedGoogleCredentialHome } from "../retained-google-credential-cleanup.js";
 
 const copyFault = vi.hoisted(() => ({ phase: "", destination: "", source: "", collisionPath: "", failedRemoval: "", removals: [] as string[], hits: 0 }));
@@ -190,6 +190,49 @@ describe("Antigravity managed Runner credentials", () => {
       expect(close).toHaveBeenCalledOnce();
       await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { release(); }
+  });
+  it.each(["turn completion", "direct close"])("retries original process proof after rejected %s before account reuse, without clearing session failure", async origin => {
+    const managedHome = await home(), runtimeHome = await home();
+    const release = bindRetainedGoogleCredentialHome(managedHome, { companyId: "company-retirement", accountKey: managedHome });
+    const destination = join(managedHome, "antigravity-acp", "acp_token.json"), source = join(runtimeHome, "antigravity-acp", "auth-refresh.json");
+    await writeFile(destination, credential("fixture-original"), { mode: 0o600 });
+    await writeFile(source, credential("fixture-refreshed"), { mode: 0o600 });
+    const terminal = Object.assign(new Error("fixture native session durable suspension failed"), { code: "native_session_close_unrecoverable" });
+    const close = vi.fn(async () => { throw terminal; });
+    let physicallyRetired = false;
+    let releaseProof!: () => void;
+    const proofGate = new Promise<void>(resolve => { releaseProof = resolve; });
+    const proof = vi.fn(async () => {
+      if (!physicallyRetired) throw new Error("fixture original process still alive");
+      await proofGate;
+    });
+    const transport = bindAntigravityTransportRetirement({ transport: { close }, retireProbeResources: proof } as unknown as ReturnType<typeof createRunnerdCodexTransport>);
+    const session = bindAntigravityCredentialTurn({ close: () => transport.close() } as unknown as NativeSession,
+      { managedHome, runtimeHome, credential: credential("fixture-original") });
+    try {
+      await expect(origin === "turn completion" ? completeManagedNativeCredentialTurn(session) : session.close({ reason: "direct close" })).rejects.toBe(terminal);
+      await expect(prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} }))
+        .rejects.toThrow("still completing credential cleanup");
+      expect(proof).toHaveBeenCalledOnce();
+      expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
+      expect(await readFile(destination, "utf8")).toBe(credential("fixture-original"));
+      physicallyRetired = true;
+      const first = prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} });
+      const second = prepareAntigravityRunnerCredentials({ managedHome, remote: false, environment: {} });
+      let admitted = false;
+      const preparing = Promise.all([first, second]).then(result => { admitted = true; return result; });
+      await vi.waitFor(() => expect(proof).toHaveBeenCalledTimes(2));
+      expect(admitted).toBe(false);
+      expect(await readFile(source, "utf8")).toBe(credential("fixture-refreshed"));
+      releaseProof();
+      const next = await preparing;
+      expect(next.every(value => value.credential === credential("fixture-refreshed"))).toBe(true);
+      expect(proof).toHaveBeenCalledTimes(2);
+      expect(close).toHaveBeenCalledOnce();
+      await expect(access(source)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(session.close({ reason: "original session remains quarantined" })).rejects.toBe(terminal);
+      expect(close).toHaveBeenCalledOnce();
+    } finally { releaseProof(); release(); }
   });
   it.each(["partial-write", "stage-stat", "stage-sync", "stage-close", "rename-before", "rename-after", "directory-sync", "stage-remove", "runtime-remove"])(
     "retains an intact token and retries the retired owner after %s", async phase => {

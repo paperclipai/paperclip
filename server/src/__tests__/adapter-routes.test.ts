@@ -183,6 +183,24 @@ describe("adapter routes", () => {
     expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
   });
 
+  it("warns once without startup payloads for malformed candidate authority, while expiry stays quiet", async () => {
+    const { logger } = await import("../middleware/logger.js");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    try {
+      mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+      expect((await request(app).get("/api/adapters?companyId=company-1")).status).toBe(200);
+      expect(warn).not.toHaveBeenCalled();
+      mockCandidateAdmission.mockImplementation(() => { throw new Error("Invalid Antigravity candidate admission"); });
+      for (let index = 0; index < 2; index++) {
+        const response = await request(app).get("/api/adapters?companyId=company-1");
+        expect(response.status).toBe(200);
+        expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+      }
+      expect(warn).toHaveBeenCalledExactlyOnceWith({ code: "ANTIGRAVITY_CANDIDATE_ADMISSION_INVALID" }, "Invalid Google Antigravity preview authorization");
+    } finally { warn.mockRestore(); }
+  });
+
   it("keeps the shared runner implementation available for Codex without the experimental flag", async () => {
     const disabledResponse = await request(createApp()).get("/api/adapters");
     expect(disabledResponse.status).toBe(200);

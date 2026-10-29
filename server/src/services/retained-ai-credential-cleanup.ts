@@ -68,6 +68,8 @@ function attempt(entry: Cleanup): Promise<void> {
 /** A retirement event gets one cleanup attempt. Already-retired failures retry
  * only on the next same-account action, never on an idle timer or SQL scan. */
 export function retainAiCredentialCleanup(input: {
+  // Accept legacy Google home metadata for compatibility. Only the explicit
+  // bindRetainedAiCredentialHome mapping grants home-to-account authority.
   scope: RetainedAiCleanupScope; cleanup: () => Promise<void>; retired?: Promise<void>; retryRetirement?: () => Promise<void>; home?: string;
 }): void {
   const scopeKey = key(input.scope);
@@ -83,8 +85,9 @@ export function retainAiCredentialCleanup(input: {
 }
 
 /** Fail closed before another provider starts. Concurrent attempts join the
- * original cleanup; a cleanup may reconcile its peers without recursing into
- * itself through the managed account's cleanup wrapper. */
+ * original cleanup. Nested credential reads skip this account's peer join to
+ * avoid recursing into the current callback. The outer bounded pass and final
+ * fence still settle every peer before any external provider admission. */
 export async function reconcileRetainedAiCleanup(scope: RetainedAiCleanupScope): Promise<void> {
   await Promise.resolve();
   const scopeKey = key(scope);

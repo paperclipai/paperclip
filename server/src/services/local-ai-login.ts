@@ -79,7 +79,11 @@ export function localAiLoginService(db: Db) {
     deferredRetirements.set(id, retained);
     void retirement.then(() => {
       if (deferredRetirements.get(id) === retained) retirementReady(id);
-    }, () => { /* Failed proof stays owned until an explicit retry succeeds. */ });
+    }, () => {
+      // A rejected abort needs an explicit Cancel or Start sign-in again to
+      // retry its original owner. Keep its home/claim and sleep blocker; an
+      // idle timer must not repeatedly signal a process with uncertain state.
+    });
   }
   function subscribeCleanupReady(wake: () => void) {
     let listeners = cleanupReadyListeners.get(scope);
