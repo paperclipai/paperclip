@@ -7,6 +7,8 @@ describe("explicit file output requirements", () => {
     "Make a Markdown file named checklist.md with three items.",
     "Write connection-proof.json with the computed result.",
     "Write result.json inline and attach it as a download.",
+    "Write result.json inline and publish it.",
+    "Write result.json inline. Publish it on this task.",
     "Write result.json and update package.json.",
     "Publish connection-proof.json on this child task with register_deliverable using the workspace-relative path, correct byte size, and correct SHA-256.",
     "Write internal-proof.json. This is an internal verification file, not a deliverable. Publish it on this task.",

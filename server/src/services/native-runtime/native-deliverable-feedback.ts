@@ -105,9 +105,9 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
         const inline = /\b(?:inline|(?:in|within|inside|as|into)\s+(?:(?:a|an|the|my|your|our|final|plain|markdown|chat|fenced)\s+)*(?:chat|response|reply|message|comment|text|code block)|(?:its|the) contents)\b/iu.test(output);
         const downloadable = referencedAttachment || (!/\b(?:no|without)\s+(?:downloadable|attached)/iu.test(output)
           && /\b(?:(?:downloadable|attached)\s+(?:file|report|document|checklist|draft)|download link)\b/iu.test(output));
+        const inlineOnly = inline && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
+          && !/\bas (?:an? )?attachment\b/iu.test(output);
         const objects = [...output.matchAll(file)].filter(match => {
-          if (inline && !downloadable && !/^(?:attach|export|publish)$/iu.test(create[0])
-            && !/\bas (?:an? )?attachment\b/iu.test(output)) return false;
           const prefix = output.slice(0, match.index);
           const suffix = output.slice(match.index + match[0].length);
           // "Create no files" is a prohibition, even though it contains a creation
@@ -125,7 +125,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
           && /\b(?:attempt|try)\s+(?:the\s+)?native\s*$/iu.test(before)
           && /\b(?:must be denied|denial is (?:the )?expected|(?:this|the) negative test)\b/iu.test(objective);
         if (objects.length === 0 && !downloadable && /^\s+(?:no|zero|without)\b/iu.test(output)) return [];
-        return [{ objects: objects.length, downloadable, publication, deniedAttempt,
+        return [{ namesFile: objects.length > 0, objects: inlineOnly ? 0 : objects.length, downloadable, publication, deniedAttempt,
           referencesOutput, publicationReference: referencesOutput && !inline }];
       });
     });
@@ -136,7 +136,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
       && /^\s*This is (?:an? )?(?:personal memory|internal (?:assertion|verification) file)\b[^.!?]*\bnot a (?:task )?deliverable\b/iu.test(sentences[index + 1] ?? "");
     return outputs.some(output => {
       const publicationReference = output.publicationReference && precedingFileOutput;
-      if (!output.referencesOutput) precedingFileOutput = output.objects > 0;
+      if (!output.referencesOutput) precedingFileOutput = output.namesFile;
       return (output.objects > 0 || output.downloadable || publicationReference)
         && (output.publication || (!internal && !output.deniedAttempt));
     });
