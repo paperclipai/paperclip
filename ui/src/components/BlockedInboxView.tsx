@@ -264,7 +264,6 @@ export function BlockedInboxView({
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
                         showResponsibleColumn={showResponsibleColumn}
-              showResponsibleColumn={showResponsibleColumn}
                         presentation={presentation}
                       />
                     ))}
