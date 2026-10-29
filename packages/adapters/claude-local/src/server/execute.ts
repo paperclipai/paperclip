@@ -71,6 +71,7 @@ import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeMaxBudgetResult,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
@@ -1141,6 +1142,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsedStream.sessionId ??
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+    // A --max-budget-usd stop is terminal: resuming the session re-reads the
+    // whole transcript and spends the cap again, so drop it like max-turns.
+    const clearSessionForMaxBudget = isClaudeMaxBudgetResult(parsed);
     const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
     // Fable 5 policy refusals exit cleanly (exitCode=0, is_error=false), so this
     // is intentionally independent of `failed` — otherwise a refusal looks like a
@@ -1182,6 +1186,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !clearSessionForMaxBudget &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
@@ -1193,6 +1198,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       failed &&
       !loginMeta.requiresLogin &&
       !clearSessionForMaxTurns &&
+      !clearSessionForMaxBudget &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
       isClaudeTransientUpstreamError({
@@ -1223,7 +1229,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // error_max_turns run that merely *mentions* the phrase would otherwise
       // be sealed as model_not_found. Same guard the providerQuota and
       // transientUpstream branches above already apply.
-      : failed && !clearSessionForMaxTurns && !poisonedPreviousMessageId && isClaudeModelNotFoundError({
+      : failed && !clearSessionForMaxTurns && !clearSessionForMaxBudget && !poisonedPreviousMessageId && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
@@ -1232,6 +1238,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? "model_not_found"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
+      : failed && clearSessionForMaxBudget
+      ? "max_budget_exhausted"
       : failed && poisonedPreviousMessageId
       ? "claude_poisoned_previous_message_id"
       : providerQuota
@@ -1251,6 +1259,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const mergedResultJson: Record<string, unknown> = {
       ...parsed,
       ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
+      ...(failed && clearSessionForMaxBudget ? { stopReason: "max_budget_exhausted" } : {}),
       ...(failed && poisonedPreviousMessageId ? { stopReason: "claude_poisoned_previous_message_id" } : {}),
       ...(claudeRefusal ? { stopReason: "refusal", errorFamily: "model_refusal" } : {}),
       ...(errorFamily ? { errorFamily } : {}),
@@ -1285,6 +1294,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
         clearSessionForMaxTurns ||
+        clearSessionForMaxBudget ||
         // Clear-on-error: a poisoned previous_message_id is a deterministic
         // state error. Force the server to drop persisted session state for
         // this issue so the next continuation starts from a clean slate.
