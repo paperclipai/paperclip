@@ -101,6 +101,18 @@ describe("claude_local resumed session usage", () => {
     });
   });
 
+  it("keeps a legacy session id when a run resumed without session params times out", async () => {
+    mockExecutionResult(procResult(2, 2000, 300, true));
+
+    const result = await execute(resumedContext(null as never) as never);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.sessionParams).toEqual({
+      sessionId,
+      usageTotals: { sessionId, totalCostUsd: 2, modelUsage: modelUsage(2, 2000, 300) },
+    });
+  });
+
   it("leaves session params alone when a timed-out run printed no result", async () => {
     mockExecutionResult({
       ...procResult(2, 2000, 300, true),

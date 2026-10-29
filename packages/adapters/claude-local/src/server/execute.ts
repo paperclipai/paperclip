@@ -1022,7 +1022,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : null;
       return {
         ...(timedOutUsageTotals && !opts.clearSessionOnMissingSession
-          ? { sessionParams: { ...runtimeSessionParams, usageTotals: timedOutUsageTotals } }
+          ? { sessionParams: { ...runtimeSessionParams, sessionId, usageTotals: timedOutUsageTotals } }
           : {}),
         exitCode: proc.exitCode,
         signal: proc.signal,
