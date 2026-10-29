@@ -11883,7 +11883,10 @@ describe("runnerd provider runtime wiring", () => {
       provider: { kind: "acpx", agent: "antigravity", model: "caller-selected-model", permissionMode: "deny-all" },
       session: { ...execution.session, driverKind: "acpx_runtime" },
     } as unknown as NativeExecutionInputV1;
-    const close = vi.fn(async () => undefined);
+    const transportClose = vi.fn(async () => undefined);
+    const nativeTransport = { close: transportClose };
+    state.createTransport.mockReturnValueOnce({ transport: nativeTransport } as never);
+    const close = vi.fn(async () => nativeTransport.close());
     state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
     try {
       const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current,
@@ -11900,6 +11903,7 @@ describe("runnerd provider runtime wiring", () => {
       const session = await backend.openSession({} as never);
       await session.close({ reason: "completed" });
       expect(close).toHaveBeenCalledOnce();
+      expect(transportClose).toHaveBeenCalledOnce();
       expect(await readFile(managedToken, "utf8")).toBe(credential("resolved-project"));
       for (const name of ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp"]) await expect(access(join(runtimeHome, name))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
