@@ -871,7 +871,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     ${catalogOverviewStyles}
   </style>
 </head>
-<body id="top">
+<body id="top"${catalogOverview ? " data-catalog-metadata" : ""}>
   ${renderReportShell(catalogOverview ? { history: input.history } : { campaignId: input.campaign?.campaignId, catalog, history: input.history })}
   <main id="overview">
     ${catalogOverview ?? `

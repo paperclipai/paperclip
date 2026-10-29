@@ -62,9 +62,15 @@ describe("display-only catalog overview", () => {
     expect(doc.querySelector('[data-execution-scope]')!.textContent).toContain('25 cases measured outside main · 49 never run · 1');
     expect(() => parseCatalogOverview({...data,rows:data.rows.map((r,i)=>i===218?{...r,executionRecord:'never-run'}:r)})).toThrow('Inconsistent recorded');
   });
+  it.each([[152,"below"],[196,"equal to"],[200,"above"]] as const)("compares a ceiling of %i accurately", (ceiling, comparison) => {
+    const data=fixture(); data.accounting.theoreticalMainCeiling=ceiling;
+    expect(new JSDOM(page(data)).window.document.querySelector('main')!.textContent).toContain(`${ceiling}/244, ${comparison} the 196-case target`);
+  });
   it("filters and resets actual DOM rows without treating unused initials as failures", () => {
     const dom=new JSDOM(page(fixture()),{runScripts:'dangerously',pretendToBeVisual:true});
     const doc=dom.window.document;
+    for (const selector of ['[data-nav-view="attention"]','.report-global-nav a[href$="?view=history"]','.report-breadcrumbs']) expect(dom.window.getComputedStyle(doc.querySelector(selector)!).display).toBe('none');
+    expect(dom.window.getComputedStyle(doc.querySelector('[data-nav-view="overview"]')!).display).not.toBe('none');
     const select=doc.querySelector<HTMLSelectElement>('[data-catalog-outcome]')!;select.value='unmeasured';select.dispatchEvent(new dom.window.Event('input'));
     expect([...doc.querySelectorAll<HTMLElement>('[data-catalog-row]')].filter(r=>!r.hidden)).toHaveLength(75);
     const allowance=doc.querySelector<HTMLSelectElement>('[data-catalog-allowance]')!;allowance.value='unknown';allowance.dispatchEvent(new dom.window.Event('input'));
@@ -99,5 +105,7 @@ describe("display-only catalog overview", () => {
     expect(normal).toContain('aria-label="Campaign summary"');
     expect(normal).not.toContain('data-catalog-overview>');
     expect(normal).toContain('data-report-scope="campaign"');
+    const window=new JSDOM(normal).window;
+    expect(window.getComputedStyle(window.document.querySelector('[data-nav-view="attention"]')!).display).not.toBe('none');
   });
 });
