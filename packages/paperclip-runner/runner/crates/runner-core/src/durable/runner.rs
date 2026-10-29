@@ -415,6 +415,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
         )?;
         store.save(&state)?;
     }
+    #[cfg(unix)]
+    let mut notifications =
+        crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
@@ -819,6 +822,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                     "active connection lease expired; durable state is preserved",
                 ));
             }
+            #[cfg(unix)]
+            if let Some(notifications) = notifications.as_mut() {
+                notifications.poll(&config, &mut state, &store);
+            }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
                 // A failed write may still have reached the controller.
@@ -854,7 +861,13 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Read control before starting another fsynced provider batch.
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
-            let control_message = transport.receive_json();
+            #[cfg(unix)]
+            let work_pending = notifications
+                .as_ref()
+                .is_some_and(|notifications| notifications.has_pending_work());
+            #[cfg(not(unix))]
+            let work_pending = false;
+            let control_message = transport.receive_json_with_pending_work(work_pending);
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,

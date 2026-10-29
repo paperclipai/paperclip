@@ -426,12 +426,36 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
     };
+    #[cfg(unix)]
+    std::env::set_var(
+        paperclip_runner_core::runtime_notifications::CONTEXT_ENV,
+        paperclip_runner_core::runtime_notifications::context_path(
+            &std::path::absolute(&state_dir)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?,
+        ),
+    );
+    #[cfg(unix)]
+    {
+        let key = paperclip_runner_core::runtime_notifications::HELPER_ENV;
+        std::env::remove_var(key);
+        if let Ok(executable) = std::env::current_exe() {
+            std::env::set_var(key, executable);
+        }
+    }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(unix)]
+    if matches!(
+        args.first().map(String::as_str),
+        Some("notification-context" | "record-activity")
+    ) {
+        return paperclip_runner_core::runtime_notifications::run_cli(args)
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()));
+    }
     if args.first().map(String::as_str) == Some("--stdio-mcp")
         && (args.len() == 2 || (args.len() == 3 && args[2] == "--content-images"))
     {

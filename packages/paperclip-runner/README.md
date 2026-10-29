@@ -595,6 +595,22 @@ Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.
 
+The runtime activity publisher has an offline final-command regression against the
+qualified Codex executable. Run it on a host that supports Codex's OS sandbox,
+with the pinned executable and the matching freshly built Runner helper:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+PAPERCLIP_RUNTIME_NOTIFICATION_HELPER=/absolute/path/to/paperclip-runnerd \
+cargo test --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  publisher_crosses_real_codex_tool_boundary_without_runner_state_access -- --ignored
+```
+
+This uses `app-server command/exec` without credentials or a model call. It checks
+actual shell discovery, successful durable activity recording, and denial of unrelated
+Runner state, descriptor writes and ambient secrets. The normal suite covers
+mailbox frame limits, timeout/orphan cleanup and attachment fencing.
+
 ## Direct live protocol qualification
 
 The canonical direct live protocol suite lives in the separate

@@ -271,6 +271,51 @@ views, access failures, inactive runs and missing plugins contribute no task tab
 Closing a tab preserves dismissal during polling; available panels remain in the
 launcher. Only tab identity is persisted, never availability responses or secrets.
 
+#### Runtime activity recording
+
+A runtime client captures Runner's opaque activity context before an eligible
+operation, then sends a structured notification after successful use:
+
+```sh
+context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context)
+# Perform the operation; notify only on success.
+"$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used
+```
+
+Runner publishes its matching executable as host-owned
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER`; clients invoke that absolute path and
+need no Runner command on `PATH`. Configured task environment cannot override it.
+Runner preserves both discovery variables at final provider command boundaries.
+For Codex, it adds read access to those two exact files and write access to the
+dedicated IPC directory, preserving the existing filesystem and network limits;
+it never grants access to the enclosing Runner state directory.
+
+Runner supplies `PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`, a stable path to its
+local notification endpoint descriptor. The helper uses bounded JSON-RPC over a
+private filesystem mailbox (2 KiB frames, at most 16 entries per control-loop
+iteration and a 500 ms client deadline). Per-request directories are private,
+atomically published and cleaned on completion or timeout; abandoned requests
+expire after two seconds. Runner opens request directories without following
+symlinks and performs reads, claims, replies and expiry cleanup relative to
+those open handles, so a provider cannot redirect them by swapping a pathname. After
+publishing a complete request, the helper updates a root-level wake marker. A
+native filesystem watcher coalesces wakes for Runner's owning control loop;
+uncompleted bounded sweeps and concurrent wakes are retained. Runner checks
+control messages with a short wait while mailbox work is pending, then restores
+its normal control wait, so bounded batches do not consume client deadlines. Cleanup has a
+real expiry deadline only while request directories remain; an unsuccessful
+inspection retains its own retry deadline until reconciled. Settled history
+causes no further mailbox scans. The watcher stops with Runner; if it cannot be
+registered, this optional hint stays unavailable without an idle polling fallback. It does not parse stdout/stderr or take a run ID. Runner
+rejects contexts from earlier warm attachments or process lifetimes and persists
+`runtime.activity.recorded` with `{ namespace, activityKey }` through its existing
+authenticated PRP event stream before acknowledging. The wrapper treats this
+optional hint as best effort; missing/older runners must not fail the operation.
+Do not notify for help, schema discovery, status probes or failures. No agent
+instruction is required. Identifiers are 1–160 Unicode code points, excluding
+C0 controls and DEL, consistently with all PRP schemas. This is a UI hint; plugin discovery, authorization and
+availability checks still apply. Runner knows no plugin or UI slot. Core maps declared activity identifiers to its consumers and retains authorization and readiness checks.
+
 #### `taskDetailView`
 
 A specialized slot rendered in the context of a task or issue detail view. Similar to `detailTab` but designed for inline content within the task detail layout rather than a separate tab. Receives `context.companyId`, `context.entityId`, and `context.entityType` like `detailTab`. Requires the `ui.detailTab.register` capability.

@@ -923,6 +923,14 @@ impl SecureChannel {
     }
 }
 
+pub(crate) fn control_read_timeout(work_pending: bool) -> Duration {
+    if work_pending {
+        Duration::from_millis(1)
+    } else {
+        RUNTIME_READ_TIMEOUT
+    }
+}
+
 pub(crate) struct AuthenticatedTransport {
     socket: RunnerSocket,
     secure_channel: SecureChannel,
@@ -1161,6 +1169,25 @@ impl AuthenticatedTransport {
 
     pub(crate) fn receive_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
         self.receive_json_until(None)
+    }
+
+    pub(crate) fn receive_json_with_pending_work(
+        &mut self,
+        work_pending: bool,
+    ) -> Result<Option<Value>, DurableRunnerError> {
+        if !work_pending {
+            return self.receive_json();
+        }
+        self.socket
+            .set_read_timeout(Some(control_read_timeout(true)))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        let message = self.receive_json();
+        let restore = self
+            .socket
+            .set_read_timeout(Some(control_read_timeout(false)))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()));
+        restore?;
+        message
     }
 
     fn receive_json_until(
@@ -2346,6 +2373,51 @@ mod tests {
         assert_eq!(accepted.connection.connection_id, "connection_1");
         assert_eq!(accepted.lease.unwrap().expose().unwrap(), "lease-secret");
         valid_peer.join().unwrap();
+    }
+
+    #[test]
+    fn pending_local_work_keeps_control_readable_and_restores_the_idle_wait() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        let mut server = RunnerSocket::Listen(WebSocket::from_raw_socket(
+            peer,
+            tungstenite::protocol::Role::Server,
+            None,
+        ));
+        let key = [7_u8; 32];
+        let mut secure = SecureChannel::server(&key, b"challenge", b"server", b"client").unwrap();
+        let mut transport = AuthenticatedTransport {
+            socket: RunnerSocket::Listen(WebSocket::from_raw_socket(
+                stream,
+                tungstenite::protocol::Role::Client,
+                None,
+            )),
+            secure_channel: SecureChannel::client(&key, b"challenge", b"server", b"client")
+                .unwrap(),
+            max_frame_bytes: 4096,
+        };
+        assert!(transport
+            .receive_json_with_pending_work(true)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            transport.socket.read_timeout().unwrap(),
+            Some(RUNTIME_READ_TIMEOUT)
+        );
+        let payload = json!({"kind":"command","payload":{"commandType":"runner.shutdown"}});
+        let frame = secure
+            .encrypt(&serde_json::to_vec(&payload).unwrap(), true)
+            .unwrap();
+        send_plain(&mut server, &frame, 4096).unwrap();
+        assert_eq!(
+            transport.receive_json_with_pending_work(true).unwrap(),
+            Some(payload)
+        );
+        assert_eq!(
+            transport.socket.read_timeout().unwrap(),
+            Some(RUNTIME_READ_TIMEOUT)
+        );
     }
 
     #[test]

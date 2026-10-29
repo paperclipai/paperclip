@@ -2956,6 +2956,7 @@ function sanitizedEnvironment(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
   const allowed = [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
     "PATH",
     "LANG",
@@ -2978,6 +2979,7 @@ function sanitizedEnvironment(
 
 function sanitizedEnvironmentKeys(): string[] {
   return [
+    "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT", "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
     "PATH",
     "LANG",
     "LC_ALL",
