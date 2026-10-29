@@ -351,7 +351,7 @@ export async function recordRunPresentationDecision(db: Db, input: {
   companyId: string; runId: string; issueId?: string; decision: RunPresentationDecision;
 }) {
   await db.transaction(async tx => {
-    await notifyChatRunMilestones(tx, { companyId: input.companyId, issueId: input.issueId });
+    await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.runId, issueId: input.issueId });
     await tx.update(heartbeatRuns).set({
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({ presentationDecision: input.decision })}::jsonb`,
       updatedAt: new Date(),

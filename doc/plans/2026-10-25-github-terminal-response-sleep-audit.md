@@ -377,3 +377,46 @@ Original producer, quietness, failure-isolation, skipped-suite and presentation
 results above retain their original scopes. Fresh exact-head CI and Greptile 5/5
 with no actionable findings remain required. This does not establish a full
 local repository result, live GitHub delivery or physical host/database sleep.
+
+
+## CI: native presentation startup observation
+
+PR #17680 head `40f84082526d6ba405f206475c919c3b4b67ec4c` fails chat shard
+1 in run 40814818307, job 123253388098. The passive native-presentation case
+expires its initial default one-second idle poll with no deadline and two active
+tracked operations. The aggregate verify check fails because of that shard.
+This is retained as a real CI failure; no unchanged-head retry was issued.
+
+The scoped worker's minimum pass interval is also one second. The initial poll
+was added after the earlier coalescing correction documented above and still
+used the default, while neighboring settlement observations use five seconds.
+The unchanged local focused pair passes, so there is no claim of an unmodified
+local reproduction of CI scheduling.
+
+A temporary controlled fixture commits a real milestone hint during the initial
+registered run and holds the second registered run attempt for 600 ms after
+delegating to the existing implementation. That attempt may defer at the
+unchanged one-second gate, retaining a coalesced follow-up. Both old observations
+fail at the original one-second bound. With the identical probe, both pass when
+the initial observation uses the existing five-second bound. The controlled
+failures have a pending deadline and one active token; CI saw no deadline and
+two active tokens. This proves that the observation window cannot reliably fit
+allowed startup follow-up, not the exact unrecorded CI token-owner timeline.
+
+The probe is removed byte for byte before final acceptance. The permanent
+change is one argument on the initial poll. It still requires a null deadline
+and zero active work, then proves two virtual minutes with zero SQL, transaction
+or provider writes. Rollback, committed settlement and final drain assertions
+are unchanged. Production code, scheduler cadence, retry/business deadlines and
+the overall test budget are unchanged. Only this eventual-startup observation
+uses the established five-second bound.
+
+The no-probe focused pair passes. The complete named GitHub agent-review
+workflow then passes all **274 selected cases** in 232.06 seconds on fresh
+PostgreSQL 17. The other 1507 cases in the large integration file are outside
+that named selection, not counted as acceptance. Five dedicated fresh 0409
+fixtures isolate baseline, controlled red, controlled green, focused and workflow
+runs. No embedded CI-environment equivalence is claimed. The source file hash
+for permanent acceptance is
+`d0dbef76741f03862dfef0a42338f97d5ea7a9f36d4b465c7538a5eaacd65b2c`.
+Fresh published-head CI and review remain required.

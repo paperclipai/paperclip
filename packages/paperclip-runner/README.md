@@ -857,7 +857,9 @@ Prepare authentication, skills, and external MCP servers on the execution machin
 before launching. Runner does not install skills, copy or remove credentials, or
 rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
-model, task instructions, and its internal task/completion tools. Local permission
+model, task instructions, and its internal task/completion tools. Claude session
+loads and resumes receive the same native session options as session creation,
+including allowed tools and the selected settings sources. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains

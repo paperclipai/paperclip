@@ -500,6 +500,7 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     decisionId: string;
     resultId: string;
     assessmentId: string;
+    onlyWhenDue?: boolean;
   },
 ): Promise<boolean> {
   const [coordinator] = await db
@@ -519,6 +520,8 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     .for("update")
     .limit(1);
   if (!coordinator) return false;
+  if (input.onlyWhenDue && (coordinator.leaseOwner !== null
+    || coordinator.nextAttemptAt !== null && coordinator.nextAttemptAt.getTime() > Date.now())) return false;
   const [decision] = await db
     .select()
     .from(statusDecisions)

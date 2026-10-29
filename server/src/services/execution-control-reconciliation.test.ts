@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { enableRunFailureReporting } from "../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -19,7 +20,8 @@ vi.mock("../sentry.js", async () => {
 
 import { reconcileAbandonedExecutionControl } from "./execution-control-reconciliation.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_EXECUTION_CONTROL_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine failed transition", () => {
@@ -27,11 +29,12 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("execution-control-reconciliation-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("execution-control-reconciliation-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -218,10 +221,10 @@ describeEmbeddedPostgres("native review execution reconciliation admission", () 
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("execution-control-review-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("execution-control-review-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 30_000);
-  afterAll(async () => { await tempDb?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await tempDb?.cleanup(); });
 
   it.each([true, false])("only releases the exact admitted review (admitted=%s)", async (admitted) => {
     const companyId = randomUUID();

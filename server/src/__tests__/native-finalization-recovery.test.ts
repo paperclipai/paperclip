@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -28,6 +29,8 @@ import {
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { assertRetainedNativeSourceArchiveSettled } from "../services/native-runtime/native-session-executor.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZATION_TEST_DATABASE_URL");
+
 describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -41,8 +44,8 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   const staleRunId = "72000000-0000-4000-8000-000000000015";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-recovery-");
-    db = createDb(temporary.connectionString);
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-recovery-");
+    db = createDb(external ?? temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Native recovery", issuePrefix: "NRC" });
     await db.insert(agents).values({
       id: agentId,
@@ -210,7 +213,8 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await temporary.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
   });
 
   it("fails closed into bounded named recovery without consulting the live flag or falling back", async () => {
@@ -355,10 +359,10 @@ describe("retained native cleanup discovery", () => {
   ];
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase(
       "paperclip-native-cleanup-sweep-",
     );
-    db = createDb(temporary.connectionString);
+    db = createDb(external ?? temporary.connectionString);
     await db
       .insert(companies)
       .values({ id: companyId, name: "Cleanup sweep", issuePrefix: "NCS" });
@@ -382,7 +386,8 @@ describe("retained native cleanup discovery", () => {
     });
   });
   afterAll(async () => {
-    await temporary.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
   });
 
   async function candidate(

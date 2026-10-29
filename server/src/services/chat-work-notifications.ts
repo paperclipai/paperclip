@@ -1,5 +1,5 @@
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
-import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyChatRunMilestones, notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
 import { notifyChatConnectionConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -47,7 +47,7 @@ export async function notifyChatVerificationWork(tx: object): Promise<void> {
 export async function notifyChatEndpointWork(tx: object, connectionId: string, companyId: string): Promise<void> {
   // Configuration/status transitions can restore post-control publication
   // authority. Ordinary health checks use the narrower configuration signals.
-  await notifyChatRunMilestones(tx, { companyId });
+  await notifyChatCompanyAuthorityChange(tx, { companyId });
   await notifyChatDeliveryWork(tx);
   await notifyChatPublicationWork(tx);
   for (const queue of Object.values(CHAT_ACTION_QUEUES)) await notifyDeliveryWork(tx, queue);

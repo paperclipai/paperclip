@@ -632,3 +632,24 @@ write the warning must not replace the provider outcome or stop lease release.
 cannot apply company export settings. Its payload contains only a closed reason
 and the settings revision. It carries no endpoint, credential, secret reference
 or resolver error. Recording the diagnostic never contacts a destination.
+
+## Runtime activity
+
+`runtime.activity.recorded` is a P1 Runner PRP event with a closed
+`{ namespace, activityKey }` payload. `namespace` groups a producer's activity
+types under a stable name. `activityKey` identifies an activity within that group.
+Consumers use the pair to select a response to activity in the current run.
+
+For example, `{ namespace: "example.computer", activityKey: "desktop.used" }`
+records successful desktop use. Core can map that activity to a Desktop viewer
+for the task's running agent. The authenticated event envelope supplies the run,
+session, source sequence and emission time. Core resolves the company, task and
+agent through the run's existing authorization checks.
+
+Both activity identifiers contain 1–160 Unicode code points and exclude C0
+controls and DEL. Callers cannot supply run, task or agent identity in this payload.
+
+The ordinary authenticated Runner event is the durable record. Normal source-event
+acknowledgement and replay deduplicate delivery. Existing run-read authorization
+and secret redaction apply to saved and live events. Recording reported activity
+is not independent proof that it happened and grants no resource permission.

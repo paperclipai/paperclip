@@ -30,7 +30,7 @@ import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
-import { notifyChatRunMilestones } from "../services/chat-run-milestone-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "../services/chat-run-milestone-notifications.js";
 
 export {
   isTransientDbConnectionError,
@@ -665,7 +665,7 @@ async function resolveCloudTenantActorOnce(
       // Serialize authority restoration and its notice while retaining the
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
       return tx
         .insert(companyMemberships)

@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
 import {
   persistActivity,
@@ -385,6 +386,7 @@ export async function settleConversationTurn(
       issue.conversationState === conversationState
     )
       return true;
+    if (status === "in_review") await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
     await tx
       .update(issues)
       .set({

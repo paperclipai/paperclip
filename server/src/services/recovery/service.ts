@@ -1,3 +1,7 @@
+import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
@@ -6275,8 +6279,11 @@ export function recoveryService(
       // to recheck finalization records committed after this lock was taken.
       const [candidate] = await tx.select().from(heartbeatRuns).where(eligible).for("update");
       if (!candidate) return null;
+      await notifyInstructionCollection(tx, { companyId: candidate.companyId, runId: candidate.id });
+      await notifyCancelledWorkspacePreservation(tx, { companyId: candidate.companyId, runId: candidate.id });
       const boundIssueId = boundRunIssueId(candidate);
       if (boundIssueId) {
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId: boundIssueId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: boundIssueId });
       }
       return tx
@@ -6473,7 +6480,10 @@ export function recoveryService(
         continue;
       }
 
-      const updated = await db
+      const updated = await db.transaction(async tx => {
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
+        await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
+        return tx
         .update(issues)
         .set({
           checkoutRunId: null,
@@ -6495,6 +6505,7 @@ export function recoveryService(
         )
         .returning({ id: issues.id })
         .then((rows) => rows[0] ?? null);
+      });
 
       if (!updated) continue;
 

@@ -1,3 +1,8 @@
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
+import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { readRequiredQualityReview } from "../required-quality-review.js";
 import { pendingNativeGovernance } from "./native-governance.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -34,6 +39,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisions,
+  statusDecisionEffects,
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -210,6 +216,7 @@ async function claimCoordinator(input: {
       coordinator.leaseOwner !== leaseOwner
     )
       throw new Error("native_finalization_lease_busy");
+    if (coordinator.decisionId) await notifyNativeFinalizationWork(tx, coordinator);
     const [updated] = await tx
       .update(nativeRunFinalizations)
       .set({
@@ -377,7 +384,11 @@ async function recordRetryableFailure(input: {
             ? "native_workspace_sync_out_retry_exhausted"
             : "native_finalization_retry_exhausted"
           : input.failureCode;
+    await notifyNativeFinalizationWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
+    if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
+    }
     await notifyExecutionRunWork(tx);
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
@@ -410,6 +421,9 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus && input.failureScope === "workspace") {
       await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
     }
+    if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
+    if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
+    if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -600,7 +614,7 @@ function recoveredExecutionFailureMetadata() {
 
 async function projectCommittedRun(input: {
   db: Db;
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase" | "nativeIssueId" | "contextSnapshot">;
   coordinator: typeof nativeRunFinalizations.$inferSelect;
 }) {
   if (!input.coordinator.resultId) return;
@@ -667,6 +681,9 @@ async function projectCommittedRun(input: {
   const now = new Date();
   const [updatedRun] = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
+    await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
@@ -706,65 +723,62 @@ async function projectCommittedRun(input: {
   }
 }
 
-async function materializeCommittedReviewResponse(db: Db, runId: string) {
-  try {
-    const [run] = await db
-      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-        nativeIssueId: heartbeatRuns.nativeIssueId, resultJson: heartbeatRuns.resultJson })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .limit(1);
-    if (!run?.nativeIssueId || !run.resultJson?.externalChatReviewPresentation)
-      return;
-    const decisionId = record(
-      run.resultJson.externalChatReviewPresentation,
-    ).decisionId;
-    if (
-      typeof decisionId !== "string" ||
-      (await hasMaterializedNativeReviewResponse(db, {
-        companyId: run.companyId,
-        issueId: run.nativeIssueId,
-        runId,
-        decisionId,
-      }))
-    )
-      return;
-    const summary = record(run.resultJson.nativeResult).summary;
-    if (
-      typeof summary !== "string" ||
-      !(await authorizeNativeChatReviewPresentation(db, {
-        companyId: run.companyId,
-        issueId: run.nativeIssueId,
-        runId,
-        resultJson: run.resultJson,
-      }))
-    )
-      return;
-    // The coordinator transaction is already committed. addComment owns a
-    // fresh issue transaction, rechecks the proof and carries selected files;
-    // its same-run/text and publication keys make recovery replay idempotent.
-    await issueService(db).addComment(
-      run.nativeIssueId,
-      summary,
-      { agentId: run.agentId, runId },
-      {
-        authorizationReason: "allow_chat_run_presentation",
-      },
-    );
-    publishChatPublicationCommitSignal({
+async function materializeNativeReviewResponse(db: Db, runId: string, dbOrTx: Db = db) {
+  const [run] = await dbOrTx
+    .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+      nativeIssueId: heartbeatRuns.nativeIssueId, resultJson: heartbeatRuns.resultJson })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .limit(1);
+  if (!run?.nativeIssueId || !run.resultJson?.externalChatReviewPresentation)
+    return null;
+  const decisionId = record(
+    run.resultJson.externalChatReviewPresentation,
+  ).decisionId;
+  if (
+    typeof decisionId !== "string" ||
+    (await hasMaterializedNativeReviewResponse(dbOrTx, {
       companyId: run.companyId,
       issueId: run.nativeIssueId,
-      runId: run.id,
-      agentId: run.agentId,
-      eventType: "run.presentation.resolved",
-    });
+      runId,
+      decisionId,
+    }))
+  )
+    return null;
+  const summary = record(run.resultJson.nativeResult).summary;
+  if (
+    typeof summary !== "string" ||
+    !(await authorizeNativeChatReviewPresentation(dbOrTx, {
+      companyId: run.companyId,
+      issueId: run.nativeIssueId,
+      runId,
+      resultJson: run.resultJson,
+    }))
+  )
+    return null;
+  await issueService(db).addComment(
+    run.nativeIssueId,
+    summary,
+    { agentId: run.agentId, runId },
+    {
+      authorizationReason: "allow_chat_run_presentation",
+    },
+    dbOrTx,
+  );
+  return run;
+}
+
+function publishNativeReviewResponse(run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "nativeIssueId">) {
+  publishChatPublicationCommitSignal({ companyId: run.companyId, issueId: run.nativeIssueId!,
+    runId: run.id, agentId: run.agentId, eventType: "run.presentation.resolved" });
+}
+
+async function materializeCommittedReviewResponse(db: Db, runId: string) {
+  try {
+    const run = await materializeNativeReviewResponse(db, runId);
+    if (run) publishNativeReviewResponse(run);
   } catch (error) {
-    // The durable committed proof remains retryable by the next reconciler
-    // sweep. Presentation failure must not reclassify a successful native run.
-    logger.warn(
-      { runId, error },
-      "Committed chat review response is awaiting presentation retry",
-    );
+    logger.warn({ runId, error }, "Committed chat review response is awaiting presentation retry");
   }
 }
 
@@ -833,6 +847,21 @@ export async function repairCommittedNativeChatResponse(
   db: Db,
   input: { companyId: string; issueId: string; runId: string },
 ): Promise<boolean> {
+  try {
+    return await recoverCommittedNativeChatResponse(db, input);
+  } catch (error) {
+    logger.warn(
+      { runId: input.runId, error },
+      "Committed chat response is awaiting presentation retry",
+    );
+    return false;
+  }
+}
+
+export async function recoverCommittedNativeChatResponse(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string; onlyWhenDue?: boolean },
+): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
   try {
@@ -893,9 +922,11 @@ export async function repairCommittedNativeChatResponse(
         return false;
       // An existing selected answer, including a subsequently deleted one, must
       // never be replaced or resurrected by a background presentation repair.
+      const recordedPresentation = record(record(run.resultJson).presentationDecision);
       if (
-        typeof record(record(run.resultJson).presentationDecision).commentId ===
-        "string"
+        typeof recordedPresentation.commentId === "string" ||
+        (recordedPresentation.commentAction !== undefined && recordedPresentation.commentAction !== "create") ||
+        record(run.contextSnapshot).skipIssueComment === true
       )
         return false;
       const [coordinator] = await tx
@@ -917,6 +948,16 @@ export async function repairCommittedNativeChatResponse(
         !coordinator.assessmentId
       )
         return false;
+      if (input.onlyWhenDue) {
+        if (coordinator.nextAttemptAt && coordinator.nextAttemptAt.getTime() > Date.now()) return false;
+        const [pendingEffect] = await tx.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
+          eq(statusDecisionEffects.companyId, input.companyId),
+          eq(statusDecisionEffects.issueId, input.issueId),
+          eq(statusDecisionEffects.decisionId, coordinator.decisionId),
+          inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+        )).limit(1);
+        if (pendingEffect) return false;
+      }
       const [accepted] = await tx
         .select()
         .from(nativeRunResults)
@@ -1107,13 +1148,7 @@ export async function repairCommittedNativeChatResponse(
     });
   } catch (error) {
     if (error instanceof CommittedChatResponseAuthorizationError) return false;
-    // Keep transient failures visible and retryable without reclassifying the
-    // committed run or acknowledging a publication that never committed.
-    logger.warn(
-      { runId: input.runId, error },
-      "Committed chat response is awaiting presentation retry",
-    );
-    return false;
+    throw error;
   }
   if (materialized && agentId)
     publishChatPublicationCommitSignal({
@@ -1145,12 +1180,36 @@ export async function repairCommittedNativeReviewResponse(
   );
   if (restored) await materializeCommittedReviewResponse(db, input.runId);
 }
+export async function recoverCommittedNativeReviewResponse(db: Db, input: {
+  companyId: string; issueId: string; runId: string; decisionId: string;
+  resultId: string; assessmentId: string; onlyWhenDue?: boolean;
+}): Promise<boolean> {
+  const materialized = await db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+
+
+    const [coordinator] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+        eq(nativeRunFinalizations.issueId, input.issueId), eq(nativeRunFinalizations.runId, input.runId))).for("update");
+    if (!coordinator) return null;
+    const [issue] = await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    if (!issue || await hasMaterializedNativeReviewResponse(tx, input)) return null;
+    if (!await restoreNativeChatReviewPresentationInTransaction(tx, input)) return null;
+    return materializeNativeReviewResponse(db, input.runId, tx);
+  });
+  if (materialized) publishNativeReviewResponse(materialized);
+  return materialized !== null;
+}
+
 export async function finalizeNativeRun(input: {
   db: Db;
   runId: string;
   workspaceFinalizeStatus: "succeeded" | "failed";
   /** Reconciliation owns terminal run projection; the live heartbeat does it afterward. */
   projectRunStatus?: boolean;
+  skipNativeResponsePresentation?: boolean;
+  skipNativeReviewResponse?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
@@ -1158,6 +1217,8 @@ export async function finalizeNativeRun(input: {
   const admittedRun = await input.db
     .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->>'issueId')`,
       nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
@@ -1173,14 +1234,14 @@ export async function finalizeNativeRun(input: {
   const coordinator = claim.coordinator;
   if (!claim.leaseOwner && coordinator.phase === "committed") {
     if (isNativeRunnerOwnershipHeld(admittedRun)) return coordinator;
-    const presentationAlreadyMaterialized = coordinator.decisionId
+    const presentationAlreadyMaterialized = input.skipNativeReviewResponse || (coordinator.decisionId
       ? await hasMaterializedNativeReviewResponse(input.db, {
           companyId: admittedRun.companyId,
           issueId: coordinator.issueId,
           runId: admittedRun.id,
           decisionId: coordinator.decisionId,
         })
-      : false;
+      : false);
     if (
       !presentationAlreadyMaterialized &&
       coordinator.decisionId &&
@@ -1202,7 +1263,7 @@ export async function finalizeNativeRun(input: {
       await projectCommittedRun({ db: input.db, run: admittedRun, coordinator });
     if (input.projectRunStatus && !presentationAlreadyMaterialized)
       await materializeCommittedReviewResponse(input.db, input.runId);
-    if (input.projectRunStatus)
+    if (input.projectRunStatus && !input.skipNativeResponsePresentation)
       await repairCommittedNativeChatResponse(input.db, {
         companyId: admittedRun.companyId,
         issueId: coordinator.issueId,
@@ -1685,6 +1746,9 @@ export async function finalizeNativeRun(input: {
         .returning();
       const [updatedRun] = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
+        if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
+        if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+        if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
@@ -1700,7 +1764,7 @@ export async function finalizeNativeRun(input: {
       }
       if (input.projectRunStatus)
         await materializeCommittedReviewResponse(input.db, input.runId);
-      if (input.projectRunStatus && finalizationPhase === "committed")
+      if (input.projectRunStatus && finalizationPhase === "committed" && !input.skipNativeResponsePresentation)
         await repairCommittedNativeChatResponse(input.db, {
           companyId: run.companyId,
           issueId: coordinator.issueId,

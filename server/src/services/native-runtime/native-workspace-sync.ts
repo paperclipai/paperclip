@@ -1,3 +1,4 @@
+import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { emitStartupReuse, type StartupReuseReason } from "@paperclipai/adapter-utils/startup-reuse";
@@ -614,13 +615,14 @@ async function persistRunReference(
 ): Promise<void> {
   await db.transaction(async (tx) => {
     const run = await tx
-      .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson })
+      .select({ companyId: heartbeatRuns.companyId, runnerProfileJson: heartbeatRuns.runnerProfileJson })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run) throw new Error("native_workspace_sync_run_missing");
+    await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId });
     await tx
       .update(heartbeatRuns)
       .set({
