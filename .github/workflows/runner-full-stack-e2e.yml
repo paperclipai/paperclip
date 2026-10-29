@@ -1298,9 +1298,57 @@ jobs:
           finalization_status=$?
           test "$run_status" = 0 && test "$finalization_status" = 0
 
+      - name: Prepare selected self-addressed AgentMail inputs
+        if: needs.catalog.outputs.operations_cadence == '' && steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && contains(fromJSON('["chat-features.runner-opencode.local.chat-channels.outbound-email","chat-features.runner-opencode.local.recovery.unknown-email-outcome"]'), matrix.executionId)
+        env:
+          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
+          PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN: ${{ secrets.PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN }}
+          CHAT_CATALOG_AGENTMAIL_QA_CONFIG_JSON: ${{ secrets.CHAT_CATALOG_AGENTMAIL_QA_CONFIG_JSON }}
+          CHAT_CATALOG_ORACLE_COMMITMENT_KEY_B64: ${{ secrets.CHAT_CATALOG_ORACLE_COMMITMENT_KEY_B64 }}
+        run: |
+          node --input-type=module <<'NODE'
+          // BEGIN_AGENTMAIL_PRIVATE_INPUTS
+          import fs from "node:fs";
+          import path from "node:path";
+          try {
+            const allowed = new Set(["chat-features.runner-opencode.local.chat-channels.outbound-email", "chat-features.runner-opencode.local.recovery.unknown-email-outcome"]);
+            if (!allowed.has(process.env.SELECTED_EXECUTION_ID)) throw new Error();
+            const tokenName = "PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN";
+            const token = process.env[tokenName];
+            if (!token || token.length < 12 || /[^\x21-\x7e]/.test(token)) throw new Error();
+            const raw = process.env.CHAT_CATALOG_AGENTMAIL_QA_CONFIG_JSON;
+            if (!raw || Buffer.byteLength(raw) > 65536) throw new Error();
+            const config = JSON.parse(raw), provider = config.providers?.agentmail, fields = provider?.prerequisites;
+            const keys = (object, expected) => object && Object.keys(object).sort().join() === expected.sort().join();
+            if (!keys(config, ["schemaVersion", "providers"]) || config.schemaVersion !== 1 || !keys(config.providers, ["agentmail"])
+              || !keys(provider, ["disposable", "resourceIds", "credentialEnv", "prerequisites"]) || provider.disposable !== true
+              || !Array.isArray(provider.resourceIds) || provider.resourceIds.length !== 1 || !Array.isArray(provider.credentialEnv)
+              || provider.credentialEnv.length !== 1 || provider.credentialEnv[0] !== tokenName
+              || !keys(fields, ["inboxId", "recipient", "recipientAuthorization", "apiTokenEnv"])
+              || fields.recipientAuthorization !== "self-addressed-only" || fields.apiTokenEnv !== tokenName
+              || typeof fields.inboxId !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.inboxId)
+              || fields.inboxId !== fields.recipient || provider.resourceIds[0] !== fields.inboxId) throw new Error();
+            const encoded = process.env.CHAT_CATALOG_ORACLE_COMMITMENT_KEY_B64 ?? "";
+            const key = Buffer.from(encoded, "base64");
+            if (key.length !== 32 || key.toString("base64") !== encoded) throw new Error();
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            if (/[\r\n]/.test(temporary)) throw new Error();
+            const directory = fs.mkdtempSync(path.join(temporary, "paperclip-agentmail-qa-"));
+            const configPath = path.join(directory, "external-config.json"), keyPath = path.join(directory, "oracle-hmac.key");
+            try {
+              fs.chmodSync(directory, 0o700);
+              fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600, flag: "wx" });
+              fs.writeFileSync(keyPath, key, { mode: 0o600, flag: "wx" });
+              fs.appendFileSync(process.env.GITHUB_ENV, `PAPERCLIP_CHAT_QA_INPUT_ROOT=${directory}\nPAPERCLIP_CHAT_CATALOG_EXTERNAL_CONFIG=${configPath}\nPAPERCLIP_CHAT_ORACLE_COMMITMENT_KEY=${keyPath}\n`);
+            } catch { fs.rmSync(directory, { recursive: true, force: true }); throw new Error(); }
+          } catch { process.stderr.write("Selected AgentMail private input preparation failed; details withheld\n"); process.exitCode = 1; }
+          // END_AGENTMAIL_PRIVATE_INPUTS
+          NODE
+
       - name: Run paid cell
         if: needs.catalog.outputs.operations_cadence == '' && (steps.manual_cell_route.outputs.route == 'actions' || steps.manual_private_verified.outcome == 'success')
         env:
+          PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN: ${{ steps.manual_cell_route.outputs.route == 'private' && steps.manual_private_verified.outcome == 'success' && contains(fromJSON('["chat-features.runner-opencode.local.chat-channels.outbound-email","chat-features.runner-opencode.local.recovery.unknown-email-outcome"]'), matrix.executionId) && secrets.PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN || '' }}
           PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.manual_private_verified.outcome == 'success' && format('{0}/preflight.json', steps.manual_private.outputs.root) || '' }}
           PRIVATE_EVIDENCE_ROOT: ${{ steps.manual_private.outputs.root }}
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
@@ -1323,6 +1371,24 @@ jobs:
           else
             pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
           fi
+
+      - name: Remove selected AgentMail private input files
+        if: always() && env.PAPERCLIP_CHAT_QA_INPUT_ROOT != ''
+        run: |
+          node --input-type=module <<'NODE'
+          // BEGIN_AGENTMAIL_PRIVATE_CLEANUP
+          import fs from "node:fs";
+          import path from "node:path";
+          try {
+            const root = process.env.PAPERCLIP_CHAT_QA_INPUT_ROOT;
+            const temporary = fs.realpathSync(process.env.RUNNER_TEMP);
+            const info = root ? fs.lstatSync(root) : undefined;
+            if (!root || path.dirname(root) !== temporary || !path.basename(root).startsWith("paperclip-agentmail-qa-")
+              || !info?.isDirectory() || info.isSymbolicLink()) throw new Error();
+            fs.rmSync(root, { recursive: true, force: true });
+          } catch { process.stderr.write("Selected AgentMail private input cleanup failed; details withheld\n"); process.exitCode = 1; }
+          // END_AGENTMAIL_PRIVATE_CLEANUP
+          NODE
 
       - name: Stage bounded campaign evidence
         id: stage_evidence

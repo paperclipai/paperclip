@@ -3061,3 +3061,42 @@ they are not reported as charges or converted into reviewed lifecycle bounds.
 This mode therefore does not certify a full-lifecycle operating-cost ceiling.
 Omitting the policy preserves the stricter full-accounting gate. Historical
 journals and their holds are not rewritten by changing future campaign policy.
+
+### Selected self-addressed AgentMail inputs
+
+Manual private AWS cells can receive selected QA inputs only for these exact
+OpenCode/local execution IDs:
+
+- `chat-features.runner-opencode.local.chat-channels.outbound-email`
+- `chat-features.runner-opencode.local.recovery.unknown-email-outcome`
+
+The existing `runner-e2e-private-paid` environment supplies only three named
+secrets: `PAPERCLIP_CHAT_EVAL_AGENTMAIL_API_TOKEN`,
+`CHAT_CATALOG_AGENTMAIL_QA_CONFIG_JSON`, and
+`CHAT_CATALOG_ORACLE_COMMITMENT_KEY_B64`. The JSON contains only the disposable
+AgentMail provider, one inbox/resource, the fixed token reference, and exactly
+`inboxId`, `recipient`, `recipientAuthorization`, and `apiTokenEnv` prerequisites.
+Inbox and recipient must match, with `recipientAuthorization=self-addressed-only`.
+Reuse the original campaign commitment key: canonical base64 of exactly 32 bytes;
+never generate or substitute a key.
+
+Preparation runs after the exact private tuple and restricted storage verification,
+then immediately before the paid command. The three protected values are never
+printed or shell-interpolated. Configuration and key are staged in an owned 0700
+directory with 0600 files outside results and evidence; only path references enter
+`GITHUB_ENV`. Only the two selected paid commands receive the token. The existing
+selected-input loader writes its execution-bound 0600 envelope, scrubs child
+environment inputs, and registers secret roots. That envelope is a private file,
+not a new encrypted format; existing GitHub Secrets delivery and product encrypted
+credential storage remain unchanged. Always-run cleanup removes only the owned
+input directory before evidence staging or retention. Failure remains visible.
+
+`chat-channels.reply-to-email` receives no inputs: it requires a separately
+authorized distinct synthetic reviewer mailbox and sender credential. Self-mail
+permission does not authorize that setup. No other case, profile, environment,
+recurring campaign or external provider receives these AgentMail inputs.
+
+Secret transfer, deployment, exact run approval and actual provider/runtime
+qualification are separate prerequisites. This delivery change grants none.
+Run offline actual-script controls with:
+`node --test tests/runner-e2e/agentmail-paid-inputs.test.mjs`.
