@@ -92,8 +92,7 @@ const PROPOSAL_WIDTH_STORAGE_KEY = "paperclip.design-proposal.properties-pane-wi
 const DEFAULT_PANE_WIDTH = 322;
 const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
-/** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
-const RESERVED_LAYOUT_WIDTH = 656;
+const MAX_PANE_WIDTH_RATIO = 0.33;
 /** Content cap while maximized so text doesn't span the full viewport. */
 const MAXIMIZED_CONTENT_MAX_WIDTH = 840;
 /**
@@ -110,11 +109,10 @@ function readProposalPaneWidth(fallback: number): number {
 }
 
 function clampPaneWidth(width: number): number {
-  const max =
-    typeof window === "undefined"
-      ? Number.POSITIVE_INFINITY
-      : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
-  return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), max);
+  if (typeof window === "undefined") return Math.max(Math.round(width), MIN_PANE_WIDTH);
+  const max = Math.round(window.innerWidth * MAX_PANE_WIDTH_RATIO);
+  const min = Math.min(MIN_PANE_WIDTH, max);
+  return Math.min(Math.max(Math.round(width), min), max);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
@@ -206,6 +204,12 @@ function ResizablePropertiesPanel({
     if (panelVisible) setWidth(clampPaneWidth);
   }, [panelVisible]);
 
+  useEffect(() => {
+    const handleViewportResize = () => setWidth(clampPaneWidth);
+    window.addEventListener("resize", handleViewportResize);
+    return () => window.removeEventListener("resize", handleViewportResize);
+  }, []);
+
   const asideRef = useRef<HTMLElement | null>(null);
   const widthRef = useRef(width);
   widthRef.current = width;
@@ -290,7 +294,7 @@ function ResizablePropertiesPanel({
   }, [endDrag]);
 
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(designSandbox ? clampPaneWidth(readProposalPaneWidth(productionPaneWidth)) : defaultPaneWidth);
+    setWidth(clampPaneWidth(designSandbox ? readProposalPaneWidth(productionPaneWidth) : defaultPaneWidth));
     clearStoredPaneWidth(widthStorageKey);
   }, [defaultPaneWidth, designSandbox, productionPaneWidth, widthStorageKey]);
 
